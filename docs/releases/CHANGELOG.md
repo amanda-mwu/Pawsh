@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.2
+
+### Fixed
+
+- Made authenticated-encryption tamper checks deterministic and rejected
+  malformed or non-canonical encrypted payloads.
+- Aligned local and CI runtime versions and added a repository-managed pre-push
+  validation guard.
+
+### Validation
+
+- Thirty-two automated tests, 50 repeated secret-suite executions, PostgreSQL
+  runtime validation, production build, and backup/restore rehearsal pass.
+
 ## 0.1.1
 
 ### Fixed

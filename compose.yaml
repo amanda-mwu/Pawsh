@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: pawsh
+      POSTGRES_USER: pawsh
+      POSTGRES_PASSWORD: pawsh-local-only
+    ports:
+      - "54322:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pawsh -d pawsh"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - pawsh-postgres:/var/lib/postgresql/data
+
+volumes:
+  pawsh-postgres:

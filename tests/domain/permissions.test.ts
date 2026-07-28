@@ -1,0 +1,13 @@
+import { describe, expect, it } from "vitest";
+import { can } from "../../src/domain/permissions.js";
+
+describe("permissions", () => {
+  it("gives owners protected full access", () => {
+    expect(can({ isOwner: true, permissions: [] }, "settings.manage")).toBe(true);
+  });
+
+  it("requires explicit permission for non-owners", () => {
+    expect(can({ isOwner: false, permissions: ["calendar.view"] }, "calendar.view")).toBe(true);
+    expect(can({ isOwner: false, permissions: ["calendar.view"] }, "team.manage")).toBe(false);
+  });
+});

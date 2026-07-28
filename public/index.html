@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Pawsh grooming business operations">
+  <title>Pawsh — Salon operations, beautifully organized</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="auth-view" class="auth-shell">
+    <section class="brand-panel">
+      <a class="brand" href="/">pawsh<span>.</span></a>
+      <div>
+        <p class="eyebrow">The calm way to run a grooming salon</p>
+        <h1>Every appointment.<br>Every pet.<br><em>All cared for.</em></h1>
+        <p class="lead">A focused workspace for your schedule, client history, service flow, and checkout.</p>
+      </div>
+      <p class="fine">Built for independent grooming teams.</p>
+    </section>
+    <section class="auth-card">
+      <div class="auth-copy">
+        <p class="eyebrow">Welcome to Pawsh</p>
+        <h2 id="auth-title">Create your salon</h2>
+        <p id="auth-subtitle">Set up your workspace in under a minute.</p>
+      </div>
+      <form id="auth-form">
+        <label>Email<input name="email" type="email" autocomplete="email" required></label>
+        <label>Password<input name="password" type="password" minlength="12" autocomplete="new-password" required></label>
+        <label id="business-field">Salon name<input name="businessName" autocomplete="organization" required></label>
+        <button class="primary" type="submit">Create workspace</button>
+        <p id="auth-error" class="error" role="alert"></p>
+      </form>
+      <button id="toggle-auth" class="text-button">Already have an account? Sign in</button>
+    </section>
+  </div>
+
+  <div id="app-view" class="app-shell" hidden>
+    <aside>
+      <a class="brand" href="/">pawsh<span>.</span></a>
+      <nav aria-label="Main navigation">
+        <button data-view="dashboard" class="active">Overview</button>
+        <button data-view="calendar">Calendar</button>
+        <button data-view="customers">Customers & pets</button>
+        <button data-view="setup">Salon setup</button>
+      </nav>
+      <div class="aside-foot">
+        <div class="salon-chip"><span class="avatar">P</span><span><strong id="salon-name">Pawsh</strong><small>Owner workspace</small></span></div>
+        <button id="logout" class="text-button">Sign out</button>
+      </div>
+    </aside>
+    <main>
+      <header>
+        <div><p class="eyebrow" id="page-kicker">Daily operations</p><h2 id="page-title">Good morning</h2></div>
+        <div class="header-actions"><span id="today"></span><button class="primary compact" data-action="new-appointment">+ New appointment</button></div>
+      </header>
+
+      <section id="dashboard" class="view">
+        <div id="metrics" class="metric-grid"></div>
+        <div class="content-grid">
+          <article class="panel span-2">
+            <div class="panel-head"><div><p class="eyebrow">Today</p><h3>Salon schedule</h3></div><button class="text-button" data-view-target="calendar">View calendar →</button></div>
+            <div id="today-list" class="appointment-list empty">No appointments yet.</div>
+          </article>
+          <article class="panel safety-panel">
+            <p class="eyebrow">Care at a glance</p><h3>Safety comes first</h3>
+            <p>Pet safety alerts appear prominently throughout check-in and service workflows.</p>
+            <div class="safety-mark">!</div>
+          </article>
+        </div>
+      </section>
+
+      <section id="calendar" class="view" hidden>
+        <div class="panel">
+          <div class="panel-head"><div><p class="eyebrow">Seven-day view</p><h3>Upcoming appointments</h3></div><button class="primary compact" data-action="new-appointment">+ Add booking</button></div>
+          <div id="calendar-list" class="appointment-list empty">Your week is clear.</div>
+        </div>
+      </section>
+
+      <section id="customers" class="view" hidden>
+        <div class="split-head"><div><p class="eyebrow">Relationships</p><h3>Customers & pets</h3></div><div><button class="secondary compact" data-action="new-pet">+ Pet</button><button class="primary compact" data-action="new-customer">+ Customer</button></div></div>
+        <label class="search"><span>Search</span><input id="customer-search" placeholder="Name, phone, or email"></label>
+        <div id="customer-grid" class="card-grid"></div>
+      </section>
+
+      <section id="setup" class="view" hidden>
+        <div class="split-head"><div><p class="eyebrow">Foundation</p><h3>Salon setup</h3></div></div>
+        <div class="content-grid">
+          <article class="panel"><div class="panel-head"><h3>Team</h3><button class="text-button" data-action="new-employee">+ Add</button></div><div id="employee-list" class="simple-list"></div></article>
+          <article class="panel"><div class="panel-head"><h3>Services</h3><button class="text-button" data-action="new-service">+ Add</button></div><div id="service-list" class="simple-list"></div></article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="modal">
+    <form id="modal-form">
+      <div class="modal-head"><div><p class="eyebrow">Pawsh workflow</p><h3 id="modal-title"></h3></div><button type="button" class="close" aria-label="Close">×</button></div>
+      <div id="modal-fields" class="form-grid"></div>
+      <p id="modal-error" class="error" role="alert"></p>
+      <div class="modal-actions"><button type="button" class="secondary close">Cancel</button><button class="primary" type="submit">Save</button></div>
+    </form>
+  </dialog>
+  <div id="toast" role="status"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

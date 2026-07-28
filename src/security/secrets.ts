@@ -13,8 +13,11 @@ export function sealSecret(value: string, secret: string): string {
 }
 
 export function openSecret(value: string, secret: string): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error("Encrypted value is invalid");
   const packed = Buffer.from(value, "base64url");
-  if (packed.length < 29) throw new Error("Encrypted value is invalid");
+  if (packed.length < 29 || packed.toString("base64url") !== value) {
+    throw new Error("Encrypted value is invalid");
+  }
   const nonce = packed.subarray(0, 12);
   const tag = packed.subarray(12, 28);
   const ciphertext = packed.subarray(28);

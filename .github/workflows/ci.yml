@@ -29,13 +29,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .node-version
           cache: npm
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
-      - run: npm run db:migrate
-      - run: npm run validate
-      - run: npm run test:db
+      - run: npm run validate:ci
       - name: Backup and restore rehearsal
         shell: bash
         run: |

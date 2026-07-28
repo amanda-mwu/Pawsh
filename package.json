@@ -4,19 +4,26 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=24 <25",
+    "npm": ">=11 <12"
   },
+  "packageManager": "npm@11.6.0",
   "scripts": {
     "dev": "node --env-file-if-exists=.env --import tsx --watch src/server.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node --env-file-if-exists=.env dist/server.js",
+    "check:runtime": "node scripts/check-runtime.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
     "test:db": "vitest run tests/database",
     "test:watch": "vitest",
     "db:migrate": "node --env-file-if-exists=.env --import tsx scripts/migrate.ts",
-    "validate": "npm run lint && npm run typecheck && npm test && npm run build"
+    "validate": "npm run check:runtime && npm run lint && npm run typecheck && npm test && npm run build",
+    "validate:runtime": "npm run db:migrate && npm run test:db",
+    "validate:ci": "npm run db:migrate && npm run validate && npm run test:db",
+    "hooks:install": "node scripts/install-hooks.mjs",
+    "prepare": "node scripts/install-hooks.mjs"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",

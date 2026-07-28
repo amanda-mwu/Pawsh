@@ -65,10 +65,12 @@ describeDatabase("PostgreSQL invariants", () => {
       const visible = await tx<{ business_id: string }[]>`select business_id from customers`;
       expect(visible).toHaveLength(1);
       expect(visible[0]?.business_id).toBe(businessA!.id);
-      await expect(tx`
-        insert into customers(business_id,first_name,last_name)
-        values (${businessB!.id},'Blocked','Write')
-      `).rejects.toThrow();
+      await expect(tx.savepoint(async (savepoint) => {
+        await savepoint`
+          insert into customers(business_id,first_name,last_name)
+          values (${businessB!.id},'Blocked','Write')
+        `;
+      })).rejects.toThrow();
     });
   });
 });

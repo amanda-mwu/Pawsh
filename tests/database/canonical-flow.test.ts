@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
-import { processOutbox } from "../../src/engagement/worker.js";
+import { deliverNotifications, processOutbox, type EmailMessage, type EmailProvider } from "../../src/engagement/worker.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -167,6 +167,25 @@ describeDatabase("canonical Pawsh workflow", () => {
         and notification_type='appointment_confirmation'
     `;
     expect(count?.count).toBe(1);
+  });
+
+  it("atomically claims notification delivery across concurrent workers", async () => {
+    const sent: EmailMessage[] = [];
+    const provider: EmailProvider = {
+      async send(message) {
+        sent.push(message);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return { providerReference: `test:${message.idempotencyKey}` };
+      }
+    };
+    await Promise.all([deliverNotifications(db, provider), deliverNotifications(db, provider)]);
+    expect(sent).toHaveLength(1);
+    const [intent] = await db<{ status: string; attempts: number }[]>`
+      select status,attempts from notification_intents
+      where business_id=${businessId} and appointment_id=${appointmentId}
+        and notification_type='appointment_confirmation'
+    `;
+    expect(intent).toMatchObject({ status: "sent", attempts: 1 });
   });
 
   it("supports invitation acceptance and enforces customized permission denial", async () => {

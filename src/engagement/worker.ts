@@ -27,15 +27,20 @@ export async function processOutbox(db: Database): Promise<number> {
     resourceId: string | null;
     occurredAt: Date;
   }[]>`
-    select id, business_id, event_type, resource_id, occurred_at
-    from outbox_events
-    where processed_at is null and next_attempt_at <= now()
-    order by occurred_at
-    for update skip locked limit 25
+    with claim as (
+      select id from outbox_events
+      where processed_at is null and next_attempt_at<=now()
+      order by occurred_at for update skip locked limit 25
+    )
+    update outbox_events event set
+      attempts=event.attempts+1,
+      next_attempt_at=now()+interval '10 minutes'
+    from claim where event.id=claim.id
+    returning event.id,event.business_id,event.event_type,event.resource_id,event.occurred_at
   `;
   for (const event of events) {
     try {
-      if (["AppointmentCreated", "AppointmentCancelled"].includes(event.eventType) && event.resourceId) {
+      if (["AppointmentCreated", "AppointmentUpdated", "AppointmentCancelled"].includes(event.eventType) && event.resourceId) {
         const [target] = await db<{
           customerId: string;
           email: string | null;
@@ -62,6 +67,20 @@ export async function processOutbox(db: Database): Promise<number> {
                  ${new Date(target.startAt.getTime() - target.reminderLeadMinutes * 60_000)}, 'email', ${target.email})
               on conflict do nothing
             `;
+          } else if (event.eventType === "AppointmentUpdated") {
+            await db`
+              delete from notification_intents
+              where business_id=${event.businessId} and appointment_id=${event.resourceId}
+                and notification_type='appointment_reminder' and status in ('pending','failed','cancelled')
+            `;
+            await db`
+              insert into notification_intents
+                (business_id,appointment_id,customer_id,notification_type,
+                 scheduled_occurrence,channel,destination)
+              values (${event.businessId},${event.resourceId},${target.customerId},'appointment_reminder',
+                ${new Date(target.startAt.getTime()-target.reminderLeadMinutes*60_000)},'email',${target.email})
+              on conflict do nothing
+            `;
           } else {
             await db`
               update notification_intents set status='cancelled', updated_at=now()
@@ -80,10 +99,10 @@ export async function processOutbox(db: Database): Promise<number> {
           }
         }
       }
-      await db`update outbox_events set processed_at=now(), attempts=attempts+1 where id=${event.id}`;
+      await db`update outbox_events set processed_at=now(),last_error=null where id=${event.id}`;
     } catch (error) {
       await db`
-        update outbox_events set attempts=attempts+1, last_error=${String(error)},
+        update outbox_events set last_error=${String(error)},
           next_attempt_at=now() + least(interval '1 hour', interval '1 minute' * power(2, attempts))
         where id=${event.id}
       `;
@@ -100,16 +119,23 @@ export async function deliverNotifications(db: Database, provider: EmailProvider
     notificationType: string;
     attempts: number;
   }[]>`
-    select id, business_id, destination, notification_type, attempts
-    from notification_intents
-    where status in ('pending','failed') and scheduled_occurrence <= now() and attempts < 5
-    order by scheduled_occurrence
-    for update skip locked limit 25
+    with claim as (
+      select id from notification_intents
+      where (
+          status in ('pending','failed')
+          or (status='sending' and updated_at<now()-interval '10 minutes')
+        )
+        and scheduled_occurrence<=now() and attempts<5
+      order by scheduled_occurrence for update skip locked limit 25
+    )
+    update notification_intents intent set
+      status='sending',attempts=intent.attempts+1,updated_at=now()
+    from claim where intent.id=claim.id
+    returning intent.id,intent.business_id,intent.destination,intent.notification_type,intent.attempts
   `;
   for (const intent of intents) {
-    const attempt = intent.attempts + 1;
+    const attempt = intent.attempts;
     try {
-      await db`update notification_intents set status='sending', attempts=${attempt}, updated_at=now() where id=${intent.id}`;
       const result = await provider.send({
         idempotencyKey: intent.id,
         to: intent.destination,

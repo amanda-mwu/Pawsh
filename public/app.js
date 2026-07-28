@@ -156,11 +156,12 @@ function renderCustomersEnhanced() {
   renderCustomers();
   $("#customer-grid").innerHTML = state.customers.length ? state.customers.map((customer) => {
     const pets = state.pets.filter((pet) => pet.customerId === customer.id);
-    return `<article class="customer-card"><p class="eyebrow">${pets.length} pet${pets.length === 1 ? "" : "s"}</p><h3>${escape(customer.firstName)} ${escape(customer.lastName)}</h3><p>${escape(customer.email || customer.phone || "No contact added")}</p><div class="pet-links">${pets.map((pet) => `<button type="button" class="text-button edit-pet" data-id="${pet.id}">${escape(pet.name)}${pet.safetyAlerts?" !":""}</button>`).join("") || "Add their first pet"}</div><div class="card-actions"><button type="button" class="text-button edit-customer" data-id="${customer.id}">Edit</button><button type="button" class="text-button archive-customer" data-id="${customer.id}">Archive</button></div></article>`;
+    return `<article class="customer-card"><p class="eyebrow">${pets.length} pet${pets.length === 1 ? "" : "s"}</p><h3>${escape(customer.firstName)} ${escape(customer.lastName)}</h3><p>${escape(customer.email || customer.phone || "No contact added")}</p><div class="pet-links">${pets.map((pet) => `<button type="button" class="text-button edit-pet" data-id="${pet.id}">${escape(pet.name)}${pet.safetyAlerts?" !":""}</button>`).join("") || "Add their first pet"}</div><div class="card-actions"><button type="button" class="text-button customer-history" data-id="${customer.id}">History</button><button type="button" class="text-button edit-customer" data-id="${customer.id}">Edit</button><button type="button" class="text-button archive-customer" data-id="${customer.id}">Archive</button></div></article>`;
   }).join("") : `<p class="empty">Create your first customer to begin building salon history.</p>`;
   $$(".edit-customer").forEach((button)=>button.addEventListener("click",()=>editCustomer(button.dataset.id)));
   $$(".archive-customer").forEach((button)=>button.addEventListener("click",()=>archiveCustomer(button.dataset.id)));
   $$(".edit-pet").forEach((button)=>button.addEventListener("click",()=>editPet(button.dataset.id)));
+  $$(".customer-history").forEach((button)=>button.addEventListener("click",()=>showCustomerHistory(button.dataset.id)));
 }
 function renderSetupEnhanced() {
   renderSetup();
@@ -233,6 +234,14 @@ function editCustomer(id) {
   const customer=state.customers.find(item=>item.id===id);
   openModal("Edit customer",field("firstName","First name","text",`required value="${escape(customer.firstName)}"`)+field("lastName","Last name","text",`required value="${escape(customer.lastName)}"`)+field("email","Email","email",`value="${escape(customer.email||"")}"`)+field("phone","Phone","tel",`value="${escape(customer.phone||"")}"`)+field("notes","Notes","text",`value="${escape(customer.notes||"")}"`,true),form=>api(`/api/customers/${id}`,{method:"PUT",body:JSON.stringify({...Object.fromEntries(form),preferredContactMethod:customer.preferredContactMethod||"email",emailAllowed:customer.emailAllowed})}));
 }
+async function showCustomerHistory(id) {
+  try{
+    const historyData=await api(`/api/customers/${id}/history`);
+    const appointments=historyData.appointments.map(item=>`<div><span>${new Date(item.startAt).toLocaleDateString()} / ${escape(item.petName)}</span><strong>${escape(item.status.replace("_"," "))}</strong></div>`).join("")||"<p>No appointments yet.</p>";
+    const invoices=historyData.invoices.map(item=>`<div><span>Invoice ${escape(item.invoiceNumber)}</span><strong>${money(item.totalMinor)} / ${escape(item.status)}</strong></div>`).join("")||"<p>No invoices yet.</p>";
+    openModal(`${historyData.customer.firstName} ${historyData.customer.lastName} history`,`<div class="wide history-list"><h4>Appointments</h4>${appointments}<h4>Transactions</h4>${invoices}</div>`,async()=>{});
+  }catch(error){toast(error.message);}
+}
 async function archiveCustomer(id) {
   if(!confirm("Archive this customer? Their operational and financial history will remain."))return;
   try{await api(`/api/customers/${id}/archive`,{method:"POST"});toast("Customer archived");await refresh();}catch(error){toast(error.message);}
@@ -303,10 +312,10 @@ const actions = {
     select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]))+
     select("petId","Pet",state.pets.map(p=>[p.id,p.name]))+
     select("employeeId","Groomer",state.employees.filter(e=>e.active).map(e=>[e.id,e.displayName]))+
-    select("serviceId","Service",state.services.filter(s=>s.active).map(s=>[s.id,`${s.name} · ${money(s.basePriceMinor)}`]))+
+    serviceCheckboxes()+
     field("startAt","Start time","datetime-local","required",true)+field("notes","Appointment notes","text","",true),
-    (form) => { const o=Object.fromEntries(form); return api("/api/appointments",{method:"POST",body:JSON.stringify({locationId:state.me.business.locationId,customerId:o.customerId,petId:o.petId,employeeId:o.employeeId,serviceIds:[o.serviceId],startAt:new Date(o.startAt).toISOString(),notes:o.notes||null})}); })
-  ,"blocked-time": () => openModal("Block team time",
+    (form) => { const o=Object.fromEntries(form); return api("/api/appointments",{method:"POST",body:JSON.stringify({locationId:state.me.business.locationId,customerId:o.customerId,petId:o.petId,employeeId:o.employeeId,serviceIds:form.getAll("serviceIds"),startAt:new Date(o.startAt).toISOString(),notes:o.notes||null})}); }),
+  "blocked-time": () => openModal("Block team time",
     select("employeeId","Team member",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]))+
     field("startAt","Start","datetime-local","required")+field("endAt","End","datetime-local","required")+
     field("reason","Reason","text","required",true),

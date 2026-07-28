@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.1
+
+### Fixed
+
+- Expanded database regression coverage for exclusive notification claims,
+  secure reset-message persistence, and isolated platform-support sessions.
+- Added an index for eligible notification delivery claims.
+
+### Validation
+
+- Thirty automated tests, PostgreSQL runtime suites, critical-read latency
+  budgets, production build, and backup/restore rehearsal pass.
+
 ## 0.1.0
 
 ### Added

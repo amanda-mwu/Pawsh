@@ -8,4 +8,10 @@ MVP server targets under normal pilot load:
 - Checkout and manual payment recording: p95 under 1 second.
 - Initial application shell on a typical broadband connection: usable within 2.5 seconds.
 
-These are service objectives, not claims of measured production performance. Calendar, customer lookup, appointment, invoice, and outbox access paths are indexed. Add caching only after production measurements identify a bottleneck.
+These are service objectives, not claims of measured production performance.
+PostgreSQL CI performs ten authenticated samples each for dashboard, calendar,
+and customer search and rejects p95 at or above one second. This detects major
+regressions but does not replace staging load tests or production telemetry.
+Calendar, customer lookup, appointment, invoice, outbox, and notification-claim
+access paths are indexed. Add caching only after production measurements identify
+a bottleneck.

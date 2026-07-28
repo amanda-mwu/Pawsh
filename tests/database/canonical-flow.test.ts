@@ -28,7 +28,6 @@ describeDatabase("canonical Pawsh workflow", () => {
   let app: Awaited<ReturnType<typeof createApp>>;
   const suffix = crypto.randomUUID();
   let ownerCookie: string;
-  let ownerUserId: string;
   let businessId: string;
   let locationId: string;
   let employeeId: string;
@@ -62,7 +61,6 @@ describeDatabase("canonical Pawsh workflow", () => {
     expect(response.statusCode).toBe(201);
     ownerCookie = cookie(response);
     const signup = response.json();
-    ownerUserId = signup.userId;
     businessId = signup.businessId;
     locationId = signup.locationId;
 
@@ -253,7 +251,11 @@ describeDatabase("canonical Pawsh workflow", () => {
         return { providerReference: `test:${message.idempotencyKey}` };
       }
     };
-    await Promise.all([deliverNotifications(db, provider), deliverNotifications(db, provider)]);
+    await Promise.all([
+      deliverNotifications(db, provider),
+      deliverNotifications(db, provider),
+      deliverNotifications(db, provider)
+    ]);
     expect(sent.length).toBeGreaterThan(0);
     expect(new Set(sent.map((message) => message.idempotencyKey)).size).toBe(sent.length);
     const [intent] = await db<{ status: string; attempts: number }[]>`
@@ -262,6 +264,63 @@ describeDatabase("canonical Pawsh workflow", () => {
         and notification_type='appointment_confirmation'
     `;
     expect(intent).toMatchObject({ status: "sent", attempts: 1 });
+  });
+
+  it("preserves notification claim, retry, stale recovery, and delivered invariants", async () => {
+    const insertIntent = async (status = "pending", stale = false) => {
+      const [intent] = await db<{ id: string }[]>`
+        insert into notification_intents
+          (business_id,notification_type,scheduled_occurrence,channel,destination,status,updated_at)
+        values (
+          ${businessId},${`worker_regression_${crypto.randomUUID()}`},now(),'email',
+          ${`worker-${suffix}@example.test`},${status},
+          ${stale ? new Date(Date.now() - 11 * 60_000) : new Date()}
+        )
+        returning id
+      `;
+      return intent!.id;
+    };
+    const sent: string[] = [];
+    const successfulProvider: EmailProvider = {
+      async send(message) {
+        sent.push(message.idempotencyKey);
+        return { providerReference: `test:${message.idempotencyKey}` };
+      }
+    };
+
+    const singleWorkerId = await insertIntent();
+    await deliverNotifications(db, successfulProvider);
+    expect(sent.filter((id) => id === singleWorkerId)).toHaveLength(1);
+
+    const freshClaimId = await insertIntent("sending");
+    await deliverNotifications(db, successfulProvider);
+    expect(sent).not.toContain(freshClaimId);
+
+    const staleClaimId = await insertIntent("sending", true);
+    await deliverNotifications(db, successfulProvider);
+    expect(sent.filter((id) => id === staleClaimId)).toHaveLength(1);
+
+    const retryId = await insertIntent();
+    const failingProvider: EmailProvider = {
+      async send() {
+        throw new Error("deterministic provider failure");
+      }
+    };
+    await deliverNotifications(db, failingProvider);
+    const [failed] = await db<{ status: string; attempts: number }[]>`
+      select status,attempts from notification_intents where id=${retryId}
+    `;
+    expect(failed).toMatchObject({ status: "failed", attempts: 1 });
+    await deliverNotifications(db, successfulProvider);
+    const [retried] = await db<{ status: string; attempts: number }[]>`
+      select status,attempts from notification_intents where id=${retryId}
+    `;
+    expect(retried).toMatchObject({ status: "sent", attempts: 2 });
+    expect(sent.filter((id) => id === retryId)).toHaveLength(1);
+
+    const deliveredId = await insertIntent("sent");
+    await deliverNotifications(db, successfulProvider);
+    expect(sent).not.toContain(deliveredId);
   });
 
   it("supports invitation acceptance and enforces customized permission denial", async () => {
@@ -362,24 +421,61 @@ describeDatabase("canonical Pawsh workflow", () => {
   });
 
   it("restricts exact-id platform support and audits disable actions", async () => {
-    await db`insert into platform_administrators(user_id) values (${ownerUserId})`;
+    const support = await app.inject({
+      method: "POST", url: "/api/auth/signup",
+      payload: {
+        email: `support-${suffix}@example.test`,
+        password: "correct horse support identity",
+        businessName: "Pawsh Support Fixture"
+      }
+    });
+    expect(support.statusCode).toBe(201);
+    const supportCookie = cookie(support);
+    const supportUserId = support.json().userId;
+    await db`insert into platform_administrators(user_id) values (${supportUserId})`;
     const business = await app.inject({
-      method: "GET", url: `/api/admin/businesses/${otherBusinessId}`, headers: { cookie: resetOwnerCookie }
+      method: "GET", url: `/api/admin/businesses/${otherBusinessId}`, headers: { cookie: supportCookie }
     });
     expect(business.statusCode).toBe(200);
     const user = await app.inject({
-      method: "GET", url: `/api/admin/users/${otherUserId}`, headers: { cookie: resetOwnerCookie }
+      method: "GET", url: `/api/admin/users/${otherUserId}`, headers: { cookie: supportCookie }
     });
     expect(user.statusCode).toBe(200);
     const disabled = await app.inject({
-      method: "POST", url: `/api/admin/users/${otherUserId}/disable`, headers: { cookie: resetOwnerCookie },
+      method: "POST", url: `/api/admin/users/${otherUserId}/disable`, headers: { cookie: supportCookie },
       payload: { reason: "Security response test account disable" }
     });
     expect(disabled.statusCode).toBe(200);
     const [audit] = await db<{ count: number }[]>`
       select count(*)::integer as count from audit_events
-      where actor_id=${ownerUserId} and resource_id=${otherUserId} and action='platform.user.disable'
+      where actor_id=${supportUserId} and resource_id=${otherUserId} and action='platform.user.disable'
     `;
     expect(audit?.count).toBe(1);
+  });
+
+  it("keeps critical read paths within the documented CI latency budget", async () => {
+    const measurements: Record<string, number[]> = {
+      dashboard: [],
+      calendar: [],
+      customerSearch: []
+    };
+    const requests = [
+      ["dashboard", "/api/dashboard"],
+      ["calendar", "/api/appointments?from=2031-08-01T00:00:00.000Z&to=2031-08-08T00:00:00.000Z"],
+      ["customerSearch", "/api/customers?search=Pat"]
+    ] as const;
+    for (let iteration = 0; iteration < 10; iteration += 1) {
+      for (const [name, url] of requests) {
+        const started = performance.now();
+        const response = await app.inject({ method: "GET", url, headers: { cookie: resetOwnerCookie } });
+        measurements[name]!.push(performance.now() - started);
+        expect(response.statusCode).toBe(200);
+      }
+    }
+    for (const values of Object.values(measurements)) {
+      const sorted = [...values].sort((left, right) => left - right);
+      const p95 = sorted[Math.ceil(sorted.length * 0.95) - 1]!;
+      expect(p95).toBeLessThan(1_000);
+    }
   });
 });

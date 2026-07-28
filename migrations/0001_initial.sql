@@ -410,6 +410,10 @@ create unique index unique_appointment_notification
   on notification_intents (business_id,appointment_id,notification_type,scheduled_occurrence,channel)
   where appointment_id is not null;
 
+create index notification_delivery_claim
+  on notification_intents (scheduled_occurrence, updated_at)
+  where status in ('pending', 'failed', 'sending');
+
 create table notification_delivery_attempts (
   id uuid primary key default gen_random_uuid(),
   business_id uuid not null references businesses(id),

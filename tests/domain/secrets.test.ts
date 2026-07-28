@@ -11,6 +11,8 @@ describe("short-lived secret encryption", () => {
   it("rejects the wrong key and tampered values", () => {
     const sealed = sealSecret("reset-link-token", "correct secret");
     expect(() => openSecret(sealed, "wrong secret")).toThrow();
-    expect(() => openSecret(`${sealed.slice(0,-1)}x`, "correct secret")).toThrow();
+    const tampered = Buffer.from(sealed, "base64url");
+    tampered[tampered.length - 1] = tampered[tampered.length - 1]! ^ 1;
+    expect(() => openSecret(tampered.toString("base64url"), "correct secret")).toThrow();
   });
 });

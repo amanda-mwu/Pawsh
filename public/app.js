@@ -1,7 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const inviteToken = new URLSearchParams(location.search).get("invite");
-const state = { me: null, customers: [], pets: [], employees: [], services: [], appointments: [], members: [], login: false };
+const state = { me: null, customers: [], pets: [], employees: [], services: [], appointments: [], members: [], reports: null, login: false };
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -45,11 +45,12 @@ async function refresh() {
     safe("pets.view") ? api("/api/pets") : [],
     api("/api/employees"), api("/api/services"),
     safe("appointments.view") ? api(`/api/appointments?from=${new Date(Date.now()-86400000).toISOString()}&to=${new Date(Date.now()+8*86400000).toISOString()}`) : [],
-    safe("team.manage") ? api("/api/members") : []
+    safe("team.manage") ? api("/api/members") : [],
+    safe("reports.view") ? api("/api/reports") : null
   ];
-  const [dashboard, customers, pets, employees, services, appointments, members] = await Promise.all(requests);
-  Object.assign(state, { customers, pets, employees, services, appointments, members });
-  renderDashboard(dashboard); renderCustomers(); renderSetup(); renderAppointments();
+  const [dashboard, customers, pets, employees, services, appointments, members, reports] = await Promise.all(requests);
+  Object.assign(state, { customers, pets, employees, services, appointments, members, reports });
+  renderDashboard(dashboard); renderCustomers(); renderSetup(); renderAppointments(); renderReports();
 }
 
 function renderDashboard(data) {
@@ -109,6 +110,12 @@ function renderSetup() {
   $("#member-list").innerHTML = state.members.length ? state.members.map((member) => `<div><span><strong>${escape(member.email)}</strong><small>${member.isOwner ? "Owner" : `${member.permissions.length} permissions`}</small></span>${member.isOwner ? "" : `<span><button class="text-button edit-member" data-id="${member.id}">Access</button> <button class="text-button remove-member" data-id="${member.id}">Remove</button></span>`}</div>`).join("") : `<p class="empty">Only you have workspace access.</p>`;
   $$(".edit-member").forEach((button)=>button.addEventListener("click",()=>editMember(button.dataset.id)));
   $$(".remove-member").forEach((button)=>button.addEventListener("click",()=>removeMember(button.dataset.id)));
+}
+function renderReports() {
+  if (!state.reports) return;
+  $("#revenue-report").innerHTML=state.reports.revenue.length?state.reports.revenue.map(row=>`<div><span>${new Date(`${row.date}T00:00:00`).toLocaleDateString()}</span><strong>${money(row.revenueMinor)}</strong></div>`).join(""):`<p class="empty">No paid revenue yet.</p>`;
+  $("#employee-report").innerHTML=state.reports.employees.length?state.reports.employees.map(row=>`<div><span>${escape(row.displayName)}</span><strong>${row.appointmentCount}</strong></div>`).join(""):`<p class="empty">No completed appointments.</p>`;
+  $("#service-report").innerHTML=state.reports.services.length?state.reports.services.map(row=>`<div><span>${escape(row.service)}</span><strong>${row.performed}</strong></div>`).join(""):`<p class="empty">No services completed.</p>`;
 }
 
 const permissionLabels = {
@@ -175,6 +182,21 @@ const actions = {
       await navigator.clipboard.writeText(`${location.origin}${result.acceptancePath}`);
       toast("Secure invitation link copied");
     }),
+  "business-settings": () => openModal("Business settings",
+    field("name","Salon name","text",`required value="${escape(state.me.business.name)}"`,true)+
+    field("timezone","IANA timezone","text",`required value="${escape(state.me.business.timezone)}"`)+
+    field("currency","Currency","text",`required maxlength="3" value="${escape(state.me.business.currency)}"`)+
+    field("taxRate","Tax rate (%)","number",`required min="0" max="100" step=".01" value="${Number(state.me.business.taxRateBasisPoints)/100}`)+
+    field("reminderHours","Reminder lead (hours)","number",`required min="0" value="${Number(state.me.business.reminderLeadMinutes)/60}`),
+    async(form)=>{
+      const values=Object.fromEntries(form);
+      await api("/api/business/settings",{method:"PUT",body:JSON.stringify({
+        name:values.name,timezone:values.timezone,currency:values.currency,
+        taxRateBasisPoints:Math.round(Number(values.taxRate)*100),
+        reminderLeadMinutes:Math.round(Number(values.reminderHours)*60)
+      })});
+      state.me=await api("/api/me");$("#salon-name").textContent=state.me.business.name;
+    }),
   "new-appointment": () => openModal("New appointment",
     select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]))+
     select("petId","Pet",state.pets.map(p=>[p.id,p.name]))+
@@ -206,7 +228,7 @@ $("#logout").addEventListener("click", async () => { await api("/api/auth/logout
 $$("[data-action]").forEach((button) => button.addEventListener("click", () => actions[button.dataset.action]?.()));
 $$("nav [data-view]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.view)));
 $$("[data-view-target]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.viewTarget)));
-function showView(view) { $$(".view").forEach(v=>v.hidden=v.id!==view); $$("nav button").forEach(b=>b.classList.toggle("active",b.dataset.view===view)); $("#page-title").textContent={dashboard:"Good morning",calendar:"Your calendar",customers:"Client care",setup:"Salon setup"}[view]; }
+function showView(view) { $$(".view").forEach(v=>v.hidden=v.id!==view); $$("nav button").forEach(b=>b.classList.toggle("active",b.dataset.view===view)); $("#page-title").textContent={dashboard:"Good morning",calendar:"Your calendar",customers:"Client care",setup:"Salon setup",reports:"Business reports"}[view]; }
 $$(".close").forEach((button)=>button.addEventListener("click",()=>$("#modal").close()));
 $("#customer-search").addEventListener("input", async (event)=>{state.customers=await api(`/api/customers?q=${encodeURIComponent(event.target.value)}`);renderCustomers();});
 $("#today").textContent = new Date().toLocaleDateString([], { weekday:"long", month:"short", day:"numeric" });

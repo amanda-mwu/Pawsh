@@ -59,6 +59,17 @@ async function record(
         (${input.businessId}, ${input.eventType}, ${input.actorId}, ${input.resourceId ?? null},
          ${correlationId}, ${tx.json((input.after ?? {}) as any)})
     `;
+    if ([
+      "BusinessCreated", "CustomerCreated", "PetCreated", "AppointmentCreated",
+      "AppointmentCompleted", "InvoiceCreated", "PaymentRecorded"
+    ].includes(input.eventType)) {
+      await tx`
+        insert into product_analytics_events
+          (business_id,user_id,event_name,resource_id,properties)
+        values (${input.businessId},${input.actorId},${input.eventType},${input.resourceId ?? null},
+          ${tx.json((input.after ?? {}) as any)})
+      `;
+    }
   }
 }
 
@@ -420,6 +431,35 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
     return reply.code(201).send(service);
   });
 
+  app.put("/api/services/:id", {
+    preHandler: [authenticate, requirePermission("services.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(serviceSchema, request.body);
+    const [service] = await db`
+      update services set name=${input.name},description=${input.description ?? null},
+        base_duration_minutes=${input.baseDurationMinutes},base_price_minor=${input.basePriceMinor},
+        updated_at=now()
+      where business_id=${context.businessId} and id=${id} returning *
+    `;
+    if (!service) return reply.code(404).send({ error: "Service not found" });
+    return service;
+  });
+
+  app.delete("/api/services/:id", {
+    preHandler: [authenticate, requirePermission("services.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [service] = await db`
+      update services set active=false,updated_at=now()
+      where business_id=${context.businessId} and id=${id} and active returning id
+    `;
+    if (!service) return reply.code(404).send({ error: "Active service not found" });
+    return reply.code(204).send();
+  });
+
   app.get("/api/employees", { preHandler: authenticate }, async (request) => {
     const context = auth(request);
     return db`select * from employees where business_id = ${context.businessId} order by active desc, display_name`;
@@ -447,6 +487,45 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
       return created;
     });
     return reply.code(201).send(employee);
+  });
+
+  app.put("/api/employees/:id", {
+    preHandler: [authenticate, requirePermission("team.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(employeeSchema, request.body);
+    const employee = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [updated] = await tx<{ id: string }[]>`
+        update employees set display_name=${input.displayName},membership_id=${input.membershipId ?? null},
+          updated_at=now() where business_id=${context.businessId} and id=${id} returning *
+      `;
+      if (!updated) return null;
+      await tx`delete from employee_services where business_id=${context.businessId} and employee_id=${id}`;
+      for (const serviceId of input.serviceIds) {
+        await tx`
+          insert into employee_services(business_id,employee_id,service_id)
+          values (${context.businessId},${id},${serviceId})
+        `;
+      }
+      return updated;
+    });
+    if (!employee) return reply.code(404).send({ error: "Employee not found" });
+    return employee;
+  });
+
+  app.delete("/api/employees/:id", {
+    preHandler: [authenticate, requirePermission("team.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [employee] = await db`
+      update employees set active=false,updated_at=now()
+      where business_id=${context.businessId} and id=${id} and active returning id
+    `;
+    if (!employee) return reply.code(404).send({ error: "Active employee not found" });
+    return reply.code(204).send();
   });
 
   app.put("/api/employees/:id/working-hours", {
@@ -481,6 +560,28 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
         ${input.reason},${context.userId}) returning *
     `;
     return reply.code(201).send(created);
+  });
+
+  app.put("/api/business/working-hours", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request) => {
+    const context = auth(request);
+    const input = body(workingHoursSchema, request.body);
+    await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [location] = await tx<{ id: string }[]>`
+        select id from locations where business_id=${context.businessId} and active
+      `;
+      if (!location) throw new Error("Active location not found");
+      await tx`delete from business_hours where business_id=${context.businessId} and location_id=${location.id}`;
+      for (const period of input.hours) {
+        await tx`
+          insert into business_hours(business_id,location_id,weekday,start_time,end_time)
+          values (${context.businessId},${location.id},${period.weekday},${period.startTime},${period.endTime})
+        `;
+      }
+    });
+    return { saved: true };
   });
 
   app.get("/api/customers", {
@@ -663,6 +764,19 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
     return updated;
   });
 
+  app.post("/api/pets/:id/archive", {
+    preHandler: [authenticate, requirePermission("pets.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [pet] = await db`
+      update pets set archived_at=now(),updated_by=${context.userId},updated_at=now()
+      where business_id=${context.businessId} and id=${id} and archived_at is null returning id
+    `;
+    if (!pet) return reply.code(404).send({ error: "Active pet not found" });
+    return reply.code(204).send();
+  });
+
   app.get("/api/appointments", {
     preHandler: [authenticate, requirePermission("appointments.view")]
   }, async (request) => {
@@ -705,15 +819,28 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
       const [availability] = await tx<{ withinHours: boolean; blocked: boolean }[]>`
         select
           (
-            not exists (select 1 from employee_working_hours where employee_id=${input.employeeId})
-            or exists (
-              select 1 from employee_working_hours wh
-              join locations l on l.business_id=wh.business_id
-              where wh.business_id=${context.businessId} and wh.employee_id=${input.employeeId}
-                and l.id=${input.locationId}
-                and wh.weekday=extract(dow from (${startAt}::timestamptz at time zone l.timezone))
-                and (${startAt}::timestamptz at time zone l.timezone)::time >= wh.start_time
-                and (${endAt}::timestamptz at time zone l.timezone)::time <= wh.end_time
+            (
+              not exists (select 1 from employee_working_hours where employee_id=${input.employeeId})
+              or exists (
+                select 1 from employee_working_hours wh
+                join locations l on l.business_id=wh.business_id
+                where wh.business_id=${context.businessId} and wh.employee_id=${input.employeeId}
+                  and l.id=${input.locationId}
+                  and wh.weekday=extract(dow from (${startAt}::timestamptz at time zone l.timezone))
+                  and (${startAt}::timestamptz at time zone l.timezone)::time >= wh.start_time
+                  and (${endAt}::timestamptz at time zone l.timezone)::time <= wh.end_time
+              )
+            )
+            and (
+              not exists (select 1 from business_hours where location_id=${input.locationId})
+              or exists (
+                select 1 from business_hours bh
+                join locations l on l.id=bh.location_id
+                where bh.business_id=${context.businessId} and bh.location_id=${input.locationId}
+                  and bh.weekday=extract(dow from (${startAt}::timestamptz at time zone l.timezone))
+                  and (${startAt}::timestamptz at time zone l.timezone)::time >= bh.start_time
+                  and (${endAt}::timestamptz at time zone l.timezone)::time <= bh.end_time
+              )
             )
           ) as within_hours,
           exists (
@@ -810,14 +937,48 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
     const input = body(appointmentMoveSchema, request.body);
     const moved = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [current] = await tx<{ startAt: Date; endAt: Date; status: string }[]>`
-        select start_at,end_at,status from appointments
+      const [current] = await tx<{ startAt: Date; endAt: Date; status: string; locationId: string }[]>`
+        select start_at,end_at,status,location_id from appointments
         where business_id=${context.businessId} and id=${id} and version=${input.version} for update
       `;
       if (!current) return null;
       if (current.status !== "scheduled") throw new Error("Only scheduled appointments can be moved");
       const startAt = new Date(input.startAt);
       const endAt = new Date(startAt.getTime() + (current.endAt.getTime() - current.startAt.getTime()));
+      const [availability] = await tx<{ withinHours: boolean; blocked: boolean }[]>`
+        select
+          (
+            (
+              not exists (select 1 from employee_working_hours where employee_id=${input.employeeId})
+              or exists (
+                select 1 from employee_working_hours wh join locations l on l.business_id=wh.business_id
+                where wh.business_id=${context.businessId} and wh.employee_id=${input.employeeId}
+                  and l.id=${current.locationId}
+                  and wh.weekday=extract(dow from (${startAt}::timestamptz at time zone l.timezone))
+                  and (${startAt}::timestamptz at time zone l.timezone)::time>=wh.start_time
+                  and (${endAt}::timestamptz at time zone l.timezone)::time<=wh.end_time
+              )
+            )
+            and (
+              not exists (select 1 from business_hours where location_id=${current.locationId})
+              or exists (
+                select 1 from business_hours bh join locations l on l.id=bh.location_id
+                where bh.business_id=${context.businessId} and bh.location_id=${current.locationId}
+                  and bh.weekday=extract(dow from (${startAt}::timestamptz at time zone l.timezone))
+                  and (${startAt}::timestamptz at time zone l.timezone)::time>=bh.start_time
+                  and (${endAt}::timestamptz at time zone l.timezone)::time<=bh.end_time
+              )
+            )
+          ) as within_hours,
+          exists (
+            select 1 from blocked_times bt where bt.business_id=${context.businessId}
+              and bt.employee_id=${input.employeeId}
+              and tstzrange(bt.start_at,bt.end_at,'[)') && tstzrange(${startAt},${endAt},'[)')
+          ) as blocked
+      `;
+      if ((!availability?.withinHours || availability.blocked) && !input.availabilityOverride) {
+        throw new Error("Requested time is outside employee availability; an explicit override is required");
+      }
       const [updated] = await tx`
         update appointments set employee_id=${input.employeeId},start_at=${startAt},end_at=${endAt},
           availability_overridden=${input.availabilityOverride},version=version+1,
@@ -1087,6 +1248,37 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
     return { ...metrics, ...finance };
   });
 
+  app.get("/api/reports", {
+    preHandler: [authenticate, requirePermission("reports.view")]
+  }, async (request) => {
+    const context = auth(request);
+    const query = request.query as { from?: string; to?: string };
+    const from = query.from ?? new Date(Date.now() - 30 * 86_400_000).toISOString();
+    const to = query.to ?? new Date(Date.now() + 86_400_000).toISOString();
+    const [revenue, employees, servicesPerformed] = await Promise.all([
+      db`
+        select created_at::date as date,sum(total_minor-balance_minor)::bigint as revenue_minor
+        from invoices where business_id=${context.businessId} and created_at>=${from} and created_at<${to}
+        group by created_at::date order by date
+      `,
+      db`
+        select e.id,e.display_name,count(a.id)::integer as appointment_count
+        from employees e left join appointments a on a.employee_id=e.id
+          and a.start_at>=${from} and a.start_at<${to} and a.status='completed'
+        where e.business_id=${context.businessId}
+        group by e.id order by appointment_count desc
+      `,
+      db`
+        select aps.service_name_snapshot as service,count(*)::integer as performed
+        from appointment_services aps join appointments a on a.id=aps.appointment_id
+        where aps.business_id=${context.businessId} and a.status='completed'
+          and a.start_at>=${from} and a.start_at<${to}
+        group by aps.service_name_snapshot order by performed desc
+      `
+    ]);
+    return { from, to, revenue, employees, services: servicesPerformed };
+  });
+
   app.get("/api/audit", {
     preHandler: [authenticate, requirePermission("settings.manage")]
   }, async (request) => {
@@ -1114,5 +1306,30 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
         'Exact-id internal support lookup')
     `;
     return business;
+  });
+
+  app.post("/api/admin/users/:id/disable", {
+    preHandler: authenticatePlatform
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body((await import("zod")).z.object({
+      reason: (await import("zod")).z.string().trim().min(5).max(500)
+    }), request.body);
+    const disabled = await db.begin(async (tx) => {
+      const [user] = await tx<{ id: string }[]>`
+        update users set disabled_at=now(),updated_at=now()
+        where id=${id} and disabled_at is null returning id
+      `;
+      if (!user) return false;
+      await tx`update sessions set revoked_at=now() where user_id=${id} and revoked_at is null`;
+      await tx`
+        insert into audit_events(actor_id,action,resource_type,resource_id,correlation_id,reason)
+        values (${context.userId},'platform.user.disable','user',${id},${randomUUID()},${input.reason})
+      `;
+      return true;
+    });
+    if (!disabled) return reply.code(404).send({ error: "Active user not found" });
+    return { disabled: true };
   });
 }

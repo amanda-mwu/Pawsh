@@ -348,6 +348,19 @@ create table audit_events (
   created_at timestamptz not null default now()
 );
 
+create table product_analytics_events (
+  id uuid primary key default gen_random_uuid(),
+  business_id uuid references businesses(id),
+  user_id uuid references users(id),
+  event_name text not null,
+  resource_id uuid,
+  properties jsonb not null default '{}',
+  occurred_at timestamptz not null default now()
+);
+
+create index product_analytics_business_time
+  on product_analytics_events (business_id,occurred_at desc);
+
 create index audit_business_time on audit_events (business_id, created_at desc);
 
 create table outbox_events (
@@ -443,7 +456,8 @@ begin
     'membership_invitations',
     'services','employee_services','customers','pets','blocked_times','appointments',
     'appointment_services','invoices','invoice_items','payments','audit_events',
-    'outbox_events','notification_intents','notification_delivery_attempts'
+    'outbox_events','notification_intents','notification_delivery_attempts',
+    'product_analytics_events'
   ]
   loop
     execute format('alter table %I enable row level security', table_name);

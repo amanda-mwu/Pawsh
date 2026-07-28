@@ -35,3 +35,13 @@ jobs:
       - run: npm run db:migrate
       - run: npm run validate
       - run: npm run test:db
+      - name: Backup and restore rehearsal
+        shell: bash
+        run: |
+          set -euo pipefail
+          POSTGRES_CONTAINER="$(docker ps --filter ancestor=postgres:17-alpine --format '{{.ID}}' | head -n 1)"
+          test -n "$POSTGRES_CONTAINER"
+          docker exec "$POSTGRES_CONTAINER" pg_dump -U pawsh -d pawsh -Fc -f /tmp/pawsh.dump
+          docker exec "$POSTGRES_CONTAINER" createdb -U pawsh pawsh_restore
+          docker exec "$POSTGRES_CONTAINER" pg_restore -U pawsh -d pawsh_restore /tmp/pawsh.dump
+          DATABASE_URL=postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh_restore npm run test:db

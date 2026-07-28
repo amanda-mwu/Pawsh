@@ -4,9 +4,20 @@
 
 ### Added
 
-- Multi-tenant salon foundation, owner permissions, CRM, pet safety data, services, employees, scheduling, operations, checkout, manual payments, engagement intents, dashboard, audit history, and responsive web client.
+- Multi-tenant salon foundation, owner permissions, membership lifecycle, CRM,
+  pet safety data, services, employees, scheduling, operations, checkout,
+  receipts, manual payment corrections, engagement delivery, dashboard/reports,
+  support controls, audit history, and responsive web client.
+
+### Changed
+
+- Production email uses an SMTP adapter; password-reset message bodies are
+  encrypted at rest and delivery workers use retry-safe atomic claiming.
+- Scheduling, commerce, owner protection, and tenant isolation are enforced by
+  application rules plus PostgreSQL constraints or policies.
 
 ### Validation
 
-- Lint, types, unit tests, PostgreSQL syntax validation, and production build pass.
-- Database-backed runtime validation remains pending because PostgreSQL is unavailable in the local environment.
+- Lint, types, unit/static tests, PostgreSQL migration and integration suites,
+  canonical smoke flow, scheduling concurrency, tenant isolation, production
+  build, and PostgreSQL dump/restore rehearsal pass.

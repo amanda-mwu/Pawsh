@@ -12,4 +12,7 @@ Restore procedure:
 6. Record data-loss window and validation evidence.
 7. Switch production only after authorization and retain the prior instance for investigation.
 
-A real restore rehearsal is required before calling the MVP production ready. The local environment used for the initial build did not provide a PostgreSQL engine, so no restore was claimed.
+The CI workflow performs a real PostgreSQL custom-format dump, restores it into a
+new database, and reruns the database suite against the restored copy. Managed
+production backup retention and point-in-time recovery still require validation
+in the selected hosting environment.

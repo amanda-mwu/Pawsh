@@ -1,6 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const inviteToken = new URLSearchParams(location.search).get("invite");
+const resetToken = new URLSearchParams(location.search).get("reset");
 const state = { me: null, customers: [], pets: [], employees: [], services: [], appointments: [], members: [], reports: null, login: false };
 
 async function api(path, options = {}) {
@@ -326,10 +327,11 @@ $("#auth-form").addEventListener("submit", async (event) => {
   event.preventDefault(); $("#auth-error").textContent = "";
   const data = Object.fromEntries(new FormData(event.currentTarget));
   try {
-    await api(inviteToken ? "/api/auth/invitations/accept" : state.login ? "/api/auth/login" : "/api/auth/signup", {
-      method: "POST", body: JSON.stringify(inviteToken ? {token:inviteToken,password:data.password} : data)
+    await api(resetToken ? "/api/auth/password-reset/confirm" : inviteToken ? "/api/auth/invitations/accept" : state.login ? "/api/auth/login" : "/api/auth/signup", {
+      method: "POST", body: JSON.stringify(resetToken ? {token:resetToken,password:data.password} : inviteToken ? {token:inviteToken,password:data.password} : data)
     });
-    if (inviteToken) history.replaceState({}, "", "/");
+    if (inviteToken || resetToken) history.replaceState({}, "", "/");
+    if (resetToken) { location.href="/"; return; }
     await bootstrap();
   } catch (error) { $("#auth-error").textContent = error.message; }
 });
@@ -340,6 +342,12 @@ $("#toggle-auth").addEventListener("click", () => {
   $("#auth-form button").textContent = state.login ? "Sign in" : "Create workspace";
   $("#toggle-auth").textContent = state.login ? "New to Pawsh? Create a workspace" : "Already have an account? Sign in";
 });
+$("#forgot-password").addEventListener("click",()=>{
+  openModal("Reset password",field("email","Account email","email","required",true),async(form)=>{
+    await api("/api/auth/password-reset/request",{method:"POST",body:JSON.stringify({email:form.get("email")})});
+    toast("If the account exists, a reset email is on its way");
+  });
+});
 $("#logout").addEventListener("click", async () => { await api("/api/auth/logout",{method:"POST"}); location.reload(); });
 $$("[data-action]").forEach((button) => button.addEventListener("click", () => actions[button.dataset.action]?.()));
 $$("nav [data-view]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.view)));
@@ -348,11 +356,13 @@ function showView(view) { $$(".view").forEach(v=>v.hidden=v.id!==view); $$("nav 
 $$(".close").forEach((button)=>button.addEventListener("click",()=>$("#modal").close()));
 $("#customer-search").addEventListener("input", async (event)=>{state.customers=await api(`/api/customers?q=${encodeURIComponent(event.target.value)}`);renderCustomers();});
 $("#today").textContent = new Date().toLocaleDateString([], { weekday:"long", month:"short", day:"numeric" });
-if (inviteToken) {
+if (inviteToken || resetToken) {
   state.login=true;
   $("#business-field").hidden=true; $("#business-field input").required=false;
   const emailLabel=$('#auth-form input[name="email"]').closest("label"); emailLabel.hidden=true; emailLabel.querySelector("input").required=false;
-  $("#auth-title").textContent="Join your salon"; $("#auth-subtitle").textContent="Choose a secure password to accept your invitation.";
-  $("#auth-form button").textContent="Accept invitation"; $("#toggle-auth").hidden=true;
+  $("#auth-title").textContent=resetToken?"Reset your password":"Join your salon";
+  $("#auth-subtitle").textContent=resetToken?"Choose a new secure password.":"Choose a secure password to accept your invitation.";
+  $("#auth-form button").textContent=resetToken?"Update password":"Accept invitation";
+  $("#toggle-auth").hidden=true;$("#forgot-password").hidden=true;
 }
 bootstrap();

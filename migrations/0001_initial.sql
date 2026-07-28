@@ -397,6 +397,7 @@ create table notification_intents (
   scheduled_occurrence timestamptz not null,
   channel text not null check (channel in ('email')),
   destination text not null,
+  encrypted_body text,
   status text not null default 'pending' check (status in ('pending', 'sending', 'sent', 'failed', 'cancelled')),
   provider_message_id text,
   attempts integer not null default 0,

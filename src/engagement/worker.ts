@@ -1,4 +1,6 @@
 import type { Database } from "../db/client.js";
+import nodemailer from "nodemailer";
+import type { Config } from "../config.js";
 
 export interface EmailMessage {
   idempotencyKey: string;
@@ -16,6 +18,29 @@ export class LogEmailProvider implements EmailProvider {
     // Development adapter intentionally excludes message content from logs.
     console.info(JSON.stringify({ event: "email.accepted", idempotencyKey: message.idempotencyKey }));
     return { providerReference: `log:${message.idempotencyKey}` };
+  }
+}
+
+export class SmtpEmailProvider implements EmailProvider {
+  private readonly transport;
+  constructor(private readonly config: Config) {
+    this.transport = nodemailer.createTransport({
+      host: config.SMTP_HOST,
+      port: config.SMTP_PORT,
+      secure: config.SMTP_SECURE,
+      auth: config.SMTP_USER ? { user: config.SMTP_USER, pass: config.SMTP_PASS } : undefined
+    });
+  }
+  async send(message: EmailMessage): Promise<{ providerReference: string }> {
+    if (!this.config.EMAIL_FROM) throw new Error("EMAIL_FROM is required");
+    const result = await this.transport.sendMail({
+      from: this.config.EMAIL_FROM,
+      to: message.to,
+      subject: message.subject,
+      text: message.text,
+      headers: { "X-Pawsh-Idempotency-Key": message.idempotencyKey }
+    });
+    return { providerReference: result.messageId };
   }
 }
 
@@ -111,13 +136,22 @@ export async function processOutbox(db: Database): Promise<number> {
   return events.length;
 }
 
-export async function deliverNotifications(db: Database, provider: EmailProvider): Promise<number> {
+export async function deliverNotifications(
+  db: Database,
+  provider: EmailProvider,
+  decryptBody?: (value: string) => string
+): Promise<number> {
   const intents = await db<{
     id: string;
     businessId: string;
     destination: string;
     notificationType: string;
     attempts: number;
+    encryptedBody: string | null;
+    startAt: Date | null;
+    timezone: string | null;
+    businessName: string | null;
+    petName: string | null;
   }[]>`
     with claim as (
       select id from notification_intents
@@ -131,16 +165,33 @@ export async function deliverNotifications(db: Database, provider: EmailProvider
     update notification_intents intent set
       status='sending',attempts=intent.attempts+1,updated_at=now()
     from claim where intent.id=claim.id
-    returning intent.id,intent.business_id,intent.destination,intent.notification_type,intent.attempts
+    returning intent.id,intent.business_id,intent.destination,intent.notification_type,intent.attempts,
+      intent.encrypted_body,
+      (select appointment.start_at from appointments appointment where appointment.id=intent.appointment_id) as start_at,
+      (select location.timezone from appointments appointment join locations location on location.id=appointment.location_id where appointment.id=intent.appointment_id) as timezone,
+      (select business.name from businesses business where business.id=intent.business_id) as business_name,
+      (select pet.name from appointments appointment join pets pet on pet.id=appointment.pet_id where appointment.id=intent.appointment_id) as pet_name
   `;
   for (const intent of intents) {
     const attempt = intent.attempts;
     try {
+      const when = intent.startAt && intent.timezone
+        ? new Intl.DateTimeFormat("en-US", {
+          timeZone: intent.timezone, dateStyle: "full", timeStyle: "short"
+        }).format(intent.startAt)
+        : null;
+      const body = intent.encryptedBody
+        ? decryptBody?.(intent.encryptedBody)
+        : `${intent.businessName ?? "Your salon"}: ${intent.petName ?? "Your pet"} has an appointment update${when ? ` for ${when}` : ""}.`;
+      if (!body) throw new Error("Notification body cannot be decrypted");
       const result = await provider.send({
         idempotencyKey: intent.id,
         to: intent.destination,
-        subject: intent.notificationType === "appointment_reminder" ? "Upcoming Pawsh appointment" : "Pawsh appointment update",
-        text: "Your grooming appointment has an update. Please contact the salon for details."
+        subject: intent.notificationType === "password_reset" ? "Reset your Pawsh password"
+          : intent.notificationType === "appointment_reminder" ? "Upcoming Pawsh appointment"
+          : intent.notificationType === "appointment_cancellation" ? "Pawsh appointment cancelled"
+          : "Pawsh appointment confirmation",
+        text: body
       });
       await db.begin(async (tx) => {
         await tx`

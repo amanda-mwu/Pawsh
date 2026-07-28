@@ -17,6 +17,7 @@ import {
   passwordResetRequestSchema, passwordResetConfirmSchema, invitationSchema,
   invitationAcceptSchema, ownershipTransferSchema
 } from "./schemas.js";
+import { sealSecret } from "../security/secrets.js";
 
 type Transaction = postgres.TransactionSql;
 
@@ -158,8 +159,16 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
 
   app.post("/api/auth/password-reset/request", async (request) => {
     const input = body(passwordResetRequestSchema, request.body);
-    const [user] = await db<{ id: string }[]>`
-      select id from users where normalized_email=${normalizeEmail(input.email)} and disabled_at is null
+    const [user] = await db<{ id: string; businessId: string | null }[]>`
+      select user_account.id,
+        (
+          select membership.business_id from business_memberships membership
+          where membership.user_id=user_account.id and membership.status='active'
+          order by membership.created_at limit 1
+        ) as business_id
+      from users user_account
+      where user_account.normalized_email=${normalizeEmail(input.email)}
+        and user_account.disabled_at is null
     `;
     let developmentToken: string | undefined;
     if (user) {
@@ -170,6 +179,20 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
           insert into password_reset_tokens(user_id,token_hash,expires_at)
           values (${user.id},${tokenHash(token)},now()+interval '30 minutes')
         `;
+        if (user.businessId) {
+          const resetMessage = [
+            "A Pawsh password reset was requested for this email address.",
+            `Open ${config.APP_ORIGIN}/?reset=${encodeURIComponent(token)} to choose a new password.`,
+            "This link expires in 30 minutes. If you did not request it, you can ignore this message."
+          ].join("\n\n");
+          await tx`select set_config('app.business_id',${user.businessId},true)`;
+          await tx`
+            insert into notification_intents
+              (business_id,customer_id,notification_type,scheduled_occurrence,channel,destination,encrypted_body)
+            values (${user.businessId},null,'password_reset',now(),'email',${normalizeEmail(input.email)},
+              ${sealSecret(resetMessage,config.SESSION_SECRET)})
+          `;
+        }
       });
       if (config.NODE_ENV !== "production") developmentToken = token;
     }
@@ -756,7 +779,13 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
       if (!created) throw new Error("Pet creation failed");
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "pet.create",
-        resourceType: "pet", resourceId: created.id, eventType: "PetCreated"
+        resourceType: "pet", resourceId: created.id,
+        after: {
+          hasSafetyAlerts: Boolean(input.safetyAlerts),
+          hasMedicalNotes: Boolean(input.medicalNotes),
+          hasBehaviorNotes: Boolean(input.behaviorNotes)
+        },
+        eventType: "PetCreated"
       });
       return created;
     });
@@ -789,10 +818,15 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
           photo_permission=${input.photoPermission ?? null},updated_by=${context.userId},updated_at=now()
         where business_id=${context.businessId} and id=${id} returning *
       `;
+      const changedFields = [
+        before.safetyAlerts !== (input.safetyAlerts ?? null) ? "safety_alerts" : null,
+        before.medicalNotes !== (input.medicalNotes ?? null) ? "medical_notes" : null,
+        before.behaviorNotes !== (input.behaviorNotes ?? null) ? "behavior_notes" : null
+      ].filter(Boolean);
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "pet.safety.update",
-        resourceType: "pet", resourceId: id, before,
-        after: { safetyAlerts: input.safetyAlerts, medicalNotes: input.medicalNotes, behaviorNotes: input.behaviorNotes }
+        resourceType: "pet", resourceId: id,
+        after: { changedFields }
       });
       return pet;
     });
@@ -845,9 +879,23 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
     const input = body(appointmentSchema, request.body);
     const result = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
+      const [participants] = await tx<{ available: boolean }[]>`
+        select exists (
+          select 1 from customers customer
+          join pets pet on pet.customer_id=customer.id and pet.business_id=customer.business_id
+          where customer.business_id=${context.businessId} and customer.id=${input.customerId}
+            and pet.id=${input.petId} and customer.archived_at is null and pet.archived_at is null
+        ) as available
+      `;
+      if (!participants?.available) throw new Error("The selected customer or pet is unavailable");
       const catalog = await tx<{ id: string; name: string; baseDurationMinutes: number; basePriceMinor: number }[]>`
-        select id, name, base_duration_minutes, base_price_minor from services
-        where business_id=${context.businessId} and id in ${tx(input.serviceIds)} and active
+        select service.id,service.name,service.base_duration_minutes,service.base_price_minor
+        from services service
+        join employee_services eligibility on eligibility.service_id=service.id
+          and eligibility.employee_id=${input.employeeId}
+        join employees employee on employee.id=eligibility.employee_id and employee.active
+        where service.business_id=${context.businessId} and service.id in ${tx(input.serviceIds)}
+          and service.active
       `;
       if (catalog.length !== new Set(input.serviceIds).size) throw new Error("One or more services are unavailable");
       const totalMinutes = catalog.reduce((sum, service) => sum + service.baseDurationMinutes, 0);
@@ -980,6 +1028,23 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
       `;
       if (!current) return null;
       if (current.status !== "scheduled") throw new Error("Only scheduled appointments can be moved");
+      const [assignment] = await tx<{ eligible: boolean }[]>`
+        select
+          exists (
+            select 1 from employees
+            where business_id=${context.businessId} and id=${input.employeeId} and active
+          )
+          and not exists (
+            select 1 from appointment_services booked
+            where booked.business_id=${context.businessId} and booked.appointment_id=${id}
+              and not exists (
+                select 1 from employee_services eligible
+                where eligible.employee_id=${input.employeeId}
+                  and eligible.service_id=booked.service_id
+              )
+          ) as eligible
+      `;
+      if (!assignment?.eligible) throw new Error("The selected employee is not eligible for every booked service");
       const startAt = new Date(input.startAt);
       const endAt = new Date(startAt.getTime() + (current.endAt.getTime() - current.startAt.getTime()));
       const [availability] = await tx<{ withinHours: boolean; blocked: boolean }[]>`
@@ -1060,8 +1125,8 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
     const input = body(appointmentServicesSchema, request.body);
     const result = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [appointment] = await tx<{ startAt: Date; status: string }[]>`
-        select start_at,status from appointments
+      const [appointment] = await tx<{ startAt: Date; status: string; employeeId: string }[]>`
+        select start_at,status,employee_id from appointments
         where business_id=${context.businessId} and id=${id} for update
       `;
       if (!appointment) return null;
@@ -1073,8 +1138,12 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
       `;
       if (invoice.length) throw new Error("Services cannot change after checkout begins");
       const catalog = await tx<{ id: string; name: string; baseDurationMinutes: number; basePriceMinor: number }[]>`
-        select id,name,base_duration_minutes,base_price_minor from services
-        where business_id=${context.businessId} and id in ${tx(input.serviceIds)} and active
+        select service.id,service.name,service.base_duration_minutes,service.base_price_minor
+        from services service
+        join employee_services eligibility on eligibility.service_id=service.id
+          and eligibility.employee_id=${appointment.employeeId}
+        where service.business_id=${context.businessId} and service.id in ${tx(input.serviceIds)}
+          and service.active
       `;
       if (catalog.length !== new Set(input.serviceIds).size) throw new Error("One or more services are unavailable");
       await tx`delete from appointment_services where business_id=${context.businessId} and appointment_id=${id}`;
@@ -1276,16 +1345,27 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
     const context = auth(request);
     const [metrics] = await db`
       select
-        count(*) filter (where a.start_at::date=current_date) as todays_appointments,
+        count(*) filter (
+          where (a.start_at at time zone l.timezone)::date=(now() at time zone l.timezone)::date
+        ) as todays_appointments,
         count(*) filter (where a.start_at>=now() and a.status='scheduled') as upcoming_appointments,
-        count(*) filter (where a.start_at::date=current_date and a.status='completed') as completed_today
-      from appointments a where a.business_id=${context.businessId}
+        count(*) filter (
+          where (a.start_at at time zone l.timezone)::date=(now() at time zone l.timezone)::date
+            and a.status='completed'
+        ) as completed_today
+      from appointments a join locations l on l.id=a.location_id
+      where a.business_id=${context.businessId}
     `;
     const [finance] = await db`
       select
-        coalesce(sum(total_minor-balance_minor) filter (where created_at::date=current_date),0) as todays_sales_minor,
-        coalesce(sum(balance_minor) filter (where status in ('open','partially_paid')),0) as outstanding_minor
-      from invoices where business_id=${context.businessId}
+        coalesce(sum(i.total_minor-i.balance_minor) filter (
+          where (i.created_at at time zone l.timezone)::date=(now() at time zone l.timezone)::date
+        ),0) as todays_sales_minor,
+        coalesce(sum(i.balance_minor) filter (where i.status in ('open','partially_paid')),0) as outstanding_minor
+      from invoices i
+      join appointments a on a.id=i.appointment_id
+      join locations l on l.id=a.location_id
+      where i.business_id=${context.businessId}
     `;
     return { ...metrics, ...finance };
   });

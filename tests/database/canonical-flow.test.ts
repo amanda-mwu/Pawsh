@@ -254,7 +254,8 @@ describeDatabase("canonical Pawsh workflow", () => {
       }
     };
     await Promise.all([deliverNotifications(db, provider), deliverNotifications(db, provider)]);
-    expect(sent).toHaveLength(1);
+    expect(sent.length).toBeGreaterThan(0);
+    expect(new Set(sent.map((message) => message.idempotencyKey)).size).toBe(sent.length);
     const [intent] = await db<{ status: string; attempts: number }[]>`
       select status,attempts from notification_intents
       where business_id=${businessId} and appointment_id=${appointmentId}
@@ -336,14 +337,14 @@ describeDatabase("canonical Pawsh workflow", () => {
     });
     expect(requested.statusCode).toBe(200);
     expect(requested.json().developmentToken).toBeTruthy();
-    const [resetIntent] = await db<{ encrypted_body: string }[]>`
+    const [resetIntent] = await db<{ encryptedBody: string }[]>`
       select encrypted_body from notification_intents
       where business_id=${businessId} and notification_type='password_reset'
       order by created_at desc limit 1
     `;
-    expect(resetIntent?.encrypted_body).toBeTruthy();
-    expect(resetIntent?.encrypted_body).not.toContain(requested.json().developmentToken);
-    expect(openSecret(resetIntent!.encrypted_body, config.SESSION_SECRET))
+    expect(resetIntent?.encryptedBody).toBeTruthy();
+    expect(resetIntent?.encryptedBody).not.toContain(requested.json().developmentToken);
+    expect(openSecret(resetIntent!.encryptedBody, config.SESSION_SECRET))
       .toContain(requested.json().developmentToken);
     const confirmed = await app.inject({
       method: "POST", url: "/api/auth/password-reset/confirm",

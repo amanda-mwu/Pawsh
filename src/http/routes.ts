@@ -61,7 +61,8 @@ async function record(
     `;
     if ([
       "BusinessCreated", "CustomerCreated", "PetCreated", "AppointmentCreated",
-      "AppointmentCompleted", "InvoiceCreated", "PaymentRecorded"
+      "AppointmentCompleted", "InvoiceCreated", "PaymentRecorded", "EmployeeCreated",
+      "ServiceCreated"
     ].includes(input.eventType)) {
       await tx`
         insert into product_analytics_events
@@ -342,11 +343,25 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
       (await import("zod")).z.object({ permissions: (await import("zod")).z.array((await import("zod")).z.enum(permissions)) }),
       request.body
     );
-    const [member] = await db`
-      update business_memberships set permissions = ${input.permissions}, updated_at = now()
-      where id = ${id} and business_id = ${context.businessId} and not is_owner
-      returning id, permissions
-    `;
+    const member = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [before] = await tx<{ permissions: string[] }[]>`
+        select permissions from business_memberships
+        where id=${id} and business_id=${context.businessId} and not is_owner for update
+      `;
+      if (!before) return null;
+      const [updated] = await tx`
+        update business_memberships set permissions=${input.permissions},updated_at=now()
+        where id=${id} and business_id=${context.businessId} and not is_owner
+        returning id,permissions
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "membership.permissions.update",
+        resourceType: "membership", resourceId: id,
+        before: { permissions: before.permissions }, after: { permissions: input.permissions }
+      });
+      return updated;
+    });
     if (!member) return reply.code(404).send({ error: "Editable member not found" });
     return member;
   });
@@ -425,12 +440,20 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
   }, async (request, reply) => {
     const context = auth(request);
     const input = body(serviceSchema, request.body);
-    const [service] = await db`
-      insert into services (business_id, name, description, base_duration_minutes, base_price_minor)
-      values (${context.businessId}, ${input.name}, ${input.description ?? null},
-        ${input.baseDurationMinutes}, ${input.basePriceMinor})
-      returning *
-    `;
+    const service = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [created] = await tx<{ id: string }[]>`
+        insert into services (business_id,name,description,base_duration_minutes,base_price_minor)
+        values (${context.businessId},${input.name},${input.description ?? null},
+          ${input.baseDurationMinutes},${input.basePriceMinor}) returning *
+      `;
+      if (!created) throw new Error("Service creation failed");
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "service.create",
+        resourceType: "service", resourceId: created.id, eventType: "ServiceCreated"
+      });
+      return created;
+    });
     return reply.code(201).send(service);
   });
 
@@ -493,6 +516,10 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
           values (${context.businessId}, ${created.id}, ${serviceId})
         `;
       }
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "employee.create",
+        resourceType: "employee", resourceId: created.id, eventType: "EmployeeCreated"
+      });
       return created;
     });
     return reply.code(201).send(employee);
@@ -1094,6 +1121,11 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
       `;
       if (!appointment) return null;
       if (appointment.status !== "completed") throw new Error("Only completed appointments can be checked out");
+      const [existing] = await tx`
+        select * from invoices
+        where business_id=${context.businessId} and appointment_id=${id} and status<>'void'
+      `;
+      if (existing) return existing;
       const services = await tx<{ id: string; serviceNameSnapshot: string; priceMinorSnapshot: number }[]>`
         select id, service_name_snapshot, price_minor_snapshot from appointment_services
         where business_id=${context.businessId} and appointment_id=${id}
@@ -1316,6 +1348,24 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
         'Exact-id internal support lookup')
     `;
     return business;
+  });
+
+  app.get("/api/admin/users/:id", {
+    preHandler: authenticatePlatform
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [user] = await db`
+      select id,email,email_verified_at,disabled_at,created_at,updated_at
+      from users where id=${id}
+    `;
+    if (!user) return reply.code(404).send({ error: "User not found" });
+    await db`
+      insert into audit_events(actor_id,action,resource_type,resource_id,correlation_id,reason)
+      values (${context.userId},'platform.user_metadata.view','user',${id},${randomUUID()},
+        'Exact-id internal support lookup')
+    `;
+    return user;
   });
 
   app.post("/api/admin/users/:id/disable", {

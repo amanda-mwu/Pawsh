@@ -234,6 +234,9 @@ create table blocked_times (
   foreign key (business_id, employee_id) references employees(business_id, id)
 );
 
+create index pet_search_name on pets (business_id,lower(name));
+create index pet_customer on pets (business_id,customer_id) where archived_at is null;
+
 create table appointments (
   id uuid primary key default gen_random_uuid(),
   business_id uuid not null references businesses(id),
@@ -268,6 +271,7 @@ alter table appointments add constraint employee_appointment_no_overlap
   ) where (status in ('scheduled', 'checked_in', 'in_service'));
 
 create index appointment_calendar on appointments (business_id, start_at, end_at);
+create index appointment_employee_calendar on appointments (business_id,employee_id,start_at);
 
 create table appointment_services (
   id uuid primary key default gen_random_uuid(),
@@ -283,7 +287,7 @@ create table appointment_services (
 
 create table invoices (
   id uuid primary key default gen_random_uuid(),
-  invoice_number bigint generated always as identity,
+  invoice_number text not null default ('INV-' || upper(substr(replace(gen_random_uuid()::text,'-',''),1,10))),
   business_id uuid not null references businesses(id),
   appointment_id uuid not null,
   customer_id uuid not null,
@@ -299,12 +303,15 @@ create table invoices (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (business_id, id),
+  unique (business_id, invoice_number),
   foreign key (business_id, appointment_id) references appointments(business_id, id),
   foreign key (business_id, customer_id) references customers(business_id, id)
 );
 
 create unique index one_active_invoice_per_appointment
   on invoices (appointment_id) where status <> 'void';
+create index invoice_outstanding on invoices (business_id,status,created_at)
+  where status in ('open','partially_paid');
 
 create table invoice_items (
   id uuid primary key default gen_random_uuid(),

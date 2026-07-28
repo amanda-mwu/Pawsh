@@ -193,7 +193,13 @@ function permissionFields(selected=[]) {
 }
 function editMember(id) {
   const member=state.members.find((item)=>item.id===id);
-  openModal("Edit member access",permissionFields(member.permissions),async(form)=>{
+  openModal("Edit member access",permissionFields(member.permissions)+`<label class="wide transfer-control"><input type="checkbox" name="transferOwnership"> Transfer protected business ownership to this member</label>`,async(form)=>{
+    if(form.get("transferOwnership")){
+      if(!confirm("Transfer ownership? Your account will no longer have protected Owner authority."))throw new Error("Ownership transfer cancelled");
+      await api("/api/business/transfer-ownership",{method:"POST",body:JSON.stringify({membershipId:id})});
+      state.me=await api("/api/me");
+      return;
+    }
     await api(`/api/members/${id}/permissions`,{method:"PATCH",body:JSON.stringify({permissions:form.getAll("permissions")})});
   });
 }

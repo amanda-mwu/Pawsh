@@ -18,6 +18,10 @@ export default tseslint.config(
         document: "readonly",
         fetch: "readonly",
         FormData: "readonly",
+        URLSearchParams: "readonly",
+        confirm: "readonly",
+        history: "readonly",
+        navigator: "readonly",
         location: "readonly",
         setTimeout: "readonly"
       }

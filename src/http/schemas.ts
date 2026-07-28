@@ -23,6 +23,27 @@ export const passwordResetConfirmSchema = z.object({
   password: z.string().min(12).max(200)
 });
 
+export const invitationSchema = z.object({
+  email: z.string().email().max(320),
+  permissions: z.array(z.enum([
+    "calendar.view", "appointments.view", "appointments.create", "appointments.edit",
+    "appointments.cancel", "customers.view", "customers.edit", "pets.view", "pets.edit",
+    "pets.safety.view", "pets.safety.edit", "operations.check_in",
+    "operations.perform_service", "operations.complete", "checkout.perform",
+    "payments.view", "discounts.apply", "services.manage", "team.manage",
+    "reports.view", "settings.manage"
+  ])).default([])
+});
+
+export const invitationAcceptSchema = z.object({
+  token: z.string().min(20).max(200),
+  password: z.string().min(12).max(200)
+});
+
+export const ownershipTransferSchema = z.object({
+  membershipId: z.string().uuid()
+});
+
 export const customerSchema = z.object({
   firstName: z.string().trim().min(1).max(80),
   lastName: z.string().trim().min(1).max(80),

@@ -14,7 +14,8 @@ import {
   normalizeEmail, normalizePhone, paymentSchema, petSchema, serviceSchema, signupSchema,
   transitionSchema, businessSettingsSchema, workingHoursSchema, blockedTimeSchema,
   operationalUpdateSchema, voidPaymentSchema, appointmentMoveSchema, appointmentServicesSchema,
-  passwordResetRequestSchema, passwordResetConfirmSchema
+  passwordResetRequestSchema, passwordResetConfirmSchema, invitationSchema,
+  invitationAcceptSchema, ownershipTransferSchema
 } from "./schemas.js";
 
 type Transaction = postgres.TransactionSql;
@@ -181,6 +182,56 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
     return { changed: true };
   });
 
+  app.post("/api/auth/invitations/accept", async (request, reply) => {
+    const input = body(invitationAcceptSchema, request.body);
+    const passwordHash = await hash(input.password);
+    const result = await db.begin(async (tx) => {
+      const [invitation] = await tx<{
+        id: string; businessId: string; email: string; normalizedEmail: string; permissions: string[];
+      }[]>`
+        select id,business_id,email,normalized_email,permissions from membership_invitations
+        where token_hash=${tokenHash(input.token)} and accepted_at is null and revoked_at is null
+          and expires_at>now() for update
+      `;
+      if (!invitation) return null;
+      let [user] = await tx<{ id: string }[]>`
+        select id from users where normalized_email=${invitation.normalizedEmail}
+      `;
+      if (!user) {
+        [user] = await tx<{ id: string }[]>`
+          insert into users(email,normalized_email,password_hash)
+          values (${invitation.email},${invitation.normalizedEmail},${passwordHash}) returning id
+        `;
+      } else {
+        const existingMembership = await tx`
+          select id from business_memberships
+          where business_id=${invitation.businessId} and user_id=${user.id}
+        `;
+        if (existingMembership.length) throw new Error("This user already belongs to the business");
+        await tx`update users set password_hash=${passwordHash},updated_at=now() where id=${user.id}`;
+      }
+      if (!user) throw new Error("Invitation user creation failed");
+      const [membership] = await tx<{ id: string }[]>`
+        insert into business_memberships(business_id,user_id,permissions,status)
+        values (${invitation.businessId},${user.id},${invitation.permissions},'active') returning id
+      `;
+      await tx`update membership_invitations set accepted_at=now() where id=${invitation.id}`;
+      const token = issueToken();
+      await tx`
+        insert into sessions(user_id,token_hash,expires_at)
+        values (${user.id},${tokenHash(token)},now()+interval '14 days')
+      `;
+      await setTenant(tx, invitation.businessId);
+      await record(tx, {
+        businessId: invitation.businessId, actorId: user.id, action: "membership.accept",
+        resourceType: "membership", resourceId: membership?.id
+      });
+      return { token, businessId: invitation.businessId };
+    });
+    if (!result) return reply.code(400).send({ error: "Invitation is invalid or expired" });
+    return reply.setCookie("pawsh_session", result.token, sessionCookie(config)).send({ businessId: result.businessId });
+  });
+
   app.get("/api/me", { preHandler: authenticate }, async (request) => {
     const context = auth(request);
     const [business] = await db`
@@ -232,6 +283,41 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
     `;
   });
 
+  app.post("/api/members/invitations", {
+    preHandler: [authenticate, requirePermission("team.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    if (!context.isOwner) return reply.code(403).send({ error: "Only an Owner can invite members" });
+    const input = body(invitationSchema, request.body);
+    const invitationToken = issueToken();
+    const normalized = normalizeEmail(input.email);
+    const invitation = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [created] = await tx<{ id: string; email: string; permissions: string[]; expiresAt: Date }[]>`
+        insert into membership_invitations
+          (business_id,email,normalized_email,token_hash,permissions,invited_by,expires_at)
+        values (${context.businessId},${input.email.trim()},${normalized},${tokenHash(invitationToken)},
+          ${input.permissions},${context.userId},now()+interval '7 days')
+        on conflict (business_id,normalized_email) do update set
+          email=excluded.email,token_hash=excluded.token_hash,permissions=excluded.permissions,
+          invited_by=excluded.invited_by,expires_at=excluded.expires_at,accepted_at=null,revoked_at=null,
+          created_at=now()
+        returning id,email,permissions,expires_at
+      `;
+      if (!created) throw new Error("Invitation creation failed");
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "membership.invite",
+        resourceType: "membership_invitation", resourceId: created.id,
+        after: { email: created.email }, eventType: "MemberInvited"
+      });
+      return created;
+    });
+    return reply.code(201).send({
+      ...invitation,
+      acceptancePath: `/?invite=${encodeURIComponent(invitationToken)}`
+    });
+  });
+
   app.patch("/api/members/:id/permissions", {
     preHandler: [authenticate, requirePermission("team.manage")]
   }, async (request, reply) => {
@@ -249,6 +335,70 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
     `;
     if (!member) return reply.code(404).send({ error: "Editable member not found" });
     return member;
+  });
+
+  app.delete("/api/members/:id", {
+    preHandler: [authenticate, requirePermission("team.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    if (!context.isOwner) return reply.code(403).send({ error: "Only an Owner can remove members" });
+    const { id } = idParams.parse(request.params);
+    const removed = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [membership] = await tx<{ userId: string; isOwner: boolean }[]>`
+        select user_id,is_owner from business_memberships
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!membership) return false;
+      if (membership.isOwner) throw new Error("Transfer ownership before removing an Owner");
+      await tx`
+        update business_memberships set status='disabled',updated_at=now()
+        where business_id=${context.businessId} and id=${id}
+      `;
+      await tx`update sessions set revoked_at=now() where user_id=${membership.userId} and revoked_at is null`;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "membership.remove",
+        resourceType: "membership", resourceId: id
+      });
+      return true;
+    });
+    if (!removed) return reply.code(404).send({ error: "Membership not found" });
+    return reply.code(204).send();
+  });
+
+  app.post("/api/business/transfer-ownership", {
+    preHandler: [authenticate, requirePermission("team.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    if (!context.isOwner) return reply.code(403).send({ error: "Only an Owner can transfer ownership" });
+    const input = body(ownershipTransferSchema, request.body);
+    if (input.membershipId === context.membershipId) {
+      return reply.code(400).send({ error: "Select another active member" });
+    }
+    const transferred = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [target] = await tx<{ id: string }[]>`
+        select id from business_memberships
+        where business_id=${context.businessId} and id=${input.membershipId} and status='active' for update
+      `;
+      if (!target) return false;
+      await tx`
+        update business_memberships set is_owner=true,permissions=${permissions as unknown as string[]},
+          updated_at=now() where id=${target.id}
+      `;
+      await tx`
+        update business_memberships set is_owner=false,updated_at=now()
+        where id=${context.membershipId}
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "ownership.transfer",
+        resourceType: "membership", resourceId: target.id,
+        after: { previousOwnerMembershipId: context.membershipId }
+      });
+      return true;
+    });
+    if (!transferred) return reply.code(404).send({ error: "Active target member not found" });
+    return { transferred: true };
   });
 
   app.get("/api/services", { preHandler: authenticate }, async (request) => {

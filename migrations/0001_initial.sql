@@ -55,6 +55,21 @@ create table platform_administrators (
   created_at timestamptz not null default now()
 );
 
+create table membership_invitations (
+  id uuid primary key default gen_random_uuid(),
+  business_id uuid not null references businesses(id),
+  email text not null,
+  normalized_email text not null,
+  token_hash text not null unique,
+  permissions text[] not null default '{}',
+  invited_by uuid not null references users(id),
+  expires_at timestamptz not null,
+  accepted_at timestamptz,
+  revoked_at timestamptz,
+  created_at timestamptz not null default now(),
+  unique (business_id, normalized_email)
+);
+
 create unique index one_owner_membership_per_business_user
   on business_memberships (business_id, user_id) where is_owner;
 
@@ -357,7 +372,7 @@ create table notification_intents (
   id uuid primary key default gen_random_uuid(),
   business_id uuid not null references businesses(id),
   appointment_id uuid,
-  customer_id uuid not null,
+  customer_id uuid,
   notification_type text not null,
   scheduled_occurrence timestamptz not null,
   channel text not null check (channel in ('email')),
@@ -367,9 +382,12 @@ create table notification_intents (
   attempts integer not null default 0,
   last_error text,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (business_id, appointment_id, notification_type, scheduled_occurrence, channel)
+  updated_at timestamptz not null default now()
 );
+
+create unique index unique_appointment_notification
+  on notification_intents (business_id,appointment_id,notification_type,scheduled_occurrence,channel)
+  where appointment_id is not null;
 
 create table notification_delivery_attempts (
   id uuid primary key default gen_random_uuid(),
@@ -422,6 +440,7 @@ declare table_name text;
 begin
   foreach table_name in array array[
     'business_memberships','locations','business_hours','employees','employee_working_hours',
+    'membership_invitations',
     'services','employee_services','customers','pets','blocked_times','appointments',
     'appointment_services','invoices','invoice_items','payments','audit_events',
     'outbox_events','notification_intents','notification_delivery_attempts'

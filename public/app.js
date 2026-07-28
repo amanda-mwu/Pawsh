@@ -1,6 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
-const state = { me: null, customers: [], pets: [], employees: [], services: [], appointments: [], login: false };
+const inviteToken = new URLSearchParams(location.search).get("invite");
+const state = { me: null, customers: [], pets: [], employees: [], services: [], appointments: [], members: [], login: false };
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -43,10 +44,11 @@ async function refresh() {
     safe("customers.view") ? api("/api/customers") : [],
     safe("pets.view") ? api("/api/pets") : [],
     api("/api/employees"), api("/api/services"),
-    safe("appointments.view") ? api(`/api/appointments?from=${new Date(Date.now()-86400000).toISOString()}&to=${new Date(Date.now()+8*86400000).toISOString()}`) : []
+    safe("appointments.view") ? api(`/api/appointments?from=${new Date(Date.now()-86400000).toISOString()}&to=${new Date(Date.now()+8*86400000).toISOString()}`) : [],
+    safe("team.manage") ? api("/api/members") : []
   ];
-  const [dashboard, customers, pets, employees, services, appointments] = await Promise.all(requests);
-  Object.assign(state, { customers, pets, employees, services, appointments });
+  const [dashboard, customers, pets, employees, services, appointments, members] = await Promise.all(requests);
+  Object.assign(state, { customers, pets, employees, services, appointments, members });
   renderDashboard(dashboard); renderCustomers(); renderSetup(); renderAppointments();
 }
 
@@ -104,6 +106,34 @@ function renderCustomers() {
 function renderSetup() {
   $("#employee-list").innerHTML = state.employees.length ? state.employees.map((e) => `<div><strong>${escape(e.displayName)}</strong><small>${e.active ? "Active" : "Inactive"}</small></div>`).join("") : `<p class="empty">No team members yet.</p>`;
   $("#service-list").innerHTML = state.services.length ? state.services.map((s) => `<div><span><strong>${escape(s.name)}</strong><small>${s.baseDurationMinutes} min</small></span><strong>${money(s.basePriceMinor)}</strong></div>`).join("") : `<p class="empty">No services yet.</p>`;
+  $("#member-list").innerHTML = state.members.length ? state.members.map((member) => `<div><span><strong>${escape(member.email)}</strong><small>${member.isOwner ? "Owner" : `${member.permissions.length} permissions`}</small></span>${member.isOwner ? "" : `<span><button class="text-button edit-member" data-id="${member.id}">Access</button> <button class="text-button remove-member" data-id="${member.id}">Remove</button></span>`}</div>`).join("") : `<p class="empty">Only you have workspace access.</p>`;
+  $$(".edit-member").forEach((button)=>button.addEventListener("click",()=>editMember(button.dataset.id)));
+  $$(".remove-member").forEach((button)=>button.addEventListener("click",()=>removeMember(button.dataset.id)));
+}
+
+const permissionLabels = {
+  "calendar.view":"View calendar","appointments.view":"View appointments","appointments.create":"Create appointments",
+  "appointments.edit":"Edit appointments","appointments.cancel":"Cancel appointments","customers.view":"View customers",
+  "customers.edit":"Edit customers","pets.view":"View pets","pets.edit":"Edit pets",
+  "pets.safety.view":"View safety details","pets.safety.edit":"Edit safety details",
+  "operations.check_in":"Check in pets","operations.perform_service":"Perform services",
+  "operations.complete":"Complete services","checkout.perform":"Perform checkout","payments.view":"View payments",
+  "discounts.apply":"Apply discounts","services.manage":"Manage services","team.manage":"Manage team",
+  "reports.view":"View reports","settings.manage":"Manage settings"
+};
+function permissionFields(selected=[]) {
+  return `<fieldset class="wide permission-grid"><legend>Permissions</legend>${Object.entries(permissionLabels).map(([value,label])=>`<label><input type="checkbox" name="permissions" value="${value}" ${selected.includes(value)?"checked":""}> ${label}</label>`).join("")}</fieldset>`;
+}
+function editMember(id) {
+  const member=state.members.find((item)=>item.id===id);
+  openModal("Edit member access",permissionFields(member.permissions),async(form)=>{
+    await api(`/api/members/${id}/permissions`,{method:"PATCH",body:JSON.stringify({permissions:form.getAll("permissions")})});
+  });
+}
+async function removeMember(id) {
+  if (!confirm("Remove this member’s Pawsh access?")) return;
+  try { await api(`/api/members/${id}`,{method:"DELETE"});toast("Member access removed");await refresh(); }
+  catch(error){toast(error.message);}
 }
 
 function field(name, label, type = "text", extra = "", wide = false) {
@@ -135,6 +165,16 @@ const actions = {
   "new-employee": () => openModal("New team member",
     field("displayName","Display name","text","required",true),
     (form) => api("/api/employees",{method:"POST",body:JSON.stringify({...Object.fromEntries(form),serviceIds:[]})})),
+  "invite-member": () => openModal("Invite workspace member",
+    field("email","Email","email","required",true)+
+    `<label class="wide">Access preset<select name="preset"><option value="groomer">Groomer</option><option value="receptionist">Receptionist</option><option value="manager">Manager</option></select></label>`,
+    async(form)=>{
+      const values=Object.fromEntries(form);
+      const definitions=await api("/api/permissions");
+      const result=await api("/api/members/invitations",{method:"POST",body:JSON.stringify({email:values.email,permissions:definitions.presets[values.preset]})});
+      await navigator.clipboard.writeText(`${location.origin}${result.acceptancePath}`);
+      toast("Secure invitation link copied");
+    }),
   "new-appointment": () => openModal("New appointment",
     select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]))+
     select("petId","Pet",state.pets.map(p=>[p.id,p.name]))+
@@ -148,7 +188,10 @@ $("#auth-form").addEventListener("submit", async (event) => {
   event.preventDefault(); $("#auth-error").textContent = "";
   const data = Object.fromEntries(new FormData(event.currentTarget));
   try {
-    await api(state.login ? "/api/auth/login" : "/api/auth/signup", { method: "POST", body: JSON.stringify(data) });
+    await api(inviteToken ? "/api/auth/invitations/accept" : state.login ? "/api/auth/login" : "/api/auth/signup", {
+      method: "POST", body: JSON.stringify(inviteToken ? {token:inviteToken,password:data.password} : data)
+    });
+    if (inviteToken) history.replaceState({}, "", "/");
     await bootstrap();
   } catch (error) { $("#auth-error").textContent = error.message; }
 });
@@ -167,4 +210,11 @@ function showView(view) { $$(".view").forEach(v=>v.hidden=v.id!==view); $$("nav 
 $$(".close").forEach((button)=>button.addEventListener("click",()=>$("#modal").close()));
 $("#customer-search").addEventListener("input", async (event)=>{state.customers=await api(`/api/customers?q=${encodeURIComponent(event.target.value)}`);renderCustomers();});
 $("#today").textContent = new Date().toLocaleDateString([], { weekday:"long", month:"short", day:"numeric" });
+if (inviteToken) {
+  state.login=true;
+  $("#business-field").hidden=true; $("#business-field input").required=false;
+  const emailLabel=$('#auth-form input[name="email"]').closest("label"); emailLabel.hidden=true; emailLabel.querySelector("input").required=false;
+  $("#auth-title").textContent="Join your salon"; $("#auth-subtitle").textContent="Choose a secure password to accept your invitation.";
+  $("#auth-form button").textContent="Accept invitation"; $("#toggle-auth").hidden=true;
+}
 bootstrap();

@@ -63,7 +63,8 @@ function renderDashboard(data) {
 function appointmentHtml(item) {
   const time = new Date(item.startAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   const customer = `${item.firstName} ${item.lastName}`;
-  return `<div class="appointment"><time>${time}</time><div><span class="pet">${escape(item.petName)}</span><small>${escape(customer)} · ${escape(item.employeeName)}</small>${item.safetyAlerts ? `<small>⚠ ${escape(item.safetyAlerts)}</small>` : ""}</div><span class="badge ${item.status}">${item.status.replace("_"," ")}</span></div>`;
+  const action = {scheduled:"Check in",checked_in:"Start service",in_service:"Complete",completed:"Checkout"}[item.status];
+  return `<div class="appointment"><time>${time}</time><div><span class="pet">${escape(item.petName)}</span><small>${escape(customer)} · ${escape(item.employeeName)}</small>${item.safetyAlerts ? `<small>⚠ ${escape(item.safetyAlerts)}</small>` : ""}</div><div class="appointment-actions"><span class="badge ${item.status}">${item.status.replace("_"," ")}</span>${action ? `<button class="text-button appointment-action" data-id="${item.id}" data-status="${item.status}">${action} →</button>` : ""}</div></div>`;
 }
 function renderAppointments() {
   const html = state.appointments.length ? state.appointments.map(appointmentHtml).join("") : "No appointments scheduled.";
@@ -71,6 +72,28 @@ function renderAppointments() {
   const today = new Date().toDateString();
   const todays = state.appointments.filter((item) => new Date(item.startAt).toDateString() === today);
   $("#today-list").innerHTML = todays.length ? todays.map(appointmentHtml).join("") : "No appointments today.";
+  $$(".appointment-action").forEach((button) => button.addEventListener("click", () => advanceAppointment(button.dataset.id, button.dataset.status)));
+}
+async function advanceAppointment(id, status) {
+  if (status === "completed") return checkout(id);
+  const next = {scheduled:"checked_in",checked_in:"in_service",in_service:"completed"}[status];
+  try { await api(`/api/appointments/${id}/transition`,{method:"POST",body:JSON.stringify({status:next})}); toast(`Appointment ${next.replace("_"," ")}`); await refresh(); }
+  catch (error) { toast(error.message); }
+}
+function checkout(id) {
+  openModal("Complete checkout",
+    field("discount","Discount ($)","number",'min="0" step=".01" value="0"')+
+    field("tip","Tip ($)","number",'min="0" step=".01" value="0"')+
+    select("method","Payment method",[["cash","Cash"],["external_card","External card"],["check","Check"],["other","Other"]],true),
+    async (form) => {
+      const values=Object.fromEntries(form);
+      const invoice=await api(`/api/appointments/${id}/checkout`,{method:"POST",body:JSON.stringify({
+        discountMinor:Math.round(Number(values.discount||0)*100),
+        discountType:Number(values.discount||0)>0?"manual":null,
+        tipMinor:Math.round(Number(values.tip||0)*100)
+      })});
+      if (Number(invoice.balanceMinor)>0) await api(`/api/invoices/${invoice.id}/payments`,{method:"POST",body:JSON.stringify({amountMinor:Number(invoice.balanceMinor),method:values.method})});
+    });
 }
 function renderCustomers() {
   $("#customer-grid").innerHTML = state.customers.length ? state.customers.map((customer) => {

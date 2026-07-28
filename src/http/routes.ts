@@ -205,21 +205,24 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
           and expires_at>now() for update
       `;
       if (!invitation) return null;
-      let [user] = await tx<{ id: string }[]>`
-        select id from users where normalized_email=${invitation.normalizedEmail}
+      let [user] = await tx<{ id: string; passwordHash: string }[]>`
+        select id,password_hash from users where normalized_email=${invitation.normalizedEmail}
       `;
       if (!user) {
-        [user] = await tx<{ id: string }[]>`
+        [user] = await tx<{ id: string; passwordHash: string }[]>`
           insert into users(email,normalized_email,password_hash)
-          values (${invitation.email},${invitation.normalizedEmail},${passwordHash}) returning id
+          values (${invitation.email},${invitation.normalizedEmail},${passwordHash})
+          returning id,password_hash
         `;
       } else {
+        if (!(await verify(user.passwordHash, input.password))) {
+          throw new Error("Existing Pawsh users must enter their current password");
+        }
         const existingMembership = await tx`
           select id from business_memberships
           where business_id=${invitation.businessId} and user_id=${user.id}
         `;
         if (existingMembership.length) throw new Error("This user already belongs to the business");
-        await tx`update users set password_hash=${passwordHash},updated_at=now() where id=${user.id}`;
       }
       if (!user) throw new Error("Invitation user creation failed");
       const [membership] = await tx<{ id: string }[]>`
@@ -462,7 +465,13 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
 
   app.get("/api/employees", { preHandler: authenticate }, async (request) => {
     const context = auth(request);
-    return db`select * from employees where business_id = ${context.businessId} order by active desc, display_name`;
+    return db`
+      select e.*,
+        coalesce(array_agg(es.service_id) filter (where es.service_id is not null),'{}') as service_ids
+      from employees e left join employee_services es on es.employee_id=e.id
+      where e.business_id=${context.businessId}
+      group by e.id order by e.active desc,e.display_name
+    `;
   });
 
   app.post("/api/employees", {
@@ -789,7 +798,8 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
         e.display_name as employee_name,
         coalesce(json_agg(json_build_object(
           'id', aps.id, 'name', aps.service_name_snapshot, 'durationMinutes',
-          aps.duration_minutes_snapshot, 'priceMinor', aps.price_minor_snapshot
+          aps.duration_minutes_snapshot, 'priceMinor', aps.price_minor_snapshot,
+          'serviceId', aps.service_id
         )) filter (where aps.id is not null), '[]') as services
       from appointments a
       join customers c on c.id=a.customer_id

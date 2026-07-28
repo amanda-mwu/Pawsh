@@ -40,4 +40,35 @@ describeDatabase("PostgreSQL invariants", () => {
     await insert("2026-08-01T10:00:00Z", "2026-08-01T11:00:00Z");
     await expect(insert("2026-08-01T09:30:00Z", "2026-08-01T10:30:00Z")).rejects.toThrow();
   });
+
+  it("enforces row-level tenant isolation for a non-owner database role", async () => {
+    const [businessA] = await sql!`insert into businesses(name) values ('RLS A') returning id`;
+    const [businessB] = await sql!`insert into businesses(name) values ('RLS B') returning id`;
+    await sql!`
+      insert into customers(business_id,first_name,last_name) values
+        (${businessA!.id},'Visible','Customer'),
+        (${businessB!.id},'Hidden','Customer')
+    `;
+    await sql!.unsafe(`
+      do $$
+      begin
+        if not exists (select 1 from pg_roles where rolname='pawsh_rls_test') then
+          create role pawsh_rls_test nologin nosuperuser nobypassrls;
+        end if;
+      end $$;
+      grant usage on schema public to pawsh_rls_test;
+      grant select,insert,update,delete on customers to pawsh_rls_test;
+    `);
+    await sql!.begin(async (tx) => {
+      await tx`set local role pawsh_rls_test`;
+      await tx`select set_config('app.business_id',${businessA!.id},true)`;
+      const visible = await tx<{ businessId: string }[]>`select business_id from customers`;
+      expect(visible).toHaveLength(1);
+      expect(visible[0]?.businessId).toBe(businessA!.id);
+      await expect(tx`
+        insert into customers(business_id,first_name,last_name)
+        values (${businessB!.id},'Blocked','Write')
+      `).rejects.toThrow();
+    });
+  });
 });

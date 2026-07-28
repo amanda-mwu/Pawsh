@@ -50,7 +50,7 @@ async function refresh() {
   ];
   const [dashboard, customers, pets, employees, services, appointments, members, reports] = await Promise.all(requests);
   Object.assign(state, { customers, pets, employees, services, appointments, members, reports });
-  renderDashboard(dashboard); renderCustomers(); renderSetup(); renderAppointments(); renderReports();
+  renderDashboard(dashboard); renderCustomersEnhanced(); renderSetupEnhanced(); renderAppointments(); renderReports();
 }
 
 function renderDashboard(data) {
@@ -76,10 +76,45 @@ function renderAppointments() {
   const todays = state.appointments.filter((item) => new Date(item.startAt).toDateString() === today);
   $("#today-list").innerHTML = todays.length ? todays.map(appointmentHtml).join("") : "No appointments today.";
   $$(".appointment-action").forEach((button) => button.addEventListener("click", () => advanceAppointment(button.dataset.id, button.dataset.status)));
+  state.appointments.filter(item=>item.status==="scheduled").forEach(item=>{
+    $$(`.appointment-action[data-id="${item.id}"]`).forEach(button=>{
+      button.parentElement.insertAdjacentHTML("beforeend",`<span><button type="button" class="text-button move-action" data-id="${item.id}">Move</button> <button type="button" class="text-button terminal-action" data-id="${item.id}" data-status="cancelled">Cancel</button> <button type="button" class="text-button terminal-action" data-id="${item.id}" data-status="no_show">No show</button></span>`);
+    });
+  });
+  state.appointments.filter(item=>["checked_in","in_service"].includes(item.status)).forEach(item=>{
+    $$(`.appointment-action[data-id="${item.id}"]`).forEach(button=>{
+      button.parentElement.insertAdjacentHTML("beforeend",`<button type="button" class="text-button service-action" data-id="${item.id}">Adjust services</button>`);
+    });
+  });
+  $$(".terminal-action").forEach(button=>button.addEventListener("click",()=>terminalAppointment(button.dataset.id,button.dataset.status)));
+  $$(".move-action").forEach(button=>button.addEventListener("click",()=>moveAppointment(button.dataset.id)));
+  $$(".service-action").forEach(button=>button.addEventListener("click",()=>adjustServices(button.dataset.id)));
+}
+function adjustServices(id) {
+  const appointment=state.appointments.find(item=>item.id===id);
+  openModal("Adjust appointment services",serviceCheckboxes(appointment.services.map(service=>service.serviceId)),form=>api(`/api/appointments/${id}/services`,{method:"PUT",body:JSON.stringify({serviceIds:form.getAll("serviceIds")})}));
+}
+function moveAppointment(id) {
+  const appointment=state.appointments.find(item=>item.id===id);
+  const local=new Date(new Date(appointment.startAt).getTime()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);
+  openModal("Move appointment",select("employeeId","Groomer",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]))+field("startAt","Start time","datetime-local",`required value="${local}"`),form=>api(`/api/appointments/${id}/schedule`,{method:"PATCH",body:JSON.stringify({employeeId:form.get("employeeId"),startAt:new Date(form.get("startAt")).toISOString(),version:appointment.version})}));
+}
+async function terminalAppointment(id,status) {
+  if(!confirm(status==="cancelled"?"Cancel this appointment?":"Mark this appointment as a no-show?"))return;
+  try{await api(`/api/appointments/${id}/transition`,{method:"POST",body:JSON.stringify({status})});toast(`Appointment ${status.replace("_"," ")}`);await refresh();}catch(error){toast(error.message);}
 }
 async function advanceAppointment(id, status) {
   if (status === "completed") return checkout(id);
   const next = {scheduled:"checked_in",checked_in:"in_service",in_service:"completed"}[status];
+  if (status === "checked_in") {
+    return openModal("Start service",
+      field("operationalNotes","Service notes","text","",true),
+      async (form) => {
+        await api(`/api/appointments/${id}/operations`,{method:"PATCH",body:JSON.stringify({operationalNotes:form.get("operationalNotes")||null})});
+        await api(`/api/appointments/${id}/transition`,{method:"POST",body:JSON.stringify({status:next})});
+      });
+  }
+  if (status === "in_service" && !confirm("Mark this grooming appointment complete?")) return;
   try { await api(`/api/appointments/${id}/transition`,{method:"POST",body:JSON.stringify({status:next})}); toast(`Appointment ${next.replace("_"," ")}`); await refresh(); }
   catch (error) { toast(error.message); }
 }
@@ -96,7 +131,13 @@ function checkout(id) {
         tipMinor:Math.round(Number(values.tip||0)*100)
       })});
       if (Number(invoice.balanceMinor)>0) await api(`/api/invoices/${invoice.id}/payments`,{method:"POST",body:JSON.stringify({amountMinor:Number(invoice.balanceMinor),method:values.method})});
+      const receipt=await api(`/api/invoices/${invoice.id}/receipt`);
+      setTimeout(()=>showReceipt(receipt),50);
     });
+}
+function showReceipt(receipt) {
+  const invoice=receipt.invoice;
+  openModal(`Receipt #${invoice.invoiceNumber}`,`<div class="wide receipt"><p><strong>${escape(invoice.businessName)}</strong></p><p>${escape(invoice.firstName)} ${escape(invoice.lastName)}</p>${receipt.items.map(item=>`<div><span>${escape(item.description)}</span><strong>${money(item.amountMinor)}</strong></div>`).join("")}<div><span>Tax</span><strong>${money(invoice.taxMinor)}</strong></div><div><span>Tip</span><strong>${money(invoice.tipMinor)}</strong></div><div class="receipt-total"><span>Total paid</span><strong>${money(invoice.totalMinor)}</strong></div></div>`,async()=>{});
 }
 function renderCustomers() {
   $("#customer-grid").innerHTML = state.customers.length ? state.customers.map((customer) => {
@@ -110,6 +151,25 @@ function renderSetup() {
   $("#member-list").innerHTML = state.members.length ? state.members.map((member) => `<div><span><strong>${escape(member.email)}</strong><small>${member.isOwner ? "Owner" : `${member.permissions.length} permissions`}</small></span>${member.isOwner ? "" : `<span><button class="text-button edit-member" data-id="${member.id}">Access</button> <button class="text-button remove-member" data-id="${member.id}">Remove</button></span>`}</div>`).join("") : `<p class="empty">Only you have workspace access.</p>`;
   $$(".edit-member").forEach((button)=>button.addEventListener("click",()=>editMember(button.dataset.id)));
   $$(".remove-member").forEach((button)=>button.addEventListener("click",()=>removeMember(button.dataset.id)));
+}
+function renderCustomersEnhanced() {
+  renderCustomers();
+  $("#customer-grid").innerHTML = state.customers.length ? state.customers.map((customer) => {
+    const pets = state.pets.filter((pet) => pet.customerId === customer.id);
+    return `<article class="customer-card"><p class="eyebrow">${pets.length} pet${pets.length === 1 ? "" : "s"}</p><h3>${escape(customer.firstName)} ${escape(customer.lastName)}</h3><p>${escape(customer.email || customer.phone || "No contact added")}</p><div class="pet-links">${pets.map((pet) => `<button type="button" class="text-button edit-pet" data-id="${pet.id}">${escape(pet.name)}${pet.safetyAlerts?" !":""}</button>`).join("") || "Add their first pet"}</div><div class="card-actions"><button type="button" class="text-button edit-customer" data-id="${customer.id}">Edit</button><button type="button" class="text-button archive-customer" data-id="${customer.id}">Archive</button></div></article>`;
+  }).join("") : `<p class="empty">Create your first customer to begin building salon history.</p>`;
+  $$(".edit-customer").forEach((button)=>button.addEventListener("click",()=>editCustomer(button.dataset.id)));
+  $$(".archive-customer").forEach((button)=>button.addEventListener("click",()=>archiveCustomer(button.dataset.id)));
+  $$(".edit-pet").forEach((button)=>button.addEventListener("click",()=>editPet(button.dataset.id)));
+}
+function renderSetupEnhanced() {
+  renderSetup();
+  $("#employee-list").innerHTML = state.employees.length ? state.employees.map((employee) => `<div><span><strong>${escape(employee.displayName)}</strong><small>${employee.active ? "Active" : "Inactive"}</small></span>${employee.active?`<span><button type="button" class="text-button edit-employee" data-id="${employee.id}">Edit</button> <button type="button" class="text-button deactivate-employee" data-id="${employee.id}">Deactivate</button></span>`:""}</div>`).join("") : `<p class="empty">No team members yet.</p>`;
+  $("#service-list").innerHTML = state.services.length ? state.services.map((service) => `<div><span><strong>${escape(service.name)}</strong><small>${service.baseDurationMinutes} min / ${money(service.basePriceMinor)}</small></span>${service.active?`<span><button type="button" class="text-button edit-service" data-id="${service.id}">Edit</button> <button type="button" class="text-button deactivate-service" data-id="${service.id}">Deactivate</button></span>`:"<small>Inactive</small>"}</div>`).join("") : `<p class="empty">No services yet.</p>`;
+  $$(".edit-employee").forEach((button)=>button.addEventListener("click",()=>editEmployee(button.dataset.id)));
+  $$(".deactivate-employee").forEach((button)=>button.addEventListener("click",()=>deactivate("employees",button.dataset.id)));
+  $$(".edit-service").forEach((button)=>button.addEventListener("click",()=>editService(button.dataset.id)));
+  $$(".deactivate-service").forEach((button)=>button.addEventListener("click",()=>deactivate("services",button.dataset.id)));
 }
 function renderReports() {
   if (!state.reports) return;
@@ -142,6 +202,39 @@ async function removeMember(id) {
   try { await api(`/api/members/${id}`,{method:"DELETE"});toast("Member access removed");await refresh(); }
   catch(error){toast(error.message);}
 }
+function serviceCheckboxes(selected=[]) {
+  return `<fieldset class="wide permission-grid"><legend>Eligible services</legend>${state.services.filter(service=>service.active).map(service=>`<label><input type="checkbox" name="serviceIds" value="${service.id}" ${selected.includes(service.id)?"checked":""}> ${escape(service.name)}</label>`).join("")||"<p>Add a service first.</p>"}</fieldset>`;
+}
+function weeklyHoursFields() {
+  return `<fieldset class="wide hours-grid"><legend>Working hours</legend>${["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"].map((day,index)=>`<div><label><input type="checkbox" name="day${index}" ${index>0&&index<6?"checked":""}> ${day}</label><input type="time" name="start${index}" value="09:00"><input type="time" name="end${index}" value="17:00"></div>`).join("")}</fieldset>`;
+}
+function editEmployee(id) {
+  const employee=state.employees.find(item=>item.id===id);
+  openModal("Edit team member",field("displayName","Display name","text",`required value="${escape(employee.displayName)}"`,true)+serviceCheckboxes(employee.serviceIds)+weeklyHoursFields(),async(form)=>{
+    await api(`/api/employees/${id}`,{method:"PUT",body:JSON.stringify({displayName:form.get("displayName"),serviceIds:form.getAll("serviceIds")})});
+    await api(`/api/employees/${id}/working-hours`,{method:"PUT",body:JSON.stringify({hours:[0,1,2,3,4,5,6].filter(index=>form.get(`day${index}`)).map(index=>({weekday:index,startTime:form.get(`start${index}`),endTime:form.get(`end${index}`)}))})});
+  });
+}
+function editService(id) {
+  const service=state.services.find(item=>item.id===id);
+  openModal("Edit service",field("name","Service name","text",`required value="${escape(service.name)}"`)+field("baseDurationMinutes","Duration (minutes)","number",`required min="1" value="${service.baseDurationMinutes}"`)+field("basePrice","Price ($)","number",`required min="0" step=".01" value="${Number(service.basePriceMinor)/100}`)+field("description","Description","text",`value="${escape(service.description||"")}"`,true),form=>{const values=Object.fromEntries(form);return api(`/api/services/${id}`,{method:"PUT",body:JSON.stringify({name:values.name,description:values.description||null,baseDurationMinutes:Number(values.baseDurationMinutes),basePriceMinor:Math.round(Number(values.basePrice)*100)})});});
+}
+async function deactivate(type,id) {
+  if(!confirm(`Deactivate this ${type==="services"?"service":"team member"}?`))return;
+  try{await api(`/api/${type}/${id}`,{method:"DELETE"});toast("Deactivated");await refresh();}catch(error){toast(error.message);}
+}
+function editCustomer(id) {
+  const customer=state.customers.find(item=>item.id===id);
+  openModal("Edit customer",field("firstName","First name","text",`required value="${escape(customer.firstName)}"`)+field("lastName","Last name","text",`required value="${escape(customer.lastName)}"`)+field("email","Email","email",`value="${escape(customer.email||"")}"`)+field("phone","Phone","tel",`value="${escape(customer.phone||"")}"`)+field("notes","Notes","text",`value="${escape(customer.notes||"")}"`,true),form=>api(`/api/customers/${id}`,{method:"PUT",body:JSON.stringify({...Object.fromEntries(form),preferredContactMethod:customer.preferredContactMethod||"email",emailAllowed:customer.emailAllowed})}));
+}
+async function archiveCustomer(id) {
+  if(!confirm("Archive this customer? Their operational and financial history will remain."))return;
+  try{await api(`/api/customers/${id}/archive`,{method:"POST"});toast("Customer archived");await refresh();}catch(error){toast(error.message);}
+}
+function editPet(id) {
+  const pet=state.pets.find(item=>item.id===id);
+  openModal("Edit pet safety and care",field("name","Pet name","text",`required value="${escape(pet.name)}"`)+field("breed","Breed","text",`value="${escape(pet.breed||"")}"`)+field("safetyAlerts","Safety alerts","text",`value="${escape(pet.safetyAlerts||"")}"`,true)+field("behaviorNotes","Behavior notes","text",`value="${escape(pet.behaviorNotes||"")}"`,true)+field("medicalNotes","Medical notes","text",`value="${escape(pet.medicalNotes||"")}"`,true),form=>api(`/api/pets/${id}`,{method:"PUT",body:JSON.stringify({...pet,...Object.fromEntries(form),dateOfBirth:pet.dateOfBirth?String(pet.dateOfBirth).slice(0,10):null,vaccinationExpiresOn:pet.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):null})}));
+}
 
 function field(name, label, type = "text", extra = "", wide = false) {
   return `<label class="${wide ? "wide" : ""}">${label}<input name="${name}" type="${type}" ${extra}></label>`;
@@ -170,8 +263,8 @@ const actions = {
     field("name","Service name","text","required")+field("baseDurationMinutes","Duration (minutes)","number",'required min="1"')+field("basePrice","Price ($)","number",'required min="0" step=".01"')+field("description","Description","text","",true),
     (form) => { const o=Object.fromEntries(form); o.baseDurationMinutes=Number(o.baseDurationMinutes); o.basePriceMinor=Math.round(Number(o.basePrice)*100); delete o.basePrice; return api("/api/services",{method:"POST",body:JSON.stringify(o)}); }),
   "new-employee": () => openModal("New team member",
-    field("displayName","Display name","text","required",true),
-    (form) => api("/api/employees",{method:"POST",body:JSON.stringify({...Object.fromEntries(form),serviceIds:[]})})),
+    field("displayName","Display name","text","required",true)+serviceCheckboxes(),
+    (form) => api("/api/employees",{method:"POST",body:JSON.stringify({displayName:form.get("displayName"),serviceIds:form.getAll("serviceIds")})})),
   "invite-member": () => openModal("Invite workspace member",
     field("email","Email","email","required",true)+
     `<label class="wide">Access preset<select name="preset"><option value="groomer">Groomer</option><option value="receptionist">Receptionist</option><option value="manager">Manager</option></select></label>`,
@@ -197,6 +290,9 @@ const actions = {
       })});
       state.me=await api("/api/me");$("#salon-name").textContent=state.me.business.name;
     }),
+  "business-hours": () => openModal("Business hours",
+    `<fieldset class="wide hours-grid"><legend>Weekly schedule</legend>${["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"].map((day,index)=>`<div><label><input type="checkbox" name="day${index}" ${index>0&&index<6?"checked":""}> ${day}</label><input type="time" name="start${index}" value="09:00"><input type="time" name="end${index}" value="17:00"></div>`).join("")}</fieldset>`,
+    form=>api("/api/business/working-hours",{method:"PUT",body:JSON.stringify({hours:[0,1,2,3,4,5,6].filter(index=>form.get(`day${index}`)).map(index=>({weekday:index,startTime:form.get(`start${index}`),endTime:form.get(`end${index}`)}))})})),
   "new-appointment": () => openModal("New appointment",
     select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]))+
     select("petId","Pet",state.pets.map(p=>[p.id,p.name]))+
@@ -204,6 +300,11 @@ const actions = {
     select("serviceId","Service",state.services.filter(s=>s.active).map(s=>[s.id,`${s.name} · ${money(s.basePriceMinor)}`]))+
     field("startAt","Start time","datetime-local","required",true)+field("notes","Appointment notes","text","",true),
     (form) => { const o=Object.fromEntries(form); return api("/api/appointments",{method:"POST",body:JSON.stringify({locationId:state.me.business.locationId,customerId:o.customerId,petId:o.petId,employeeId:o.employeeId,serviceIds:[o.serviceId],startAt:new Date(o.startAt).toISOString(),notes:o.notes||null})}); })
+  ,"blocked-time": () => openModal("Block team time",
+    select("employeeId","Team member",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]))+
+    field("startAt","Start","datetime-local","required")+field("endAt","End","datetime-local","required")+
+    field("reason","Reason","text","required",true),
+    form=>api("/api/blocked-times",{method:"POST",body:JSON.stringify({employeeId:form.get("employeeId"),startAt:new Date(form.get("startAt")).toISOString(),endAt:new Date(form.get("endAt")).toISOString(),reason:form.get("reason")})}))
 };
 
 $("#auth-form").addEventListener("submit", async (event) => {

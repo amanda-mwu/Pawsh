@@ -25,6 +25,7 @@ jobs:
       DATABASE_URL: postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh
       SESSION_SECRET: ci-session-secret-at-least-thirty-two-characters
       APP_ORIGIN: http://127.0.0.1:3000
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -34,6 +35,25 @@ jobs:
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
       - run: npm run validate:ci
+      - name: Install Chromium for GUI smoke
+        run: npx playwright install --with-deps chromium
+      - name: Auth lifecycle stability (50 consecutive executions)
+        run: npx playwright test tests/e2e/smoke/auth-business.spec.ts --project=chromium --grep "auth session lifecycle" --repeat-each=50
+        env:
+          NODE_ENV: test
+      - name: Browser GUI and security smoke
+        run: npm run test:smoke
+        env:
+          NODE_ENV: test
+      - name: Upload browser failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failures
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
       - name: Backup and restore rehearsal
         shell: bash
         run: |
@@ -43,4 +63,6 @@ jobs:
           docker exec "$POSTGRES_CONTAINER" pg_dump -U pawsh -d pawsh -Fc -f /tmp/pawsh.dump
           docker exec "$POSTGRES_CONTAINER" createdb -U pawsh pawsh_restore
           docker exec "$POSTGRES_CONTAINER" pg_restore -U pawsh -d pawsh_restore /tmp/pawsh.dump
-          DATABASE_URL=postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh_restore npm run test:db
+          SOURCE_DATABASE_URL=postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh \
+            DATABASE_URL=postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh_restore \
+            npm run db:verify-restore

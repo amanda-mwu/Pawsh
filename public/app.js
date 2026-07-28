@@ -3,11 +3,15 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 const inviteToken = new URLSearchParams(location.search).get("invite");
 const resetToken = new URLSearchParams(location.search).get("reset");
 const state = { me: null, customers: [], pets: [], employees: [], services: [], appointments: [], members: [], reports: null, login: false };
+const pendingActions = new Set();
+let customerSearchSequence = 0;
 
 async function api(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (options.body !== undefined) headers["content-type"] = "application/json";
   const response = await fetch(path, {
     credentials: "include",
-    headers: { "content-type": "application/json", ...(options.headers || {}) },
+    headers,
     ...options
   });
   if (response.status === 204) return null;
@@ -26,13 +30,31 @@ function toast(message) {
 function escape(value = "") {
   const el = document.createElement("span"); el.textContent = value; return el.innerHTML;
 }
+function allowed(permission) {
+  return Boolean(state.me?.isOwner || state.me?.permissions?.includes(permission));
+}
+function applyPermissions() {
+  $$("[data-permission]").forEach((element) => {
+    element.hidden = !allowed(element.dataset.permission);
+  });
+  $$("[data-any-permission]").forEach((element) => {
+    element.hidden = !element.dataset.anyPermission.split(",").some(allowed);
+  });
+}
+async function runOnce(key, operation) {
+  if (pendingActions.has(key)) return;
+  pendingActions.add(key);
+  try { return await operation(); }
+  finally { pendingActions.delete(key); }
+}
 
 async function bootstrap() {
   try {
     state.me = await api("/api/me");
-    $("#auth-view").hidden = true; $("#app-view").hidden = false;
     $("#salon-name").textContent = state.me.business.name;
+    applyPermissions();
     await refresh();
+    $("#auth-view").hidden = true; $("#app-view").hidden = false;
   } catch { $("#auth-view").hidden = false; $("#app-view").hidden = true; }
 }
 
@@ -51,6 +73,7 @@ async function refresh() {
   ];
   const [dashboard, customers, pets, employees, services, appointments, members, reports] = await Promise.all(requests);
   Object.assign(state, { customers, pets, employees, services, appointments, members, reports });
+  applyPermissions();
   renderDashboard(dashboard); renderCustomersEnhanced(); renderSetupEnhanced(); renderAppointments(); renderReports();
 }
 
@@ -64,11 +87,30 @@ function renderDashboard(data) {
   $("#metrics").innerHTML = metrics.map(([label, value]) => `<div class="metric"><strong>${value}</strong><span>${label}</span></div>`).join("");
 }
 
+function safetyContext(item) {
+  const details = [
+    item.safetyAlerts ? `<strong>Safety alert:</strong> ${escape(item.safetyAlerts)}` : "",
+    item.behaviorNotes ? `<strong>Behavior:</strong> ${escape(item.behaviorNotes)}` : "",
+    item.medicalNotes ? `<strong>Medical:</strong> ${escape(item.medicalNotes)}` : "",
+    item.groomingPreferences ? `<strong>Grooming:</strong> ${escape(item.groomingPreferences)}` : ""
+  ].filter(Boolean);
+  return details.length
+    ? `<div class="safety-context" role="note" aria-label="Pet safety and care information" data-testid="safety-context">${details.map((detail) => `<p>${detail}</p>`).join("")}</div>`
+    : "";
+}
 function appointmentHtml(item) {
   const time = new Date(item.startAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   const customer = `${item.firstName} ${item.lastName}`;
-  const action = {scheduled:"Check in",checked_in:"Start service",in_service:"Complete",completed:"Checkout"}[item.status];
-  return `<div class="appointment"><time>${time}</time><div><span class="pet">${escape(item.petName)}</span><small>${escape(customer)} · ${escape(item.employeeName)}</small>${item.safetyAlerts ? `<small>⚠ ${escape(item.safetyAlerts)}</small>` : ""}</div><div class="appointment-actions"><span class="badge ${item.status}">${item.status.replace("_"," ")}</span>${action ? `<button class="text-button appointment-action" data-id="${item.id}" data-status="${item.status}">${action} →</button>` : ""}</div></div>`;
+  const actionDefinition = {
+    scheduled: ["Check in", "operations.check_in"],
+    checked_in: ["Start service", "operations.perform_service"],
+    in_service: ["Complete", "operations.complete"],
+    completed: ["Checkout", "checkout.perform"]
+  }[item.status];
+  const action = actionDefinition && allowed(actionDefinition[1])
+    ? `<button data-testid="appointment-${item.status}" class="text-button appointment-action" data-id="${item.id}" data-status="${item.status}">${actionDefinition[0]} →</button>`
+    : "";
+  return `<article class="appointment" data-testid="appointment" data-appointment-id="${item.id}"><time>${time}</time><div><span class="pet">${escape(item.petName)}</span><small>${escape(customer)} · ${escape(item.employeeName)}</small>${safetyContext(item)}</div><div class="appointment-actions"><span class="badge ${item.status}">${item.status.replace("_"," ")}</span>${action}</div></article>`;
 }
 function renderAppointments() {
   const html = state.appointments.length ? state.appointments.map(appointmentHtml).join("") : "No appointments scheduled.";
@@ -77,12 +119,12 @@ function renderAppointments() {
   const todays = state.appointments.filter((item) => new Date(item.startAt).toDateString() === today);
   $("#today-list").innerHTML = todays.length ? todays.map(appointmentHtml).join("") : "No appointments today.";
   $$(".appointment-action").forEach((button) => button.addEventListener("click", () => advanceAppointment(button.dataset.id, button.dataset.status)));
-  state.appointments.filter(item=>item.status==="scheduled").forEach(item=>{
+  state.appointments.filter(item=>item.status==="scheduled" && (allowed("appointments.edit") || allowed("appointments.cancel"))).forEach(item=>{
     $$(`.appointment-action[data-id="${item.id}"]`).forEach(button=>{
-      button.parentElement.insertAdjacentHTML("beforeend",`<span><button type="button" class="text-button move-action" data-id="${item.id}">Move</button> <button type="button" class="text-button terminal-action" data-id="${item.id}" data-status="cancelled">Cancel</button> <button type="button" class="text-button terminal-action" data-id="${item.id}" data-status="no_show">No show</button></span>`);
+      button.parentElement.insertAdjacentHTML("beforeend",`<span>${allowed("appointments.edit")?`<button type="button" class="text-button move-action" data-id="${item.id}">Move</button>`:""} ${allowed("appointments.cancel")?`<button type="button" class="text-button terminal-action" data-id="${item.id}" data-status="cancelled">Cancel</button> <button type="button" class="text-button terminal-action" data-id="${item.id}" data-status="no_show">No show</button>`:""}</span>`);
     });
   });
-  state.appointments.filter(item=>["checked_in","in_service"].includes(item.status)).forEach(item=>{
+  state.appointments.filter(item=>["checked_in","in_service"].includes(item.status) && allowed("appointments.edit")).forEach(item=>{
     $$(`.appointment-action[data-id="${item.id}"]`).forEach(button=>{
       button.parentElement.insertAdjacentHTML("beforeend",`<button type="button" class="text-button service-action" data-id="${item.id}">Adjust services</button>`);
     });
@@ -93,7 +135,7 @@ function renderAppointments() {
 }
 function adjustServices(id) {
   const appointment=state.appointments.find(item=>item.id===id);
-  openModal("Adjust appointment services",serviceCheckboxes(appointment.services.map(service=>service.serviceId)),form=>api(`/api/appointments/${id}/services`,{method:"PUT",body:JSON.stringify({serviceIds:form.getAll("serviceIds")})}));
+  openModal("Adjust appointment services",safetyContext(appointment)+serviceCheckboxes(appointment.services.map(service=>service.serviceId)),form=>api(`/api/appointments/${id}/services`,{method:"PUT",body:JSON.stringify({serviceIds:form.getAll("serviceIds"),version:appointment.version})}));
 }
 function moveAppointment(id) {
   const appointment=state.appointments.find(item=>item.id===id);
@@ -102,22 +144,31 @@ function moveAppointment(id) {
 }
 async function terminalAppointment(id,status) {
   if(!confirm(status==="cancelled"?"Cancel this appointment?":"Mark this appointment as a no-show?"))return;
-  try{await api(`/api/appointments/${id}/transition`,{method:"POST",body:JSON.stringify({status})});toast(`Appointment ${status.replace("_"," ")}`);await refresh();}catch(error){toast(error.message);}
+  const appointment=state.appointments.find(item=>item.id===id);
+  return runOnce(`transition:${id}`,async()=>{
+    try{await api(`/api/appointments/${id}/transition`,{method:"POST",body:JSON.stringify({status,version:appointment.version})});toast(`Appointment ${status.replace("_"," ")}`);await refresh();}catch(error){toast(error.message);}
+  });
 }
 async function advanceAppointment(id, status) {
   if (status === "completed") return checkout(id);
+  const appointment=state.appointments.find(item=>item.id===id);
   const next = {scheduled:"checked_in",checked_in:"in_service",in_service:"completed"}[status];
-  if (status === "checked_in") {
-    return openModal("Start service",
-      field("operationalNotes","Service notes","text","",true),
+  if (status === "scheduled" || status === "checked_in") {
+    return openModal(status === "scheduled" ? "Check in appointment" : "Start service",
+      safetyContext(appointment)+(status === "checked_in" ? field("operationalNotes","Service notes","text","",true) : ""),
       async (form) => {
-        await api(`/api/appointments/${id}/operations`,{method:"PATCH",body:JSON.stringify({operationalNotes:form.get("operationalNotes")||null})});
-        await api(`/api/appointments/${id}/transition`,{method:"POST",body:JSON.stringify({status:next})});
+        if (status === "checked_in") {
+          const updated=await api(`/api/appointments/${id}/operations`,{method:"PATCH",body:JSON.stringify({operationalNotes:form.get("operationalNotes")||null,version:appointment.version})});
+          appointment.version=updated.version;
+        }
+        await api(`/api/appointments/${id}/transition`,{method:"POST",body:JSON.stringify({status:next,version:appointment.version})});
       });
   }
   if (status === "in_service" && !confirm("Mark this grooming appointment complete?")) return;
-  try { await api(`/api/appointments/${id}/transition`,{method:"POST",body:JSON.stringify({status:next})}); toast(`Appointment ${next.replace("_"," ")}`); await refresh(); }
-  catch (error) { toast(error.message); }
+  return runOnce(`transition:${id}`,async()=>{
+    try { await api(`/api/appointments/${id}/transition`,{method:"POST",body:JSON.stringify({status:next,version:appointment.version})}); toast(`Appointment ${next.replace("_"," ")}`); await refresh(); }
+    catch (error) { toast(error.message); }
+  });
 }
 function checkout(id) {
   openModal("Complete checkout",
@@ -133,12 +184,26 @@ function checkout(id) {
       })});
       if (Number(invoice.balanceMinor)>0) await api(`/api/invoices/${invoice.id}/payments`,{method:"POST",body:JSON.stringify({amountMinor:Number(invoice.balanceMinor),method:values.method})});
       const receipt=await api(`/api/invoices/${invoice.id}/receipt`);
-      setTimeout(()=>showReceipt(receipt),50);
+      return ()=>showReceipt(receipt);
     });
 }
 function showReceipt(receipt) {
   const invoice=receipt.invoice;
-  openModal(`Receipt #${invoice.invoiceNumber}`,`<div class="wide receipt"><p><strong>${escape(invoice.businessName)}</strong></p><p>${escape(invoice.firstName)} ${escape(invoice.lastName)}</p>${receipt.items.map(item=>`<div><span>${escape(item.description)}</span><strong>${money(item.amountMinor)}</strong></div>`).join("")}<div><span>Tax</span><strong>${money(invoice.taxMinor)}</strong></div><div><span>Tip</span><strong>${money(invoice.tipMinor)}</strong></div><div class="receipt-total"><span>Total paid</span><strong>${money(invoice.totalMinor)}</strong></div></div>`,async()=>{});
+  const payments=receipt.payments.map(payment=>`<div><span>${escape(payment.method.replace("_"," "))} · ${escape(payment.status)}</span><strong>${money(payment.amountMinor)}</strong>${payment.status==="recorded"&&allowed("checkout.perform")?`<button type="button" class="text-button void-payment" data-payment-id="${payment.id}">Void record</button>`:""}</div>`).join("");
+  openModal(`Receipt #${invoice.invoiceNumber}`,`<div class="wide receipt" data-testid="receipt"><p><strong>${escape(invoice.businessName)}</strong></p><p>${escape(invoice.firstName)} ${escape(invoice.lastName)}</p>${receipt.items.map(item=>`<div><span>${escape(item.description)}</span><strong>${money(item.amountMinor)}</strong></div>`).join("")}<div><span>Subtotal</span><strong>${money(invoice.subtotalMinor)}</strong></div><div><span>Discount</span><strong>-${money(invoice.discountMinor)}</strong></div><div><span>Tax</span><strong>${money(invoice.taxMinor)}</strong></div><div><span>Tip</span><strong>${money(invoice.tipMinor)}</strong></div><div class="receipt-total"><span>Total</span><strong>${money(invoice.totalMinor)}</strong></div><div><span>Balance</span><strong>${money(invoice.balanceMinor)}</strong></div><h4>Payment records</h4>${payments||"<p>No payment recorded.</p>"}</div>`,async()=>{});
+  $$(".void-payment").forEach(button=>button.addEventListener("click",()=>voidPayment(button.dataset.paymentId,invoice.id)));
+}
+async function voidPayment(paymentId,invoiceId) {
+  const reason=prompt("Reason for voiding this manual payment record:");
+  if(!reason)return;
+  if(!confirm("Void this Pawsh payment record? This does not refund external funds."))return;
+  await runOnce(`void:${paymentId}`,async()=>{
+    try{
+      await api(`/api/payments/${paymentId}/void`,{method:"POST",body:JSON.stringify({reason})});
+      const receipt=await api(`/api/invoices/${invoiceId}/receipt`);
+      $("#modal").close();toast("Payment record voided; no external refund was issued");setTimeout(()=>showReceipt(receipt),50);
+    }catch(error){toast(error.message);}
+  });
 }
 function renderCustomers() {
   $("#customer-grid").innerHTML = state.customers.length ? state.customers.map((customer) => {
@@ -157,7 +222,7 @@ function renderCustomersEnhanced() {
   renderCustomers();
   $("#customer-grid").innerHTML = state.customers.length ? state.customers.map((customer) => {
     const pets = state.pets.filter((pet) => pet.customerId === customer.id);
-    return `<article class="customer-card"><p class="eyebrow">${pets.length} pet${pets.length === 1 ? "" : "s"}</p><h3>${escape(customer.firstName)} ${escape(customer.lastName)}</h3><p>${escape(customer.email || customer.phone || "No contact added")}</p><div class="pet-links">${pets.map((pet) => `<button type="button" class="text-button edit-pet" data-id="${pet.id}">${escape(pet.name)}${pet.safetyAlerts?" !":""}</button>`).join("") || "Add their first pet"}</div><div class="card-actions"><button type="button" class="text-button customer-history" data-id="${customer.id}">History</button><button type="button" class="text-button edit-customer" data-id="${customer.id}">Edit</button><button type="button" class="text-button archive-customer" data-id="${customer.id}">Archive</button></div></article>`;
+    return `<article class="customer-card" data-testid="customer-card"><p class="eyebrow">${pets.length} pet${pets.length === 1 ? "" : "s"}</p><h3>${escape(customer.firstName)} ${escape(customer.lastName)}</h3><p>${escape(customer.email || customer.phone || "No contact added")}</p><div class="pet-links">${pets.map((pet) => `<button type="button" class="text-button edit-pet" data-id="${pet.id}">${escape(pet.name)}${pet.safetyAlerts?" !":""}</button>`).join("") || "Add their first pet"}</div><div class="card-actions"><button type="button" class="text-button customer-history" data-id="${customer.id}">History</button>${allowed("customers.edit")?`<button type="button" class="text-button edit-customer" data-id="${customer.id}">Edit</button><button type="button" class="text-button archive-customer" data-id="${customer.id}">Archive</button>`:""}</div></article>`;
   }).join("") : `<p class="empty">Create your first customer to begin building salon history.</p>`;
   $$(".edit-customer").forEach((button)=>button.addEventListener("click",()=>editCustomer(button.dataset.id)));
   $$(".archive-customer").forEach((button)=>button.addEventListener("click",()=>archiveCustomer(button.dataset.id)));
@@ -239,8 +304,12 @@ async function showCustomerHistory(id) {
   try{
     const historyData=await api(`/api/customers/${id}/history`);
     const appointments=historyData.appointments.map(item=>`<div><span>${new Date(item.startAt).toLocaleDateString()} / ${escape(item.petName)}</span><strong>${escape(item.status.replace("_"," "))}</strong></div>`).join("")||"<p>No appointments yet.</p>";
-    const invoices=historyData.invoices.map(item=>`<div><span>Invoice ${escape(item.invoiceNumber)}</span><strong>${money(item.totalMinor)} / ${escape(item.status)}</strong></div>`).join("")||"<p>No invoices yet.</p>";
+    const invoices=historyData.invoices.map(item=>`<div><span>Invoice ${escape(item.invoiceNumber)}</span><span><strong>${money(item.totalMinor)} / ${escape(item.status)}</strong>${allowed("payments.view")?` <button type="button" class="text-button history-receipt" data-invoice-id="${item.id}">Receipt</button>`:""}</span></div>`).join("")||"<p>No invoices yet.</p>";
     openModal(`${historyData.customer.firstName} ${historyData.customer.lastName} history`,`<div class="wide history-list"><h4>Appointments</h4>${appointments}<h4>Transactions</h4>${invoices}</div>`,async()=>{});
+    $$(".history-receipt").forEach(button=>button.addEventListener("click",async()=>{
+      const receipt=await api(`/api/invoices/${button.dataset.invoiceId}/receipt`);
+      $("#modal").close();setTimeout(()=>showReceipt(receipt),50);
+    }));
   }catch(error){toast(error.message);}
 }
 async function archiveCustomer(id) {
@@ -249,21 +318,28 @@ async function archiveCustomer(id) {
 }
 function editPet(id) {
   const pet=state.pets.find(item=>item.id===id);
-  openModal("Edit pet safety and care",field("name","Pet name","text",`required value="${escape(pet.name)}"`)+field("breed","Breed","text",`value="${escape(pet.breed||"")}"`)+field("safetyAlerts","Safety alerts","text",`value="${escape(pet.safetyAlerts||"")}"`,true)+field("behaviorNotes","Behavior notes","text",`value="${escape(pet.behaviorNotes||"")}"`,true)+field("medicalNotes","Medical notes","text",`value="${escape(pet.medicalNotes||"")}"`,true),form=>api(`/api/pets/${id}`,{method:"PUT",body:JSON.stringify({...pet,...Object.fromEntries(form),dateOfBirth:pet.dateOfBirth?String(pet.dateOfBirth).slice(0,10):null,vaccinationExpiresOn:pet.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):null})}));
+  openModal("Edit pet safety and care",field("name","Pet name","text",`required value="${escape(pet.name)}"`)+field("breed","Breed","text",`value="${escape(pet.breed||"")}"`)+field("groomingPreferences","Grooming preferences","text",`value="${escape(pet.groomingPreferences||"")}"`,true)+field("safetyAlerts","Safety alerts","text",`value="${escape(pet.safetyAlerts||"")}"`,true)+field("behaviorNotes","Behavior notes","text",`value="${escape(pet.behaviorNotes||"")}"`,true)+field("medicalNotes","Medical notes","text",`value="${escape(pet.medicalNotes||"")}"`,true),form=>api(`/api/pets/${id}`,{method:"PUT",body:JSON.stringify({...pet,...Object.fromEntries(form),dateOfBirth:pet.dateOfBirth?String(pet.dateOfBirth).slice(0,10):null,vaccinationExpiresOn:pet.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):null})}));
 }
 
 function field(name, label, type = "text", extra = "", wide = false) {
-  return `<label class="${wide ? "wide" : ""}">${label}<input name="${name}" type="${type}" ${extra}></label>`;
+  return `<label class="${wide ? "wide" : ""}">${label}<input data-testid="field-${name}" name="${name}" type="${type}" ${extra}></label>`;
 }
 function select(name, label, options, wide = false) {
-  return `<label class="${wide ? "wide" : ""}">${label}<select name="${name}" required><option value="">Choose…</option>${options.map(([v,l]) => `<option value="${v}">${escape(l)}</option>`).join("")}</select></label>`;
+  return `<label class="${wide ? "wide" : ""}">${label}<select data-testid="field-${name}" name="${name}" required><option value="">Choose…</option>${options.map(([v,l]) => `<option value="${v}">${escape(l)}</option>`).join("")}</select></label>`;
 }
 function openModal(title, fields, submit) {
   $("#modal-title").textContent = title; $("#modal-fields").innerHTML = fields; $("#modal-error").textContent = "";
   $("#modal-form").onsubmit = async (event) => {
     event.preventDefault(); $("#modal-error").textContent = "";
-    try { await submit(new FormData(event.currentTarget)); $("#modal").close(); toast(`${title} saved`); await refresh(); }
+    const form=event.currentTarget;const button=form.querySelector('[type="submit"]');const original=button.textContent;
+    button.disabled=true;button.textContent="Saving…";form.setAttribute("aria-busy","true");
+    try {
+      const afterClose=await submit(new FormData(form));
+      await refresh(); $("#modal").close(); toast(`${title} saved`);
+      if(typeof afterClose==="function")afterClose();
+    }
     catch (error) { $("#modal-error").textContent = error.message; }
+    finally{button.disabled=false;button.textContent=original;form.removeAttribute("aria-busy");}
   };
   $("#modal").showModal();
 }
@@ -273,7 +349,7 @@ const actions = {
     field("firstName","First name","text","required")+field("lastName","Last name","text","required")+field("email","Email","email")+field("phone","Phone","tel")+field("notes","Notes","text","",true),
     (form) => api("/api/customers",{method:"POST",body:JSON.stringify(Object.fromEntries(form))})),
   "new-pet": () => openModal("New pet",
-    select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]),true)+field("name","Pet name","text","required")+field("breed","Breed")+field("species","Species","text",'value="dog"')+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true),
+    select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]),true)+field("name","Pet name","text","required")+field("breed","Breed")+field("species","Species","text",'value="dog"')+field("groomingPreferences","Grooming preferences","text","",true)+field("behaviorNotes","Behavior notes","text","",true)+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true),
     (form) => api("/api/pets",{method:"POST",body:JSON.stringify(Object.fromEntries(form))})),
   "new-service": () => openModal("New service",
     field("name","Service name","text","required")+field("baseDurationMinutes","Duration (minutes)","number",'required min="1"')+field("basePrice","Price ($)","number",'required min="0" step=".01"')+field("description","Description","text","",true),
@@ -295,8 +371,8 @@ const actions = {
     field("name","Salon name","text",`required value="${escape(state.me.business.name)}"`,true)+
     field("timezone","IANA timezone","text",`required value="${escape(state.me.business.timezone)}"`)+
     field("currency","Currency","text",`required maxlength="3" value="${escape(state.me.business.currency)}"`)+
-    field("taxRate","Tax rate (%)","number",`required min="0" max="100" step=".01" value="${Number(state.me.business.taxRateBasisPoints)/100}`)+
-    field("reminderHours","Reminder lead (hours)","number",`required min="0" value="${Number(state.me.business.reminderLeadMinutes)/60}`),
+    field("taxRate","Tax rate (%)","number",`required min="0" max="100" step=".01" value="${Number(state.me.business.taxRateBasisPoints)/100}"`)+
+    field("reminderHours","Reminder lead (hours)","number",`required min="0" value="${Number(state.me.business.reminderLeadMinutes)/60}"`),
     async(form)=>{
       const values=Object.fromEntries(form);
       await api("/api/business/settings",{method:"PUT",body:JSON.stringify({
@@ -309,13 +385,27 @@ const actions = {
   "business-hours": () => openModal("Business hours",
     `<fieldset class="wide hours-grid"><legend>Weekly schedule</legend>${["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"].map((day,index)=>`<div><label><input type="checkbox" name="day${index}" ${index>0&&index<6?"checked":""}> ${day}</label><input type="time" name="start${index}" value="09:00"><input type="time" name="end${index}" value="17:00"></div>`).join("")}</fieldset>`,
     form=>api("/api/business/working-hours",{method:"PUT",body:JSON.stringify({hours:[0,1,2,3,4,5,6].filter(index=>form.get(`day${index}`)).map(index=>({weekday:index,startTime:form.get(`start${index}`),endTime:form.get(`end${index}`)}))})})),
-  "new-appointment": () => openModal("New appointment",
-    select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]))+
-    select("petId","Pet",state.pets.map(p=>[p.id,p.name]))+
-    select("employeeId","Groomer",state.employees.filter(e=>e.active).map(e=>[e.id,e.displayName]))+
-    serviceCheckboxes()+
-    field("startAt","Start time","datetime-local","required",true)+field("notes","Appointment notes","text","",true),
-    (form) => { const o=Object.fromEntries(form); return api("/api/appointments",{method:"POST",body:JSON.stringify({locationId:state.me.business.locationId,customerId:o.customerId,petId:o.petId,employeeId:o.employeeId,serviceIds:form.getAll("serviceIds"),startAt:new Date(o.startAt).toISOString(),notes:o.notes||null})}); }),
+  "new-appointment": () => runOnce("open:new-appointment", async () => {
+    const [customers, pets, employees, services] = await Promise.all([
+      api("/api/customers"),
+      api("/api/pets"),
+      api("/api/employees"),
+      api("/api/services")
+    ]);
+    Object.assign(state, { customers, pets, employees, services });
+    openModal("New appointment",
+      select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]))+
+      select("petId","Pet",[])+
+      select("employeeId","Groomer",state.employees.filter(e=>e.active).map(e=>[e.id,e.displayName]))+
+      serviceCheckboxes()+
+      field("startAt","Start time","datetime-local","required",true)+field("notes","Appointment notes","text","",true),
+      (form) => { const o=Object.fromEntries(form); return api("/api/appointments",{method:"POST",body:JSON.stringify({locationId:state.me.business.locationId,customerId:o.customerId,petId:o.petId,employeeId:o.employeeId,serviceIds:form.getAll("serviceIds"),startAt:new Date(o.startAt).toISOString(),notes:o.notes||null})}); });
+    const customerSelect=$('[name="customerId"]');const petSelect=$('[name="petId"]');
+    customerSelect.addEventListener("change",()=>{
+      const pets=state.pets.filter(pet=>pet.customerId===customerSelect.value);
+      petSelect.innerHTML=`<option value="">Choose…</option>${pets.map(pet=>`<option value="${pet.id}">${escape(pet.name)}</option>`).join("")}`;
+    });
+  }),
   "blocked-time": () => openModal("Block team time",
     select("employeeId","Team member",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]))+
     field("startAt","Start","datetime-local","required")+field("endAt","End","datetime-local","required")+
@@ -348,14 +438,43 @@ $("#forgot-password").addEventListener("click",()=>{
     toast("If the account exists, a reset email is on its way");
   });
 });
-$("#logout").addEventListener("click", async () => { await api("/api/auth/logout",{method:"POST"}); location.reload(); });
+$("#logout").addEventListener("click", async () => {
+  try { await api("/api/auth/logout",{method:"POST"}); }
+  catch(error) {
+    // Logout is intentionally idempotent: an already-ended session is the
+    // requested outcome. Every other server or application failure still
+    // surfaces as an uncaught page error for operators and smoke tests.
+    if(error.message!=="Authentication required")throw error;
+  }
+  finally {
+    state.me=null;
+    $("#app-view").hidden=true;
+    $("#auth-view").hidden=false;
+  }
+});
 $$("[data-action]").forEach((button) => button.addEventListener("click", () => actions[button.dataset.action]?.()));
 $$("nav [data-view]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.view)));
 $$("[data-view-target]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.viewTarget)));
-function showView(view) { $$(".view").forEach(v=>v.hidden=v.id!==view); $$("nav button").forEach(b=>b.classList.toggle("active",b.dataset.view===view)); $("#page-title").textContent={dashboard:"Good morning",calendar:"Your calendar",customers:"Client care",setup:"Salon setup",reports:"Business reports"}[view]; }
+async function showView(view) {
+  const target=$(`#${view}`);if(!target||$(`[data-view="${view}"]`)?.hidden)return;
+  $$(".view").forEach(v=>v.hidden=v.id!==view); $$("nav button").forEach(b=>b.classList.toggle("active",b.dataset.view===view)); $("#page-title").textContent={dashboard:"Good morning",calendar:"Your calendar",customers:"Client care",setup:"Salon setup",reports:"Business reports"}[view];
+  try{
+    state.me=await api("/api/me");applyPermissions();
+    if($(`[data-view="${view}"]`)?.hidden){
+      $$(".view").forEach(v=>v.hidden=v.id!=="dashboard");
+      $("#page-title").textContent="Good morning";
+    }
+  }catch{return bootstrap();}
+}
 $$(".close").forEach((button)=>button.addEventListener("click",()=>$("#modal").close()));
-$("#customer-search").addEventListener("input", async (event)=>{state.customers=await api(`/api/customers?q=${encodeURIComponent(event.target.value)}`);renderCustomers();});
+$("#customer-search").addEventListener("input", async (event)=>{
+  const sequence=++customerSearchSequence;
+  const customers=await api(`/api/customers?q=${encodeURIComponent(event.target.value)}`);
+  if(sequence!==customerSearchSequence)return;
+  state.customers=customers;renderCustomersEnhanced();
+});
 $("#today").textContent = new Date().toLocaleDateString([], { weekday:"long", month:"short", day:"numeric" });
+document.addEventListener("visibilitychange",async()=>{if(document.visibilityState==="visible"&&state.me){try{state.me=await api("/api/me");applyPermissions();await refresh();}catch{await bootstrap();}}});
 if (inviteToken || resetToken) {
   state.login=true;
   $("#business-field").hidden=true; $("#business-field input").required=false;

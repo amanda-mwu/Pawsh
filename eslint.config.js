@@ -2,7 +2,7 @@ import eslint from "@eslint/js";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist/**", "coverage/**", "node_modules/**"] },
+  { ignores: ["dist/**", "coverage/**", "node_modules/**", ".playwright-browsers/**", "playwright-report/**", "test-results/**"] },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -20,6 +20,7 @@ export default tseslint.config(
         FormData: "readonly",
         URLSearchParams: "readonly",
         confirm: "readonly",
+        prompt: "readonly",
         history: "readonly",
         navigator: "readonly",
         location: "readonly",

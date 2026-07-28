@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.3
+
+### Added
+
+- Isolated Playwright browser smoke, guarded manual QA data, and the manual UX
+  validation package.
+
+### Changed
+
+- Operational GUI safety, permissions, customer-pet booking, mutation feedback,
+  stale-state protection, and manual payment correction were hardened.
+
+### Validation
+
+- Exact-commit CI/PostgreSQL and browser smoke evidence is pending.
+
 ## 0.1.2
 
 ### Fixed

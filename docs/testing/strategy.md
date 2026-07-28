@@ -8,8 +8,15 @@ Pawsh prioritizes tenant boundaries and business invariants over exhaustive triv
 - The database-backed canonical test executes signup through receipt, concurrent scheduling, invitation permissions, outbox idempotency, and cross-tenant denial.
 - Static client validation enforces recommended HTML and WCAG-oriented structural rules.
 - CI migrates a fresh PostgreSQL service before running the complete validation suite.
-- CI performs a real PostgreSQL dump into a new database, restores it, and reruns the database suite against the restored copy.
+- CI performs a real PostgreSQL dump into a new database, restores it, and
+  compares the restored public-table inventory and row counts with the source.
+  Mutation-oriented database tests run against the migrated test database before
+  the rehearsal, not against its already-populated restored copy.
 - The canonical runtime smoke flow creates a business, operational records, appointment, completed service, invoice, payment, and receipt while also testing denial cases.
+- Playwright Chromium smoke exercises 11 isolated browser journeys, including
+  direct authenticated security assertions, responsive viewports, accessibility
+  semantics, and generous performance-regression budgets. Tests use unique
+  tenants and mutable records per test and run with zero retries.
 
 Skipped database tests are not a pass. Validation records must state when the PostgreSQL runtime was unavailable.
 
@@ -21,8 +28,13 @@ Skipped database tests are not a pass. Validation records must state when the Po
   PostgreSQL 17 database, `npm run validate:runtime` applies migrations and runs
   the database/runtime suite.
 - CI parity: `npm run validate:ci` applies migrations, runs code validation, and
-  reruns the database suite. GitHub Actions executes this after `npm ci` and the
-  dependency audit, then rehearses dump/restore separately.
+  reruns the database suite.
+- GUI smoke: `npm run test:smoke` runs the tagged Chromium suite;
+  `npm run test:e2e` runs every configured Playwright project.
+- QA release validation: `npm run validate:qa` runs CI parity followed by GUI
+  smoke against the configured `PAWSH_E2E_BASE_URL`, or starts Pawsh locally.
+  GitHub Actions installs Chromium, runs this browser smoke, and preserves
+  failure traces/screenshots before rehearsing database dump/restore.
 - Release validation: the exact target commit must have a green required GitHub
   Actions run. Evidence from a different SHA does not classify the target.
 

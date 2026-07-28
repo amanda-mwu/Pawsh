@@ -742,7 +742,7 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
   }, async (request) => {
     const context = auth(request);
     const query = request.query as { q?: string; customerId?: string };
-    return db`
+    const rows = await db`
       select p.*, concat_ws(' ', c.first_name, c.last_name) as customer_name
       from pets p join customers c on c.id=p.customer_id
       where p.business_id=${context.businessId} and p.archived_at is null
@@ -750,6 +750,16 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
         and (${query.q ?? ""}='' or p.name ilike ${`%${query.q ?? ""}%`} or p.breed ilike ${`%${query.q ?? ""}%`})
       order by p.name limit 100
     `;
+    if (context.isOwner || context.permissions.includes("pets.safety.view")) return rows;
+    return rows.map((pet) => ({
+      ...pet,
+      safetyAlerts: null,
+      medicalNotes: null,
+      behaviorNotes: null,
+      emergencyContact: null,
+      veterinarian: null,
+      vaccinationNotes: null
+    }));
   });
 
   app.post("/api/pets", {
@@ -854,8 +864,9 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
     const query = request.query as { from?: string; to?: string };
     const from = query.from ?? new Date(Date.now() - 86_400_000).toISOString();
     const to = query.to ?? new Date(Date.now() + 7 * 86_400_000).toISOString();
-    return db`
+    const rows = await db`
       select a.*, c.first_name, c.last_name, p.name as pet_name, p.safety_alerts,
+        p.behavior_notes, p.medical_notes, p.grooming_preferences, p.coat_notes,
         e.display_name as employee_name,
         coalesce(json_agg(json_build_object(
           'id', aps.id, 'name', aps.service_name_snapshot, 'durationMinutes',
@@ -870,6 +881,15 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
       where a.business_id=${context.businessId} and a.start_at >= ${from} and a.start_at < ${to}
       group by a.id,c.id,p.id,e.id order by a.start_at
     `;
+    if (context.isOwner || context.permissions.includes("pets.safety.view")) return rows;
+    return rows.map((appointment) => ({
+      ...appointment,
+      safetyAlerts: null,
+      behaviorNotes: null,
+      medicalNotes: null,
+      groomingPreferences: null,
+      coatNotes: null
+    }));
   });
 
   app.post("/api/appointments", {
@@ -987,10 +1007,13 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
     }
     const result = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [current] = await tx<{ status: AppointmentStatus }[]>`
-        select status from appointments where business_id=${context.businessId} and id=${id} for update
+      const [current] = await tx<{ status: AppointmentStatus; version: number }[]>`
+        select status,version from appointments where business_id=${context.businessId} and id=${id} for update
       `;
       if (!current) return null;
+      if (input.version && current.version !== input.version) {
+        return { stale: true } as const;
+      }
       if (!canTransition(current.status, input.status)) {
         throw new Error(`Invalid appointment transition: ${current.status} -> ${input.status}`);
       }
@@ -1011,6 +1034,7 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
       return updated;
     });
     if (!result) return reply.code(404).send({ error: "Appointment not found" });
+    if ("stale" in result) return reply.code(409).send({ error: "Appointment changed; refresh before continuing" });
     return result;
   });
 
@@ -1107,12 +1131,19 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
     const context = auth(request);
     const { id } = idParams.parse(request.params);
     const input = body(operationalUpdateSchema, request.body);
-    const [updated] = await db`
-      update appointments set operational_notes=${input.operationalNotes ?? null},
-        version=version+1, updated_by=${context.userId}, updated_at=now()
-      where business_id=${context.businessId} and id=${id}
-        and status in ('checked_in','in_service') returning *
-    `;
+    const [updated] = input.version
+      ? await db`
+          update appointments set operational_notes=${input.operationalNotes ?? null},
+            version=version+1, updated_by=${context.userId}, updated_at=now()
+          where business_id=${context.businessId} and id=${id} and version=${input.version}
+            and status in ('checked_in','in_service') returning *
+        `
+      : await db`
+          update appointments set operational_notes=${input.operationalNotes ?? null},
+            version=version+1, updated_by=${context.userId}, updated_at=now()
+          where business_id=${context.businessId} and id=${id}
+            and status in ('checked_in','in_service') returning *
+        `;
     if (!updated) return reply.code(404).send({ error: "Active service appointment not found" });
     return updated;
   });
@@ -1125,11 +1156,14 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
     const input = body(appointmentServicesSchema, request.body);
     const result = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [appointment] = await tx<{ startAt: Date; status: string; employeeId: string }[]>`
-        select start_at,status,employee_id from appointments
+      const [appointment] = await tx<{ startAt: Date; status: string; employeeId: string; version: number }[]>`
+        select start_at,status,employee_id,version from appointments
         where business_id=${context.businessId} and id=${id} for update
       `;
       if (!appointment) return null;
+      if (input.version && appointment.version !== input.version) {
+        return { stale: true } as const;
+      }
       if (!["scheduled","checked_in","in_service"].includes(appointment.status)) {
         throw new Error("Services cannot be changed in the current appointment state");
       }
@@ -1169,6 +1203,7 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
       return { id, endAt };
     });
     if (!result) return reply.code(404).send({ error: "Appointment not found" });
+    if ("stale" in result) return reply.code(409).send({ error: "Appointment changed; refresh before continuing" });
     return result;
   });
 

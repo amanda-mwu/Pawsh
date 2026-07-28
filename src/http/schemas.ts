@@ -107,7 +107,8 @@ export const appointmentSchema = z.object({
 
 export const transitionSchema = z.object({
   status: z.enum(["checked_in", "in_service", "completed", "cancelled", "no_show"]),
-  reason: z.string().trim().max(500).nullish()
+  reason: z.string().trim().max(500).nullish(),
+  version: z.number().int().positive().optional()
 });
 
 export const checkoutSchema = z.object({
@@ -150,7 +151,8 @@ export const blockedTimeSchema = z.object({
 });
 
 export const operationalUpdateSchema = z.object({
-  operationalNotes: z.string().max(10_000).nullish()
+  operationalNotes: z.string().max(10_000).nullish(),
+  version: z.number().int().positive().optional()
 });
 
 export const appointmentMoveSchema = z.object({
@@ -166,7 +168,8 @@ export const appointmentMoveSchema = z.object({
 });
 
 export const appointmentServicesSchema = z.object({
-  serviceIds: z.array(z.string().uuid()).min(1)
+  serviceIds: z.array(z.string().uuid()).min(1),
+  version: z.number().int().positive().optional()
 });
 
 export const voidPaymentSchema = z.object({

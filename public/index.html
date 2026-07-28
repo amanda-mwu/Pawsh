@@ -24,11 +24,11 @@
         <h2 id="auth-title">Create your salon</h2>
         <p id="auth-subtitle">Set up your workspace in under a minute.</p>
       </div>
-      <form id="auth-form">
-        <label>Email<input name="email" type="email" autocomplete="email" required></label>
-        <label>Password<input name="password" type="password" minlength="12" autocomplete="new-password" required></label>
+      <form id="auth-form" data-testid="auth-form">
+        <label>Email<input data-testid="login-email" name="email" type="email" autocomplete="email" required></label>
+        <label>Password<input data-testid="login-password" name="password" type="password" minlength="12" autocomplete="new-password" required></label>
         <label id="business-field">Salon name<input name="businessName" type="text" autocomplete="organization" required></label>
-        <button class="primary" type="submit">Create workspace</button>
+        <button data-testid="auth-submit" class="primary" type="submit">Create workspace</button>
         <p id="auth-error" class="error" role="alert"></p>
       </form>
       <button id="toggle-auth" type="button" class="text-button">Already have an account? Sign in</button>
@@ -40,24 +40,24 @@
     <aside>
       <a class="brand" href="/">pawsh<span>.</span></a>
       <nav aria-label="Main navigation">
-        <button type="button" data-view="dashboard" class="active">Overview</button>
-        <button type="button" data-view="calendar">Calendar</button>
-        <button type="button" data-view="customers">Customers &amp; pets</button>
-        <button type="button" data-view="setup">Salon setup</button>
-        <button type="button" data-view="reports">Reports</button>
+        <button type="button" data-testid="nav-dashboard" data-view="dashboard" class="active">Overview</button>
+        <button type="button" data-testid="nav-calendar" data-view="calendar" data-permission="calendar.view">Calendar</button>
+        <button type="button" data-testid="nav-customers" data-view="customers" data-any-permission="customers.view,pets.view">Customers &amp; pets</button>
+        <button type="button" data-testid="nav-setup" data-view="setup" data-any-permission="services.manage,team.manage,settings.manage">Salon setup</button>
+        <button type="button" data-testid="nav-reports" data-view="reports" data-permission="reports.view">Reports</button>
       </nav>
       <div class="aside-foot">
         <div class="salon-chip"><span class="avatar">P</span><span><strong id="salon-name">Pawsh</strong><small>Owner workspace</small></span></div>
-        <button id="logout" type="button" class="text-button">Sign out</button>
+        <button id="logout" data-testid="logout" type="button" class="text-button">Sign out</button>
       </div>
     </aside>
     <main>
       <header>
         <div><p class="eyebrow" id="page-kicker">Daily operations</p><h2 id="page-title">Good morning</h2></div>
-        <div class="header-actions"><span id="today"></span><button type="button" class="primary compact" data-action="new-appointment">+ New appointment</button></div>
+        <div class="header-actions"><span id="today"></span><button data-testid="new-appointment" data-permission="appointments.create" type="button" class="primary compact" data-action="new-appointment">+ New appointment</button></div>
       </header>
 
-      <section id="dashboard" class="view">
+      <section id="dashboard" data-testid="dashboard" class="view">
         <div id="metrics" class="metric-grid"></div>
         <div class="content-grid">
           <article class="panel span-2">
@@ -72,25 +72,25 @@
         </div>
       </section>
 
-      <section id="calendar" class="view" hidden>
+      <section id="calendar" data-testid="calendar" class="view" hidden>
         <div class="panel">
-          <div class="panel-head"><div><p class="eyebrow">Seven-day view</p><h3>Upcoming appointments</h3></div><div><button type="button" class="secondary compact" data-action="blocked-time">Block time</button><button type="button" class="primary compact" data-action="new-appointment">+ Add booking</button></div></div>
-          <div id="calendar-list" class="appointment-list empty">Your week is clear.</div>
+          <div class="panel-head"><div><p class="eyebrow">Seven-day view</p><h3>Upcoming appointments</h3></div><div><button data-permission="appointments.edit" type="button" class="secondary compact" data-action="blocked-time">Block time</button><button data-testid="calendar-add-appointment" data-permission="appointments.create" type="button" class="primary compact" data-action="new-appointment">+ Add booking</button></div></div>
+          <div id="calendar-list" data-testid="calendar-list" class="appointment-list empty">Your week is clear.</div>
         </div>
       </section>
 
-      <section id="customers" class="view" hidden>
-        <div class="split-head"><div><p class="eyebrow">Relationships</p><h3>Customers &amp; pets</h3></div><div><button type="button" class="secondary compact" data-action="new-pet">+ Pet</button><button type="button" class="primary compact" data-action="new-customer">+ Customer</button></div></div>
-        <label class="search"><span>Search</span><input id="customer-search" type="search" placeholder="Name, phone, or email"></label>
+      <section id="customers" data-testid="customers-view" class="view" hidden>
+        <div class="split-head"><div><p class="eyebrow">Relationships</p><h3>Customers &amp; pets</h3></div><div><button data-permission="pets.edit" type="button" class="secondary compact" data-action="new-pet">+ Pet</button><button data-testid="new-customer" data-permission="customers.edit" type="button" class="primary compact" data-action="new-customer">+ Customer</button></div></div>
+        <label class="search"><span>Search</span><input data-testid="customer-search" id="customer-search" type="search" placeholder="Name, phone, or email"></label>
         <div id="customer-grid" class="card-grid"></div>
       </section>
 
-      <section id="setup" class="view" hidden>
-        <div class="split-head"><div><p class="eyebrow">Foundation</p><h3>Salon setup</h3></div><div><button type="button" class="secondary compact" data-action="business-hours">Business hours</button><button type="button" class="secondary compact" data-action="business-settings">Business settings</button></div></div>
+      <section id="setup" data-testid="setup-view" class="view" hidden>
+        <div class="split-head"><div><p class="eyebrow">Foundation</p><h3>Salon setup</h3></div><div><button data-permission="settings.manage" type="button" class="secondary compact" data-action="business-hours">Business hours</button><button data-testid="business-settings" data-permission="settings.manage" type="button" class="secondary compact" data-action="business-settings">Business settings</button></div></div>
         <div class="content-grid">
-          <article class="panel"><div class="panel-head"><h3>Team</h3><button type="button" class="text-button" data-action="new-employee">+ Add</button></div><div id="employee-list" class="simple-list"></div></article>
-          <article class="panel"><div class="panel-head"><h3>Services</h3><button type="button" class="text-button" data-action="new-service">+ Add</button></div><div id="service-list" class="simple-list"></div></article>
-          <article class="panel"><div class="panel-head"><h3>Workspace access</h3><button type="button" class="text-button" data-action="invite-member">+ Invite</button></div><div id="member-list" class="simple-list"></div></article>
+          <article class="panel" data-permission="team.manage"><div class="panel-head"><h3>Team</h3><button type="button" class="text-button" data-action="new-employee">+ Add</button></div><div id="employee-list" class="simple-list"></div></article>
+          <article class="panel" data-permission="services.manage"><div class="panel-head"><h3>Services</h3><button type="button" class="text-button" data-action="new-service">+ Add</button></div><div id="service-list" class="simple-list"></div></article>
+          <article class="panel" data-permission="team.manage"><div class="panel-head"><h3>Workspace access</h3><button type="button" class="text-button" data-action="invite-member">+ Invite</button></div><div id="member-list" class="simple-list"></div></article>
         </div>
       </section>
 
@@ -105,12 +105,12 @@
     </main>
   </div>
 
-  <dialog id="modal">
+  <dialog id="modal" data-testid="modal">
     <form id="modal-form">
       <div class="modal-head"><div><p class="eyebrow">Pawsh workflow</p><h3 id="modal-title">Dialog</h3></div><button type="button" class="close" aria-label="Close">×</button></div>
       <div id="modal-fields" class="form-grid"></div>
       <p id="modal-error" class="error" role="alert"></p>
-      <div class="modal-actions"><button type="button" class="secondary close">Cancel</button><button class="primary" type="submit">Save</button></div>
+      <div class="modal-actions"><button type="button" class="secondary close">Cancel</button><button data-testid="modal-submit" class="primary" type="submit">Save</button></div>
     </form>
   </dialog>
   <div id="toast" role="status"></div>

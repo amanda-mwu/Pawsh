@@ -13,6 +13,7 @@ Restore procedure:
 7. Switch production only after authorization and retain the prior instance for investigation.
 
 The CI workflow performs a real PostgreSQL custom-format dump, restores it into a
-new database, and reruns the database suite against the restored copy. Managed
-production backup retention and point-in-time recovery still require validation
+new database, and verifies that its public-table inventory and row counts match
+the source without mutating the restored copy. Managed production backup
+retention and point-in-time recovery still require validation
 in the selected hosting environment.

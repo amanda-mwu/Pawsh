@@ -1,4 +1,7 @@
 node_modules/
+.playwright-browsers/
+playwright-report/
+test-results/
 dist/
 coverage/
 .env

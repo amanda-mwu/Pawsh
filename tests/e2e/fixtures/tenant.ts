@@ -203,8 +203,8 @@ async function attachText(testInfo: TestInfo, name: string, lines: string[]): Pr
 export async function login(page: Page,email:string,passwordValue=password) {
   await page.goto("/");
   await expect(
-    page.getByTestId("dashboard").or(page.getByTestId("auth-form"))
-  ).toBeVisible();
+    page.locator('[data-testid="dashboard"]:visible, [data-testid="auth-form"]:visible')
+  ).toHaveCount(1);
   if(await page.getByTestId("dashboard").isVisible()) {
     await page.getByTestId("logout").click();
     await expect(page.getByTestId("auth-form")).toBeVisible();

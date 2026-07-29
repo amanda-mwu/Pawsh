@@ -22,6 +22,8 @@ Batch A adds four deliberately small `@cross-browser` journeys for desktop
 Chromium, Firefox, and WebKit: browser-cookie session lifecycle, booking
 persistence, customer/pet scoping, and prepared checkout receipt presentation.
 Chromium remains the deep browser and continues to run all 11 `@smoke` journeys.
+The application stylesheet explicitly preserves the HTML `[hidden]` invariant so
+auth and authenticated surfaces cannot overlap while session state settles.
 
 ## Commands and environments
 

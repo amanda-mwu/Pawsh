@@ -14,7 +14,9 @@
 
 ### Validation
 
-- Exact-commit CI/PostgreSQL and browser smoke evidence is pending.
+- Thirty-two backend tests, 50 consecutive auth lifecycle executions, 11
+  Chromium GUI/security smoke tests, PostgreSQL runtime validation, production
+  build, dependency audit, and dump/restore verification pass.
 
 ## 0.1.2
 

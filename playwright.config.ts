@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 process.env.PLAYWRIGHT_BROWSERS_PATH ||= resolve(".playwright-browsers");
 const baseURL = process.env.PAWSH_E2E_BASE_URL ?? "http://127.0.0.1:3000";
 const crossBrowserTag = /@cross-browser/;
+const mobileTag = /@mobile-core|@responsive/;
+const tabletTag = /@tablet-core|@responsive/;
 
 export default defineConfig({
   testDir:"tests/e2e",
@@ -42,6 +44,21 @@ export default defineConfig({
       name:"webkit-desktop",
       grep:crossBrowserTag,
       use:{...devices["Desktop Safari"]}
+    },
+    {
+      name:"iphone-webkit",
+      grep:mobileTag,
+      use:{...devices["iPhone 15"]}
+    },
+    {
+      name:"android-chromium",
+      grep:mobileTag,
+      use:{...devices["Pixel 7"]}
+    },
+    {
+      name:"ipad-webkit",
+      grep:tabletTag,
+      use:{...devices["iPad (gen 11)"]}
     }
   ]
 });

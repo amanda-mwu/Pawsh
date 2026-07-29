@@ -20,6 +20,7 @@
     "test:e2e": "playwright test",
     "test:smoke": "playwright test --project=chromium-desktop --grep @smoke",
     "test:cross-browser": "playwright test --grep @cross-browser",
+    "test:responsive": "playwright test --project=iphone-webkit --project=android-chromium --project=ipad-webkit",
     "test:watch": "vitest",
     "seed:qa": "node --env-file-if-exists=.env --import tsx scripts/seed-qa.ts",
     "start:e2e": "node --env-file-if-exists=.env --import tsx src/server.ts",

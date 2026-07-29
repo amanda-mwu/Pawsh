@@ -25,11 +25,20 @@ Chromium remains the deep browser and continues to run all 11 `@smoke` journeys.
 The application stylesheet explicitly preserves the HTML `[hidden]` invariant so
 auth and authenticated surfaces cannot overlap while session state settles.
 
+Batch B adds four shared `@responsive` journeys on the `iphone-webkit`,
+`android-chromium`, and `ipad-webkit` Playwright device profiles. They validate
+auth/navigation/logout, customer-pet scoping, concrete booking persistence, and
+objective layout/control reachability. This is browser device-profile emulation,
+not physical-device evidence.
+
 ## Commands and environments
 
 - `npm run test:smoke`: tagged `chromium-desktop` smoke.
 - `npm run test:cross-browser`: the compatibility subset on all three desktop
   projects.
+- `npm run test:responsive`: shared responsive coverage across configured
+  desktop and device-profile projects; use an explicit responsive project for a
+  single profile.
 - `npm run test:e2e`: all configured browser projects.
 - `npm run validate:qa`: backend/CI validation followed by browser smoke.
 
@@ -40,10 +49,10 @@ supplied. Credentials are created by isolated fixtures; the persistent manual QA
 tenant is never used.
 
 CI runs static validation, backend/runtime validation, Chromium smoke, each
-browser compatibility subset, and backup/restore as separate jobs. Every mutable
-browser job receives its own PostgreSQL 17 service and runtime. Browser install,
-startup, test, and total job timings are recorded by GitHub Actions as the Batch A
-latency baseline; no hard timing gate is imposed.
+browser compatibility subset, three responsive device profiles, and
+backup/restore as separate jobs. Every mutable browser job receives its own
+PostgreSQL 17 service and runtime. Browser install, startup, test, and total job
+timings are recorded by GitHub Actions; no hard timing gate is imposed.
 
 Automated viewport emulation is responsive-web evidence only. It is not physical
 iOS or Android validation.

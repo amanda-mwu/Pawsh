@@ -115,6 +115,63 @@ jobs:
             test-results/
           if-no-files-found: ignore
 
+  responsive:
+    name: Responsive / ${{ matrix.project }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - project: iphone-webkit
+            browser: webkit
+          - project: android-chromium
+            browser: chromium
+          - project: ipad-webkit
+            browser: webkit
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: pawsh
+          POSTGRES_USER: pawsh
+          POSTGRES_PASSWORD: pawsh-ci
+        ports:
+          - 54322:5432
+        options: >-
+          --health-cmd "pg_isready -U pawsh -d pawsh"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh
+      PAWSH_E2E_MODE: disposable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - name: Record Playwright version
+        run: npx playwright --version
+      - name: Migrate isolated responsive database
+        run: npm run db:migrate
+      - name: Install Playwright ${{ matrix.browser }}
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+      - name: Verify ${{ matrix.project }} mapping
+        run: npx playwright test --project=${{ matrix.project }} --list
+      - name: Run ${{ matrix.project }}
+        run: npx playwright test --project=${{ matrix.project }}
+      - name: Upload responsive failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failures-${{ matrix.project }}
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+
   backup-restore:
     name: Backup and restore
     runs-on: ubuntu-latest

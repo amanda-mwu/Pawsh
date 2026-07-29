@@ -201,14 +201,9 @@ async function attachText(testInfo: TestInfo, name: string, lines: string[]): Pr
 }
 
 export async function login(page: Page,email:string,passwordValue=password) {
+  await page.context().clearCookies({name:"pawsh_session"});
   await page.goto("/");
-  await expect(
-    page.locator('[data-testid="dashboard"]:visible, [data-testid="auth-form"]:visible')
-  ).toHaveCount(1);
-  if(await page.getByTestId("dashboard").isVisible()) {
-    await page.getByTestId("logout").click();
-    await expect(page.getByTestId("auth-form")).toBeVisible();
-  }
+  await expect(page.getByTestId("auth-form")).toBeVisible();
   await page.getByRole("button",{name:/already have an account/i}).click();
   await page.getByTestId("login-email").fill(email);
   await page.getByTestId("login-password").fill(passwordValue);

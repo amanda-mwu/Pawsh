@@ -48,16 +48,19 @@ export default defineConfig({
     {
       name:"iphone-webkit",
       grep:mobileTag,
+      workers:1,
       use:{...devices["iPhone 15"]}
     },
     {
       name:"android-chromium",
       grep:mobileTag,
+      workers:1,
       use:{...devices["Pixel 7"]}
     },
     {
       name:"ipad-webkit",
       grep:tabletTag,
+      workers:1,
       use:{...devices["iPad (gen 11)"]}
     }
   ]

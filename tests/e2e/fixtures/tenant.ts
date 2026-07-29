@@ -176,7 +176,6 @@ export const test = base.extend<Fixtures>({
     page.on("requestfailed",(request)=>{
       const evidence=`FAILED ${request.method()} ${request.url()} ${request.failure()?.errorText??"unknown error"}`;
       requestEvidence.push(evidence);
-      failures.push(evidence);
     });
     page.on("response",(response)=>{
       if(response.status()>=400)requestEvidence.push(`${response.status()} ${response.request().method()} ${response.url()}`);
@@ -203,9 +202,20 @@ async function attachText(testInfo: TestInfo, name: string, lines: string[]): Pr
 
 export async function login(page: Page,email:string,passwordValue=password) {
   await page.goto("/");
+  await expect(
+    page.getByTestId("dashboard").or(page.getByTestId("auth-form"))
+  ).toBeVisible();
+  if(await page.getByTestId("dashboard").isVisible()) {
+    await page.getByTestId("logout").click();
+    await expect(page.getByTestId("auth-form")).toBeVisible();
+  }
   await page.getByRole("button",{name:/already have an account/i}).click();
   await page.getByTestId("login-email").fill(email);
   await page.getByTestId("login-password").fill(passwordValue);
+  const loginResponse=page.waitForResponse((response)=>
+    response.url().endsWith("/api/auth/login") && response.request().method()==="POST"
+  );
   await page.getByTestId("auth-submit").click();
+  expect((await loginResponse).status()).toBe(200);
   await expect(page.getByTestId("dashboard")).toBeVisible();
 }

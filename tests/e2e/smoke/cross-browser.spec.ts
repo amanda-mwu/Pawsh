@@ -56,7 +56,7 @@ test("@cross-browser customer and pet creation remains customer-scoped",async({p
   await page.getByTestId("modal-submit").click();
   await expect(page.getByTestId("customer-card").filter({hasText:customerName})).toBeVisible();
 
-  await page.getByTestId("new-pet").click();
+  await page.getByRole("button",{name:/\+ Pet/}).click();
   const customerOption=page.getByTestId("field-customerId").locator("option",{hasText:customerName});
   const customerId=await customerOption.getAttribute("value");
   expect(customerId).toBeTruthy();

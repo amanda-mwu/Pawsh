@@ -5,6 +5,7 @@ import {
   type APIRequestContext,
   type APIResponse,
   type Page,
+  type TestInfo,
 } from "@playwright/test";
 import { nextMonday, zonedIso } from "../helpers/date.js";
 
@@ -40,7 +41,16 @@ async function json<T>(response: APIResponse): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function requireDisposableMode(): void {
+  if (process.env.PAWSH_E2E_MODE !== "disposable") {
+    throw new Error(
+      "Mutable Playwright fixtures require PAWSH_E2E_MODE=disposable; refusing destructive setup without an explicit execution mode"
+    );
+  }
+}
+
 export async function createTenant(api: APIRequestContext, label: string): Promise<TenantFixture> {
+  requireDisposableMode();
   const runId = `pw-${Date.now()}-${label.replace(/\W+/g,"-").slice(0,18)}-${crypto.randomUUID().slice(0,6)}`;
   const ownerEmail = `owner+${runId}@pawsh-test.example`;
   const signup = await json<{ businessId:string;locationId:string;membershipId:string }>(await api.post("/api/auth/signup",{
@@ -125,6 +135,19 @@ export async function completeAppointment(api: APIRequestContext, tenant: Tenant
   return {...appointment,version};
 }
 
+export async function prepareReceipt(api: APIRequestContext, tenant: TenantFixture) {
+  const appointment = await completeAppointment(api, tenant);
+  const invoice = await json<{id:string;totalMinor:number;balanceMinor:number}>(
+    await api.post(`/api/appointments/${appointment.id}/checkout`, {
+      data:{discountMinor:500,discountType:"manual",tipMinor:1500}
+    })
+  );
+  await json(await api.post(`/api/invoices/${invoice.id}/payments`, {
+    data:{amountMinor:invoice.balanceMinor,method:"cash"}
+  }));
+  return {appointment,invoice};
+}
+
 export async function createMember(
   ownerApi: APIRequestContext,
   email: string,
@@ -143,14 +166,26 @@ export async function createMember(
 
 type Fixtures = { tenant: TenantFixture };
 export const test = base.extend<Fixtures>({
-  page: async ({page},use) => {
+  page: async ({page},use,testInfo) => {
     const failures:string[]=[];
+    const requestEvidence:string[]=[];
     page.on("pageerror",(error)=>failures.push(error.message));
     page.on("console",(message)=>{
       if(message.type()==="error" && !message.text().startsWith("Failed to load resource:")) failures.push(message.text());
     });
-    page.on("response",(response)=>{if(response.status()>=500)failures.push(`${response.status()} ${response.url()}`);});
+    page.on("requestfailed",(request)=>{
+      const evidence=`FAILED ${request.method()} ${request.url()} ${request.failure()?.errorText??"unknown error"}`;
+      requestEvidence.push(evidence);
+      failures.push(evidence);
+    });
+    page.on("response",(response)=>{
+      if(response.status()>=400)requestEvidence.push(`${response.status()} ${response.request().method()} ${response.url()}`);
+      if(response.status()>=500)failures.push(`${response.status()} ${response.url()}`);
+    });
     await use(page);
+    if(testInfo.status!==testInfo.expectedStatus && requestEvidence.length) {
+      await attachText(testInfo,"browser-request-evidence",requestEvidence);
+    }
     expect(failures,failures.join("\n")).toEqual([]);
   },
   tenant: async ({request},use,testInfo) => {
@@ -158,6 +193,13 @@ export const test = base.extend<Fixtures>({
   }
 });
 export { expect, ownerPermissions };
+
+async function attachText(testInfo: TestInfo, name: string, lines: string[]): Promise<void> {
+  await testInfo.attach(name,{
+    body:Buffer.from(lines.join("\n"),"utf8"),
+    contentType:"text/plain"
+  });
+}
 
 export async function login(page: Page,email:string,passwordValue=password) {
   await page.goto("/");

@@ -4,8 +4,32 @@ on:
   push:
     branches: [main]
 
+env:
+  NODE_ENV: test
+  TZ: America/Los_Angeles
+  SESSION_SECRET: ci-session-secret-at-least-thirty-two-characters
+  APP_ORIGIN: http://127.0.0.1:3000
+  PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+
 jobs:
-  validate:
+  static-validation:
+    name: Static validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  backend-runtime:
+    name: Backend and PostgreSQL runtime
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -23,9 +47,6 @@ jobs:
           --health-retries 20
     env:
       DATABASE_URL: postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh
-      SESSION_SECRET: ci-session-secret-at-least-thirty-two-characters
-      APP_ORIGIN: http://127.0.0.1:3000
-      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -33,27 +54,94 @@ jobs:
           node-version-file: .node-version
           cache: npm
       - run: npm ci
-      - run: npm audit --omit=dev --audit-level=high
-      - run: npm run validate:ci
-      - name: Install Chromium for GUI smoke
-        run: npx playwright install --with-deps chromium
-      - name: Auth lifecycle stability (50 consecutive executions)
-        run: npx playwright test tests/e2e/smoke/auth-business.spec.ts --project=chromium --grep "auth session lifecycle" --repeat-each=50
+      - run: npm run validate:runtime
+
+  browser:
+    name: Browser / ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: chromium-smoke
+            browser: chromium
+            command: npm run test:smoke
+          - name: chromium-cross-browser
+            browser: chromium
+            command: npx playwright test --project=chromium-desktop --grep @cross-browser
+          - name: firefox-cross-browser
+            browser: firefox
+            command: npx playwright test --project=firefox-desktop --grep @cross-browser
+          - name: webkit-cross-browser
+            browser: webkit
+            command: npx playwright test --project=webkit-desktop --grep @cross-browser
+    services:
+      postgres:
+        image: postgres:17-alpine
         env:
-          NODE_ENV: test
-      - name: Browser GUI and security smoke
-        run: npm run test:smoke
-        env:
-          NODE_ENV: test
+          POSTGRES_DB: pawsh
+          POSTGRES_USER: pawsh
+          POSTGRES_PASSWORD: pawsh-ci
+        ports:
+          - 54322:5432
+        options: >-
+          --health-cmd "pg_isready -U pawsh -d pawsh"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh
+      PAWSH_E2E_MODE: disposable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - name: Migrate isolated browser database
+        run: npm run db:migrate
+      - name: Install Playwright ${{ matrix.browser }}
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+      - name: Run ${{ matrix.name }}
+        run: ${{ matrix.command }}
       - name: Upload browser failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-failures
+          name: playwright-failures-${{ matrix.name }}
           path: |
             playwright-report/
             test-results/
           if-no-files-found: ignore
+
+  backup-restore:
+    name: Backup and restore
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: pawsh
+          POSTGRES_USER: pawsh
+          POSTGRES_PASSWORD: pawsh-ci
+        ports:
+          - 54322:5432
+        options: >-
+          --health-cmd "pg_isready -U pawsh -d pawsh"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate
       - name: Backup and restore rehearsal
         shell: bash
         run: |

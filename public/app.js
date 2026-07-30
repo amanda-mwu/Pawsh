@@ -396,7 +396,7 @@ function renderConflictOverride(error){
     `${new Date(item.startsAt).toLocaleString()}–${new Date(item.endsAt).toLocaleTimeString()}`
   ).join(", ");
   const message=document.createElement("span");
-  message.textContent=`${error.proposedEmployee} is already booked. ${error.operationLabel} at ${proposed} will overlap ${conflictTimes}.`;
+  message.textContent=`${error.proposedEmployee} already has an overlapping appointment. ${error.operationLabel} at ${proposed} will overlap ${conflictTimes}.`;
   const button=document.createElement("button");
   button.type="button";
   button.className="secondary";

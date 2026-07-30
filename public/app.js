@@ -19,7 +19,10 @@ async function api(path, options = {}) {
   if (!response.ok) {
     if (response.status === 401) settleUnauthenticated();
     if (response.status === 403) await reconcilePermissions();
-    throw new Error(result.error || "Something went wrong");
+    const error = new Error(result.error || "Something went wrong");
+    error.status = response.status;
+    error.data = result;
+    throw error;
   }
   return result;
 }
@@ -130,7 +133,8 @@ function appointmentHtml(item) {
   const action = actionDefinition && allowed(actionDefinition[1])
     ? `<button data-testid="appointment-${item.status}" class="text-button appointment-action" data-id="${item.id}" data-status="${item.status}">${actionDefinition[0]} →</button>`
     : "";
-  return `<article class="appointment" data-testid="appointment" data-appointment-id="${item.id}"><time>${time}</time><div><span class="pet">${escape(item.petName)}</span><small>${escape(customer)} · ${escape(item.employeeName)}</small>${safetyContext(item)}</div><div class="appointment-actions"><span class="badge ${item.status}">${item.status.replace("_"," ")}</span>${action}</div></article>`;
+  const conflictOverride=item.conflictOverridden?`<small class="conflict-override" data-testid="conflict-override">Intentional overlap</small>`:"";
+  return `<article class="appointment" data-testid="appointment" data-appointment-id="${item.id}"><time>${time}</time><div><span class="pet">${escape(item.petName)}</span><small>${escape(customer)} · ${escape(item.employeeName)}</small>${conflictOverride}${safetyContext(item)}</div><div class="appointment-actions"><span class="badge ${item.status}">${item.status.replace("_"," ")}</span>${action}</div></article>`;
 }
 function renderAppointments() {
   const html = state.appointments.length ? state.appointments.map(appointmentHtml).join("") : "No appointments scheduled.";
@@ -160,7 +164,7 @@ function adjustServices(id) {
 function moveAppointment(id) {
   const appointment=state.appointments.find(item=>item.id===id);
   const local=new Date(new Date(appointment.startAt).getTime()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);
-  openModal("Move appointment",select("employeeId","Groomer",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]))+field("startAt","Start time","datetime-local",`required value="${local}"`),form=>api(`/api/appointments/${id}/schedule`,{method:"PATCH",body:JSON.stringify({employeeId:form.get("employeeId"),startAt:new Date(form.get("startAt")).toISOString(),version:appointment.version})}));
+  openModal("Move appointment",select("employeeId","Groomer",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]))+field("startAt","Start time","datetime-local",`required value="${local}"`),form=>schedulingMutation(`/api/appointments/${id}/schedule`,{employeeId:form.get("employeeId"),startAt:new Date(form.get("startAt")).toISOString(),version:appointment.version},"Reschedule"));
 }
 async function terminalAppointment(id,status) {
   if(!confirm(status==="cancelled"?"Cancel this appointment?":"Mark this appointment as a no-show?"))return;
@@ -267,7 +271,8 @@ function renderReports() {
 
 const permissionLabels = {
   "calendar.view":"View calendar","appointments.view":"View appointments","appointments.create":"Create appointments",
-  "appointments.edit":"Edit appointments","appointments.cancel":"Cancel appointments","customers.view":"View customers",
+  "appointments.edit":"Edit appointments","appointments.cancel":"Cancel appointments",
+  "appointments.override_conflict":"Override scheduling conflicts","customers.view":"View customers",
   "customers.edit":"Edit customers","pets.view":"View pets","pets.edit":"Edit pets",
   "pets.safety.view":"View safety details","pets.safety.edit":"Edit safety details",
   "operations.check_in":"Check in pets","operations.perform_service":"Perform services",
@@ -358,10 +363,58 @@ function openModal(title, fields, submit) {
       await refresh(); $("#modal").close(); toast(`${title} saved`);
       if(typeof afterClose==="function")afterClose();
     }
-    catch (error) { $("#modal-error").textContent = error.message; }
+    catch (error) {
+      if(error.retryConflictOverride) renderConflictOverride(error);
+      else $("#modal-error").textContent = error.message;
+    }
     finally{button.disabled=false;button.textContent=original;form.removeAttribute("aria-busy");}
   };
   $("#modal").showModal();
+}
+
+function schedulingMutation(path,payload,operationLabel){
+  return api(path,{method:path.includes("/schedule")?"PATCH":"POST",body:JSON.stringify(payload)}).catch(error=>{
+    if(error.status===409&&error.data?.code==="SCHEDULING_CONFLICT"&&error.data.canOverride){
+      error.operationLabel=operationLabel;
+      error.proposedEmployee=state.employees.find(item=>item.id===payload.employeeId)?.displayName||"Selected employee";
+      error.proposedStart=new Date(payload.startAt);
+      error.retryConflictOverride=()=>api(path,{
+        method:path.includes("/schedule")?"PATCH":"POST",
+        body:JSON.stringify({...payload,overrideConflict:true})
+      });
+    }
+    throw error;
+  });
+}
+
+function renderConflictOverride(error){
+  const container=$("#modal-error");
+  container.textContent="";
+  const conflicts=error.data.conflicts||[];
+  const proposed=error.proposedStart.toLocaleString();
+  const conflictTimes=conflicts.map(item=>
+    `${new Date(item.startsAt).toLocaleString()}–${new Date(item.endsAt).toLocaleTimeString()}`
+  ).join(", ");
+  const message=document.createElement("span");
+  message.textContent=`${error.proposedEmployee} is already booked. ${error.operationLabel} at ${proposed} will overlap ${conflictTimes}.`;
+  const button=document.createElement("button");
+  button.type="button";
+  button.className="secondary";
+  button.dataset.testid="confirm-conflict-override";
+  button.textContent=error.operationLabel==="Reschedule"?"Move anyway":"Book anyway";
+  button.addEventListener("click",async()=>{
+    button.disabled=true;
+    try{
+      await error.retryConflictOverride();
+      await refresh();
+      $("#modal").close();
+      toast(`${error.operationLabel} saved with intentional overlap`);
+    }catch(retryError){
+      if(retryError.status===403)await reconcilePermissions();
+      container.textContent=retryError.message;
+    }finally{button.disabled=false;}
+  });
+  container.append(message,button);
 }
 
 const actions = {
@@ -419,7 +472,7 @@ const actions = {
       select("employeeId","Groomer",state.employees.filter(e=>e.active).map(e=>[e.id,e.displayName]))+
       serviceCheckboxes()+
       field("startAt","Start time","datetime-local","required",true)+field("notes","Appointment notes","text","",true),
-      (form) => { const o=Object.fromEntries(form); return api("/api/appointments",{method:"POST",body:JSON.stringify({locationId:state.me.business.locationId,customerId:o.customerId,petId:o.petId,employeeId:o.employeeId,serviceIds:form.getAll("serviceIds"),startAt:new Date(o.startAt).toISOString(),notes:o.notes||null})}); });
+      (form) => { const o=Object.fromEntries(form); return schedulingMutation("/api/appointments",{locationId:state.me.business.locationId,customerId:o.customerId,petId:o.petId,employeeId:o.employeeId,serviceIds:form.getAll("serviceIds"),startAt:new Date(o.startAt).toISOString(),notes:o.notes||null},"Booking"); });
     const customerSelect=$('[name="customerId"]');const petSelect=$('[name="petId"]');
     customerSelect.addEventListener("change",()=>{
       const pets=state.pets.filter(pet=>pet.customerId===customerSelect.value);

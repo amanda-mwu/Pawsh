@@ -4,7 +4,8 @@ Pawsh prioritizes tenant boundaries and business invariants over exhaustive triv
 
 - Unit tests cover appointment transitions, interval semantics, permissions, and integer-money calculations.
 - Migration syntax tests parse every PostgreSQL statement.
-- Database tests require an isolated PostgreSQL database and exercise final-owner and scheduling exclusion constraints.
+- Database tests require an isolated PostgreSQL database and exercise final-owner
+  protection plus serialized, override-aware scheduling conflict enforcement.
 - The database-backed canonical test executes signup through receipt, concurrent scheduling, invitation permissions, outbox idempotency, and cross-tenant denial.
 - Static client validation enforces recommended HTML and WCAG-oriented structural rules.
 - CI uses fresh PostgreSQL services for backend validation, backup/restore, and

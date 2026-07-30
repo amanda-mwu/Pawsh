@@ -15,10 +15,12 @@ workflow. Invalid transitions are rejected server-side and state changes are
 audited.
 
 Scheduled, checked-in, and in-service appointments reserve `[start_at, end_at)`.
-PostgreSQL prevents overlapping employee reservations under concurrent creates,
-moves, reassignments, and duration changes. Availability is a separate check
-against business hours, employee hours, and blocked time. An authorized override
-requires an explicit reason and audit entry.
+Serialized PostgreSQL transactions prevent accidental overlapping employee
+reservations under concurrent creates, moves, reassignments, and duration
+changes. An explicit conflict override requires current
+`appointments.override_conflict` authority and an atomic audit entry.
+Availability is a separate check against business hours, employee hours, and
+blocked time; its existing override requires an explicit reason.
 
 Appointment views used for check-in and service execution expose pet safety
 alerts, medical and behavioral notes, grooming preferences, services, and

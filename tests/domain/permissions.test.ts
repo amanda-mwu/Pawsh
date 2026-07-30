@@ -9,5 +9,13 @@ describe("permissions", () => {
   it("requires explicit permission for non-owners", () => {
     expect(can({ isOwner: false, permissions: ["calendar.view"] }, "calendar.view")).toBe(true);
     expect(can({ isOwner: false, permissions: ["calendar.view"] }, "team.manage")).toBe(false);
+    expect(can(
+      { isOwner: false, permissions: ["appointments.create"] },
+      "appointments.override_conflict"
+    )).toBe(false);
+    expect(can(
+      { isOwner: false, permissions: ["appointments.override_conflict"] },
+      "appointments.override_conflict"
+    )).toBe(true);
   });
 });

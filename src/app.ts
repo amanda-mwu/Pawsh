@@ -9,12 +9,17 @@ import type { Config } from "./config.js";
 import type { Database } from "./db/client.js";
 import { deliverNotifications, LogEmailProvider, processOutbox, SmtpEmailProvider } from "./engagement/worker.js";
 import { registerRoutes } from "./http/routes.js";
+import type { SchedulingHooks } from "./http/routes.js";
 import { openSecret } from "./security/secrets.js";
 
 export async function createApp(
   config: Config,
   db: Database,
-  options: { runWorker?: boolean; serveStatic?: boolean } = {}
+  options: {
+    runWorker?: boolean;
+    serveStatic?: boolean;
+    schedulingHooks?: SchedulingHooks;
+  } = {}
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: config.NODE_ENV === "test" ? false : {
@@ -51,7 +56,7 @@ export async function createApp(
     return { status: "ok" };
   });
 
-  registerRoutes(app, db, config);
+  registerRoutes(app, db, config, options.schedulingHooks);
 
   let worker: NodeJS.Timeout | undefined;
   if (options.runWorker !== false) {
@@ -77,7 +82,12 @@ export async function createApp(
     }, "request failed");
     if (error.name === "ZodError") return reply.code(400).send({ error: "Invalid request", details: error });
     if ((error as { code?: string }).code === "23P01") {
-      return reply.code(409).send({ error: "The employee already has an overlapping appointment" });
+      return reply.code(409).send({
+        code: "SCHEDULING_CONFLICT",
+        error: "This employee already has an overlapping appointment during the selected time.",
+        conflicts: [],
+        canOverride: false
+      });
     }
     if ((error as { code?: string }).code?.startsWith("23")) {
       return reply.code(409).send({ error: "The requested change violates a data integrity rule" });

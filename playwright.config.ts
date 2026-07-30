@@ -72,6 +72,12 @@ export default defineConfig({
       use:{...devices["Desktop Chrome"]}
     },
     {
+      name:"chromium-regression",
+      grep:/@regression-booking/,
+      workers:1,
+      use:{...devices["Desktop Chrome"]}
+    },
+    {
       name:"iphone-security",
       grep:/@security-permission-parity/,
       workers:1,

@@ -22,12 +22,109 @@ import { AuthAbuseProtector } from "../security/auth-abuse.js";
 
 type Transaction = postgres.TransactionSql;
 
+interface SchedulingConflict {
+  appointmentId: string;
+  startsAt: Date;
+  endsAt: Date;
+}
+
+export interface SchedulingHooks {
+  beforeLock?: (input: {
+    operation: "create" | "reschedule";
+    businessId: string;
+    employeeIds: readonly string[];
+  }) => Promise<void>;
+  afterOverrideAudit?: (input: {
+    operation: "create" | "reschedule";
+    appointmentId: string;
+  }) => Promise<void>;
+}
+
 function body<T>(schema: ZodType<T>, value: unknown): T {
   return schema.parse(value);
 }
 
 async function setTenant(tx: Transaction, businessId: string): Promise<void> {
   await tx`select set_config('app.business_id', ${businessId}, true)`;
+}
+
+async function lockSchedulingResources(
+  tx: Transaction,
+  businessId: string,
+  employeeIds: readonly string[]
+): Promise<void> {
+  for (const employeeId of [...new Set(employeeIds)].sort()) {
+    await tx`
+      select pg_advisory_xact_lock(
+        hashtextextended(${`${businessId}:${employeeId}`}, 0)
+      )
+    `;
+  }
+}
+
+async function hasCurrentPermission(
+  tx: Transaction,
+  input: { businessId: string; membershipId: string; permission: string }
+): Promise<boolean> {
+  const [row] = await tx<{ allowed: boolean }[]>`
+    select (membership.is_owner or ${input.permission}=any(membership.permissions)) as allowed
+    from business_memberships membership
+    join users account on account.id=membership.user_id and account.status='active'
+    join businesses business on business.id=membership.business_id and business.status='active'
+    where membership.business_id=${input.businessId}
+      and membership.id=${input.membershipId}
+      and membership.status='active'
+  `;
+  return row?.allowed ?? false;
+}
+
+async function findSchedulingConflicts(
+  tx: Transaction,
+  input: {
+    businessId: string;
+    employeeId: string;
+    startAt: Date;
+    endAt: Date;
+    excludeAppointmentId?: string;
+  }
+): Promise<SchedulingConflict[]> {
+  return tx<SchedulingConflict[]>`
+    select id as appointment_id,start_at as starts_at,end_at as ends_at
+    from appointments
+    where business_id=${input.businessId}
+      and employee_id=${input.employeeId}
+      and status in ('scheduled','checked_in','in_service')
+      and id<>coalesce(${input.excludeAppointmentId ?? null}::uuid,'00000000-0000-0000-0000-000000000000'::uuid)
+      and tstzrange(start_at,end_at,'[)')
+          && tstzrange(${input.startAt},${input.endAt},'[)')
+    order by start_at,id
+  `;
+}
+
+async function authorizeConflictOverride(
+  tx: Transaction,
+  context: { businessId: string; membershipId: string },
+  overrideRequested: boolean
+): Promise<boolean> {
+  if (!overrideRequested) return false;
+  return hasCurrentPermission(tx, {
+    businessId: context.businessId,
+    membershipId: context.membershipId,
+    permission: "appointments.override_conflict"
+  });
+}
+
+async function permitConflictOverride(
+  tx: Transaction,
+  appointmentId: string
+): Promise<void> {
+  await tx`
+    select set_config(
+      'app.scheduling_conflict_override_appointment_id',
+      ${appointmentId},
+      true
+    )
+  `;
 }
 
 async function record(
@@ -87,7 +184,12 @@ function sessionCookie(config: Config) {
   };
 }
 
-export function registerRoutes(app: FastifyInstance, db: Database, config: Config): void {
+export function registerRoutes(
+  app: FastifyInstance,
+  db: Database,
+  config: Config,
+  schedulingHooks: SchedulingHooks = {}
+): void {
   const authenticate = authentication(db);
   const authenticatePlatform = platformAuthentication(db);
   const abuse = new AuthAbuseProtector({
@@ -909,7 +1011,7 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
       join employees e on e.id=a.employee_id
       left join appointment_services aps on aps.appointment_id=a.id
       where a.business_id=${context.businessId} and a.start_at >= ${from} and a.start_at < ${to}
-      group by a.id,c.id,p.id,e.id order by a.start_at
+      group by a.id,c.id,p.id,e.id order by a.start_at,a.employee_id,a.id
     `;
     if (context.isOwner || context.permissions.includes("pets.safety.view")) return rows;
     return rows.map((appointment) => ({
@@ -927,8 +1029,13 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
   }, async (request, reply) => {
     const context = auth(request);
     const input = body(appointmentSchema, request.body);
+    const appointmentId = randomUUID();
     const result = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
+      const overrideAuthorized = await authorizeConflictOverride(tx, context, input.overrideConflict);
+      if (input.overrideConflict && !overrideAuthorized) {
+        return { kind: "forbidden" } as const;
+      }
       const [participants] = await tx<{ available: boolean }[]>`
         select exists (
           select 1 from customers customer
@@ -951,6 +1058,28 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
       const totalMinutes = catalog.reduce((sum, service) => sum + service.baseDurationMinutes, 0);
       const startAt = new Date(input.startAt);
       const endAt = new Date(startAt.getTime() + totalMinutes * 60_000);
+      await schedulingHooks.beforeLock?.({
+        operation: "create",
+        businessId: context.businessId,
+        employeeIds: [input.employeeId]
+      });
+      await lockSchedulingResources(tx, context.businessId, [input.employeeId]);
+      const conflicts = await findSchedulingConflicts(tx, {
+        businessId: context.businessId,
+        employeeId: input.employeeId,
+        startAt,
+        endAt
+      });
+      if (conflicts.length && !input.overrideConflict) {
+        const canOverride = await hasCurrentPermission(tx, {
+          businessId: context.businessId,
+          membershipId: context.membershipId,
+          permission: "appointments.override_conflict"
+        });
+        return { kind: "conflict", conflicts, canOverride } as const;
+      }
+      const overrideApplied = conflicts.length > 0 && input.overrideConflict && overrideAuthorized;
+      if (overrideApplied) await permitConflictOverride(tx, appointmentId);
       const [availability] = await tx<{ withinHours: boolean; blocked: boolean }[]>`
         select
           (
@@ -992,12 +1121,12 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
       }
       const [appointment] = await tx<{ id: string }[]>`
         insert into appointments
-          (business_id, location_id, customer_id, pet_id, employee_id, start_at, end_at,
-           notes, availability_overridden, created_by, updated_by)
+          (id, business_id, location_id, customer_id, pet_id, employee_id, start_at, end_at,
+           notes, availability_overridden, conflict_overridden, created_by, updated_by)
         values
-          (${context.businessId}, ${input.locationId}, ${input.customerId}, ${input.petId},
+          (${appointmentId}, ${context.businessId}, ${input.locationId}, ${input.customerId}, ${input.petId},
            ${input.employeeId}, ${startAt}, ${endAt}, ${input.notes ?? null},
-           ${input.availabilityOverride}, ${context.userId}, ${context.userId})
+           ${input.availabilityOverride}, ${overrideApplied}, ${context.userId}, ${context.userId})
         returning *
       `;
       if (!appointment) throw new Error("Appointment creation failed");
@@ -1017,9 +1146,49 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
         after: { startAt, endAt, employeeId: input.employeeId },
         reason: input.overrideReason, eventType: "AppointmentCreated"
       });
-      return appointment;
+      if (overrideApplied) {
+        await record(tx, {
+          businessId: context.businessId,
+          actorId: context.userId,
+          action: "appointment.conflict_override",
+          resourceType: "appointment",
+          resourceId: appointment.id,
+          after: {
+            operation: "create",
+            employeeId: input.employeeId,
+            startAt,
+            endAt,
+            conflictingAppointmentIds: conflicts.map((conflict) => conflict.appointmentId)
+          }
+        });
+        await schedulingHooks.afterOverrideAudit?.({
+          operation: "create",
+          appointmentId: appointment.id
+        });
+      }
+      return {
+        kind: "created",
+        appointment,
+        scheduling: {
+          conflictDetected: conflicts.length > 0,
+          overrideRequested: input.overrideConflict,
+          overrideAuthorized,
+          overrideApplied
+        }
+      } as const;
     });
-    return reply.code(201).send(result);
+    if (result.kind === "forbidden") {
+      return reply.code(403).send({ error: "Missing permission: appointments.override_conflict" });
+    }
+    if (result.kind === "conflict") {
+      return reply.code(409).send({
+        code: "SCHEDULING_CONFLICT",
+        error: "This employee already has an overlapping appointment during the selected time.",
+        conflicts: result.conflicts,
+        canOverride: result.canOverride
+      });
+    }
+    return reply.code(201).send({ ...result.appointment, scheduling: result.scheduling });
   });
 
   app.post("/api/appointments/:id/transition", {
@@ -1037,10 +1206,12 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
     }
     const result = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [current] = await tx<{ status: AppointmentStatus; version: number }[]>`
-        select status,version from appointments where business_id=${context.businessId} and id=${id} for update
+      const [current] = await tx<{ status: AppointmentStatus; version: number; employeeId: string }[]>`
+        select status,version,employee_id from appointments
+        where business_id=${context.businessId} and id=${id} for update
       `;
       if (!current) return null;
+      await lockSchedulingResources(tx, context.businessId, [current.employeeId]);
       if (input.version && current.version !== input.version) {
         return { stale: true } as const;
       }
@@ -1076,12 +1247,28 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
     const input = body(appointmentMoveSchema, request.body);
     const moved = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [current] = await tx<{ startAt: Date; endAt: Date; status: string; locationId: string }[]>`
-        select start_at,end_at,status,location_id from appointments
+      const overrideAuthorized = await authorizeConflictOverride(tx, context, input.overrideConflict);
+      if (input.overrideConflict && !overrideAuthorized) {
+        return { kind: "forbidden" } as const;
+      }
+      const [current] = await tx<{
+        startAt: Date;
+        endAt: Date;
+        status: string;
+        locationId: string;
+        employeeId: string;
+      }[]>`
+        select start_at,end_at,status,location_id,employee_id from appointments
         where business_id=${context.businessId} and id=${id} and version=${input.version} for update
       `;
-      if (!current) return null;
+      if (!current) return { kind: "stale" } as const;
       if (current.status !== "scheduled") throw new Error("Only scheduled appointments can be moved");
+      await schedulingHooks.beforeLock?.({
+        operation: "reschedule",
+        businessId: context.businessId,
+        employeeIds: [current.employeeId, input.employeeId]
+      });
+      await lockSchedulingResources(tx, context.businessId, [current.employeeId, input.employeeId]);
       const [assignment] = await tx<{ eligible: boolean }[]>`
         select
           exists (
@@ -1101,6 +1288,23 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
       if (!assignment?.eligible) throw new Error("The selected employee is not eligible for every booked service");
       const startAt = new Date(input.startAt);
       const endAt = new Date(startAt.getTime() + (current.endAt.getTime() - current.startAt.getTime()));
+      const conflicts = await findSchedulingConflicts(tx, {
+        businessId: context.businessId,
+        employeeId: input.employeeId,
+        startAt,
+        endAt,
+        excludeAppointmentId: id
+      });
+      if (conflicts.length && !input.overrideConflict) {
+        const canOverride = await hasCurrentPermission(tx, {
+          businessId: context.businessId,
+          membershipId: context.membershipId,
+          permission: "appointments.override_conflict"
+        });
+        return { kind: "conflict", conflicts, canOverride } as const;
+      }
+      const overrideApplied = conflicts.length > 0 && input.overrideConflict && overrideAuthorized;
+      if (overrideApplied) await permitConflictOverride(tx, id);
       const [availability] = await tx<{ withinHours: boolean; blocked: boolean }[]>`
         select
           (
@@ -1137,7 +1341,8 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
       }
       const [updated] = await tx`
         update appointments set employee_id=${input.employeeId},start_at=${startAt},end_at=${endAt},
-          availability_overridden=${input.availabilityOverride},version=version+1,
+          availability_overridden=${input.availabilityOverride},
+          conflict_overridden=${overrideApplied},version=version+1,
           updated_by=${context.userId},updated_at=now()
         where business_id=${context.businessId} and id=${id} and version=${input.version}
         returning *
@@ -1149,10 +1354,52 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
         after: { startAt, endAt, employeeId: input.employeeId },
         reason: input.overrideReason, eventType: "AppointmentUpdated"
       });
-      return updated;
+      if (overrideApplied) {
+        await record(tx, {
+          businessId: context.businessId,
+          actorId: context.userId,
+          action: "appointment.conflict_override",
+          resourceType: "appointment",
+          resourceId: id,
+          after: {
+            operation: "reschedule",
+            employeeId: input.employeeId,
+            startAt,
+            endAt,
+            conflictingAppointmentIds: conflicts.map((conflict) => conflict.appointmentId)
+          }
+        });
+        await schedulingHooks.afterOverrideAudit?.({
+          operation: "reschedule",
+          appointmentId: id
+        });
+      }
+      return {
+        kind: "moved",
+        appointment: updated,
+        scheduling: {
+          conflictDetected: conflicts.length > 0,
+          overrideRequested: input.overrideConflict,
+          overrideAuthorized,
+          overrideApplied
+        }
+      } as const;
     });
-    if (!moved) return reply.code(409).send({ error: "Appointment changed or no longer exists" });
-    return moved;
+    if (moved.kind === "forbidden") {
+      return reply.code(403).send({ error: "Missing permission: appointments.override_conflict" });
+    }
+    if (moved.kind === "stale") {
+      return reply.code(409).send({ error: "Appointment changed or no longer exists" });
+    }
+    if (moved.kind === "conflict") {
+      return reply.code(409).send({
+        code: "SCHEDULING_CONFLICT",
+        error: "This employee already has an overlapping appointment during the selected time.",
+        conflicts: moved.conflicts,
+        canOverride: moved.canOverride
+      });
+    }
+    return { ...moved.appointment, scheduling: moved.scheduling };
   });
 
   app.patch("/api/appointments/:id/operations", {
@@ -1191,6 +1438,7 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
         where business_id=${context.businessId} and id=${id} for update
       `;
       if (!appointment) return null;
+      await lockSchedulingResources(tx, context.businessId, [appointment.employeeId]);
       if (input.version && appointment.version !== input.version) {
         return { stale: true } as const;
       }

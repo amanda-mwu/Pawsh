@@ -78,6 +78,9 @@ jobs:
           - name: chromium-security
             browser: chromium
             command: npx playwright test --project=chromium-security
+          - name: chromium-regression
+            browser: chromium
+            command: npx playwright test --project=chromium-regression
           - name: iphone-security
             browser: webkit
             command: npx playwright test --project=iphone-security

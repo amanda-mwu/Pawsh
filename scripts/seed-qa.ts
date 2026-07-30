@@ -25,6 +25,7 @@ const sql = postgres(databaseUrl, { transform: postgres.camel });
 const passwordHash = await hashPassword(password);
 const allPermissions = [
   "calendar.view","appointments.view","appointments.create","appointments.edit","appointments.cancel",
+  "appointments.override_conflict",
   "customers.view","customers.edit","pets.view","pets.edit","pets.safety.view","pets.safety.edit",
   "operations.check_in","operations.perform_service","operations.complete","checkout.perform",
   "payments.view","discounts.apply","services.manage","team.manage","reports.view","settings.manage"

@@ -28,7 +28,8 @@ export const invitationSchema = z.object({
   email: z.string().email().max(320),
   permissions: z.array(z.enum([
     "calendar.view", "appointments.view", "appointments.create", "appointments.edit",
-    "appointments.cancel", "customers.view", "customers.edit", "pets.view", "pets.edit",
+    "appointments.cancel", "appointments.override_conflict",
+    "customers.view", "customers.edit", "pets.view", "pets.edit",
     "pets.safety.view", "pets.safety.edit", "operations.check_in",
     "operations.perform_service", "operations.complete", "checkout.perform",
     "payments.view", "discounts.apply", "services.manage", "team.manage",
@@ -99,6 +100,7 @@ export const appointmentSchema = z.object({
   serviceIds: z.array(z.string().uuid()).min(1),
   notes: z.string().max(5000).nullish(),
   availabilityOverride: z.boolean().default(false),
+  overrideConflict: z.boolean().default(false),
   overrideReason: z.string().trim().min(3).max(500).nullish()
 }).superRefine((value, context) => {
   if (value.availabilityOverride && !value.overrideReason) {
@@ -161,6 +163,7 @@ export const appointmentMoveSchema = z.object({
   startAt: z.string().datetime({ offset: true }),
   version: z.number().int().positive(),
   availabilityOverride: z.boolean().default(false),
+  overrideConflict: z.boolean().default(false),
   overrideReason: z.string().trim().min(3).max(500).nullish()
 }).superRefine((value, context) => {
   if (value.availabilityOverride && !value.overrideReason) {

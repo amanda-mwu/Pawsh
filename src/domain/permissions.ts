@@ -4,6 +4,7 @@ export const permissions = [
   "appointments.create",
   "appointments.edit",
   "appointments.cancel",
+  "appointments.override_conflict",
   "customers.view",
   "customers.edit",
   "pets.view",

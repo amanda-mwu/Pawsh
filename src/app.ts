@@ -19,7 +19,10 @@ export async function createApp(
   const app = Fastify({
     logger: config.NODE_ENV === "test" ? false : {
       level: config.NODE_ENV === "production" ? "info" : "debug",
-      redact: ["req.headers.authorization", "req.headers.cookie", "password"]
+      redact: [
+        "req.headers.authorization", "req.headers.cookie",
+        "req.body.password", "req.body.token", "password", "token"
+      ]
     },
     genReqId: () => crypto.randomUUID()
   });

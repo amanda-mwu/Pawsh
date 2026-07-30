@@ -123,18 +123,33 @@ wrong-password account. Reset requests return the same accepted response for
 known and unknown email addresses, apart from internal work and the current
 non-production development token.
 
-The application currently has one global Fastify rate limit of 120 requests per
-minute outside tests. It is not a per-account authentication throttle and its
-test limit effectively disables abuse testing. C2 must introduce deterministic
-account and network controls with bounded backoff, injectable time/test
-configuration, trusted-proxy decisions, and equivalent treatment for existing
-and nonexistent accounts.
+The application retains a global Fastify limit of 120 requests per minute
+outside tests and adds an in-process authentication protector keyed separately
+by pseudonymous account and network references. Five failures in a 15-minute
+window begin bounded exponential backoff at one second, capped at 60 seconds.
+A successful login clears the account counter but does not let one valid
+credential clear network abuse. Missing and disabled users perform the same
+Argon2 verification work as a wrong password. Reset requests use the same
+account/network mechanism and return the same accepted response before the
+limit regardless of account existence.
 
-Business audit events are tenant-scoped and are unsuitable as the sole store
-for pre-authentication failures. C2 must define a small security telemetry
-boundary, retention and identifier policy before adding events. Passwords,
-password-derived material, reset URLs/tokens, session tokens, cookies, and
-authorization headers must never be recorded.
+Fastify's direct `request.ip` is authoritative because Pawsh does not currently
+enable proxy trust. Deployment behind a reverse proxy must define trusted
+proxy boundaries before forwarded addresses may affect security controls.
+The in-memory limiter is appropriate to the single-instance MVP; a
+multi-instance deployment requires a shared atomic store before classification
+can be carried forward.
+
+Business audit events are tenant-scoped and remain separate from
+pre-authentication security telemetry. Authentication telemetry is emitted as
+structured operational log events with HMAC-derived 24-hex account and network
+references. It records event type and pseudonymous references only. Production
+operations retain these events for 30 days with access limited to operators;
+the application itself does not create an unbounded telemetry table.
+Passwords, password-derived material, reset URLs/tokens, session tokens,
+cookies, authorization headers, raw email addresses, and raw IP addresses are
+not event fields. Logger redaction also covers credential and token request
+fields as defense in depth.
 
 ## Authorization and tenant coverage
 
@@ -167,4 +182,3 @@ would be redundant.
 - A live breached-password provider is not required for the MVP or CI.
 - Broad platform-support, device, staging, and manual security validation remain
   outside Batch C.
-

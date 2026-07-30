@@ -83,6 +83,52 @@ describeDatabase("canonical Pawsh workflow", () => {
     expect(crossOrigin.statusCode).toBe(403);
   });
 
+  it("keeps credential failures generic and applies bounded account throttling", async () => {
+    const unknownEmail = `unknown-${suffix}@example.test`;
+    const existing = await app.inject({
+      method:"POST", url:"/api/auth/login",
+      payload:{ email:`owner-${suffix}@example.test`, password:"not the owner password" }
+    });
+    const missing = await app.inject({
+      method:"POST", url:"/api/auth/login",
+      payload:{ email:unknownEmail, password:"not the owner password" }
+    });
+    expect(existing.statusCode).toBe(401);
+    expect(missing.statusCode).toBe(401);
+    expect(missing.json()).toEqual(existing.json());
+
+    for (let attempt = 1; attempt < 5; attempt += 1) {
+      const response = await app.inject({
+        method:"POST", url:"/api/auth/login",
+        payload:{ email:unknownEmail, password:"not the owner password" }
+      });
+      expect(response.statusCode).toBe(401);
+    }
+    const throttled = await app.inject({
+      method:"POST", url:"/api/auth/login",
+      payload:{ email:unknownEmail, password:"not the owner password" }
+    });
+    expect(throttled.statusCode).toBe(429);
+    expect(throttled.headers["retry-after"]).toBe("1");
+    expect(throttled.json()).toEqual({ error:"Too many authentication attempts; try again later" });
+  });
+
+  it("keeps reset requests generic and throttles unknown accounts identically", async () => {
+    const email = `reset-abuse-${suffix}@example.test`;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const response = await app.inject({
+        method:"POST", url:"/api/auth/password-reset/request", payload:{ email }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ accepted:true });
+    }
+    const throttled = await app.inject({
+      method:"POST", url:"/api/auth/password-reset/request", payload:{ email }
+    });
+    expect(throttled.statusCode).toBe(429);
+    expect(throttled.headers["retry-after"]).toBe("1");
+  });
+
   it("configures a service, employee, customer, and safety-aware pet", async () => {
     const service = await app.inject({
       method: "POST", url: "/api/services", headers: { cookie: ownerCookie },

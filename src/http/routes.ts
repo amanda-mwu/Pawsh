@@ -18,6 +18,7 @@ import {
 } from "./schemas.js";
 import { sealSecret } from "../security/secrets.js";
 import { hashPassword, validateNewPassword, verifyPassword } from "../security/passwords.js";
+import { AuthAbuseProtector } from "../security/auth-abuse.js";
 
 type Transaction = postgres.TransactionSql;
 
@@ -89,6 +90,11 @@ function sessionCookie(config: Config) {
 export function registerRoutes(app: FastifyInstance, db: Database, config: Config): void {
   const authenticate = authentication(db);
   const authenticatePlatform = platformAuthentication(db);
+  const abuse = new AuthAbuseProtector({
+    secret:config.SESSION_SECRET,
+    record:(event)=>app.log.info({ securityEvent:event }, "security event")
+  });
+  const invalidCredentialHash = "$argon2id$v=19$m=19456,t=2,p=1$8VmlYo465D+kq/0mXGEr/g$e/k9prNJPiZXPIVCxUkGskxSHFskuBBO8gFFQcihWrY";
 
   app.post("/api/auth/signup", async (request, reply) => {
     const input = body(signupSchema, request.body);
@@ -137,13 +143,25 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
 
   app.post("/api/auth/login", async (request, reply) => {
     const input = body(loginSchema, request.body);
+    const email = normalizeEmail(input.email);
+    const retryAfter = abuse.retryAfter(email, request.ip);
+    if (retryAfter > 0) {
+      abuse.event("auth.throttled", email, request.ip);
+      return reply.header("retry-after", Math.max(1, Math.ceil(retryAfter / 1000)))
+        .code(429).send({ error:"Too many authentication attempts; try again later" });
+    }
     const [user] = await db<{ id: string; passwordHash: string }[]>`
       select id, password_hash from users
-      where normalized_email = ${normalizeEmail(input.email)} and disabled_at is null
+      where normalized_email = ${email} and disabled_at is null
     `;
-    if (!user || !(await verifyPassword(user.passwordHash, input.password))) {
+    const valid = await verifyPassword(user?.passwordHash ?? invalidCredentialHash, input.password);
+    if (!user || !valid) {
+      abuse.failure(email, request.ip);
+      abuse.event("login.failed", email, request.ip);
       return reply.code(401).send({ error: "Invalid email or password" });
     }
+    abuse.success(email);
+    abuse.event("login.succeeded", email, request.ip);
     const token = issueToken();
     await db`
       insert into sessions (user_id, token_hash, expires_at)
@@ -158,8 +176,17 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
     return reply.clearCookie("pawsh_session", { path: "/" }).code(204).send();
   });
 
-  app.post("/api/auth/password-reset/request", async (request) => {
+  app.post("/api/auth/password-reset/request", async (request, reply) => {
     const input = body(passwordResetRequestSchema, request.body);
+    const email = normalizeEmail(input.email);
+    const retryAfter = abuse.retryAfter(email, request.ip, "reset");
+    if (retryAfter > 0) {
+      abuse.event("auth.throttled", email, request.ip);
+      return reply.header("retry-after", Math.max(1, Math.ceil(retryAfter / 1000)))
+        .code(429).send({ error:"Too many requests; try again later" });
+    }
+    abuse.failure(email, request.ip, "reset");
+    abuse.event("password_reset.requested", email, request.ip);
     const [user] = await db<{ id: string; businessId: string | null }[]>`
       select user_account.id,
         (
@@ -168,7 +195,7 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
           order by membership.created_at limit 1
         ) as business_id
       from users user_account
-      where user_account.normalized_email=${normalizeEmail(input.email)}
+      where user_account.normalized_email=${email}
         and user_account.disabled_at is null
     `;
     let developmentToken: string | undefined;
@@ -190,7 +217,7 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
           await tx`
             insert into notification_intents
               (business_id,customer_id,notification_type,scheduled_occurrence,channel,destination,encrypted_body)
-            values (${user.businessId},null,'password_reset',now(),'email',${normalizeEmail(input.email)},
+            values (${user.businessId},null,'password_reset',now(),'email',${email},
               ${sealSecret(resetMessage,config.SESSION_SECRET)})
           `;
         }

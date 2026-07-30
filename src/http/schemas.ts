@@ -1,17 +1,18 @@
 import { z } from "zod";
+import { passwordSchema } from "../security/passwords.js";
 
 export const idParams = z.object({ id: z.string().uuid() });
 
 export const signupSchema = z.object({
   email: z.string().email().max(320),
-  password: z.string().min(12).max(200),
+  password: passwordSchema,
   businessName: z.string().trim().min(2).max(120),
   timezone: z.string().trim().min(1).max(80).default("America/Los_Angeles")
 });
 
 export const loginSchema = z.object({
   email: z.string().email().max(320),
-  password: z.string().min(1).max(200)
+  password: z.string().min(1).max(1024)
 });
 
 export const passwordResetRequestSchema = z.object({
@@ -20,7 +21,7 @@ export const passwordResetRequestSchema = z.object({
 
 export const passwordResetConfirmSchema = z.object({
   token: z.string().min(20).max(200),
-  password: z.string().min(12).max(200)
+  password: passwordSchema
 });
 
 export const invitationSchema = z.object({
@@ -37,7 +38,7 @@ export const invitationSchema = z.object({
 
 export const invitationAcceptSchema = z.object({
   token: z.string().min(20).max(200),
-  password: z.string().min(12).max(200)
+  password: z.string().min(1).max(1024)
 });
 
 export const ownershipTransferSchema = z.object({

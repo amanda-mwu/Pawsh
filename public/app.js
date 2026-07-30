@@ -427,6 +427,7 @@ $("#auth-form").addEventListener("submit", async (event) => {
 });
 $("#toggle-auth").addEventListener("click", () => {
   state.login = !state.login; $("#business-field").hidden = state.login; $("#business-field input").required = !state.login;
+  $("#auth-form input[name=password]").autocomplete=state.login?"current-password":"new-password";
   $("#auth-title").textContent = state.login ? "Welcome back" : "Create your salon";
   $("#auth-subtitle").textContent = state.login ? "Sign in to continue your day." : "Set up your workspace in under a minute.";
   $("#auth-form button").textContent = state.login ? "Sign in" : "Create workspace";
@@ -483,5 +484,6 @@ if (inviteToken || resetToken) {
   $("#auth-subtitle").textContent=resetToken?"Choose a new secure password.":"Choose a secure password to accept your invitation.";
   $("#auth-form button").textContent=resetToken?"Update password":"Accept invitation";
   $("#toggle-auth").hidden=true;$("#forgot-password").hidden=true;
+  $("#auth-form input[name=password]").autocomplete="new-password";
 }
 bootstrap();

@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="Pawsh grooming business operations">
+  <meta name="referrer" content="no-referrer">
   <title>Pawsh — Salon operations, beautifully organized</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
@@ -26,7 +27,7 @@
       </div>
       <form id="auth-form" data-testid="auth-form">
         <label>Email<input data-testid="login-email" name="email" type="email" autocomplete="email" required></label>
-        <label>Password<input data-testid="login-password" name="password" type="password" minlength="12" autocomplete="new-password" required></label>
+        <label>Password<input data-testid="login-password" name="password" type="password" minlength="8" maxlength="256" autocomplete="new-password" required></label>
         <label id="business-field">Salon name<input name="businessName" type="text" autocomplete="organization" required></label>
         <button data-testid="auth-submit" class="primary" type="submit">Create workspace</button>
         <p id="auth-error" class="error" role="alert"></p>

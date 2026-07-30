@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { hash, verify } from "@node-rs/argon2";
 import type { FastifyInstance } from "fastify";
 import type postgres from "postgres";
 import type { ZodType } from "zod";
@@ -18,6 +17,7 @@ import {
   invitationAcceptSchema, ownershipTransferSchema
 } from "./schemas.js";
 import { sealSecret } from "../security/secrets.js";
+import { hashPassword, validateNewPassword, verifyPassword } from "../security/passwords.js";
 
 type Transaction = postgres.TransactionSql;
 
@@ -93,7 +93,8 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
   app.post("/api/auth/signup", async (request, reply) => {
     const input = body(signupSchema, request.body);
     const email = normalizeEmail(input.email);
-    const passwordHash = await hash(input.password);
+    await validateNewPassword(input.password, { email });
+    const passwordHash = await hashPassword(input.password);
     const result = await db.begin(async (tx) => {
       const [user] = await tx<{ id: string }[]>`
         insert into users (email, normalized_email, password_hash)
@@ -140,7 +141,7 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
       select id, password_hash from users
       where normalized_email = ${normalizeEmail(input.email)} and disabled_at is null
     `;
-    if (!user || !(await verify(user.passwordHash, input.password))) {
+    if (!user || !(await verifyPassword(user.passwordHash, input.password))) {
       return reply.code(401).send({ error: "Invalid email or password" });
     }
     const token = issueToken();
@@ -194,14 +195,15 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
           `;
         }
       });
-      if (config.NODE_ENV !== "production") developmentToken = token;
+      if (config.NODE_ENV === "test") developmentToken = token;
     }
     return { accepted: true, ...(developmentToken ? { developmentToken } : {}) };
   });
 
   app.post("/api/auth/password-reset/confirm", async (request, reply) => {
     const input = body(passwordResetConfirmSchema, request.body);
-    const passwordHash = await hash(input.password);
+    await validateNewPassword(input.password);
+    const passwordHash = await hashPassword(input.password);
     const changed = await db.begin(async (tx) => {
       const [reset] = await tx<{ id: string; userId: string }[]>`
         select id,user_id from password_reset_tokens
@@ -209,7 +211,7 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
       `;
       if (!reset) return false;
       await tx`update users set password_hash=${passwordHash},updated_at=now() where id=${reset.userId}`;
-      await tx`update password_reset_tokens set used_at=now() where id=${reset.id}`;
+      await tx`update password_reset_tokens set used_at=now() where user_id=${reset.userId} and used_at is null`;
       await tx`update sessions set revoked_at=now() where user_id=${reset.userId} and revoked_at is null`;
       return true;
     });
@@ -219,7 +221,6 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
 
   app.post("/api/auth/invitations/accept", async (request, reply) => {
     const input = body(invitationAcceptSchema, request.body);
-    const passwordHash = await hash(input.password);
     const result = await db.begin(async (tx) => {
       const [invitation] = await tx<{
         id: string; businessId: string; email: string; normalizedEmail: string; permissions: string[];
@@ -233,13 +234,15 @@ export function registerRoutes(app: FastifyInstance, db: Database, config: Confi
         select id,password_hash from users where normalized_email=${invitation.normalizedEmail}
       `;
       if (!user) {
+        await validateNewPassword(input.password, { email:invitation.normalizedEmail });
+        const passwordHash = await hashPassword(input.password);
         [user] = await tx<{ id: string; passwordHash: string }[]>`
           insert into users(email,normalized_email,password_hash)
           values (${invitation.email},${invitation.normalizedEmail},${passwordHash})
           returning id,password_hash
         `;
       } else {
-        if (!(await verify(user.passwordHash, input.password))) {
+        if (!(await verifyPassword(user.passwordHash, input.password))) {
           throw new Error("Existing Pawsh users must enter their current password");
         }
         const existingMembership = await tx`

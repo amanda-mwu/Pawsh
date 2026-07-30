@@ -1,5 +1,5 @@
-import { hash } from "@node-rs/argon2";
 import postgres from "postgres";
+import { hashPassword, validateNewPassword } from "../src/security/passwords.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const marker = process.env.PAWSH_QA_DATABASE_MARKER;
@@ -16,12 +16,13 @@ const target = new URL(databaseUrl);
 if (/(^|[.-])(prod|production)([.-]|$)/i.test(target.hostname) || /prod(uction)?/i.test(target.pathname)) {
   throw new Error("QA seed refuses production-like database targets");
 }
-if (!password || password.length < 12) throw new Error("PAWSH_QA_PASSWORD must be supplied securely");
+if (!password) throw new Error("PAWSH_QA_PASSWORD must be supplied securely");
+await validateNewPassword(password);
 
 console.log(`QA seed target: ${target.hostname}${target.pathname} (${process.env.NODE_ENV ?? "development"})`);
 
 const sql = postgres(databaseUrl, { transform: postgres.camel });
-const passwordHash = await hash(password);
+const passwordHash = await hashPassword(password);
 const allPermissions = [
   "calendar.view","appointments.view","appointments.create","appointments.edit","appointments.cancel",
   "customers.view","customers.edit","pets.view","pets.edit","pets.safety.view","pets.safety.edit",

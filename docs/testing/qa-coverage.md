@@ -14,6 +14,7 @@ because any registry edit creates a new SHA.
 | Automated Cross-Browser Core Valid | Browser / `*-cross-browser` | Desktop Chromium, Firefox, WebKit | `@cross-browser` | Deliberately small compatibility subset |
 | Automated Responsive Interface Valid — Playwright Device-Profile Emulation | Responsive / device project | iPhone WebKit, Android Chromium, iPad WebKit profiles | `@responsive`, with reserved `@mobile-core` / `@tablet-core` mappings | Physical-device behavior remains unvalidated |
 | Automated Authentication & Browser Security Valid — Password-Only | Backend and PostgreSQL runtime; Browser / chromium-security; Browser / iphone-security | Backend integration, desktop Chromium, iPhone WebKit profile | `@security-desktop`, `@security-permission-parity` | Eight-code-point minimum is an explicit MVP decision; MFA/passkeys, staging, manual UX, and physical-device behavior remain unvalidated; authentication throttling is process-local for the single-instance MVP runtime |
+| Critical Regression D1 — Booking/Scheduling Valid | Backend and PostgreSQL runtime; Browser / chromium-regression | PostgreSQL integration and desktop Chromium | Database scheduling regression; `@regression-booking` | Does not establish D2 appointment lifecycle, D3 customer/pet history, D4 checkout/error-path, timezone-edge, performance, staging, manual UX, or physical-device validity |
 
 ## Batch C security closure
 

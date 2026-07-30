@@ -15,7 +15,8 @@ export class AuthAbuseProtector {
     private readonly options: {
       secret: string;
       now?: (() => number) | undefined;
-      threshold?: number | undefined;
+      accountThreshold?: number | undefined;
+      networkThreshold?: number | undefined;
       windowMs?: number | undefined;
       baseBackoffMs?: number | undefined;
       maxBackoffMs?: number | undefined;
@@ -77,7 +78,9 @@ export class AuthAbuseProtector {
       entry = { attempts:0, windowStartedAt:now, blockedUntil:0 };
     }
     entry.attempts += 1;
-    const threshold = this.options.threshold ?? 5;
+    const threshold = key.includes(":account:")
+      ? (this.options.accountThreshold ?? 5)
+      : (this.options.networkThreshold ?? 50);
     if (entry.attempts >= threshold) {
       const exponent = entry.attempts - threshold;
       entry.blockedUntil = now + Math.min(
@@ -88,4 +91,3 @@ export class AuthAbuseProtector {
     this.entries.set(key, entry);
   }
 }
-

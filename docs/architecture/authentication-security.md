@@ -125,8 +125,9 @@ non-production development token.
 
 The application retains a global Fastify limit of 120 requests per minute
 outside tests and adds an in-process authentication protector keyed separately
-by pseudonymous account and network references. Five failures in a 15-minute
-window begin bounded exponential backoff at one second, capped at 60 seconds.
+by pseudonymous account and network references. Five failures for one account,
+or 50 failures from one network source, in a 15-minute window begin bounded
+exponential backoff at one second, capped at 60 seconds.
 A successful login clears the account counter but does not let one valid
 credential clear network abuse. Missing and disabled users perform the same
 Argon2 verification work as a wrong password. Reset requests use the same

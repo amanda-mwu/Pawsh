@@ -7,7 +7,8 @@ describe("authentication abuse protection", () => {
     const protector = new AuthAbuseProtector({
       secret:"test security reference secret",
       now:()=>now,
-      threshold:2,
+      accountThreshold:2,
+      networkThreshold:3,
       windowMs:10_000,
       baseBackoffMs:100,
       maxBackoffMs:200
@@ -36,4 +37,3 @@ describe("authentication abuse protection", () => {
     expect(JSON.stringify(events)).not.toContain("192.0.2.10");
   });
 });
-

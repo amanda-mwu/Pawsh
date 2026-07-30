@@ -253,11 +253,12 @@ function renderCustomersEnhanced() {
   renderCustomers();
   $("#customer-grid").innerHTML = state.customers.length ? state.customers.map((customer) => {
     const pets = state.pets.filter((pet) => pet.customerId === customer.id);
-    return `<article class="customer-card" data-testid="customer-card"><p class="eyebrow">${pets.length} pet${pets.length === 1 ? "" : "s"}</p><h3>${escape(customer.firstName)} ${escape(customer.lastName)}</h3><p>${escape(customer.email || customer.phone || "No contact added")}</p><div class="pet-links">${pets.map((pet) => `<button type="button" class="text-button edit-pet" data-id="${pet.id}">${escape(pet.name)}${pet.safetyAlerts?" !":""}</button>`).join("") || "Add their first pet"}</div><div class="card-actions"><button type="button" class="text-button customer-history" data-id="${customer.id}">History</button>${allowed("customers.edit")?`<button type="button" class="text-button edit-customer" data-id="${customer.id}">Edit</button><button type="button" class="text-button archive-customer" data-id="${customer.id}">Archive</button>`:""}</div></article>`;
+    return `<article class="customer-card" data-testid="customer-card" data-customer-id="${customer.id}"><p class="eyebrow">${pets.length} pet${pets.length === 1 ? "" : "s"}</p><h3>${escape(customer.firstName)} ${escape(customer.lastName)}</h3><p>${escape(customer.email || customer.phone || "No contact added")}</p><div class="pet-links">${pets.map((pet) => `<span data-pet-id="${pet.id}"><strong>${escape(pet.name)}${pet.safetyAlerts?" !":""}</strong>${allowed("pets.edit")?` <button type="button" class="text-button edit-pet" data-id="${pet.id}">Profile</button>`:""}${allowed("pets.safety.view")&&allowed("pets.safety.edit")?` <button type="button" class="text-button edit-pet-safety" data-id="${pet.id}">Safety</button>`:""}</span>`).join("") || "Add their first pet"}</div><div class="card-actions"><button type="button" class="text-button customer-history" data-id="${customer.id}">History</button>${allowed("customers.edit")?`<button type="button" class="text-button edit-customer" data-id="${customer.id}">Edit</button><button type="button" class="text-button archive-customer" data-id="${customer.id}">Archive</button>`:""}</div></article>`;
   }).join("") : `<p class="empty">Create your first customer to begin building salon history.</p>`;
   $$(".edit-customer").forEach((button)=>button.addEventListener("click",()=>editCustomer(button.dataset.id)));
   $$(".archive-customer").forEach((button)=>button.addEventListener("click",()=>archiveCustomer(button.dataset.id)));
   $$(".edit-pet").forEach((button)=>button.addEventListener("click",()=>editPet(button.dataset.id)));
+  $$(".edit-pet-safety").forEach((button)=>button.addEventListener("click",()=>editPetSafety(button.dataset.id)));
   $$(".customer-history").forEach((button)=>button.addEventListener("click",()=>showCustomerHistory(button.dataset.id)));
 }
 function renderSetupEnhanced() {
@@ -330,13 +331,27 @@ async function deactivate(type,id) {
 }
 function editCustomer(id) {
   const customer=state.customers.find(item=>item.id===id);
-  openModal("Edit customer",field("firstName","First name","text",`required value="${escape(customer.firstName)}"`)+field("lastName","Last name","text",`required value="${escape(customer.lastName)}"`)+field("email","Email","email",`value="${escape(customer.email||"")}"`)+field("phone","Phone","tel",`value="${escape(customer.phone||"")}"`)+field("notes","Notes","text",`value="${escape(customer.notes||"")}"`,true),form=>api(`/api/customers/${id}`,{method:"PUT",body:JSON.stringify({...Object.fromEntries(form),preferredContactMethod:customer.preferredContactMethod||"email",emailAllowed:customer.emailAllowed})}));
+  const contactOptions=["email","phone","none"].map(value=>`<option value="${value}" ${customer.preferredContactMethod===value?"selected":""}>${value}</option>`).join("");
+  openModal("Edit customer",
+    field("firstName","First name","text",`required value="${escape(customer.firstName)}"`)+
+    field("lastName","Last name","text",`required value="${escape(customer.lastName)}"`)+
+    field("email","Email","email",`value="${escape(customer.email||"")}"`)+
+    field("phone","Phone","tel",`value="${escape(customer.phone||"")}"`)+
+    field("address","Address","text",`value="${escape(customer.address||"")}"`,true)+
+    `<label>Preferred contact<select data-testid="field-preferredContactMethod" name="preferredContactMethod">${contactOptions}</select></label>`+
+    `<label><input data-testid="field-emailAllowed" name="emailAllowed" type="checkbox" ${customer.emailAllowed?"checked":""}> Email allowed</label>`+
+    field("notes","Notes","text",`value="${escape(customer.notes||"")}"`,true),
+    form=>api(`/api/customers/${id}`,{method:"PUT",body:JSON.stringify({
+      ...Object.fromEntries(form),
+      emailAllowed:form.has("emailAllowed")
+    })})
+  );
 }
 async function showCustomerHistory(id) {
   try{
     const historyData=await api(`/api/customers/${id}/history`);
     const appointments=historyData.appointments.map(item=>`<div><span>${new Date(item.startAt).toLocaleDateString()} / ${escape(item.petName)}</span><strong>${escape(item.status.replace("_"," "))}</strong></div>`).join("")||"<p>No appointments yet.</p>";
-    const invoices=historyData.invoices.map(item=>`<div><span>Invoice ${escape(item.invoiceNumber)}</span><span><strong>${money(item.totalMinor)} / ${escape(item.status)}</strong>${allowed("payments.view")?` <button type="button" class="text-button history-receipt" data-invoice-id="${item.id}">Receipt</button>`:""}</span></div>`).join("")||"<p>No invoices yet.</p>";
+    const invoices=historyData.invoices.map(item=>`<div><span>Invoice ${escape(item.invoiceNumber)}</span><span><strong>${money(item.totalMinor)} / ${escape(item.status)}</strong><button type="button" class="text-button history-receipt" data-invoice-id="${item.id}">Receipt</button></span></div>`).join("")||`<p>${allowed("payments.view")?"No invoices yet.":"Financial history requires payment access."}</p>`;
     openModal(`${historyData.customer.firstName} ${historyData.customer.lastName} history`,`<div class="wide history-list"><h4>Appointments</h4>${appointments}<h4>Transactions</h4>${invoices}</div>`,async()=>{});
     $$(".history-receipt").forEach(button=>button.addEventListener("click",async()=>{
       const receipt=await api(`/api/invoices/${button.dataset.invoiceId}/receipt`);
@@ -349,8 +364,80 @@ async function archiveCustomer(id) {
   try{await api(`/api/customers/${id}/archive`,{method:"POST"});toast("Customer archived");await refresh();}catch(error){toast(error.message);}
 }
 function editPet(id) {
-  const pet=state.pets.find(item=>item.id===id);
-  openModal("Edit pet safety and care",field("name","Pet name","text",`required value="${escape(pet.name)}"`)+field("breed","Breed","text",`value="${escape(pet.breed||"")}"`)+field("groomingPreferences","Grooming preferences","text",`value="${escape(pet.groomingPreferences||"")}"`,true)+field("safetyAlerts","Safety alerts","text",`value="${escape(pet.safetyAlerts||"")}"`,true)+field("behaviorNotes","Behavior notes","text",`value="${escape(pet.behaviorNotes||"")}"`,true)+field("medicalNotes","Medical notes","text",`value="${escape(pet.medicalNotes||"")}"`,true),form=>api(`/api/pets/${id}`,{method:"PUT",body:JSON.stringify({...pet,...Object.fromEntries(form),dateOfBirth:pet.dateOfBirth?String(pet.dateOfBirth).slice(0,10):null,vaccinationExpiresOn:pet.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):null})}));
+  let pet=state.pets.find(item=>item.id===id);
+  openModal("Edit pet profile",petProfileFields(pet),async(form)=>{
+    try{
+      return await api(`/api/pets/${id}`,{method:"PUT",body:JSON.stringify({
+        customerId:pet.customerId,
+        name:form.get("name"),
+        species:form.get("species"),
+        breed:form.get("breed")||null,
+        dateOfBirth:form.get("dateOfBirth")||null,
+        approximateAge:form.get("approximateAge")||null,
+        weightOunces:form.get("weightOunces")===""?null:Number(form.get("weightOunces")),
+        sex:form.get("sex")||null,
+        coatNotes:form.get("coatNotes")||null,
+        groomingPreferences:form.get("groomingPreferences")||null,
+        photoPermission:form.has("photoPermission"),
+        version:pet.version
+      })});
+    }catch(error){
+      if(error.status===409){
+        await refresh();
+        pet=state.pets.find(item=>item.id===id);
+        $("#modal-fields").innerHTML=petProfileFields(pet);
+      }
+      throw error;
+    }
+  });
+}
+
+function petProfileFields(pet){
+  return field("name","Pet name","text",`required value="${escape(pet.name)}"`)+
+    field("species","Species","text",`required value="${escape(pet.species)}"`)+
+    field("breed","Breed","text",`value="${escape(pet.breed||"")}"`)+
+    field("dateOfBirth","Date of birth","date",`value="${pet.dateOfBirth?String(pet.dateOfBirth).slice(0,10):""}"`)+
+    field("approximateAge","Approximate age","text",`value="${escape(pet.approximateAge||"")}"`)+
+    field("weightOunces","Weight (ounces)","number",`min="0" value="${pet.weightOunces??""}"`)+
+    field("sex","Sex","text",`value="${escape(pet.sex||"")}"`)+
+    field("coatNotes","Coat notes","text",`value="${escape(pet.coatNotes||"")}"`,true)+
+    field("groomingPreferences","Grooming preferences","text",`value="${escape(pet.groomingPreferences||"")}"`,true)+
+    `<label><input data-testid="field-photoPermission" name="photoPermission" type="checkbox" ${pet.photoPermission?"checked":""}> Photo permission</label>`;
+}
+
+function petSafetyFields(pet){
+  return field("safetyAlerts","Safety alerts","text",`value="${escape(pet.safetyAlerts||"")}"`,true)+
+    field("behaviorNotes","Behavior notes","text",`value="${escape(pet.behaviorNotes||"")}"`,true)+
+    field("medicalNotes","Medical notes","text",`value="${escape(pet.medicalNotes||"")}"`,true)+
+    field("emergencyContact","Emergency contact","text",`value="${escape(pet.emergencyContact||"")}"`,true)+
+    field("veterinarian","Veterinarian","text",`value="${escape(pet.veterinarian||"")}"`,true)+
+    field("vaccinationNotes","Vaccination notes","text",`value="${escape(pet.vaccinationNotes||"")}"`,true)+
+    field("vaccinationExpiresOn","Vaccination expires","date",`value="${pet.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):""}"`);
+}
+
+function editPetSafety(id){
+  let pet=state.pets.find(item=>item.id===id);
+  openModal("Edit pet safety",petSafetyFields(pet),async(form)=>{
+    try{
+      return await api(`/api/pets/${id}/safety`,{method:"PUT",body:JSON.stringify({
+        safetyAlerts:form.get("safetyAlerts")||null,
+        behaviorNotes:form.get("behaviorNotes")||null,
+        medicalNotes:form.get("medicalNotes")||null,
+        emergencyContact:form.get("emergencyContact")||null,
+        veterinarian:form.get("veterinarian")||null,
+        vaccinationNotes:form.get("vaccinationNotes")||null,
+        vaccinationExpiresOn:form.get("vaccinationExpiresOn")||null,
+        version:pet.version
+      })});
+    }catch(error){
+      if(error.status===409){
+        await refresh();
+        pet=state.pets.find(item=>item.id===id);
+        $("#modal-fields").innerHTML=petSafetyFields(pet);
+      }
+      throw error;
+    }
+  });
 }
 
 function field(name, label, type = "text", extra = "", wide = false) {
@@ -432,7 +519,7 @@ const actions = {
     field("firstName","First name","text","required")+field("lastName","Last name","text","required")+field("email","Email","email")+field("phone","Phone","tel")+field("notes","Notes","text","",true),
     (form) => api("/api/customers",{method:"POST",body:JSON.stringify(Object.fromEntries(form))})),
   "new-pet": () => openModal("New pet",
-    select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]),true)+field("name","Pet name","text","required")+field("breed","Breed")+field("species","Species","text",'value="dog"')+field("groomingPreferences","Grooming preferences","text","",true)+field("behaviorNotes","Behavior notes","text","",true)+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true),
+    select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]),true)+field("name","Pet name","text","required")+field("breed","Breed")+field("species","Species","text",'value="dog"')+field("groomingPreferences","Grooming preferences","text","",true)+(allowed("pets.safety.edit")?field("behaviorNotes","Behavior notes","text","",true)+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true):""),
     (form) => api("/api/pets",{method:"POST",body:JSON.stringify(Object.fromEntries(form))})),
   "new-service": () => openModal("New service",
     field("name","Service name","text","required")+field("baseDurationMinutes","Duration (minutes)","number",'required min="1"')+field("basePrice","Price ($)","number",'required min="0" step=".01"')+field("description","Description","text","",true),

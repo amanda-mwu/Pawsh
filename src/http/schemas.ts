@@ -78,6 +78,33 @@ export const petSchema = z.object({
   photoPermission: z.boolean().nullish()
 });
 
+export const petProfileUpdateSchema = petSchema.omit({
+  safetyAlerts: true,
+  medicalNotes: true,
+  behaviorNotes: true,
+  emergencyContact: true,
+  veterinarian: true,
+  vaccinationNotes: true,
+  vaccinationExpiresOn: true
+}).extend({
+  version: z.number().int().positive()
+});
+
+export const petSafetyUpdateSchema = petSchema.pick({
+  safetyAlerts: true,
+  medicalNotes: true,
+  behaviorNotes: true,
+  emergencyContact: true,
+  veterinarian: true,
+  vaccinationNotes: true,
+  vaccinationExpiresOn: true
+}).partial().extend({
+  version: z.number().int().positive()
+}).refine(
+  (value) => Object.keys(value).some((key) => key !== "version"),
+  { message: "At least one protected safety field is required" }
+);
+
 export const serviceSchema = z.object({
   name: z.string().trim().min(1).max(120),
   description: z.string().max(1000).nullish(),

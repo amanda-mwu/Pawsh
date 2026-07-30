@@ -14,11 +14,18 @@ import {
   transitionSchema, businessSettingsSchema, workingHoursSchema, blockedTimeSchema,
   operationalUpdateSchema, voidPaymentSchema, appointmentMoveSchema, appointmentServicesSchema,
   passwordResetRequestSchema, passwordResetConfirmSchema, invitationSchema,
-  invitationAcceptSchema, ownershipTransferSchema
+  invitationAcceptSchema, ownershipTransferSchema, petProfileUpdateSchema, petSafetyUpdateSchema
 } from "./schemas.js";
 import { sealSecret } from "../security/secrets.js";
 import { hashPassword, validateNewPassword, verifyPassword } from "../security/passwords.js";
 import { AuthAbuseProtector } from "../security/auth-abuse.js";
+import {
+  changedPetSafetyFields,
+  protectedPetSafetyFields,
+  redactPetSafety,
+  suppliedPetSafetyFields,
+  type PetSafetyRecord
+} from "../domain/pet-safety.js";
 
 type Transaction = postgres.TransactionSql;
 
@@ -26,6 +33,10 @@ interface SchedulingConflict {
   appointmentId: string;
   startsAt: Date;
   endsAt: Date;
+}
+
+function mayViewPetSafety(context: { isOwner: boolean; permissions: readonly string[] }): boolean {
+  return context.isOwner || context.permissions.includes("pets.safety.view");
 }
 
 export interface SchedulingHooks {
@@ -796,7 +807,7 @@ export function registerRoutes(
         and (${search} = '' or concat_ws(' ', first_name, last_name) ilike ${`%${search}%`}
           or normalized_phone like ${`%${normalizePhone(search) ?? search}%`}
           or normalized_email ilike ${`%${search.toLowerCase()}%`})
-      order by last_name, first_name limit 100
+      order by last_name, first_name, id limit 100
     `;
   });
 
@@ -855,14 +866,27 @@ export function registerRoutes(
     const { id } = idParams.parse(request.params);
     const [customer] = await db`select * from customers where business_id=${context.businessId} and id=${id}`;
     if (!customer) return reply.code(404).send({ error: "Customer not found" });
+    const mayViewSafety = mayViewPetSafety(context);
+    const mayViewPayments = context.isOwner || context.permissions.includes("payments.view");
     const [pets, appointments, invoices] = await Promise.all([
-      db`select * from pets where business_id=${context.businessId} and customer_id=${id} order by name`,
+      db`select * from pets where business_id=${context.businessId} and customer_id=${id} order by name,id`,
       db`select a.*, p.name as pet_name, e.display_name as employee_name
          from appointments a join pets p on p.id=a.pet_id join employees e on e.id=a.employee_id
-         where a.business_id=${context.businessId} and a.customer_id=${id} order by a.start_at desc`,
-      db`select * from invoices where business_id=${context.businessId} and customer_id=${id} order by created_at desc`
+         where a.business_id=${context.businessId} and a.customer_id=${id}
+         order by a.start_at desc,a.id desc`,
+      mayViewPayments
+        ? db`select id,invoice_number,status,subtotal_minor,discount_minor,tax_minor,tip_minor,
+              total_minor,balance_minor,created_at
+             from invoices where business_id=${context.businessId} and customer_id=${id}
+             order by created_at desc,id desc`
+        : Promise.resolve([])
     ]);
-    return { customer, pets, appointments, invoices };
+    return {
+      customer,
+      pets: mayViewSafety ? pets : pets.map((pet) => redactPetSafety(pet)),
+      appointments,
+      invoices
+    };
   });
 
   app.post("/api/customers/:id/archive", {
@@ -885,22 +909,16 @@ export function registerRoutes(
     const query = request.query as { q?: string; customerId?: string };
     const rows = await db`
       select p.*, concat_ws(' ', c.first_name, c.last_name) as customer_name
-      from pets p join customers c on c.id=p.customer_id
+      from pets p
+      join customers c on c.id=p.customer_id and c.business_id=p.business_id
+        and c.archived_at is null
       where p.business_id=${context.businessId} and p.archived_at is null
         and (${query.customerId ?? null}::uuid is null or p.customer_id=${query.customerId ?? null}::uuid)
         and (${query.q ?? ""}='' or p.name ilike ${`%${query.q ?? ""}%`} or p.breed ilike ${`%${query.q ?? ""}%`})
-      order by p.name limit 100
+      order by p.name,p.id limit 100
     `;
-    if (context.isOwner || context.permissions.includes("pets.safety.view")) return rows;
-    return rows.map((pet) => ({
-      ...pet,
-      safetyAlerts: null,
-      medicalNotes: null,
-      behaviorNotes: null,
-      emergencyContact: null,
-      veterinarian: null,
-      vaccinationNotes: null
-    }));
+    if (mayViewPetSafety(context)) return rows;
+    return rows.map((pet) => redactPetSafety(pet));
   });
 
   app.post("/api/pets", {
@@ -908,9 +926,13 @@ export function registerRoutes(
   }, async (request, reply) => {
     const context = auth(request);
     const input = body(petSchema, request.body);
+    if (suppliedPetSafetyFields(request.body as PetSafetyRecord).length
+      && !context.isOwner && !context.permissions.includes("pets.safety.edit")) {
+      return reply.code(403).send({ error: "Missing permission: pets.safety.edit" });
+    }
     const pet = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [created] = await tx<{ id: string }[]>`
+      const [created] = await tx<(PetSafetyRecord & { id: string })[]>`
         insert into pets
           (business_id, customer_id, name, species, breed, date_of_birth, approximate_age,
            weight_ounces, sex, coat_notes, grooming_preferences, behavior_notes, medical_notes,
@@ -940,7 +962,7 @@ export function registerRoutes(
       });
       return created;
     });
-    return reply.code(201).send(pet);
+    return reply.code(201).send(mayViewPetSafety(context) ? pet : redactPetSafety(pet));
   });
 
   app.put("/api/pets/:id", {
@@ -948,41 +970,122 @@ export function registerRoutes(
   }, async (request, reply) => {
     const context = auth(request);
     const { id } = idParams.parse(request.params);
-    const input = body(petSchema, request.body);
+    const protectedFields = suppliedPetSafetyFields(request.body as PetSafetyRecord);
+    if (protectedFields.length) {
+      if (!context.isOwner && !context.permissions.includes("pets.safety.edit")) {
+        return reply.code(403).send({ error: "Missing permission: pets.safety.edit" });
+      }
+      return reply.code(400).send({ error: "Protected safety fields must use the safety update operation" });
+    }
+    const input = body(petProfileUpdateSchema, request.body);
     const updated = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [before] = await tx<{ safetyAlerts: string | null; medicalNotes: string | null; behaviorNotes: string | null }[]>`
-        select safety_alerts,medical_notes,behavior_notes from pets
-        where business_id=${context.businessId} and id=${id} and archived_at is null for update
+      const [customer] = await tx<{ available: boolean }[]>`
+        select exists (
+          select 1 from customers
+          where business_id=${context.businessId} and id=${input.customerId} and archived_at is null
+        ) as available
       `;
-      if (!before) return null;
+      if (!customer?.available) return { kind: "invalidCustomer" } as const;
       const [pet] = await tx`
         update pets set customer_id=${input.customerId},name=${input.name},species=${input.species},
           breed=${input.breed ?? null},date_of_birth=${input.dateOfBirth ?? null},
           approximate_age=${input.approximateAge ?? null},weight_ounces=${input.weightOunces ?? null},
           sex=${input.sex ?? null},coat_notes=${input.coatNotes ?? null},
           grooming_preferences=${input.groomingPreferences ?? null},
-          behavior_notes=${input.behaviorNotes ?? null},medical_notes=${input.medicalNotes ?? null},
-          safety_alerts=${input.safetyAlerts ?? null},emergency_contact=${input.emergencyContact ?? null},
-          veterinarian=${input.veterinarian ?? null},vaccination_notes=${input.vaccinationNotes ?? null},
-          vaccination_expires_on=${input.vaccinationExpiresOn ?? null},
-          photo_permission=${input.photoPermission ?? null},updated_by=${context.userId},updated_at=now()
-        where business_id=${context.businessId} and id=${id} returning *
+          photo_permission=${input.photoPermission ?? null},version=version+1,
+          updated_by=${context.userId},updated_at=now()
+        where business_id=${context.businessId} and id=${id} and archived_at is null
+          and version=${input.version}
+        returning *
       `;
-      const changedFields = [
-        before.safetyAlerts !== (input.safetyAlerts ?? null) ? "safety_alerts" : null,
-        before.medicalNotes !== (input.medicalNotes ?? null) ? "medical_notes" : null,
-        before.behaviorNotes !== (input.behaviorNotes ?? null) ? "behavior_notes" : null
-      ].filter(Boolean);
-      await record(tx, {
-        businessId: context.businessId, actorId: context.userId, action: "pet.safety.update",
-        resourceType: "pet", resourceId: id,
-        after: { changedFields }
-      });
-      return pet;
+      if (pet) return { kind: "updated", pet } as const;
+      const [existing] = await tx<{ exists: boolean }[]>`
+        select exists (
+          select 1 from pets where business_id=${context.businessId} and id=${id} and archived_at is null
+        ) as exists
+      `;
+      return existing?.exists ? { kind: "stale" } as const : null;
     });
     if (!updated) return reply.code(404).send({ error: "Active pet not found" });
-    return updated;
+    if (updated.kind === "invalidCustomer") {
+      return reply.code(400).send({ error: "The selected customer is unavailable" });
+    }
+    if (updated.kind === "stale") {
+      return reply.code(409).send({ error: "Pet changed; refresh before continuing" });
+    }
+    return mayViewPetSafety(context) ? updated.pet : redactPetSafety(updated.pet);
+  });
+
+  app.put("/api/pets/:id/safety", {
+    preHandler: [
+      authenticate,
+      requirePermission("pets.edit"),
+      requirePermission("pets.safety.edit")
+    ]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(petSafetyUpdateSchema, request.body);
+    const supplied = new Set(suppliedPetSafetyFields(input));
+    const updated = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [before] = await tx<{
+        safetyAlerts: string | null;
+        medicalNotes: string | null;
+        behaviorNotes: string | null;
+        emergencyContact: string | null;
+        veterinarian: string | null;
+        vaccinationNotes: string | null;
+        vaccinationExpiresOn: string | null;
+        version: number;
+      }[]>`
+        select safety_alerts,medical_notes,behavior_notes,emergency_contact,veterinarian,
+          vaccination_notes,vaccination_expires_on,version
+        from pets
+        where business_id=${context.businessId} and id=${id} and archived_at is null
+        for update
+      `;
+      if (!before) return null;
+      if (before.version !== input.version) return { kind: "stale" } as const;
+      const after: PetSafetyRecord = { ...before };
+      for (const field of protectedPetSafetyFields) {
+        if (supplied.has(field)) after[field] = input[field];
+      }
+      const changedFields = changedPetSafetyFields(before, after);
+      const [pet] = await tx`
+        update pets set
+          safety_alerts=${supplied.has("safetyAlerts") ? input.safetyAlerts ?? null : before.safetyAlerts},
+          medical_notes=${supplied.has("medicalNotes") ? input.medicalNotes ?? null : before.medicalNotes},
+          behavior_notes=${supplied.has("behaviorNotes") ? input.behaviorNotes ?? null : before.behaviorNotes},
+          emergency_contact=${supplied.has("emergencyContact") ? input.emergencyContact ?? null : before.emergencyContact},
+          veterinarian=${supplied.has("veterinarian") ? input.veterinarian ?? null : before.veterinarian},
+          vaccination_notes=${supplied.has("vaccinationNotes") ? input.vaccinationNotes ?? null : before.vaccinationNotes},
+          vaccination_expires_on=${
+            supplied.has("vaccinationExpiresOn") ? input.vaccinationExpiresOn ?? null : before.vaccinationExpiresOn
+          },
+          version=version+1,updated_by=${context.userId},updated_at=now()
+        where business_id=${context.businessId} and id=${id} and version=${input.version}
+        returning *
+      `;
+      if (!pet) return { kind: "stale" } as const;
+      if (changedFields.length) {
+        await record(tx, {
+          businessId: context.businessId,
+          actorId: context.userId,
+          action: "pet.safety.update",
+          resourceType: "pet",
+          resourceId: id,
+          after: { changedFields }
+        });
+      }
+      return { kind: "updated", pet } as const;
+    });
+    if (!updated) return reply.code(404).send({ error: "Active pet not found" });
+    if (updated.kind === "stale") {
+      return reply.code(409).send({ error: "Pet changed; refresh before continuing" });
+    }
+    return mayViewPetSafety(context) ? updated.pet : redactPetSafety(updated.pet);
   });
 
   app.post("/api/pets/:id/archive", {
@@ -1022,15 +1125,8 @@ export function registerRoutes(
       where a.business_id=${context.businessId} and a.start_at >= ${from} and a.start_at < ${to}
       group by a.id,c.id,p.id,e.id order by a.start_at,a.employee_id,a.id
     `;
-    if (context.isOwner || context.permissions.includes("pets.safety.view")) return rows;
-    return rows.map((appointment) => ({
-      ...appointment,
-      safetyAlerts: null,
-      behaviorNotes: null,
-      medicalNotes: null,
-      groomingPreferences: null,
-      coatNotes: null
-    }));
+    if (mayViewPetSafety(context)) return rows;
+    return rows.map((appointment) => redactPetSafety(appointment));
   });
 
   app.post("/api/appointments", {

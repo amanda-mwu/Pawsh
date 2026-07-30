@@ -23,5 +23,8 @@ describe("database migrations", () => {
     expect(scheduling).toContain("employee_appointment_conflict_guard");
     expect(scheduling).toContain("pg_advisory_xact_lock");
     expect(scheduling).toContain("app.scheduling_conflict_override_appointment_id");
+    const petVersions = await readFile("migrations/0003_pet_versions.sql", "utf8");
+    expect(petVersions).toContain("add column version integer not null default 1");
+    expect(petVersions).toContain("pet_version_positive");
   });
 });

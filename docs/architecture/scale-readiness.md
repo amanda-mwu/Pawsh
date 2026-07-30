@@ -163,3 +163,32 @@ inflate ordinary browser fixtures.
 - Promotion trigger: introduction of downstream no-show messaging, reporting,
   or integration behavior.
 - Status: Outbox N/A contract documented and validated in D2.
+
+### SEC-002 — Pet safety view and edit boundaries
+
+- Evidence: customer history returned complete pet rows to `customers.view`,
+  and the general pet update accepted safety fields under `pets.edit`.
+- Severity/current impact: pilot-blocking disclosure and unauthorized mutation.
+- Disposition: Must Fix Current D Batch.
+- Promotion trigger: immediate.
+- Status: Resolved in D3 with shared protected-field redaction, separate
+  profile/safety operations, and `pets.edit` + `pets.safety.edit` enforcement.
+
+### ARCH-005 — Stale pet replacement
+
+- Evidence: unversioned full replacement could overwrite a newer safety warning.
+- Severity/current impact: pilot-blocking safety-data integrity risk.
+- Disposition: Must Fix Current D Batch.
+- Promotion trigger: immediate.
+- Status: Resolved in D3. Every pet update requires a positive current version;
+  stale conditional updates return 409 without partial writes.
+
+### GOV-004 — Current versus snapshot history
+
+- Evidence: history joins current customer, pet, and employee identity, while
+  appointment service facts are booking-time snapshots.
+- Severity/current impact: misleading historical claims if undocumented.
+- Disposition: Must Fix Current D Batch through documentation and validation.
+- Promotion trigger: immediate.
+- Status: Resolved in D3. Service-time identity and safety snapshots remain
+  explicitly absent.

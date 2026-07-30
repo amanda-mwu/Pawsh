@@ -64,6 +64,18 @@ export default defineConfig({
       grep:tabletTag,
       workers:1,
       use:{...devices["iPad (gen 11)"]}
+    },
+    {
+      name:"chromium-security",
+      grep:/@security-desktop|@security-permission-parity/,
+      workers:1,
+      use:{...devices["Desktop Chrome"]}
+    },
+    {
+      name:"iphone-security",
+      grep:/@security-permission-parity/,
+      workers:1,
+      use:{...devices["iPhone 15"]}
     }
   ]
 });

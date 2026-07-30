@@ -16,8 +16,28 @@ async function api(path, options = {}) {
   });
   if (response.status === 204) return null;
   const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(result.error || "Something went wrong");
+  if (!response.ok) {
+    if (response.status === 401) settleUnauthenticated();
+    if (response.status === 403) await reconcilePermissions();
+    throw new Error(result.error || "Something went wrong");
+  }
   return result;
+}
+
+function settleUnauthenticated() {
+  state.me=null;
+  $("#app-view").hidden=true;
+  $("#auth-view").hidden=false;
+  if ($("#modal")?.open) $("#modal").close();
+}
+
+async function reconcilePermissions() {
+  const response=await fetch("/api/me",{credentials:"include"});
+  if (response.status===401) return settleUnauthenticated();
+  if (!response.ok) return;
+  state.me=await response.json();
+  applyPermissions();
+  renderAppointments();
 }
 
 function money(value = 0) {
@@ -448,9 +468,7 @@ $("#logout").addEventListener("click", async () => {
     if(error.message!=="Authentication required")throw error;
   }
   finally {
-    state.me=null;
-    $("#app-view").hidden=true;
-    $("#auth-view").hidden=false;
+    settleUnauthenticated();
   }
 });
 $$("[data-action]").forEach((button) => button.addEventListener("click", () => actions[button.dataset.action]?.()));

@@ -74,26 +74,24 @@ are resolved from the database on every protected request.
 
 ### Request integrity
 
-Credentialed CORS is restricted to `APP_ORIGIN`. State-changing requests with
-an `Origin` header are rejected when it differs from `APP_ORIGIN`. Requests
-that omit `Origin` are currently accepted, so the origin hook and
-`SameSite=Lax` cookie together do not constitute a complete independently
-verified CSRF design. Batch C must:
-
-1. classify which legitimate clients can omit `Origin`;
-2. fail closed for browser mutation requests without an allowed origin, or add
-   an explicit CSRF mechanism if non-browser clients require that path; and
-3. add targeted request-integrity tests without treating CORS as authorization.
+Credentialed CORS is restricted to `APP_ORIGIN`. State-changing requests are
+rejected when `Origin` differs from `APP_ORIGIN`, and Fetch Metadata requests
+marked `Sec-Fetch-Site: cross-site` are rejected even if `Origin` is absent.
+`SameSite=Lax` supplies an additional cookie boundary. Requests without browser
+origin/fetch metadata remain available to non-browser integrations, which must
+still authenticate normally. Targeted integration tests cover both rejection
+paths; CORS itself is not treated as authorization.
 
 ### Client reconciliation
 
 The client refreshes `/api/me` during bootstrap, navigation, and visibility
 changes. A failed `/api/me` bootstrap exposes only the authentication surface.
-Generic API failures do not currently distinguish `401` from other errors, so
-a protected action rejected after server-side revocation may leave stale UI
-until another bootstrap occurs. C3 must make unauthorized responses reconcile
-to one coherent unauthenticated state while preserving `403` permission
-feedback without granting authority.
+The shared browser API layer settles any `401` into one coherent
+unauthenticated surface and closes an open privileged dialog. On `403`, it
+re-reads `/api/me`, reapplies current server permissions, and re-renders
+appointment actions before reporting the denial. C3 browser tests prove
+revoked-session and stale-permission reconciliation without using client state
+as authorization.
 
 ## Password and recovery audit
 
@@ -160,7 +158,7 @@ context plus row policies provide defense in depth. Existing Chromium smoke
 already proves a representative permission denial/grant and a cross-tenant
 customer, pet, appointment, and invoice matrix.
 
-C3 therefore adds only genuinely new browser risks:
+C3 adds only genuinely new browser risks:
 
 - authoritative session revocation while a browser retains stale UI;
 - permission revocation using simultaneous owner and employee contexts,

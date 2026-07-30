@@ -81,6 +81,11 @@ describeDatabase("canonical Pawsh workflow", () => {
       headers: { cookie: ownerCookie, origin: "https://attacker.example" }
     });
     expect(crossOrigin.statusCode).toBe(403);
+    const crossSite = await app.inject({
+      method:"POST", url:"/api/auth/logout",
+      headers:{ cookie:ownerCookie, "sec-fetch-site":"cross-site" }
+    });
+    expect(crossSite.statusCode).toBe(403);
   });
 
   it("keeps credential failures generic and applies bounded account throttling", async () => {

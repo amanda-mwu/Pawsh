@@ -37,6 +37,10 @@ export async function createApp(
   app.addHook("onRequest", async (request, reply) => {
     if (!["POST","PUT","PATCH","DELETE"].includes(request.method)) return;
     const origin = request.headers.origin;
+    const fetchSite = request.headers["sec-fetch-site"];
+    if (fetchSite === "cross-site") {
+      return reply.code(403).send({ error: "Cross-site mutation is not allowed" });
+    }
     if (origin && origin !== config.APP_ORIGIN) {
       return reply.code(403).send({ error: "Request origin is not allowed" });
     }

@@ -75,6 +75,12 @@ jobs:
           - name: webkit-cross-browser
             browser: webkit
             command: npx playwright test --project=webkit-desktop --grep @cross-browser
+          - name: chromium-security
+            browser: chromium
+            command: npx playwright test --project=chromium-security
+          - name: iphone-security
+            browser: webkit
+            command: npx playwright test --project=iphone-security
     services:
       postgres:
         image: postgres:17-alpine

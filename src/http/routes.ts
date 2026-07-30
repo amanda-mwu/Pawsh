@@ -40,6 +40,14 @@ export interface SchedulingHooks {
   }) => Promise<void>;
 }
 
+export interface LifecycleHooks {
+  beforeRowLock?: (input: {
+    businessId: string;
+    appointmentId: string;
+    targetStatus: AppointmentStatus;
+  }) => Promise<void>;
+}
+
 function body<T>(schema: ZodType<T>, value: unknown): T {
   return schema.parse(value);
 }
@@ -188,7 +196,8 @@ export function registerRoutes(
   app: FastifyInstance,
   db: Database,
   config: Config,
-  schedulingHooks: SchedulingHooks = {}
+  schedulingHooks: SchedulingHooks = {},
+  lifecycleHooks: LifecycleHooks = {}
 ): void {
   const authenticate = authentication(db);
   const authenticatePlatform = platformAuthentication(db);
@@ -1206,6 +1215,11 @@ export function registerRoutes(
     }
     const result = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
+      await lifecycleHooks.beforeRowLock?.({
+        businessId: context.businessId,
+        appointmentId: id,
+        targetStatus: input.status
+      });
       const [current] = await tx<{ status: AppointmentStatus; version: number; employeeId: string }[]>`
         select status,version,employee_id from appointments
         where business_id=${context.businessId} and id=${id} for update

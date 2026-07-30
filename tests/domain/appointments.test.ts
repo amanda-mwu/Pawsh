@@ -1,11 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { canTransition, overlaps } from "../../src/domain/appointments.js";
+import { appointmentStatuses, canTransition, overlaps } from "../../src/domain/appointments.js";
 
 describe("appointment invariants", () => {
-  it("allows only defined state transitions", () => {
-    expect(canTransition("scheduled", "checked_in")).toBe(true);
-    expect(canTransition("completed", "checked_in")).toBe(false);
-    expect(canTransition("cancelled", "in_service")).toBe(false);
+  it("allows the complete lifecycle contract and rejects every other edge", () => {
+    const allowed = new Set([
+      "scheduled:checked_in",
+      "scheduled:cancelled",
+      "scheduled:no_show",
+      "checked_in:in_service",
+      "in_service:completed"
+    ]);
+    for (const source of appointmentStatuses) {
+      for (const target of appointmentStatuses) {
+        expect(canTransition(source, target), `${source} -> ${target}`).toBe(
+          allowed.has(`${source}:${target}`)
+        );
+      }
+    }
   });
 
   it("uses half-open time intervals", () => {

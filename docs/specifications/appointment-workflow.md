@@ -14,6 +14,9 @@ Completed, cancelled, and no-show appointments do not reopen through the normal
 workflow. Invalid transitions are rejected server-side and state changes are
 audited.
 
+The formal permission, HTTP, repeat, event, concurrency, and event-time
+contracts are maintained in `docs/architecture/appointment-lifecycle.md`.
+
 Scheduled, checked-in, and in-service appointments reserve `[start_at, end_at)`.
 Serialized PostgreSQL transactions prevent accidental overlapping employee
 reservations under concurrent creates, moves, reassignments, and duration

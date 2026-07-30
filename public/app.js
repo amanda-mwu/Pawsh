@@ -142,7 +142,7 @@ function renderAppointments() {
   const today = new Date().toDateString();
   const todays = state.appointments.filter((item) => new Date(item.startAt).toDateString() === today);
   $("#today-list").innerHTML = todays.length ? todays.map(appointmentHtml).join("") : "No appointments today.";
-  $$(".appointment-action").forEach((button) => button.addEventListener("click", () => advanceAppointment(button.dataset.id, button.dataset.status)));
+  $$(".appointment-action").forEach((button) => button.addEventListener("click", () => advanceAppointment(button.dataset.id, button.dataset.status, button)));
   state.appointments.filter(item=>item.status==="scheduled" && (allowed("appointments.edit") || allowed("appointments.cancel"))).forEach(item=>{
     $$(`.appointment-action[data-id="${item.id}"]`).forEach(button=>{
       button.parentElement.insertAdjacentHTML("beforeend",`<span>${allowed("appointments.edit")?`<button type="button" class="text-button move-action" data-id="${item.id}">Move</button>`:""} ${allowed("appointments.cancel")?`<button type="button" class="text-button terminal-action" data-id="${item.id}" data-status="cancelled">Cancel</button> <button type="button" class="text-button terminal-action" data-id="${item.id}" data-status="no_show">No show</button>`:""}</span>`);
@@ -170,10 +170,10 @@ async function terminalAppointment(id,status) {
   if(!confirm(status==="cancelled"?"Cancel this appointment?":"Mark this appointment as a no-show?"))return;
   const appointment=state.appointments.find(item=>item.id===id);
   return runOnce(`transition:${id}`,async()=>{
-    try{await api(`/api/appointments/${id}/transition`,{method:"POST",body:JSON.stringify({status,version:appointment.version})});toast(`Appointment ${status.replace("_"," ")}`);await refresh();}catch(error){toast(error.message);}
+    try{await api(`/api/appointments/${id}/transition`,{method:"POST",body:JSON.stringify({status,version:appointment.version})});toast(`Appointment ${status.replace("_"," ")}`);await refresh();}catch(error){toast(error.message);if([400,409].includes(error.status))await refresh();}
   });
 }
-async function advanceAppointment(id, status) {
+async function advanceAppointment(id, status, actionButton) {
   if (status === "completed") return checkout(id);
   const appointment=state.appointments.find(item=>item.id===id);
   const next = {scheduled:"checked_in",checked_in:"in_service",in_service:"completed"}[status];
@@ -181,17 +181,24 @@ async function advanceAppointment(id, status) {
     return openModal(status === "scheduled" ? "Check in appointment" : "Start service",
       safetyContext(appointment)+(status === "checked_in" ? field("operationalNotes","Service notes","text","",true) : ""),
       async (form) => {
-        if (status === "checked_in") {
-          const updated=await api(`/api/appointments/${id}/operations`,{method:"PATCH",body:JSON.stringify({operationalNotes:form.get("operationalNotes")||null,version:appointment.version})});
-          appointment.version=updated.version;
+        try {
+          if (status === "checked_in") {
+            const updated=await api(`/api/appointments/${id}/operations`,{method:"PATCH",body:JSON.stringify({operationalNotes:form.get("operationalNotes")||null,version:appointment.version})});
+            appointment.version=updated.version;
+          }
+          await api(`/api/appointments/${id}/transition`,{method:"POST",body:JSON.stringify({status:next,version:appointment.version})});
+        } catch (error) {
+          if([400,409].includes(error.status)){error.reconcileLifecycle=true;}
+          throw error;
         }
-        await api(`/api/appointments/${id}/transition`,{method:"POST",body:JSON.stringify({status:next,version:appointment.version})});
       });
   }
   if (status === "in_service" && !confirm("Mark this grooming appointment complete?")) return;
   return runOnce(`transition:${id}`,async()=>{
+    if(actionButton){actionButton.disabled=true;actionButton.setAttribute("aria-busy","true");}
     try { await api(`/api/appointments/${id}/transition`,{method:"POST",body:JSON.stringify({status:next,version:appointment.version})}); toast(`Appointment ${next.replace("_"," ")}`); await refresh(); }
-    catch (error) { toast(error.message); }
+    catch (error) { toast(error.message); if([400,409].includes(error.status))await refresh(); }
+    finally{if(actionButton?.isConnected){actionButton.disabled=false;actionButton.removeAttribute("aria-busy");}}
   });
 }
 function checkout(id) {
@@ -365,7 +372,10 @@ function openModal(title, fields, submit) {
     }
     catch (error) {
       if(error.retryConflictOverride) renderConflictOverride(error);
-      else $("#modal-error").textContent = error.message;
+      else {
+        $("#modal-error").textContent = error.message;
+        if(error.reconcileLifecycle)await refresh();
+      }
     }
     finally{button.disabled=false;button.textContent=original;form.removeAttribute("aria-busy");}
   };

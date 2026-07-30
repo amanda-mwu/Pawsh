@@ -120,3 +120,46 @@ inflate ordinary browser fixtures.
 - Disposition: Must Fix Before Controlled Pilot.
 - Promotion trigger: before staging/pilot enrollment.
 - Status: Product owner approval pending.
+
+### UX-002 — Stale lifecycle reconciliation
+
+- Evidence: lifecycle errors previously displayed an error while leaving the
+  appointment controls rendered from stale client state.
+- Severity/current impact: operational correctness and repeated-action risk.
+- Disposition: Must Fix Current D Batch.
+- Promotion trigger: immediate.
+- Status: Resolved in D2 by preserving handled error feedback and refreshing
+  authoritative application state without a full browser reload.
+
+### ARCH-002 — Optional lifecycle version
+
+- Evidence: lifecycle requests may omit `version`; supplied stale versions
+  return 409, while omitted versions rely on row locking and current-state
+  transition validation.
+- Severity/current impact: no integrity defect; omitted-version repeats are
+  rejected with 400 after the row lock.
+- Disposition: Accepted / Documented Current Limitation.
+- Promotion trigger: a public/mobile API contract requires mandatory optimistic
+  concurrency across mutations.
+- Status: Current optional contract retained and validated in D2.
+
+### GOV-002 — Lifecycle event-time authority
+
+- Evidence: appointments have general `created_at` and `updated_at`, but no
+  dedicated lifecycle milestone columns.
+- Severity/current impact: no current operational-history gap; audit and outbox
+  records preserve attributable transition times.
+- Disposition: Accepted / Documented Current Limitation.
+- Promotion trigger: actual-duration, labor-productivity, SLA, or
+  dispute-timeline reporting requires milestone columns.
+- Status: Event-time authorities documented in D2; dedicated columns deferred.
+
+### ARCH-003 — No-show domain event
+
+- Evidence: no-show writes `appointment.no_show` audit history but intentionally
+  emits no outbox event; no current worker or pilot workflow consumes one.
+- Severity/current impact: none under the current product contract.
+- Disposition: Accepted / Documented Current Limitation.
+- Promotion trigger: introduction of downstream no-show messaging, reporting,
+  or integration behavior.
+- Status: Outbox N/A contract documented and validated in D2.

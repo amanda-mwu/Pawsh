@@ -9,7 +9,7 @@ import type { Config } from "./config.js";
 import type { Database } from "./db/client.js";
 import { deliverNotifications, LogEmailProvider, processOutbox, SmtpEmailProvider } from "./engagement/worker.js";
 import { registerRoutes } from "./http/routes.js";
-import type { SchedulingHooks } from "./http/routes.js";
+import type { LifecycleHooks, SchedulingHooks } from "./http/routes.js";
 import { openSecret } from "./security/secrets.js";
 
 export async function createApp(
@@ -19,6 +19,7 @@ export async function createApp(
     runWorker?: boolean;
     serveStatic?: boolean;
     schedulingHooks?: SchedulingHooks;
+    lifecycleHooks?: LifecycleHooks;
   } = {}
 ): Promise<FastifyInstance> {
   const app = Fastify({
@@ -56,7 +57,7 @@ export async function createApp(
     return { status: "ok" };
   });
 
-  registerRoutes(app, db, config, options.schedulingHooks);
+  registerRoutes(app, db, config, options.schedulingHooks, options.lifecycleHooks);
 
   let worker: NodeJS.Timeout | undefined;
   if (options.runWorker !== false) {

@@ -16,8 +16,9 @@ test("@regression-crm-history creates a customer and pet and persists their rela
   await page.getByTestId("field-lastName").fill(`Persist ${token}`);
   await page.getByTestId("field-email").fill(`persist-${token}@example.test`);
   await page.getByTestId("modal-submit").click();
+  await expect(page.getByTestId("modal")).toBeHidden();
 
-  await page.getByTestId("new-pet").click();
+  await page.locator('[data-action="new-pet"]').click();
   await page.getByTestId("field-customerId").selectOption({ label: `D3 Persist ${token}` });
   await page.getByTestId("field-name").fill(`Pet ${token}`);
   await page.getByTestId("field-breed").fill("Pilot Terrier");

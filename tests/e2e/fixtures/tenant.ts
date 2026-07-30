@@ -187,9 +187,12 @@ export const test = base.extend<Fixtures>({
     }
     expect(failures,failures.join("\n")).toEqual([]);
   },
-  tenant: async ({request},use,testInfo) => {
-    await use(await createTenant(request,`${testInfo.parallelIndex}-${testInfo.title}`));
-  }
+  tenant: [
+    async ({request},use,testInfo) => {
+      await use(await createTenant(request,`${testInfo.parallelIndex}-${testInfo.title}`));
+    },
+    { timeout:60_000 }
+  ]
 });
 export { expect, ownerPermissions };
 

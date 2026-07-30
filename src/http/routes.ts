@@ -69,7 +69,7 @@ async function hasCurrentPermission(
   const [row] = await tx<{ allowed: boolean }[]>`
     select (membership.is_owner or ${input.permission}=any(membership.permissions)) as allowed
     from business_memberships membership
-    join users account on account.id=membership.user_id and account.status='active'
+    join users account on account.id=membership.user_id and account.disabled_at is null
     join businesses business on business.id=membership.business_id and business.status='active'
     where membership.business_id=${input.businessId}
       and membership.id=${input.membershipId}

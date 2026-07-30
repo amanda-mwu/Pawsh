@@ -44,7 +44,7 @@ test("@security-desktop stale permission cannot mutate and reconciles capability
   const ownerCheckout=await request.post(`/api/appointments/${appointment.id}/checkout`,{
     data:{discountMinor:0,tipMinor:0}
   });
-  expect(ownerCheckout.status()).toBe(200);
+  expect(ownerCheckout.status()).toBe(201);
   await page.reload();
   await page.getByTestId("nav-calendar").click();
   await expect(page.locator(`[data-appointment-id="${appointment.id}"]`).getByTestId("appointment-completed")).toBeHidden();

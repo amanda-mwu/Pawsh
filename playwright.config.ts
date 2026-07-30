@@ -38,11 +38,13 @@ export default defineConfig({
     {
       name:"firefox-desktop",
       grep:crossBrowserTag,
+      workers:1,
       use:{...devices["Desktop Firefox"]}
     },
     {
       name:"webkit-desktop",
       grep:crossBrowserTag,
+      workers:1,
       use:{...devices["Desktop Safari"]}
     },
     {

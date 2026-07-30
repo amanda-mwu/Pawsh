@@ -23,6 +23,7 @@ test("@regression-crm-history creates a customer and pet and persists their rela
   await page.getByTestId("field-name").fill(`Pet ${token}`);
   await page.getByTestId("field-breed").fill("Pilot Terrier");
   await page.getByTestId("modal-submit").click();
+  await expect(page.getByTestId("modal")).toBeHidden();
 
   await page.reload();
   await page.getByTestId("nav-customers").click();
@@ -36,6 +37,7 @@ test("@regression-crm-history protects safety edits and reconciles a stale safet
   await page.locator(`[data-pet-id="${tenant.rockyPetId}"]`).getByRole("button", { name: "Safety" }).click();
   await page.getByTestId("field-safetyAlerts").fill("Two handlers required");
   await page.getByTestId("modal-submit").click();
+  await expect(page.getByTestId("modal")).toBeHidden();
 
   const current = (await (await request.get(`/api/pets?customerId=${tenant.rockyCustomerId}`)).json())
     .find((pet: { id: string }) => pet.id === tenant.rockyPetId);

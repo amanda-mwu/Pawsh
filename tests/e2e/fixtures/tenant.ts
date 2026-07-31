@@ -7,7 +7,7 @@ import {
   type Page,
   type TestInfo,
 } from "@playwright/test";
-import { nextMonday, zonedIso } from "../helpers/date.js";
+import { nextMonday } from "../helpers/date.js";
 
 export const password = "correct horse browser smoke";
 const ownerPermissions = [
@@ -25,6 +25,7 @@ export interface TenantFixture {
   businessId: string;
   ownerMembershipId: string;
   locationId: string;
+  locationVersion: number;
   employeeId: string;
   serviceId: string;
   customerId: string;
@@ -59,7 +60,7 @@ export async function createTenant(api: APIRequestContext, label: string): Promi
   }));
   await json(await api.put("/api/business/settings",{data:{
     name:`PW Smoke ${runId}`,timezone:"America/Los_Angeles",currency:"USD",
-    taxRateBasisPoints:825,reminderLeadMinutes:1440
+    taxRateBasisPoints:825,reminderLeadMinutes:1440,locationVersion:1
   }}));
   await json(await api.put("/api/business/working-hours",{data:{hours:[1,2,3,4,5,6].map((weekday)=>({
     weekday,startTime:weekday===6?"09:00":"08:00",endTime:weekday===6?"16:00":"18:00"
@@ -104,7 +105,7 @@ export async function createTenant(api: APIRequestContext, label: string): Promi
     customerId:sophia.id,name:"Boba",species:"dog",breed:"Pomeranian",safetyAlerts:"Do not shave coat."
   }}));
   return {
-    runId,ownerEmail,password,businessId:signup.businessId,ownerMembershipId:signup.membershipId,locationId:signup.locationId,
+    runId,ownerEmail,password,businessId:signup.businessId,ownerMembershipId:signup.membershipId,locationId:signup.locationId,locationVersion:2,
     employeeId:employee.id,serviceId:service.id,customerId:emma.id,petId:charlie.id,
     rockyCustomerId:daniel.id,rockyPetId:rocky.id,sophiaCustomerId:sophia.id,
     mochiPetId:mochi.id,bobaPetId:boba.id,anchor:nextMonday()
@@ -114,13 +115,17 @@ export async function createTenant(api: APIRequestContext, label: string): Promi
 export async function createAppointment(
   api: APIRequestContext,
   tenant: TenantFixture,
-  options: Partial<{customerId:string;petId:string;startAt:string;serviceIds:string[]}> = {}
+  options: Partial<{customerId:string;petId:string;startAt:string;localStart:string;serviceIds:string[]}> = {}
 ) {
+  const localStart=options.localStart ?? (options.startAt
+    ? new Intl.DateTimeFormat("en-CA",{timeZone:"America/Los_Angeles",hourCycle:"h23",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}).formatToParts(new Date(options.startAt)).reduce((p,part)=>({...p,[part.type]:part.value}),{} as Record<string,string>)
+    : null);
+  const wall=typeof localStart === "string" ? localStart : localStart ? `${localStart.year}-${localStart.month}-${localStart.day}T${localStart.hour}:${localStart.minute}` : `${tenant.anchor}T09:00`;
   return json<{id:string;version:number}>(await api.post("/api/appointments",{data:{
     locationId:tenant.locationId,customerId:options.customerId??tenant.customerId,
     petId:options.petId??tenant.petId,employeeId:tenant.employeeId,
     serviceIds:options.serviceIds??[tenant.serviceId],
-    startAt:options.startAt??zonedIso(tenant.anchor,9)
+    localStart:wall,expectedLocationVersion:tenant.locationVersion
   }}));
 }
 

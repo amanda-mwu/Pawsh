@@ -27,10 +27,45 @@ appointment sums the selected duration snapshots. Editing services before
 checkout replaces those snapshots and recomputes the appointment end time.
 Existing service-catalog edits do not retroactively move appointments.
 
-Appointments persist UTC instants in `timestamptz`. APIs accept offset-bearing
-timestamps. Availability interprets those instants in the location's IANA
-timezone; the browser presents them in its configured local timezone. Exhaustive
-DST ambiguity policy remains part of the later calendar/time validation.
+Appointments persist authoritative UTC instants in `timestamptz`. Scheduling
+mutations accept strict minute-precision `YYYY-MM-DDTHH:mm` wall time; the server
+derives the IANA timezone from the tenant-owned active location and resolves the
+instant. The client cannot select a timezone. Nonexistent DST wall times are
+rejected and repeated wall times require `earlier` or `later` disambiguation.
+Durations are elapsed minutes on the UTC timeline.
+
+The controlled-pilot model has one active scheduling location per business,
+enforced by `one_active_location_per_business`. Location timezone is scheduling
+authority; the signup/business timezone is its initial default. Appointments
+snapshot the zone, original local start, resolved offset, and any ambiguity
+choice. UTC start/end remain historical truth. A future timezone-data revision
+can change rendering derived from an IANA identifier, so the zone identifier
+alone is not claimed to freeze historical timezone rules.
+
+Calendar day membership means the local day containing the snapshotted start;
+resource timeline mode uses UTC interval overlap. Calendar inputs are bounded to
+31 local days. Local midnight boundaries may span 23 or 25 elapsed hours. The
+browser formats operational scheduling screens in the location/snapshotted zone,
+never implicitly in the device zone.
+
+Business and employee hours are same-local-day weekly rules (`start < end`).
+One-off blocked time resolves through the same authoritative wall-time service.
+Cross-midnight appointments are a documented controlled-pilot limitation and
+are rejected; overnight hours must not be encoded as a start-after-end row.
+
+Timezone setting writes require `settings.manage`, a current location version,
+take a location row lock, increment that version once, and audit old/new zone.
+Appointment create/reschedule locks the same location row and requires the
+expected version, preventing mixed-zone commits. Existing appointment instants
+and snapshots do not change with settings; a reschedule creates new intent under
+the then-current location zone.
+
+The authoritative conversion implementation uses Node 24 `Intl`/ICU timezone
+data behind `src/domain/time.ts`; browsers only present server-authoritative
+context. Runtime/ICU updates require the known-transition regression suite.
+Conversion failure is fail-closed. Reminder occurrence remains UTC appointment
+instant minus elapsed lead time, while reminder wording uses the appointment's
+snapshotted scheduling timezone.
 
 Cancellation is a terminal audited state transition, not deletion. Rescheduling
 updates the same scheduled appointment. A failed or stale move leaves its

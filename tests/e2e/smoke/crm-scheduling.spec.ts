@@ -1,5 +1,4 @@
 import { test, expect, login } from "../fixtures/tenant.js";
-import { zonedIso } from "../helpers/date.js";
 
 test("@smoke CRM search persists and booking filters pets by customer",async({page,tenant})=>{
   await login(page,tenant.ownerEmail);
@@ -46,8 +45,8 @@ test("@smoke scheduling rejects overlap and blocked time but permits adjacency",
   await createAt("10:30");
   await expect(page.getByTestId("calendar-list").getByText("Charlie")).toHaveCount(2);
   await request.post("/api/blocked-times",{data:{
-    employeeId:tenant.employeeId,startAt:zonedIso(tenant.anchor,13),
-    endAt:zonedIso(tenant.anchor,14),reason:"Smoke blocked time"
+    employeeId:tenant.employeeId,locationId:tenant.locationId,localStart:`${tenant.anchor}T13:00`,
+    localEnd:`${tenant.anchor}T14:00`,expectedLocationVersion:tenant.locationVersion,reason:"Smoke blocked time"
   }});
   await createAt("13:00");
   await expect(page.locator("#modal-error")).toContainText("explicit override");

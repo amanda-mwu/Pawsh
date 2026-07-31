@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
+import { formatWallTime } from "../../src/domain/time.js";
 import { hashPassword } from "../../src/security/passwords.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -74,7 +75,7 @@ describeDatabase("D2 appointment lifecycle regression", () => {
       method: "POST",
       url: "/api/appointments",
       headers: { cookie },
-      payload: { locationId, customerId, petId, employeeId, serviceIds: [serviceId], startAt }
+      payload: { locationId, customerId, petId, employeeId, serviceIds: [serviceId], localStart:formatWallTime(startAt,"America/Los_Angeles"),expectedLocationVersion:1 }
     });
   const transition = (
     id: string,

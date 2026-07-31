@@ -114,7 +114,7 @@ test("@regression-booking hides override UX and denies direct intent without per
     petId: tenant.petId,
     employeeId: tenant.employeeId,
     serviceIds: [tenant.serviceId],
-    startAt: zonedIso(tenant.anchor, 9)
+    localStart: `${tenant.anchor}T09:00`,expectedLocationVersion:tenant.locationVersion
   });
   expect(status).toBe(403);
 });

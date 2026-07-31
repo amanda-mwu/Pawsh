@@ -32,9 +32,9 @@ describeDatabase("PostgreSQL invariants", () => {
       values (${business!.id},${customer!.id},'Mochi') returning id`;
     const insert = (start: string, end: string) => sql!`
       insert into appointments
-        (business_id,location_id,customer_id,pet_id,employee_id,start_at,end_at,created_by,updated_by)
+        (business_id,location_id,customer_id,pet_id,employee_id,start_at,end_at,scheduling_timezone,scheduled_local_start,scheduled_utc_offset_minutes,created_by,updated_by)
       values (${business!.id},${location!.id},${customer!.id},${pet!.id},${employee!.id},
-        ${start},${end},${user!.id},${user!.id})
+        ${start},${end},'America/Los_Angeles',${start}::timestamptz at time zone 'America/Los_Angeles',-420,${user!.id},${user!.id})
     `;
     await insert("2026-08-01T09:00:00Z", "2026-08-01T10:00:00Z");
     await insert("2026-08-01T10:00:00Z", "2026-08-01T11:00:00Z");

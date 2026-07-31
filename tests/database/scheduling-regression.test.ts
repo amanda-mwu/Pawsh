@@ -3,6 +3,7 @@ import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
 import { hashPassword } from "../../src/security/passwords.js";
+import { formatWallTime } from "../../src/domain/time.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -28,6 +29,7 @@ describeDatabase("D1 scheduling regression", () => {
   let app: Awaited<ReturnType<typeof createApp>>;
   let barrier: { expected: number; arrived: number; release: () => void; promise: Promise<void> } | null = null;
   let failAfterOverrideAudit = false;
+  let locationLockGate: { reached:()=>void; wait:Promise<void> } | null=null;
   let ownerCookie: string;
   let businessId: string;
   let locationId: string;
@@ -46,7 +48,7 @@ describeDatabase("D1 scheduling regression", () => {
     petId,
     employeeId,
     serviceIds: [serviceId],
-    startAt
+    localStart:formatWallTime(startAt,"America/Los_Angeles"),expectedLocationVersion:1
   });
   const create = (cookie: string, employeeId: string, startAt: string, extra: object = {}) =>
     app.inject({
@@ -77,6 +79,10 @@ describeDatabase("D1 scheduling regression", () => {
             active.release();
           }
           await active.promise;
+        },
+        async afterLocationLock({operation}) {
+          if(operation!=="create"||!locationLockGate)return;
+          const active=locationLockGate;locationLockGate=null;active.reached();await active.wait;
         },
         async afterOverrideAudit() {
           if (!failAfterOverrideAudit) return;
@@ -372,7 +378,7 @@ describeDatabase("D1 scheduling regression", () => {
       method: "PATCH",
       url: `/api/appointments/${movable.json().id}/schedule`,
       headers: { cookie: ownerCookie },
-      payload: { employeeId: employeeA, startAt: existingStart, version: movable.json().version }
+      payload: { employeeId: employeeA, localStart:formatWallTime(existingStart,"America/Los_Angeles"),expectedLocationVersion:1, version: movable.json().version }
     });
     expect(rejected.statusCode).toBe(409);
     const [unchanged] = await db<{ startAt: Date }[]>`
@@ -386,7 +392,7 @@ describeDatabase("D1 scheduling regression", () => {
       headers: { cookie: ownerCookie },
       payload: {
         employeeId: employeeA,
-        startAt: existingStart,
+        localStart:formatWallTime(existingStart,"America/Los_Angeles"),expectedLocationVersion:1,
         version: movable.json().version,
         overrideConflict: true
       }
@@ -407,7 +413,7 @@ describeDatabase("D1 scheduling regression", () => {
         headers: { cookie: ownerCookie },
         payload: {
           employeeId: employeeB,
-          startAt: "2032-01-13T17:00:00.000Z",
+          localStart: "2032-01-13T09:00",expectedLocationVersion:1,
           version: first.json().version
         }
       }),
@@ -417,7 +423,7 @@ describeDatabase("D1 scheduling regression", () => {
         headers: { cookie: ownerCookie },
         payload: {
           employeeId: employeeA,
-          startAt: "2032-01-13T20:00:00.000Z",
+          localStart: "2032-01-13T12:00",expectedLocationVersion:1,
           version: second.json().version
         }
       })
@@ -467,8 +473,7 @@ describeDatabase("D1 scheduling regression", () => {
       headers: { cookie: ownerCookie },
       payload: {
         employeeId: employeeA,
-        startAt: "2032-01-15T20:00:00.000Z",
-        endAt: "2032-01-15T21:00:00.000Z",
+        locationId,localStart: "2032-01-15T12:00",localEnd: "2032-01-15T13:00",expectedLocationVersion:1,
         reason: "D1 blocked interval"
       }
     });
@@ -488,7 +493,7 @@ describeDatabase("D1 scheduling regression", () => {
     `;
     await db`
       insert into appointments
-        (business_id,location_id,customer_id,pet_id,employee_id,start_at,end_at,status,created_by,updated_by)
+        (business_id,location_id,customer_id,pet_id,employee_id,start_at,end_at,scheduling_timezone,scheduled_local_start,scheduled_utc_offset_minutes,status,created_by,updated_by)
       select
         ${businessId},${locationId},${customerId},${petId},
         case when series.value % 2=0 then ${employeeA}::uuid else ${employeeB}::uuid end,
@@ -496,15 +501,16 @@ describeDatabase("D1 scheduling regression", () => {
           + floor(series.value/2) * interval '15 minutes',
         '2032-02-02T17:00:00.000Z'::timestamptz
           + floor(series.value/2) * interval '15 minutes' + interval '60 minutes',
+        'America/Los_Angeles',('2032-02-02T17:00:00.000Z'::timestamptz + floor(series.value/2) * interval '15 minutes') at time zone 'America/Los_Angeles',-480,
         'completed',${owner!.id},${owner!.id}
       from generate_series(0,524) as series(value)
     `;
     await db`
       insert into appointments
-        (business_id,location_id,customer_id,pet_id,employee_id,start_at,end_at,status,created_by,updated_by)
+        (business_id,location_id,customer_id,pet_id,employee_id,start_at,end_at,scheduling_timezone,scheduled_local_start,scheduled_utc_offset_minutes,status,created_by,updated_by)
       values (
         ${businessId},${locationId},${customerId},${petId},${employeeA},
-        '2032-03-01T17:00:00.000Z','2032-03-01T18:00:00.000Z','completed',
+        '2032-03-01T17:00:00.000Z','2032-03-01T18:00:00.000Z','America/Los_Angeles','2032-03-01T09:00:00',-480,'completed',
         ${owner!.id},${owner!.id}
       )
     `;
@@ -512,7 +518,7 @@ describeDatabase("D1 scheduling regression", () => {
     const startedAt = performance.now();
     const response = await app.inject({
       method: "GET",
-      url: "/api/appointments?from=2032-02-02T17:00:00.000Z&to=2032-02-09T17:00:00.000Z",
+      url: "/api/appointments?localDate=2032-02-02&days=7",
       headers: { cookie: ownerCookie }
     });
     const elapsedMilliseconds = performance.now() - startedAt;
@@ -538,5 +544,44 @@ describeDatabase("D1 scheduling regression", () => {
       elapsedMilliseconds: Number(elapsedMilliseconds.toFixed(2)),
       explain: explain[0]?.["QUERY PLAN"]
     }));
+  });
+
+  it("enforces authoritative DST and bounded calendar contracts", async () => {
+    const common={locationId,customerId,petId,employeeId:employeeA,serviceIds:[serviceId],expectedLocationVersion:1,
+      availabilityOverride:true,overrideReason:"E1 DST coverage"};
+    const nonexistent=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie},payload:{...common,localStart:"2026-03-08T02:30"}});
+    expect(nonexistent.statusCode).toBe(400);
+    expect(nonexistent.json().code).toBe("NONEXISTENT_LOCAL_TIME");
+    const ambiguous=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie},payload:{...common,localStart:"2026-11-01T01:30"}});
+    expect(ambiguous.statusCode).toBe(400);
+    expect(ambiguous.json().code).toBe("AMBIGUOUS_LOCAL_TIME");
+    expect((await app.inject({method:"GET",url:"/api/appointments?localDate=2026-01-01&days=32",headers:{cookie:ownerCookie}})).statusCode).toBe(400);
+    expect((await app.inject({method:"GET",url:"/api/appointments?localDate=not-a-date&days=7",headers:{cookie:ownerCookie}})).statusCode).toBe(400);
+  });
+
+  it("validates and version-protects audited location timezone settings", async () => {
+    const base={name:"D1 Scheduling",timezone:"America/Los_Angeles",currency:"USD",taxRateBasisPoints:0,reminderLeadMinutes:1440};
+    const invalid=await app.inject({method:"PUT",url:"/api/business/settings",headers:{cookie:ownerCookie},payload:{...base,timezone:"Not/A_Zone",locationVersion:1}});
+    expect(invalid.statusCode).toBe(400);
+    const stale=await app.inject({method:"PUT",url:"/api/business/settings",headers:{cookie:ownerCookie},payload:{...base,locationVersion:999}});
+    expect(stale.statusCode).toBe(409);
+    let reached!:()=>void;const locked=new Promise<void>(resolve=>{reached=resolve;});
+    let release!:()=>void;const wait=new Promise<void>(resolve=>{release=resolve;});
+    locationLockGate={reached,wait};
+    const creating=create(ownerCookie,employeeA,"2032-04-01T17:00:00.000Z");
+    await locked;
+    const changing=app.inject({method:"PUT",url:"/api/business/settings",headers:{cookie:ownerCookie},payload:{...base,timezone:"America/Denver",locationVersion:1}});
+    release();
+    const [created,changed]=await Promise.all([creating,changing]);
+    expect(created.statusCode).toBe(201);
+    expect(changed.statusCode).toBe(200);
+    const [location,appointment,audits]=await Promise.all([
+      db<{version:number;timezone:string}[]>`select version,timezone from locations where id=${locationId}`,
+      db<{schedulingTimezone:string}[]>`select scheduling_timezone from appointments where id=${created.json().id}`,
+      db`select id from audit_events where business_id=${businessId} and action='business.settings.update'`
+    ]);
+    expect(location[0]).toMatchObject({version:2,timezone:"America/Denver"});
+    expect(appointment[0]?.schedulingTimezone).toBe("America/Los_Angeles");
+    expect(audits).toHaveLength(1);
   });
 });

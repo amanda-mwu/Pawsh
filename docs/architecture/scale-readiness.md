@@ -32,6 +32,19 @@ inflate ordinary browser fixtures.
 
 ## Findings
 
+### TIME-005 — Cross-midnight scheduling scope
+
+- Evidence: weekly business/employee hours model one same-local-day interval;
+  safely covering an appointment across two local dates requires a different
+  availability evaluation contract.
+- Severity/current impact: no confirmed controlled-pilot requirement for
+  overnight grooming; accepting it accidentally would create correctness risk.
+- Disposition: Accepted Controlled-Pilot Limitation.
+- Promotion trigger: any pilot location requiring overnight hours or an
+  appointment crossing local midnight.
+- Status: E1 rejects cross-midnight appointments and start-after-end weekly
+  rows; explicit date-aware support is deferred.
+
 ### DB-001 — Override-aware conflict serialization
 
 - Evidence: the original unconditional exclusion constraint could not represent

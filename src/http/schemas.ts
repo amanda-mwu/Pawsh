@@ -123,7 +123,9 @@ export const appointmentSchema = z.object({
   customerId: z.string().uuid(),
   petId: z.string().uuid(),
   employeeId: z.string().uuid(),
-  startAt: z.string().datetime({ offset: true }),
+  localStart: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/),
+  disambiguation: z.enum(["earlier", "later"]).optional(),
+  expectedLocationVersion: z.number().int().positive(),
   serviceIds: z.array(z.string().uuid()).min(1),
   notes: z.string().max(5000).nullish(),
   availabilityOverride: z.boolean().default(false),
@@ -161,24 +163,29 @@ export const businessSettingsSchema = z.object({
   timezone: z.string().trim().min(1).max(80),
   currency: z.string().trim().length(3).transform((value) => value.toUpperCase()),
   taxRateBasisPoints: z.number().int().min(0).max(10_000),
-  reminderLeadMinutes: z.number().int().min(0).max(60 * 24 * 30)
+  reminderLeadMinutes: z.number().int().min(0).max(60 * 24 * 30),
+  locationVersion: z.number().int().positive()
 });
 
 export const workingHoursSchema = z.object({
   hours: z.array(z.object({
     weekday: z.number().int().min(0).max(6),
-    startTime: z.string().regex(/^\d\d:\d\d$/),
-    endTime: z.string().regex(/^\d\d:\d\d$/)
+    startTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+    endTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/)
+  }).refine((period)=>period.startTime<period.endTime,{
+    message:"Working hours must start before they end"
   })).max(7)
 });
 
 export const blockedTimeSchema = z.object({
   employeeId: z.string().uuid(),
-  startAt: z.string().datetime({ offset: true }),
-  endAt: z.string().datetime({ offset: true }),
+  locationId: z.string().uuid(),
+  localStart: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/),
+  localEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/),
+  startDisambiguation: z.enum(["earlier", "later"]).optional(),
+  endDisambiguation: z.enum(["earlier", "later"]).optional(),
+  expectedLocationVersion: z.number().int().positive(),
   reason: z.string().trim().min(1).max(500)
-}).refine((value) => new Date(value.startAt) < new Date(value.endAt), {
-  message: "Blocked time must end after it starts"
 });
 
 export const operationalUpdateSchema = z.object({
@@ -188,7 +195,9 @@ export const operationalUpdateSchema = z.object({
 
 export const appointmentMoveSchema = z.object({
   employeeId: z.string().uuid(),
-  startAt: z.string().datetime({ offset: true }),
+  localStart: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/),
+  disambiguation: z.enum(["earlier", "later"]).optional(),
+  expectedLocationVersion: z.number().int().positive(),
   version: z.number().int().positive(),
   availabilityOverride: z.boolean().default(false),
   overrideConflict: z.boolean().default(false),

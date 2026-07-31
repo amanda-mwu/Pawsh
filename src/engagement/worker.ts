@@ -168,7 +168,7 @@ export async function deliverNotifications(
     returning intent.id,intent.business_id,intent.destination,intent.notification_type,intent.attempts,
       intent.encrypted_body,
       (select appointment.start_at from appointments appointment where appointment.id=intent.appointment_id) as start_at,
-      (select location.timezone from appointments appointment join locations location on location.id=appointment.location_id where appointment.id=intent.appointment_id) as timezone,
+      (select appointment.scheduling_timezone from appointments appointment where appointment.id=intent.appointment_id) as timezone,
       (select business.name from businesses business where business.id=intent.business_id) as business_name,
       (select pet.name from appointments appointment join pets pet on pet.id=appointment.pet_id where appointment.id=intent.appointment_id) as pet_name
   `;

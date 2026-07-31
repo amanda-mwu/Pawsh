@@ -73,7 +73,7 @@ describeDatabase("canonical Pawsh workflow", () => {
       method: "PUT", url: "/api/business/settings", headers: { cookie: ownerCookie },
       payload: {
         name: "Mochi & Co.", timezone: "America/Los_Angeles", currency: "USD",
-        taxRateBasisPoints: 825, reminderLeadMinutes: 1440
+        taxRateBasisPoints: 825, reminderLeadMinutes: 1440, locationVersion:1
       }
     });
     expect(settings.statusCode).toBe(200);
@@ -182,7 +182,7 @@ describeDatabase("canonical Pawsh workflow", () => {
       method: "POST", url: "/api/appointments", headers: { cookie: ownerCookie },
       payload: {
         locationId, customerId, petId, employeeId, serviceIds: [serviceId],
-        startAt: "2031-08-01T17:00:00.000Z"
+        localStart: "2031-08-01T10:00", expectedLocationVersion:2
       }
     });
     expect(adjacent.statusCode).toBe(201);
@@ -194,7 +194,7 @@ describeDatabase("canonical Pawsh workflow", () => {
     expect(hours.statusCode).toBe(204);
     const outsidePayload = {
       locationId, customerId, petId, employeeId, serviceIds: [serviceId],
-      startAt: "2031-08-02T05:00:00.000Z"
+      localStart: "2031-08-01T22:00", expectedLocationVersion:2
     };
     const unavailable = await app.inject({
       method: "POST", url: "/api/appointments", headers: { cookie: ownerCookie }, payload: outsidePayload
@@ -513,7 +513,7 @@ describeDatabase("canonical Pawsh workflow", () => {
     };
     const requests = [
       ["dashboard", "/api/dashboard"],
-      ["calendar", "/api/appointments?from=2031-08-01T00:00:00.000Z&to=2031-08-08T00:00:00.000Z"],
+      ["calendar", "/api/appointments?localDate=2031-08-01&days=7"],
       ["customerSearch", "/api/customers?search=Pat"]
     ] as const;
     for (let iteration = 0; iteration < 10; iteration += 1) {

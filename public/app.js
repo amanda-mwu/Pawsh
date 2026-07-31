@@ -99,14 +99,31 @@ async function refresh() {
     safe("customers.view") ? api("/api/customers") : [],
     safe("pets.view") ? api("/api/pets") : [],
     api("/api/employees"), api("/api/services"),
-    safe("appointments.view") ? api(`/api/appointments?from=${new Date(Date.now()-86400000).toISOString()}&to=${new Date(Date.now()+8*86400000).toISOString()}`) : [],
+    safe("appointments.view") ? api(`/api/appointments?localDate=${businessDate()}&days=8`) : [],
     safe("team.manage") ? api("/api/members") : [],
     safe("reports.view") ? api("/api/reports") : null
   ];
   const [dashboard, customers, pets, employees, services, appointments, members, reports] = await Promise.all(requests);
   Object.assign(state, { customers, pets, employees, services, appointments, members, reports });
+  $("#today").textContent = new Intl.DateTimeFormat([], {timeZone:schedulingZone(),weekday:"long",month:"short",day:"numeric"}).format(new Date());
   applyPermissions();
   renderDashboard(dashboard); renderCustomersEnhanced(); renderSetupEnhanced(); renderAppointments(); renderReports();
+}
+
+function schedulingZone(){return state.me?.business?.timezone||"UTC";}
+function wallParts(value=new Date()){
+  return new Intl.DateTimeFormat("en-CA",{timeZone:schedulingZone(),hourCycle:"h23",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}).formatToParts(value);
+}
+function wallValue(value=new Date()){
+  const p=wallParts(value),v=t=>p.find(x=>x.type===t).value;
+  return `${v("year")}-${v("month")}-${v("day")}T${v("hour")==="24"?"00":v("hour")}:${v("minute")}`;
+}
+function businessDate(value=new Date()){return wallValue(value).slice(0,10);}
+function schedulingTime(item){
+  return new Intl.DateTimeFormat([], {timeZone:item.schedulingTimezone||schedulingZone(),hour:"numeric",minute:"2-digit"}).format(new Date(item.startAt));
+}
+function disambiguationField(value=""){
+  return `<label class="wide">Repeated-time occurrence<select name="disambiguation"><option value="" ${!value?"selected":""}>Automatic when unique</option><option value="earlier" ${value==="earlier"?"selected":""}>First occurrence</option><option value="later" ${value==="later"?"selected":""}>Second occurrence</option></select></label>`;
 }
 
 function renderDashboard(data) {
@@ -131,7 +148,7 @@ function safetyContext(item) {
     : "";
 }
 function appointmentHtml(item) {
-  const time = new Date(item.startAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const time = schedulingTime(item);
   const customer = `${item.firstName} ${item.lastName}`;
   const actionDefinition = {
     scheduled: ["Check in", "operations.check_in"],
@@ -148,8 +165,8 @@ function appointmentHtml(item) {
 function renderAppointments() {
   const html = state.appointments.length ? state.appointments.map(appointmentHtml).join("") : "No appointments scheduled.";
   $("#calendar-list").innerHTML = html; $("#calendar-list").classList.toggle("empty", !state.appointments.length);
-  const today = new Date().toDateString();
-  const todays = state.appointments.filter((item) => new Date(item.startAt).toDateString() === today);
+  const today = businessDate();
+  const todays = state.appointments.filter((item) => String(item.scheduledLocalStart).slice(0,10) === today);
   $("#today-list").innerHTML = todays.length ? todays.map(appointmentHtml).join("") : "No appointments today.";
   $$(".appointment-action").forEach((button) => button.addEventListener("click", () => advanceAppointment(button.dataset.id, button.dataset.status, button)));
   state.appointments.filter(item=>item.status==="scheduled" && (allowed("appointments.edit") || allowed("appointments.cancel"))).forEach(item=>{
@@ -172,8 +189,8 @@ function adjustServices(id) {
 }
 function moveAppointment(id) {
   const appointment=state.appointments.find(item=>item.id===id);
-  const local=new Date(new Date(appointment.startAt).getTime()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);
-  openModal("Move appointment",select("employeeId","Groomer",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]))+field("startAt","Start time","datetime-local",`required value="${local}"`),form=>schedulingMutation(`/api/appointments/${id}/schedule`,{employeeId:form.get("employeeId"),startAt:new Date(form.get("startAt")).toISOString(),version:appointment.version},"Reschedule"));
+  const local=String(appointment.scheduledLocalStart).slice(0,16);
+  openModal("Move appointment",select("employeeId","Groomer",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]))+field("startAt","Start time","datetime-local",`required value="${local}"`)+disambiguationField(appointment.scheduledDisambiguation||""),form=>schedulingMutation(`/api/appointments/${id}/schedule`,{employeeId:form.get("employeeId"),localStart:form.get("startAt"),disambiguation:form.get("disambiguation")||undefined,expectedLocationVersion:state.me.business.version,version:appointment.version},"Reschedule"));
 }
 async function terminalAppointment(id,status) {
   if(!confirm(status==="cancelled"?"Cancel this appointment?":"Mark this appointment as a no-show?"))return;
@@ -380,7 +397,7 @@ function editCustomer(id) {
 async function showCustomerHistory(id) {
   try{
     const historyData=await api(`/api/customers/${id}/history`);
-    const appointments=historyData.appointments.map(item=>`<div><span>${new Date(item.startAt).toLocaleDateString()} / ${escape(item.petName)}</span><strong>${escape(item.status.replace("_"," "))}</strong></div>`).join("")||"<p>No appointments yet.</p>";
+    const appointments=historyData.appointments.map(item=>`<div><span>${new Intl.DateTimeFormat([],{timeZone:item.schedulingTimezone||schedulingZone()}).format(new Date(item.startAt))} / ${escape(item.petName)}</span><strong>${escape(item.status.replace("_"," "))}</strong></div>`).join("")||"<p>No appointments yet.</p>";
     const invoices=historyData.invoices.map(item=>`<div><span>Invoice ${escape(item.invoiceNumber)}</span><span><strong>${money(item.totalMinor)} / ${escape(item.status)}</strong><button type="button" class="text-button history-receipt" data-invoice-id="${item.id}">Receipt</button></span></div>`).join("")||`<p>${allowed("payments.view")?"No invoices yet.":"Financial history requires payment access."}</p>`;
     const petDocuments=allowed("pets.care.view")?historyData.pets.map(pet=>`<div><span>${escape(pet.name)}${pet.archivedAt?" (archived)":""}</span><button type="button" class="text-button history-pet-documents" data-pet-id="${pet.id}">Documents</button></div>`).join(""):"";
     openModal(`${historyData.customer.firstName} ${historyData.customer.lastName} history`,`<div class="wide history-list">${petDocuments?`<h4>Pet Care documents</h4>${petDocuments}`:""}<h4>Appointments</h4>${appointments}<h4>Transactions</h4>${invoices}</div>`,async()=>{});
@@ -557,7 +574,7 @@ function schedulingMutation(path,payload,operationLabel){
     if(error.status===409&&error.data?.code==="SCHEDULING_CONFLICT"&&error.data.canOverride){
       error.operationLabel=operationLabel;
       error.proposedEmployee=state.employees.find(item=>item.id===payload.employeeId)?.displayName||"Selected employee";
-      error.proposedStart=new Date(payload.startAt);
+      error.proposedStart=payload.localStart.replace("T"," ");
       error.retryConflictOverride=()=>api(path,{
         method:path.includes("/schedule")?"PATCH":"POST",
         body:JSON.stringify({...payload,overrideConflict:true})
@@ -571,12 +588,10 @@ function renderConflictOverride(error){
   const container=$("#modal-error");
   container.textContent="";
   const conflicts=error.data.conflicts||[];
-  const proposed=error.proposedStart.toLocaleString();
-  const conflictTimes=conflicts.map(item=>
-    `${new Date(item.startsAt).toLocaleString()}–${new Date(item.endsAt).toLocaleTimeString()}`
-  ).join(", ");
+  const proposed=error.proposedStart;
+  const locationConflictTimes=conflicts.map(item=>`${new Intl.DateTimeFormat([],{timeZone:schedulingZone(),dateStyle:"short",timeStyle:"short"}).format(new Date(item.startsAt))} to ${new Intl.DateTimeFormat([],{timeZone:schedulingZone(),timeStyle:"short"}).format(new Date(item.endsAt))}`).join(", ");
   const message=document.createElement("span");
-  message.textContent=`${error.proposedEmployee} already has an overlapping appointment. ${error.operationLabel} at ${proposed} will overlap ${conflictTimes}.`;
+  message.textContent=`${error.proposedEmployee} already has an overlapping appointment. ${error.operationLabel} at ${proposed} will overlap ${locationConflictTimes}.`;
   const button=document.createElement("button");
   button.type="button";
   button.className="secondary";
@@ -628,10 +643,11 @@ const actions = {
     field("reminderHours","Reminder lead (hours)","number",`required min="0" value="${Number(state.me.business.reminderLeadMinutes)/60}"`),
     async(form)=>{
       const values=Object.fromEntries(form);
+      if(values.timezone!==state.me.business.timezone&&state.appointments.some(item=>new Date(item.startAt)>new Date())&&!confirm("Changing this location's timezone affects how new and rescheduled appointment times are interpreted. Existing appointment instants will not be moved."))return;
       await api("/api/business/settings",{method:"PUT",body:JSON.stringify({
         name:values.name,timezone:values.timezone,currency:values.currency,
         taxRateBasisPoints:Math.round(Number(values.taxRate)*100),
-        reminderLeadMinutes:Math.round(Number(values.reminderHours)*60)
+        reminderLeadMinutes:Math.round(Number(values.reminderHours)*60),locationVersion:state.me.business.version
       })});
       state.me=await api("/api/me");$("#salon-name").textContent=state.me.business.name;
     }),
@@ -651,8 +667,8 @@ const actions = {
       select("petId","Pet",[])+
       select("employeeId","Groomer",state.employees.filter(e=>e.active).map(e=>[e.id,e.displayName]))+
       serviceCheckboxes()+
-      field("startAt","Start time","datetime-local","required",true)+field("notes","Appointment notes","text","",true),
-      (form) => { const o=Object.fromEntries(form); return schedulingMutation("/api/appointments",{locationId:state.me.business.locationId,customerId:o.customerId,petId:o.petId,employeeId:o.employeeId,serviceIds:form.getAll("serviceIds"),startAt:new Date(o.startAt).toISOString(),notes:o.notes||null},"Booking"); });
+      field("startAt","Start time","datetime-local","required",true)+disambiguationField()+field("notes","Appointment notes","text","",true),
+      (form) => { const o=Object.fromEntries(form); return schedulingMutation("/api/appointments",{locationId:state.me.business.locationId,customerId:o.customerId,petId:o.petId,employeeId:o.employeeId,serviceIds:form.getAll("serviceIds"),localStart:o.startAt,disambiguation:o.disambiguation||undefined,expectedLocationVersion:state.me.business.version,notes:o.notes||null},"Booking"); });
     const customerSelect=$('[name="customerId"]');const petSelect=$('[name="petId"]');
     customerSelect.addEventListener("change",()=>{
       const pets=state.pets.filter(pet=>pet.customerId===customerSelect.value);
@@ -663,7 +679,7 @@ const actions = {
     select("employeeId","Team member",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]))+
     field("startAt","Start","datetime-local","required")+field("endAt","End","datetime-local","required")+
     field("reason","Reason","text","required",true),
-    form=>api("/api/blocked-times",{method:"POST",body:JSON.stringify({employeeId:form.get("employeeId"),startAt:new Date(form.get("startAt")).toISOString(),endAt:new Date(form.get("endAt")).toISOString(),reason:form.get("reason")})}))
+    form=>api("/api/blocked-times",{method:"POST",body:JSON.stringify({employeeId:form.get("employeeId"),locationId:state.me.business.locationId,localStart:form.get("startAt"),localEnd:form.get("endAt"),expectedLocationVersion:state.me.business.version,reason:form.get("reason")})}))
 };
 
 $("#auth-form").addEventListener("submit", async (event) => {
@@ -726,7 +742,6 @@ $("#customer-search").addEventListener("input", async (event)=>{
   if(sequence!==customerSearchSequence)return;
   state.customers=customers;renderCustomersEnhanced();
 });
-$("#today").textContent = new Date().toLocaleDateString([], { weekday:"long", month:"short", day:"numeric" });
 document.addEventListener("visibilitychange",async()=>{if(document.visibilityState==="visible"&&state.me){try{state.me=await api("/api/me");applyPermissions();await refresh();}catch{await bootstrap();}}});
 if (inviteToken || resetToken) {
   state.login=true;

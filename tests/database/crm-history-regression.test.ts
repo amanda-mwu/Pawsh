@@ -265,7 +265,7 @@ describeDatabase("D3 customer, pet, and history regression", () => {
       method: "POST", url: "/api/appointments", headers: { cookie: ownerCookie },
       payload: {
         locationId, customerId, petId, employeeId, serviceIds: [serviceId],
-        startAt: "2035-04-10T17:00:00.000Z"
+        localStart: "2035-04-10T10:00", expectedLocationVersion:1
       }
     });
     expect(appointment.statusCode).toBe(201);
@@ -357,12 +357,13 @@ describeDatabase("D3 customer, pet, and history regression", () => {
     `;
     await db`
       insert into appointments(
-        business_id,location_id,customer_id,pet_id,employee_id,start_at,end_at,status,
+        business_id,location_id,customer_id,pet_id,employee_id,start_at,end_at,scheduling_timezone,scheduled_local_start,scheduled_utc_offset_minutes,status,
         created_by,updated_by
       )
       select ${businessId},${locationId},${frequentCustomer!.id},${frequentPet!.id},${employeeId},
         timestamptz '2030-01-01 09:00:00+00' + series * interval '1 day',
         timestamptz '2030-01-01 10:00:00+00' + series * interval '1 day',
+        'America/Los_Angeles',(timestamptz '2030-01-01 09:00:00+00' + series * interval '1 day') at time zone 'America/Los_Angeles',-480,
         (array['completed','cancelled','no_show']::appointment_status[])[1 + (series % 3)],
         ${owner!.userId},${owner!.userId}
       from generate_series(1,300) series

@@ -7,6 +7,7 @@ import type { Database } from "../db/client.js";
 import { DocumentStorageError, sha256, type DocumentStorage } from "../storage/documents.js";
 import { canTransition, type AppointmentStatus } from "../domain/appointments.js";
 import { calculateInvoice } from "../domain/money.js";
+import { localDateBounds, localDateForInstant, resolveWallTime, validateTimeZone } from "../domain/time.js";
 import { permissionPresets, permissions } from "../domain/permissions.js";
 import { auth, authentication, issueToken, platformAuthentication, requirePermission, tokenHash } from "./context.js";
 import {
@@ -29,6 +30,16 @@ import {
 } from "../domain/pet-care.js";
 
 type Transaction = postgres.TransactionSql;
+
+const calendarQuerySchema=z.object({
+  localDate:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  days:z.coerce.number().int().min(1).max(31).optional(),
+  mode:z.enum(["start","overlap"]).optional()
+}).strict();
+const reportRangeSchema=z.object({
+  localDate:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  days:z.coerce.number().int().min(1).max(366).optional()
+}).strict();
 
 interface SchedulingConflict {
   appointmentId: string;
@@ -116,6 +127,7 @@ function publicDocument(row: DocumentApiRow) {
 }
 
 export interface SchedulingHooks {
+  afterLocationLock?: (input:{operation:"create"|"reschedule";businessId:string;timezone:string;version:number})=>Promise<void>;
   beforeLock?: (input: {
     operation: "create" | "reschedule";
     businessId: string;
@@ -371,6 +383,7 @@ export function registerRoutes(
 
   app.post("/api/auth/signup", async (request, reply) => {
     const input = body(signupSchema, request.body);
+    const timezone=validateTimeZone(input.timezone);
     const email = normalizeEmail(input.email);
     await validateNewPassword(input.password, { email });
     const passwordHash = await hashPassword(input.password);
@@ -393,7 +406,7 @@ export function registerRoutes(
       `;
       const [location] = await tx<{ id: string }[]>`
         insert into locations (business_id, name, timezone)
-        values (${business.id}, ${input.businessName}, ${input.timezone})
+        values (${business.id}, ${input.businessName}, ${timezone})
         returning id
       `;
       const token = issueToken();
@@ -589,11 +602,17 @@ export function registerRoutes(
 
   app.put("/api/business/settings", {
     preHandler: [authenticate, requirePermission("settings.manage")]
-  }, async (request) => {
+  }, async (request, reply) => {
     const context = auth(request);
     const input = body(businessSettingsSchema, request.body);
+    const timezone = validateTimeZone(input.timezone);
     return db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
+      const [location] = await tx<{ id:string; timezone:string; version:number }[]>`
+        select id,timezone,version from locations
+        where business_id=${context.businessId} and active and version=${input.locationVersion} for update
+      `;
+      if (!location) return reply.code(409).send({ code:"STALE_LOCATION_SETTINGS", error:"Location settings changed. Refresh and try again." });
       const [updated] = await tx`
         update businesses set name=${input.name}, phone=${input.phone ?? null}, email=${input.email ?? null},
           currency=${input.currency}, tax_rate_basis_points=${input.taxRateBasisPoints},
@@ -601,12 +620,13 @@ export function registerRoutes(
         where id=${context.businessId} returning *
       `;
       await tx`
-        update locations set name=${input.name}, timezone=${input.timezone}, updated_at=now()
-        where business_id=${context.businessId} and active
+        update locations set name=${input.name}, timezone=${timezone}, version=version+1, updated_at=now()
+        where id=${location.id}
       `;
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "business.settings.update",
-        resourceType: "business", resourceId: context.businessId
+        resourceType: "business", resourceId: context.businessId,
+        before:{ timezone:location.timezone }, after:{ timezone }
       });
       return updated;
     });
@@ -916,10 +936,19 @@ export function registerRoutes(
   }, async (request, reply) => {
     const context = auth(request);
     const input = body(blockedTimeSchema, request.body);
+    const [location] = await db<{ timezone:string; version:number }[]>`
+      select timezone,version from locations where business_id=${context.businessId} and id=${input.locationId} and active
+    `;
+    if (!location) return reply.code(404).send({ error:"Location not found" });
+    if (location.version !== input.expectedLocationVersion) return reply.code(409).send({ code:"STALE_LOCATION_SETTINGS", error:"Location settings changed. Refresh and try again." });
+    const start=resolveWallTime(input.localStart,location.timezone,input.startDisambiguation);
+    const end=resolveWallTime(input.localEnd,location.timezone,input.endDisambiguation);
+    if (start.instant >= end.instant) return reply.code(400).send({ error:"Blocked time must end after it starts" });
     const [created] = await db`
-      insert into blocked_times (business_id,employee_id,start_at,end_at,reason,created_by)
-      values (${context.businessId},${input.employeeId},${input.startAt},${input.endAt},
-        ${input.reason},${context.userId}) returning *
+      insert into blocked_times (business_id,employee_id,location_id,start_at,end_at,scheduling_timezone,
+        scheduled_local_start,scheduled_local_end,reason,created_by)
+      values (${context.businessId},${input.employeeId},${input.locationId},${start.instant},${end.instant},${start.timeZone},
+        ${input.localStart},${input.localEnd},${input.reason},${context.userId}) returning *
     `;
     return reply.code(201).send(created);
   });
@@ -1562,11 +1591,19 @@ export function registerRoutes(
 
   app.get("/api/appointments", {
     preHandler: [authenticate, requirePermission("appointments.view")]
-  }, async (request) => {
+  }, async (request, reply) => {
     const context = auth(request);
-    const query = request.query as { from?: string; to?: string };
-    const from = query.from ?? new Date(Date.now() - 86_400_000).toISOString();
-    const to = query.to ?? new Date(Date.now() + 7 * 86_400_000).toISOString();
+    const query = body(calendarQuerySchema,request.query);
+    const [location] = await db<{ id:string; timezone:string }[]>`
+      select id,timezone from locations where business_id=${context.businessId} and active
+    `;
+    if (!location) return reply.code(404).send({ error:"Active location not found" });
+    const localDate=query.localDate ?? localDateForInstant(new Date(),location.timezone);
+    const days=query.days ?? 8;
+    const from=localDateBounds(localDate,location.timezone).from;
+    const endLocal=new Date(Date.UTC(Number(localDate.slice(0,4)),Number(localDate.slice(5,7))-1,Number(localDate.slice(8,10))+days));
+    const to=localDateBounds(endLocal.toISOString().slice(0,10),location.timezone).from;
+    const overlap=query.mode === "overlap";
     const rows = await db`
       select a.*, c.first_name, c.last_name, p.name as pet_name, p.safety_alerts,
         p.behavior_notes, p.medical_notes, p.grooming_preferences, p.coat_notes,
@@ -1581,7 +1618,11 @@ export function registerRoutes(
       join pets p on p.id=a.pet_id
       join employees e on e.id=a.employee_id
       left join appointment_services aps on aps.appointment_id=a.id
-      where a.business_id=${context.businessId} and a.start_at >= ${from} and a.start_at < ${to}
+      where a.business_id=${context.businessId} and a.location_id=${location.id}
+        and ${overlap
+          ? db`a.start_at < ${to} and a.end_at > ${from}`
+          : db`a.start_at >= ${from} - interval '2 days' and a.start_at < ${to} + interval '2 days'
+              and a.scheduled_local_start >= ${localDate}::date and a.scheduled_local_start < ${endLocal.toISOString().slice(0,10)}::date`}
       group by a.id,c.id,p.id,e.id order by a.start_at,a.employee_id,a.id
     `;
     if (mayViewPetCare(context)) return rows;
@@ -1609,6 +1650,14 @@ export function registerRoutes(
         ) as available
       `;
       if (!participants?.available) throw new Error("The selected customer or pet is unavailable");
+      const [location] = await tx<{ timezone:string; version:number }[]>`
+        select timezone,version from locations
+        where business_id=${context.businessId} and id=${input.locationId} and active for update
+      `;
+      if (!location) return { kind:"location_missing" } as const;
+      if (location.version !== input.expectedLocationVersion) return { kind:"location_stale" } as const;
+      const resolved=resolveWallTime(input.localStart,location.timezone,input.disambiguation);
+      await schedulingHooks.afterLocationLock?.({operation:"create",businessId:context.businessId,timezone:location.timezone,version:location.version});
       const catalog = await tx<{ id: string; name: string; baseDurationMinutes: number; basePriceMinor: number }[]>`
         select service.id,service.name,service.base_duration_minutes,service.base_price_minor
         from services service
@@ -1620,8 +1669,11 @@ export function registerRoutes(
       `;
       if (catalog.length !== new Set(input.serviceIds).size) throw new Error("One or more services are unavailable");
       const totalMinutes = catalog.reduce((sum, service) => sum + service.baseDurationMinutes, 0);
-      const startAt = new Date(input.startAt);
+      const startAt = resolved.instant;
       const endAt = new Date(startAt.getTime() + totalMinutes * 60_000);
+      if (localDateForInstant(endAt,location.timezone) !== input.localStart.slice(0,10)) {
+        throw new Error("Appointments may not cross local midnight during the controlled pilot");
+      }
       await schedulingHooks.beforeLock?.({
         operation: "create",
         businessId: context.businessId,
@@ -1686,10 +1738,11 @@ export function registerRoutes(
       const [appointment] = await tx<{ id: string }[]>`
         insert into appointments
           (id, business_id, location_id, customer_id, pet_id, employee_id, start_at, end_at,
+           scheduling_timezone,scheduled_local_start,scheduled_utc_offset_minutes,scheduled_disambiguation,
            notes, availability_overridden, conflict_overridden, created_by, updated_by)
         values
           (${appointmentId}, ${context.businessId}, ${input.locationId}, ${input.customerId}, ${input.petId},
-           ${input.employeeId}, ${startAt}, ${endAt}, ${input.notes ?? null},
+           ${input.employeeId}, ${startAt}, ${endAt}, ${resolved.timeZone},${input.localStart},${resolved.offsetMinutes},${resolved.disambiguation},${input.notes ?? null},
            ${input.availabilityOverride}, ${overrideApplied}, ${context.userId}, ${context.userId})
         returning *
       `;
@@ -1744,6 +1797,8 @@ export function registerRoutes(
     if (result.kind === "forbidden") {
       return reply.code(403).send({ error: "Missing permission: appointments.override_conflict" });
     }
+    if (result.kind === "location_missing") return reply.code(404).send({ error:"Location not found" });
+    if (result.kind === "location_stale") return reply.code(409).send({ code:"STALE_LOCATION_SETTINGS", error:"Location settings changed. Refresh and try again." });
     if (result.kind === "conflict") {
       return reply.code(409).send({
         code: "SCHEDULING_CONFLICT",
@@ -1832,6 +1887,14 @@ export function registerRoutes(
       `;
       if (!current) return { kind: "stale" } as const;
       if (current.status !== "scheduled") throw new Error("Only scheduled appointments can be moved");
+      const [location] = await tx<{ timezone:string; version:number }[]>`
+        select timezone,version from locations
+        where business_id=${context.businessId} and id=${current.locationId} and active for update
+      `;
+      if (!location) return { kind:"location_missing" } as const;
+      if (location.version !== input.expectedLocationVersion) return { kind:"location_stale" } as const;
+      const resolved=resolveWallTime(input.localStart,location.timezone,input.disambiguation);
+      await schedulingHooks.afterLocationLock?.({operation:"reschedule",businessId:context.businessId,timezone:location.timezone,version:location.version});
       await schedulingHooks.beforeLock?.({
         operation: "reschedule",
         businessId: context.businessId,
@@ -1855,8 +1918,11 @@ export function registerRoutes(
           ) as eligible
       `;
       if (!assignment?.eligible) throw new Error("The selected employee is not eligible for every booked service");
-      const startAt = new Date(input.startAt);
+      const startAt = resolved.instant;
       const endAt = new Date(startAt.getTime() + (current.endAt.getTime() - current.startAt.getTime()));
+      if (localDateForInstant(endAt,location.timezone) !== input.localStart.slice(0,10)) {
+        throw new Error("Appointments may not cross local midnight during the controlled pilot");
+      }
       const conflicts = await findSchedulingConflicts(tx, {
         businessId: context.businessId,
         employeeId: input.employeeId,
@@ -1910,6 +1976,8 @@ export function registerRoutes(
       }
       const [updated] = await tx`
         update appointments set employee_id=${input.employeeId},start_at=${startAt},end_at=${endAt},
+          scheduling_timezone=${resolved.timeZone},scheduled_local_start=${input.localStart},
+          scheduled_utc_offset_minutes=${resolved.offsetMinutes},scheduled_disambiguation=${resolved.disambiguation},
           availability_overridden=${input.availabilityOverride},
           conflict_overridden=${overrideApplied},version=version+1,
           updated_by=${context.userId},updated_at=now()
@@ -1960,6 +2028,8 @@ export function registerRoutes(
     if (moved.kind === "stale") {
       return reply.code(409).send({ error: "Appointment changed or no longer exists" });
     }
+    if (moved.kind === "location_missing") return reply.code(404).send({ error:"Location not found" });
+    if (moved.kind === "location_stale") return reply.code(409).send({ code:"STALE_LOCATION_SETTINGS", error:"Location settings changed. Refresh and try again." });
     if (moved.kind === "conflict") {
       return reply.code(409).send({
         code: "SCHEDULING_CONFLICT",
@@ -2002,8 +2072,8 @@ export function registerRoutes(
     const input = body(appointmentServicesSchema, request.body);
     const result = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [appointment] = await tx<{ startAt: Date; status: string; employeeId: string; version: number }[]>`
-        select start_at,status,employee_id,version from appointments
+      const [appointment] = await tx<{ startAt: Date; status: string; employeeId: string; version: number; schedulingTimezone:string }[]>`
+        select start_at,status,employee_id,version,scheduling_timezone from appointments
         where business_id=${context.businessId} and id=${id} for update
       `;
       if (!appointment) return null;
@@ -2038,6 +2108,9 @@ export function registerRoutes(
       }
       const minutes = catalog.reduce((sum, service) => sum + service.baseDurationMinutes, 0);
       const endAt = new Date(appointment.startAt.getTime() + minutes * 60_000);
+      if (localDateForInstant(endAt,appointment.schedulingTimezone) !== localDateForInstant(appointment.startAt,appointment.schedulingTimezone)) {
+        throw new Error("Appointments may not cross local midnight during the controlled pilot");
+      }
       await tx`
         update appointments set end_at=${endAt},version=version+1,updated_by=${context.userId},updated_at=now()
         where business_id=${context.businessId} and id=${id}
@@ -2289,45 +2362,56 @@ export function registerRoutes(
     preHandler: [authenticate, requirePermission("reports.view")]
   }, async (request) => {
     const context = auth(request);
+    const [location]=await db<{id:string;timezone:string}[]>`select id,timezone from locations where business_id=${context.businessId} and active`;
+    if(!location)throw new Error("Active location not found");
+    const today=localDateForInstant(new Date(),location.timezone);
+    const bounds=localDateBounds(today,location.timezone);
     const [metrics] = await db`
       select
         count(*) filter (
-          where (a.start_at at time zone l.timezone)::date=(now() at time zone l.timezone)::date
+          where a.start_at>=${bounds.from} and a.start_at<${bounds.to}
         ) as todays_appointments,
         count(*) filter (where a.start_at>=now() and a.status='scheduled') as upcoming_appointments,
         count(*) filter (
-          where (a.start_at at time zone l.timezone)::date=(now() at time zone l.timezone)::date
+          where a.start_at>=${bounds.from} and a.start_at<${bounds.to}
             and a.status='completed'
         ) as completed_today
-      from appointments a join locations l on l.id=a.location_id
-      where a.business_id=${context.businessId}
+      from appointments a
+      where a.business_id=${context.businessId} and a.location_id=${location.id}
     `;
     const [finance] = await db`
       select
         coalesce(sum(i.total_minor-i.balance_minor) filter (
-          where (i.created_at at time zone l.timezone)::date=(now() at time zone l.timezone)::date
+          where i.created_at>=${bounds.from} and i.created_at<${bounds.to}
         ),0) as todays_sales_minor,
         coalesce(sum(i.balance_minor) filter (where i.status in ('open','partially_paid')),0) as outstanding_minor
       from invoices i
       join appointments a on a.id=i.appointment_id
-      join locations l on l.id=a.location_id
-      where i.business_id=${context.businessId}
+      where i.business_id=${context.businessId} and a.location_id=${location.id}
     `;
     return { ...metrics, ...finance };
   });
 
   app.get("/api/reports", {
     preHandler: [authenticate, requirePermission("reports.view")]
-  }, async (request) => {
+  }, async (request, reply) => {
     const context = auth(request);
-    const query = request.query as { from?: string; to?: string };
-    const from = query.from ?? new Date(Date.now() - 30 * 86_400_000).toISOString();
-    const to = query.to ?? new Date(Date.now() + 86_400_000).toISOString();
+    const query=body(reportRangeSchema,request.query);
+    const [location]=await db<{id:string;timezone:string}[]>`select id,timezone from locations where business_id=${context.businessId} and active`;
+    if(!location)return reply.code(404).send({error:"Active location not found"});
+    const today=localDateForInstant(new Date(),location.timezone);
+    const defaultStart=new Date(Date.UTC(Number(today.slice(0,4)),Number(today.slice(5,7))-1,Number(today.slice(8,10))-30)).toISOString().slice(0,10);
+    const localDate=query.localDate??defaultStart;
+    const days=query.days??31;
+    const from=localDateBounds(localDate,location.timezone).from;
+    const end=new Date(Date.UTC(Number(localDate.slice(0,4)),Number(localDate.slice(5,7))-1,Number(localDate.slice(8,10))+days)).toISOString().slice(0,10);
+    const to=localDateBounds(end,location.timezone).from;
     const [revenue, employees, servicesPerformed] = await Promise.all([
       db`
-        select created_at::date as date,sum(total_minor-balance_minor)::bigint as revenue_minor
-        from invoices where business_id=${context.businessId} and created_at>=${from} and created_at<${to}
-        group by created_at::date order by date
+        select (i.created_at at time zone l.timezone)::date as date,sum(i.total_minor-i.balance_minor)::bigint as revenue_minor
+        from invoices i join appointments a on a.id=i.appointment_id join locations l on l.id=a.location_id
+        where i.business_id=${context.businessId} and i.created_at>=${from} and i.created_at<${to}
+        group by (i.created_at at time zone l.timezone)::date order by date
       `,
       db`
         select e.id,e.display_name,count(a.id)::integer as appointment_count
@@ -2344,7 +2428,7 @@ export function registerRoutes(
         group by aps.service_name_snapshot order by performed desc
       `
     ]);
-    return { from, to, revenue, employees, services: servicesPerformed };
+    return { localDate, days, from, to, revenue, employees, services: servicesPerformed };
   });
 
   app.get("/api/audit", {

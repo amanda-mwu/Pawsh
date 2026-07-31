@@ -68,12 +68,12 @@ await sql.begin(async (tx) => {
     on conflict (business_id,user_id) do update set is_owner=true,permissions=excluded.permissions,status='active'
     returning id
   `;
-  let [location] = await tx<{ id: string }[]>`select id from locations where business_id=${businessId} and active limit 1`;
+  let [location] = await tx<{ id: string; timezone:string }[]>`select id,timezone from locations where business_id=${businessId} and active limit 1`;
   if (!location) {
-    [location] = await tx<{ id: string }[]>`
+    [location] = await tx<{ id: string; timezone:string }[]>`
       insert into locations(business_id,name,address,timezone)
       values (${businessId},'Pawsh QA Salon','123 Test Avenue, Pasadena, CA 91101','America/Los_Angeles')
-      returning id
+      returning id,timezone
     `;
   } else {
     await tx`update locations set name='Pawsh QA Salon',address='123 Test Avenue, Pasadena, CA 91101',timezone='America/Los_Angeles' where id=${location.id}`;
@@ -189,19 +189,21 @@ await sql.begin(async (tx) => {
   const anchor = new Date(process.env.QA_ANCHOR_DATE ?? Date.now());
   const daysUntilMonday = (8 - anchor.getUTCDay()) % 7 || 7;
   const monday = new Date(Date.UTC(anchor.getUTCFullYear(),anchor.getUTCMonth(),anchor.getUTCDate()+daysUntilMonday,19,30));
-  await tx`insert into blocked_times(business_id,employee_id,start_at,end_at,reason,created_by) values (${businessId},${graceId},${monday},${new Date(monday.getTime()+30*60_000)},'QA seed: Lunch',${ownerId})`;
+  await tx`insert into blocked_times(business_id,employee_id,location_id,start_at,end_at,scheduling_timezone,scheduled_local_start,scheduled_local_end,reason,created_by) values (${businessId},${graceId},${location!.id},${monday},${new Date(monday.getTime()+30*60_000)},${location!.timezone},${monday}::timestamptz at time zone ${location!.timezone},${new Date(monday.getTime()+30*60_000)}::timestamptz at time zone ${location!.timezone},'QA seed: Lunch',${ownerId})`;
   const gabrielBlock = new Date(monday.getTime()+26.5*60*60_000);
-  await tx`insert into blocked_times(business_id,employee_id,start_at,end_at,reason,created_by) values (${businessId},${gabrielId},${gabrielBlock},${new Date(gabrielBlock.getTime()+30*60_000)},'QA seed: Personal',${ownerId})`;
+  await tx`insert into blocked_times(business_id,employee_id,location_id,start_at,end_at,scheduling_timezone,scheduled_local_start,scheduled_local_end,reason,created_by) values (${businessId},${gabrielId},${location!.id},${gabrielBlock},${new Date(gabrielBlock.getTime()+30*60_000)},${location!.timezone},${gabrielBlock}::timestamptz at time zone ${location!.timezone},${new Date(gabrielBlock.getTime()+30*60_000)}::timestamptz at time zone ${location!.timezone},'QA seed: Personal',${ownerId})`;
   const [historical] = await tx<{ id: string }[]>`
     select id from appointments where business_id=${businessId} and notes='QA seed: Legacy historical snapshot' limit 1
   `;
   if (!historical) {
     const historicalStart = new Date(monday.getTime()-7*24*60*60_000);
     const [appointment] = await tx<{ id: string }[]>`
-      insert into appointments(business_id,location_id,customer_id,pet_id,employee_id,start_at,end_at,status,notes,created_by,updated_by)
+      insert into appointments(business_id,location_id,customer_id,pet_id,employee_id,start_at,end_at,scheduling_timezone,scheduled_local_start,scheduled_utc_offset_minutes,status,notes,created_by,updated_by)
       values (${businessId},${location!.id},${customers.get("avery.archive@pawsh-test.example")!},
         ${pets.get("avery.archive@pawsh-test.example:Daisy")!},${gabrielId},${historicalStart},
-        ${new Date(historicalStart.getTime()+75*60_000)},'completed','QA seed: Legacy historical snapshot',${ownerId},${ownerId})
+        ${new Date(historicalStart.getTime()+75*60_000)},${location!.timezone},${historicalStart}::timestamptz at time zone ${location!.timezone},
+        extract(epoch from ((${historicalStart}::timestamptz at time zone ${location!.timezone})-(${historicalStart}::timestamptz at time zone 'UTC')))/60,
+        'completed','QA seed: Legacy historical snapshot',${ownerId},${ownerId})
       returning id
     `;
     await tx`

@@ -13,6 +13,7 @@ import { registerRoutes } from "./http/routes.js";
 import type { DocumentHooks, FinancialHooks, LifecycleHooks, SchedulingHooks } from "./http/routes.js";
 import { openSecret } from "./security/secrets.js";
 import { createDocumentStorage, type DocumentStorage } from "./storage/documents.js";
+import { WallTimeError } from "./domain/time.js";
 
 export async function createApp(
   config: Config,
@@ -91,6 +92,15 @@ export async function createApp(
       route: request.routeOptions.url
     }, "request failed");
     if (error.name === "ZodError") return reply.code(400).send({ error: "Invalid request", details: error });
+    if (error instanceof WallTimeError) {
+      const messages = {
+        INVALID_LOCAL_TIME:"Enter a valid local date and time.",
+        NONEXISTENT_LOCAL_TIME:"This time does not occur on this date because of the daylight-saving time change. Choose another time.",
+        AMBIGUOUS_LOCAL_TIME:"This time occurs twice because of the daylight-saving time change. Choose the first or second occurrence.",
+        INVALID_TIMEZONE:"The location timezone is invalid."
+      } as const;
+      return reply.code(400).send({ code:error.code, error:messages[error.code] });
+    }
     if ((error as { code?: string }).code === "23P01") {
       return reply.code(409).send({
         code: "SCHEDULING_CONFLICT",

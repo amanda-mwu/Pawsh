@@ -13,7 +13,7 @@ export const password = "correct horse browser smoke";
 const ownerPermissions = [
   "calendar.view","appointments.view","appointments.create","appointments.edit","appointments.cancel",
   "appointments.override_conflict",
-  "customers.view","customers.edit","pets.view","pets.edit","pets.safety.view","pets.safety.edit",
+  "customers.view","customers.edit","pets.view","pets.edit","pets.care.view","pets.care.edit",
   "operations.check_in","operations.perform_service","operations.complete","checkout.perform",
   "payments.view","discounts.apply","services.manage","team.manage","reports.view","settings.manage"
 ];

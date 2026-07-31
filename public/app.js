@@ -253,12 +253,12 @@ function renderCustomersEnhanced() {
   renderCustomers();
   $("#customer-grid").innerHTML = state.customers.length ? state.customers.map((customer) => {
     const pets = state.pets.filter((pet) => pet.customerId === customer.id);
-    return `<article class="customer-card" data-testid="customer-card" data-customer-id="${customer.id}"><p class="eyebrow">${pets.length} pet${pets.length === 1 ? "" : "s"}</p><h3>${escape(customer.firstName)} ${escape(customer.lastName)}</h3><p>${escape(customer.email || customer.phone || "No contact added")}</p><div class="pet-links">${pets.map((pet) => `<span data-pet-id="${pet.id}"><strong>${escape(pet.name)}${pet.safetyAlerts?" !":""}</strong>${allowed("pets.edit")?` <button type="button" class="text-button edit-pet" data-id="${pet.id}">Profile</button>`:""}${allowed("pets.safety.view")&&allowed("pets.safety.edit")?` <button type="button" class="text-button edit-pet-safety" data-id="${pet.id}">Safety</button>`:""}</span>`).join("") || "Add their first pet"}</div><div class="card-actions"><button type="button" class="text-button customer-history" data-id="${customer.id}">History</button>${allowed("customers.edit")?`<button type="button" class="text-button edit-customer" data-id="${customer.id}">Edit</button><button type="button" class="text-button archive-customer" data-id="${customer.id}">Archive</button>`:""}</div></article>`;
+    return `<article class="customer-card" data-testid="customer-card" data-customer-id="${customer.id}"><p class="eyebrow">${pets.length} pet${pets.length === 1 ? "" : "s"}</p><h3>${escape(customer.firstName)} ${escape(customer.lastName)}</h3><p>${escape(customer.email || customer.phone || "No contact added")}</p><div class="pet-links">${pets.map((pet) => `<span data-pet-id="${pet.id}"><strong>${escape(pet.name)}${pet.safetyAlerts?" !":""}</strong>${allowed("pets.edit")?` <button type="button" class="text-button edit-pet" data-id="${pet.id}">Profile</button>`:""}${allowed("pets.care.view")&&allowed("pets.care.edit")?` <button type="button" class="text-button edit-pet-care" data-id="${pet.id}">Care</button>`:""}</span>`).join("") || "Add their first pet"}</div><div class="card-actions"><button type="button" class="text-button customer-history" data-id="${customer.id}">History</button>${allowed("customers.edit")?`<button type="button" class="text-button edit-customer" data-id="${customer.id}">Edit</button><button type="button" class="text-button archive-customer" data-id="${customer.id}">Archive</button>`:""}</div></article>`;
   }).join("") : `<p class="empty">Create your first customer to begin building salon history.</p>`;
   $$(".edit-customer").forEach((button)=>button.addEventListener("click",()=>editCustomer(button.dataset.id)));
   $$(".archive-customer").forEach((button)=>button.addEventListener("click",()=>archiveCustomer(button.dataset.id)));
   $$(".edit-pet").forEach((button)=>button.addEventListener("click",()=>editPet(button.dataset.id)));
-  $$(".edit-pet-safety").forEach((button)=>button.addEventListener("click",()=>editPetSafety(button.dataset.id)));
+  $$(".edit-pet-care").forEach((button)=>button.addEventListener("click",()=>editPetCare(button.dataset.id)));
   $$(".customer-history").forEach((button)=>button.addEventListener("click",()=>showCustomerHistory(button.dataset.id)));
 }
 function renderSetupEnhanced() {
@@ -282,7 +282,7 @@ const permissionLabels = {
   "appointments.edit":"Edit appointments","appointments.cancel":"Cancel appointments",
   "appointments.override_conflict":"Override scheduling conflicts","customers.view":"View customers",
   "customers.edit":"Edit customers","pets.view":"View pets","pets.edit":"Edit pets",
-  "pets.safety.view":"View safety details","pets.safety.edit":"Edit safety details",
+  "pets.care.view":"View Pet Care details","pets.care.edit":"Edit Pet Care details",
   "operations.check_in":"Check in pets","operations.perform_service":"Perform services",
   "operations.complete":"Complete services","checkout.perform":"Perform checkout","payments.view":"View payments",
   "discounts.apply":"Apply discounts","services.manage":"Manage services","team.manage":"Manage team",
@@ -405,7 +405,7 @@ function petProfileFields(pet){
     `<label><input data-testid="field-photoPermission" name="photoPermission" type="checkbox" ${pet.photoPermission?"checked":""}> Photo permission</label>`;
 }
 
-function petSafetyFields(pet){
+function petCareFields(pet){
   return field("safetyAlerts","Safety alerts","text",`value="${escape(pet.safetyAlerts||"")}"`,true)+
     field("behaviorNotes","Behavior notes","text",`value="${escape(pet.behaviorNotes||"")}"`,true)+
     field("medicalNotes","Medical notes","text",`value="${escape(pet.medicalNotes||"")}"`,true)+
@@ -415,11 +415,11 @@ function petSafetyFields(pet){
     field("vaccinationExpiresOn","Vaccination expires","date",`value="${pet.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):""}"`);
 }
 
-function editPetSafety(id){
+function editPetCare(id){
   let pet=state.pets.find(item=>item.id===id);
-  openModal("Edit pet safety",petSafetyFields(pet),async(form)=>{
+  openModal("Edit Pet Care",petCareFields(pet),async(form)=>{
     try{
-      return await api(`/api/pets/${id}/safety`,{method:"PUT",body:JSON.stringify({
+      return await api(`/api/pets/${id}/care`,{method:"PUT",body:JSON.stringify({
         safetyAlerts:form.get("safetyAlerts")||null,
         behaviorNotes:form.get("behaviorNotes")||null,
         medicalNotes:form.get("medicalNotes")||null,
@@ -433,7 +433,7 @@ function editPetSafety(id){
       if(error.status===409){
         await refresh();
         pet=state.pets.find(item=>item.id===id);
-        $("#modal-fields").innerHTML=petSafetyFields(pet);
+        $("#modal-fields").innerHTML=petCareFields(pet);
       }
       throw error;
     }
@@ -519,7 +519,7 @@ const actions = {
     field("firstName","First name","text","required")+field("lastName","Last name","text","required")+field("email","Email","email")+field("phone","Phone","tel")+field("notes","Notes","text","",true),
     (form) => api("/api/customers",{method:"POST",body:JSON.stringify(Object.fromEntries(form))})),
   "new-pet": () => openModal("New pet",
-    select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]),true)+field("name","Pet name","text","required")+field("breed","Breed")+field("species","Species","text",'value="dog"')+field("groomingPreferences","Grooming preferences","text","",true)+(allowed("pets.safety.edit")?field("behaviorNotes","Behavior notes","text","",true)+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true):""),
+    select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]),true)+field("name","Pet name","text","required")+field("breed","Breed")+field("species","Species","text",'value="dog"')+field("groomingPreferences","Grooming preferences","text","",true)+(allowed("pets.care.edit")?field("behaviorNotes","Behavior notes","text","",true)+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true):""),
     (form) => api("/api/pets",{method:"POST",body:JSON.stringify(Object.fromEntries(form))})),
   "new-service": () => openModal("New service",
     field("name","Service name","text","required")+field("baseDurationMinutes","Duration (minutes)","number",'required min="1"')+field("basePrice","Price ($)","number",'required min="0" step=".01"')+field("description","Description","text","",true),

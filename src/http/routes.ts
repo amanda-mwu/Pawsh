@@ -14,18 +14,18 @@ import {
   transitionSchema, businessSettingsSchema, workingHoursSchema, blockedTimeSchema,
   operationalUpdateSchema, voidPaymentSchema, appointmentMoveSchema, appointmentServicesSchema,
   passwordResetRequestSchema, passwordResetConfirmSchema, invitationSchema,
-  invitationAcceptSchema, ownershipTransferSchema, petProfileUpdateSchema, petSafetyUpdateSchema
+  invitationAcceptSchema, ownershipTransferSchema, petProfileUpdateSchema, petCareUpdateSchema
 } from "./schemas.js";
 import { sealSecret } from "../security/secrets.js";
 import { hashPassword, validateNewPassword, verifyPassword } from "../security/passwords.js";
 import { AuthAbuseProtector } from "../security/auth-abuse.js";
 import {
-  changedPetSafetyFields,
-  protectedPetSafetyFields,
-  redactPetSafety,
-  suppliedPetSafetyFields,
-  type PetSafetyRecord
-} from "../domain/pet-safety.js";
+  changedPetCareFields,
+  protectedPetCareFields,
+  redactPetCare,
+  suppliedPetCareFields,
+  type PetCareRecord
+} from "../domain/pet-care.js";
 
 type Transaction = postgres.TransactionSql;
 
@@ -35,8 +35,8 @@ interface SchedulingConflict {
   endsAt: Date;
 }
 
-function mayViewPetSafety(context: { isOwner: boolean; permissions: readonly string[] }): boolean {
-  return context.isOwner || context.permissions.includes("pets.safety.view");
+function mayViewPetCare(context: { isOwner: boolean; permissions: readonly string[] }): boolean {
+  return context.isOwner || context.permissions.includes("pets.care.view");
 }
 
 export interface SchedulingHooks {
@@ -866,7 +866,7 @@ export function registerRoutes(
     const { id } = idParams.parse(request.params);
     const [customer] = await db`select * from customers where business_id=${context.businessId} and id=${id}`;
     if (!customer) return reply.code(404).send({ error: "Customer not found" });
-    const mayViewSafety = mayViewPetSafety(context);
+    const mayViewCare = mayViewPetCare(context);
     const mayViewPayments = context.isOwner || context.permissions.includes("payments.view");
     const [pets, appointments, invoices] = await Promise.all([
       db`select * from pets where business_id=${context.businessId} and customer_id=${id} order by name,id`,
@@ -883,7 +883,7 @@ export function registerRoutes(
     ]);
     return {
       customer,
-      pets: mayViewSafety ? pets : pets.map((pet) => redactPetSafety(pet)),
+      pets: mayViewCare ? pets : pets.map((pet) => redactPetCare(pet)),
       appointments,
       invoices
     };
@@ -917,8 +917,8 @@ export function registerRoutes(
         and (${query.q ?? ""}='' or p.name ilike ${`%${query.q ?? ""}%`} or p.breed ilike ${`%${query.q ?? ""}%`})
       order by p.name,p.id limit 100
     `;
-    if (mayViewPetSafety(context)) return rows;
-    return rows.map((pet) => redactPetSafety(pet));
+    if (mayViewPetCare(context)) return rows;
+    return rows.map((pet) => redactPetCare(pet));
   });
 
   app.post("/api/pets", {
@@ -926,13 +926,13 @@ export function registerRoutes(
   }, async (request, reply) => {
     const context = auth(request);
     const input = body(petSchema, request.body);
-    if (suppliedPetSafetyFields(request.body as PetSafetyRecord).length
-      && !context.isOwner && !context.permissions.includes("pets.safety.edit")) {
-      return reply.code(403).send({ error: "Missing permission: pets.safety.edit" });
+    if (suppliedPetCareFields(request.body as PetCareRecord).length
+      && !context.isOwner && !context.permissions.includes("pets.care.edit")) {
+      return reply.code(403).send({ error: "Missing permission: pets.care.edit" });
     }
     const pet = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [created] = await tx<(PetSafetyRecord & { id: string })[]>`
+      const [created] = await tx<(PetCareRecord & { id: string })[]>`
         insert into pets
           (business_id, customer_id, name, species, breed, date_of_birth, approximate_age,
            weight_ounces, sex, coat_notes, grooming_preferences, behavior_notes, medical_notes,
@@ -962,7 +962,7 @@ export function registerRoutes(
       });
       return created;
     });
-    return reply.code(201).send(mayViewPetSafety(context) ? pet : redactPetSafety(pet));
+    return reply.code(201).send(mayViewPetCare(context) ? pet : redactPetCare(pet));
   });
 
   app.put("/api/pets/:id", {
@@ -970,10 +970,10 @@ export function registerRoutes(
   }, async (request, reply) => {
     const context = auth(request);
     const { id } = idParams.parse(request.params);
-    const protectedFields = suppliedPetSafetyFields(request.body as PetSafetyRecord);
+    const protectedFields = suppliedPetCareFields(request.body as PetCareRecord);
     if (protectedFields.length) {
-      if (!context.isOwner && !context.permissions.includes("pets.safety.edit")) {
-        return reply.code(403).send({ error: "Missing permission: pets.safety.edit" });
+      if (!context.isOwner && !context.permissions.includes("pets.care.edit")) {
+        return reply.code(403).send({ error: "Missing permission: pets.care.edit" });
       }
       return reply.code(400).send({ error: "Protected safety fields must use the safety update operation" });
     }
@@ -1014,20 +1014,20 @@ export function registerRoutes(
     if (updated.kind === "stale") {
       return reply.code(409).send({ error: "Pet changed; refresh before continuing" });
     }
-    return mayViewPetSafety(context) ? updated.pet : redactPetSafety(updated.pet);
+    return mayViewPetCare(context) ? updated.pet : redactPetCare(updated.pet);
   });
 
-  app.put("/api/pets/:id/safety", {
+  app.put("/api/pets/:id/care", {
     preHandler: [
       authenticate,
       requirePermission("pets.edit"),
-      requirePermission("pets.safety.edit")
+      requirePermission("pets.care.edit")
     ]
   }, async (request, reply) => {
     const context = auth(request);
     const { id } = idParams.parse(request.params);
-    const input = body(petSafetyUpdateSchema, request.body);
-    const supplied = new Set(suppliedPetSafetyFields(input));
+    const input = body(petCareUpdateSchema, request.body);
+    const supplied = new Set(suppliedPetCareFields(input));
     const updated = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
       const [before] = await tx<{
@@ -1048,11 +1048,11 @@ export function registerRoutes(
       `;
       if (!before) return null;
       if (before.version !== input.version) return { kind: "stale" } as const;
-      const after: PetSafetyRecord = { ...before };
-      for (const field of protectedPetSafetyFields) {
+      const after: PetCareRecord = { ...before };
+      for (const field of protectedPetCareFields) {
         if (supplied.has(field)) after[field] = input[field];
       }
-      const changedFields = changedPetSafetyFields(before, after);
+      const changedFields = changedPetCareFields(before, after);
       const [pet] = await tx`
         update pets set
           safety_alerts=${supplied.has("safetyAlerts") ? input.safetyAlerts ?? null : before.safetyAlerts},
@@ -1073,7 +1073,7 @@ export function registerRoutes(
         await record(tx, {
           businessId: context.businessId,
           actorId: context.userId,
-          action: "pet.safety.update",
+          action: "pet.care.update",
           resourceType: "pet",
           resourceId: id,
           after: { changedFields }
@@ -1085,7 +1085,7 @@ export function registerRoutes(
     if (updated.kind === "stale") {
       return reply.code(409).send({ error: "Pet changed; refresh before continuing" });
     }
-    return mayViewPetSafety(context) ? updated.pet : redactPetSafety(updated.pet);
+    return mayViewPetCare(context) ? updated.pet : redactPetCare(updated.pet);
   });
 
   app.post("/api/pets/:id/archive", {
@@ -1125,8 +1125,8 @@ export function registerRoutes(
       where a.business_id=${context.businessId} and a.start_at >= ${from} and a.start_at < ${to}
       group by a.id,c.id,p.id,e.id order by a.start_at,a.employee_id,a.id
     `;
-    if (mayViewPetSafety(context)) return rows;
-    return rows.map((appointment) => redactPetSafety(appointment));
+    if (mayViewPetCare(context)) return rows;
+    return rows.map((appointment) => redactPetCare(appointment));
   });
 
   app.post("/api/appointments", {

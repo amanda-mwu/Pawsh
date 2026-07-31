@@ -27,7 +27,7 @@ describeDatabase("D3 customer, pet, and history regression", () => {
   let app: Awaited<ReturnType<typeof createApp>>;
   let ownerCookie: string;
   let historyCookie: string;
-  let safetyCookie: string;
+  let careCookie: string;
   let editorCookie: string;
   let businessId: string;
   let locationId: string;
@@ -71,11 +71,11 @@ describeDatabase("D3 customer, pet, and history regression", () => {
     ...overrides
   });
 
-  const safetyAuditCount = async () => {
+  const careAuditCount = async () => {
     const [row] = await db<{ count: number }[]>`
       select count(*)::int as count from audit_events
       where business_id=${businessId} and resource_id=${petId}
-        and action='pet.safety.update'
+        and action='pet.care.update'
     `;
     return row!.count;
   };
@@ -128,8 +128,8 @@ describeDatabase("D3 customer, pet, and history regression", () => {
     employeeId = employee.json().id;
 
     historyCookie = await createMember("history", ["customers.view"]);
-    safetyCookie = await createMember("safety", [
-      "customers.view", "pets.view", "pets.edit", "pets.safety.view", "pets.safety.edit"
+    careCookie = await createMember("care", [
+      "customers.view", "pets.view", "pets.edit", "pets.care.view", "pets.care.edit"
     ]);
     editorCookie = await createMember("editor", ["customers.view", "pets.view", "pets.edit"]);
   });
@@ -154,7 +154,7 @@ describeDatabase("D3 customer, pet, and history regression", () => {
 
     const visible = await app.inject({
       method: "GET", url: `/api/customers/${customerId}/history`,
-      headers: { cookie: safetyCookie }
+      headers: { cookie: careCookie }
     });
     expect(visible.json().pets[0].safetyAlerts).toBe("Use basket muzzle");
 
@@ -173,45 +173,72 @@ describeDatabase("D3 customer, pet, and history regression", () => {
     expect(preserved).toMatchObject({
       safetyAlerts: "Use basket muzzle", medicalNotes: "Hip sensitivity"
     });
-    expect(await safetyAuditCount()).toBe(0);
+    expect(await careAuditCount()).toBe(0);
 
     const forbidden = await app.inject({
-      method: "PUT", url: `/api/pets/${petId}/safety`, headers: { cookie: editorCookie },
+      method: "PUT", url: `/api/pets/${petId}/care`, headers: { cookie: editorCookie },
       payload: { version: profile.json().version, safetyAlerts: "Unauthorized" }
     });
     expect(forbidden.statusCode).toBe(403);
-    expect(await safetyAuditCount()).toBe(0);
+    expect(await careAuditCount()).toBe(0);
 
     const missingVersion = await app.inject({
-      method: "PUT", url: `/api/pets/${petId}/safety`, headers: { cookie: safetyCookie },
+      method: "PUT", url: `/api/pets/${petId}/care`, headers: { cookie: careCookie },
       payload: { safetyAlerts: "Missing version" }
     });
     expect(missingVersion.statusCode).toBe(400);
   });
 
+  it("rejects retired permission inputs while retaining historical audit readability", async () => {
+    const retiredInvitation = await app.inject({
+      method: "POST", url: "/api/members/invitations", headers: { cookie: ownerCookie },
+      payload: { email: `retired-${suffix}@example.test`, permissions: ["pets.safety.edit"] }
+    });
+    expect(retiredInvitation.statusCode).toBe(400);
+    const retiredUpdate = await app.inject({
+      method: "PATCH", url: `/api/members/${crypto.randomUUID()}/permissions`,
+      headers: { cookie: ownerCookie }, payload: { permissions: ["pets.safety.view"] }
+    });
+    expect(retiredUpdate.statusCode).toBe(400);
+
+    await db`
+      insert into audit_events(
+        business_id,actor_id,action,resource_type,resource_id,correlation_id
+      ) values (
+        ${businessId},null,'pet.safety.update','pet',${petId},${crypto.randomUUID()}
+      )
+    `;
+    const audit = await app.inject({
+      method: "GET", url: "/api/audit", headers: { cookie: ownerCookie }
+    });
+    expect(audit.statusCode).toBe(200);
+    expect(audit.json().some((event: { action: string }) => event.action === "pet.safety.update"))
+      .toBe(true);
+  });
+
   it("rejects stale pet replacements atomically and records truthful safety audits", async () => {
     const list = await app.inject({
       method: "GET", url: `/api/pets?customerId=${customerId}`,
-      headers: { cookie: safetyCookie }
+      headers: { cookie: careCookie }
     });
     const version = list.json()[0].version as number;
     const changed = await app.inject({
-      method: "PUT", url: `/api/pets/${petId}/safety`, headers: { cookie: safetyCookie },
+      method: "PUT", url: `/api/pets/${petId}/care`, headers: { cookie: careCookie },
       payload: { version, safetyAlerts: "Two-person handling" }
     });
     expect(changed.statusCode).toBe(200);
     expect(changed.json().version).toBe(version + 1);
-    expect(await safetyAuditCount()).toBe(1);
+    expect(await careAuditCount()).toBe(1);
 
     const unchanged = await app.inject({
-      method: "PUT", url: `/api/pets/${petId}/safety`, headers: { cookie: safetyCookie },
+      method: "PUT", url: `/api/pets/${petId}/care`, headers: { cookie: careCookie },
       payload: { version: version + 1, safetyAlerts: "Two-person handling" }
     });
     expect(unchanged.statusCode).toBe(200);
-    expect(await safetyAuditCount()).toBe(1);
+    expect(await careAuditCount()).toBe(1);
 
     const stale = await app.inject({
-      method: "PUT", url: `/api/pets/${petId}`, headers: { cookie: safetyCookie },
+      method: "PUT", url: `/api/pets/${petId}`, headers: { cookie: careCookie },
       payload: profilePayload(changed.json(), { name: "Stale overwrite" })
     });
     expect(stale.statusCode).toBe(409);
@@ -221,12 +248,12 @@ describeDatabase("D3 customer, pet, and history regression", () => {
     expect(authoritative).toMatchObject({
       name: "D3 Pet", safetyAlerts: "Two-person handling", version: version + 2
     });
-    expect(await safetyAuditCount()).toBe(1);
+    expect(await careAuditCount()).toBe(1);
 
     const [audit] = await db<{ afterData: { changedFields: string[] } }[]>`
       select after_data from audit_events
       where business_id=${businessId} and resource_id=${petId}
-        and action='pet.safety.update'
+        and action='pet.care.update'
     `;
     expect(audit!.afterData).toEqual({ changedFields: ["safetyAlerts"] });
     expect(JSON.stringify(audit!.afterData)).not.toContain("Two-person handling");

@@ -44,12 +44,12 @@ test("@regression-crm-history protects safety edits and reconciles a stale safet
   await page.locator(`[data-pet-id="${tenant.rockyPetId}"]`).getByRole("button", { name: "Safety" }).click();
   await expect(page.getByTestId("field-safetyAlerts")).toHaveValue("Two handlers required");
 
-  const concurrent = await request.put(`/api/pets/${tenant.rockyPetId}/safety`, {
+  const concurrent = await request.put(`/api/pets/${tenant.rockyPetId}/care`, {
     data: { version: current.version, safetyAlerts: "Authoritative newer warning" }
   });
   expect(concurrent.status()).toBe(200);
   const staleResponse = page.waitForResponse((response) =>
-    response.url().endsWith(`/api/pets/${tenant.rockyPetId}/safety`)
+    response.url().endsWith(`/api/pets/${tenant.rockyPetId}/care`)
       && response.request().method() === "PUT"
   );
   await page.getByTestId("field-safetyAlerts").fill("Stale warning");

@@ -26,18 +26,18 @@ const passwordHash = await hashPassword(password);
 const allPermissions = [
   "calendar.view","appointments.view","appointments.create","appointments.edit","appointments.cancel",
   "appointments.override_conflict",
-  "customers.view","customers.edit","pets.view","pets.edit","pets.safety.view","pets.safety.edit",
+  "customers.view","customers.edit","pets.view","pets.edit","pets.care.view","pets.care.edit",
   "operations.check_in","operations.perform_service","operations.complete","checkout.perform",
   "payments.view","discounts.apply","services.manage","team.manage","reports.view","settings.manage"
 ];
 const managerPermissions = allPermissions.filter((permission) => permission !== "settings.manage");
 const receptionistPermissions = [
   "calendar.view","appointments.view","appointments.create","appointments.edit","appointments.cancel",
-  "customers.view","customers.edit","pets.view","pets.edit","pets.safety.view",
+  "customers.view","customers.edit","pets.view","pets.edit","pets.care.view",
   "operations.check_in","checkout.perform","payments.view"
 ];
 const groomerPermissions = [
-  "calendar.view","appointments.view","customers.view","pets.view","pets.safety.view",
+  "calendar.view","appointments.view","customers.view","pets.view","pets.care.view",
   "operations.check_in","operations.perform_service","operations.complete"
 ];
 

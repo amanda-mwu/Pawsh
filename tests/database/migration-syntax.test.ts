@@ -26,5 +26,10 @@ describe("database migrations", () => {
     const petVersions = await readFile("migrations/0003_pet_versions.sql", "utf8");
     expect(petVersions).toContain("add column version integer not null default 1");
     expect(petVersions).toContain("pet_version_positive");
+    const petCare = await readFile("migrations/0004_pet_care_permissions.sql", "utf8");
+    expect(petCare).toContain("update business_memberships");
+    expect(petCare).toContain("update membership_invitations");
+    expect(petCare).toContain("pets.care.view");
+    expect(petCare).toContain("pets.care.edit");
   });
 });

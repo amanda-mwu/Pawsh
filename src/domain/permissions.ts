@@ -9,8 +9,8 @@ export const permissions = [
   "customers.edit",
   "pets.view",
   "pets.edit",
-  "pets.safety.view",
-  "pets.safety.edit",
+  "pets.care.view",
+  "pets.care.edit",
   "operations.check_in",
   "operations.perform_service",
   "operations.complete",
@@ -27,13 +27,13 @@ export type Permission = (typeof permissions)[number];
 
 export const permissionPresets: Record<string, readonly Permission[]> = {
   groomer: [
-    "calendar.view", "appointments.view", "pets.view", "pets.safety.view",
+    "calendar.view", "appointments.view", "pets.view", "pets.care.view",
     "operations.check_in", "operations.perform_service", "operations.complete"
   ],
   receptionist: [
     "calendar.view", "appointments.view", "appointments.create", "appointments.edit",
     "appointments.cancel", "customers.view", "customers.edit", "pets.view", "pets.edit",
-    "pets.safety.view", "operations.check_in", "checkout.perform", "payments.view"
+    "pets.care.view", "operations.check_in", "checkout.perform", "payments.view"
   ],
   manager: permissions
 };

@@ -1811,7 +1811,13 @@ export function registerRoutes(
         canOverride: result.canOverride
       });
     }
-    return reply.code(201).send({ ...result.appointment, scheduling: result.scheduling });
+    return reply.code(201).send({
+      ...result.appointment,
+      // Keep the wall-time snapshot offset-free. The PostgreSQL client otherwise
+      // deserializes this timestamp as a Date and JSON turns it into a false UTC instant.
+      scheduledLocalStart: input.localStart,
+      scheduling: result.scheduling
+    });
   });
 
   app.post("/api/appointments/:id/transition", {
@@ -2043,7 +2049,11 @@ export function registerRoutes(
         canOverride: moved.canOverride
       });
     }
-    return { ...moved.appointment, scheduling: moved.scheduling };
+    return {
+      ...moved.appointment,
+      scheduledLocalStart: input.localStart,
+      scheduling: moved.scheduling
+    };
   });
 
   app.patch("/api/appointments/:id/operations", {

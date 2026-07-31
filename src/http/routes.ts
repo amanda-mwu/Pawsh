@@ -259,7 +259,8 @@ async function completeSchedulingRequest(tx:Transaction,id:string,result:Schedul
     update scheduling_request_replays set
       result_schema_version=${result.resultSchemaVersion},resulting_appointment_id=${result.appointmentId},
       resulting_appointment_version=${result.appointmentVersion},result_start_at=${result.startAt},result_end_at=${result.endAt},
-      result_scheduling_timezone=${result.schedulingTimezone},result_scheduled_local_start=${result.scheduledLocalStart},
+      result_scheduling_timezone=${result.schedulingTimezone},
+      result_scheduled_local_start=${result.scheduledLocalStart}::text::timestamp without time zone,
       result_disambiguation=${result.disambiguation},result_utc_offset_minutes=${result.utcOffsetMinutes},
       result_employee_id=${result.employeeId},result_location_id=${result.locationId},
       result_conflict_detected=${result.conflictDetected},

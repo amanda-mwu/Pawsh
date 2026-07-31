@@ -560,10 +560,10 @@ describeDatabase("D1 scheduling regression", () => {
   it("enforces authoritative DST and bounded calendar contracts", async () => {
     const common={locationId,customerId,petId,employeeId:employeeA,serviceIds:[serviceId],expectedLocationVersion:1,
       availabilityOverride:true,overrideReason:"E1 DST coverage"};
-    const nonexistent=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie},payload:{...common,localStart:"2026-03-08T02:30"}});
+    const nonexistent=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},payload:{...common,localStart:"2026-03-08T02:30"}});
     expect(nonexistent.statusCode).toBe(400);
     expect(nonexistent.json().code).toBe("NONEXISTENT_LOCAL_TIME");
-    const ambiguous=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie},payload:{...common,localStart:"2026-11-01T01:30"}});
+    const ambiguous=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},payload:{...common,localStart:"2026-11-01T01:30"}});
     expect(ambiguous.statusCode).toBe(400);
     expect(ambiguous.json().code).toBe("AMBIGUOUS_LOCAL_TIME");
     expect((await app.inject({method:"GET",url:"/api/appointments?localDate=2026-01-01&days=32",headers:{cookie:ownerCookie}})).statusCode).toBe(400);

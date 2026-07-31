@@ -658,6 +658,33 @@ describeDatabase("D1 scheduling regression", () => {
     expect(current).toMatchObject({version:movedAgain.json().version,employeeId:employeeA});
   });
 
+  it("records bounded E3 claim and replay diagnostics",async()=>{
+    const createMs:number[]=[];const replayMs:number[]=[];
+    for(let sample=0;sample<5;sample+=1){
+      const key=crypto.randomUUID();
+      const payload=schedulePayload(employeeB,`2032-03-${String(20+sample).padStart(2,"0")}T17:00:00.000Z`);
+      let started=performance.now();
+      const created=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":key},payload});
+      createMs.push(performance.now()-started);
+      expect(created.statusCode).toBe(201);
+      started=performance.now();
+      const replay=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":key},payload});
+      replayMs.push(performance.now()-started);
+      expect(replay.statusCode).toBe(200);
+    }
+    const [storage]=await db<{rows:number;averageRowBytes:number}[]>`
+      select count(*)::integer rows,coalesce(avg(pg_column_size(replay)),0)::integer average_row_bytes
+      from scheduling_request_replays replay where business_id=${businessId}
+    `;
+    const summary=(values:number[])=>({medianMs:Number([...values].sort((a,b)=>a-b)[2]!.toFixed(2)),
+      rangeMs:[Number(Math.min(...values).toFixed(2)),Number(Math.max(...values).toFixed(2))]});
+    console.info("E3_SCHEDULING_REPLAY_DIAGNOSTICS",JSON.stringify({
+      environment:"CI PostgreSQL/API injection; browser startup excluded",sampleCount:5,
+      create:summary(createMs),replay:summary(replayMs),rowsInIsolatedBusiness:storage?.rows,
+      averageRowBytes:storage?.averageRowBytes,lookupIndex:"unique business_id, operation, idempotency_key"
+    }));
+  });
+
   it("validates and version-protects audited location timezone settings", async () => {
     const base={name:"D1 Scheduling",timezone:"America/Los_Angeles",currency:"USD",taxRateBasisPoints:0,reminderLeadMinutes:1440};
     const invalid=await app.inject({method:"PUT",url:"/api/business/settings",headers:{cookie:ownerCookie},payload:{...base,timezone:"Not/A_Zone",locationVersion:1}});

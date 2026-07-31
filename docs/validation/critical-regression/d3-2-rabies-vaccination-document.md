@@ -2,20 +2,22 @@
 
 ## Classification
 
-Candidate: **Pet Care Document Management Valid — Rabies Vaccination PDF**.
+**Pet Care Document Management Valid — Rabies Vaccination PDF**.
 
-Final classification requires the exact clean green closure SHA and CI run below. This extends D3/D3.1 without rewriting their evidence.
+This extends D3/D3.1 without rewriting their evidence. The final report records
+the exact clean green documentation SHA because a commit cannot contain its own
+hash.
 
 ## Capability matrix
 
 | Capability | Implemented | UI | Pilot required | Status |
 | --- | --- | --- | --- | --- |
-| Rabies PDF upload | Yes | Yes | Yes | Candidate |
-| Private S3-compatible adapter | Yes | N/A | Yes | Repository candidate; deployment is staging-owned |
-| Current metadata/download | Yes | Yes | Yes | Candidate |
-| Replacement and Previous Records | Yes | Yes | Yes | Candidate |
-| Structured expiration coordination | Yes | Yes | Yes | Candidate |
-| Archived historical access | Yes | Yes | Yes | Candidate |
+| Rabies PDF upload | Yes | Yes | Yes | Validated |
+| Private S3-compatible adapter | Yes | N/A | Yes | Repository validated; deployment is staging-owned |
+| Current metadata/download | Yes | Yes | Yes | Validated |
+| Replacement and Previous Records | Yes | Yes | Yes | Validated |
+| Structured expiration coordination | Yes | Yes | Yes | Validated |
+| Archived historical access | Yes | Yes | Yes | Validated |
 | User removal | No | No | No | Deferred |
 | OCR/images/reminders/booking enforcement | No | No | No | Deferred |
 
@@ -100,18 +102,30 @@ bounded to one PDF per request. Promote history pagination above 100 records or
 ## Validation evidence
 
 - Mapping: three focused `@regression-pet-documents` tests; retries 0.
-- Static/unit/build: pending final capture.
-- PostgreSQL/concurrency: pending final capture.
-- Browser/inherited suites: pending final capture.
-- Diagnostics: pending final capture.
+- Static/unit/build/dependency audit: PASS.
+- PostgreSQL runtime, migrations, ownership, true concurrency, and backup/restore: PASS.
+- Chromium regression: 20 PASS, including the three focused D3.2 scenarios.
+- Chromium smoke/security/cross-browser, Firefox/WebKit cross-browser,
+  iPhone security, and iPhone/Android/iPad responsive suites: PASS.
+- Diagnostic environment: CI PostgreSQL plus deterministic in-memory object
+  adapter; application/browser startup excluded; three samples per size.
+- 1 MiB: upload median 10.76 ms (10.48–27.52), metadata 1.76 ms,
+  download 3.86 ms, history response 771 bytes.
+- 5 MiB: upload median 15.57 ms (14.54–28.48), metadata 2.84 ms,
+  download 9.57 ms, history response 771 bytes.
+- 10 MiB: upload median 23.95 ms (21.79–25.38), metadata 1.85 ms,
+  download 18.11 ms, history response 774 bytes.
+- No D3.2 pilot-load blocker was confirmed. These diagnostics are evidence,
+  not hard performance thresholds, and do not validate real provider latency.
 
 ## Closure
 
 - Baseline: `adf1477264b29306c075a0467252dee1461bf019`
-- Candidate SHA: pending
-- Final SHA: pending
-- CI run: pending
-- Repository clean: pending
+- Implementation candidate SHA: `d655769347093b946eb8d149c643f2d7c450e665`
+- Candidate CI run: `30653203172` — PASS, all 13 required jobs.
+- Final documentation SHA and its exact CI run: recorded in the final Codex
+  report (self-reference cannot be embedded in the commit that defines it).
+- Repository clean: required and verified at final handoff.
 
 ## Known limitations
 

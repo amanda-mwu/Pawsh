@@ -2,7 +2,7 @@
 
 ## Classification
 
-Candidate classification: **Scheduling Durable Replay Protection Valid**.
+Classification: **Scheduling Durable Replay Protection Valid**.
 Final classification requires a clean exact HEAD equal to `origin/main` with all
 required CI jobs green. Automated Critical Regression Valid and Calendar & Time
 Integrity Valid remain inherited requirements.
@@ -42,7 +42,10 @@ No automatic deletion occurs during pilot; `minimum_retain_until` defaults to
 one year and is a floor. The GOV-001 Operations owner owns post-pilot review;
 the named human and approved envelope remain pending. A provisional 90-day
 diagnostic envelope at 150 scheduling mutations/day produces 13,500 rows for
-one business. No E3 performance threshold is asserted.
+one business. On CI PostgreSQL, five warm API-injection samples measured create
+at 11.29 ms median (10.53–12.26 ms) and completed replay at 3.28 ms median
+(3.13–3.33 ms). The isolated business held 33 replay rows averaging 394 bytes;
+browser startup was excluded. No E3 performance threshold is asserted.
 
 ## Validation mapping
 
@@ -61,7 +64,8 @@ one business. No E3 performance threshold is asserted.
 ## Closure evidence
 
 - Baseline SHA: `5713e1daf77bc873416686a03ede9f41e62ef032`
-- Tested implementation SHA: pending
-- GitHub Actions run: pending
-- Final evidence descendant: pending
-
+- Tested implementation SHA: `8206862f0805c376f767f38484e44568f0e75eb6`
+- GitHub Actions run: `30673666876`; all 13 required jobs passed.
+- Final evidence descendant: the commit containing this record. Its exact SHA
+  and green CI run are reported in the final E3 handoff, avoiding an impossible
+  self-referential commit hash inside this file.

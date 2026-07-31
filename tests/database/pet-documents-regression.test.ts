@@ -16,13 +16,25 @@ const config: Config = {
 
 const pdf = Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n");
 
+function diagnosticPdf(size: number): Buffer {
+  const bytes = Buffer.alloc(size, 32);
+  bytes.write("%PDF-1.4\n", 0, "ascii");
+  bytes.write("\n%%EOF\n", size - 7, "ascii");
+  return bytes;
+}
+
 function cookie(response: { headers: Record<string, unknown> }): string {
   const value = response.headers["set-cookie"];
   if (typeof value !== "string") throw new Error("Session cookie missing");
   return value.split(";", 1)[0]!;
 }
 
-function multipart(metadata: unknown, file = pdf, filename = "rabies-certificate.pdf", mime = "application/pdf") {
+function multipart(
+  metadata: unknown,
+  file: Buffer<ArrayBufferLike> = pdf,
+  filename = "rabies-certificate.pdf",
+  mime = "application/pdf"
+) {
   const boundary = `pawsh-${crypto.randomUUID()}`;
   const prefix = Buffer.from(
     `--${boundary}\r\nContent-Disposition: form-data; name="metadata"\r\n\r\n${JSON.stringify(metadata)}\r\n`+
@@ -255,4 +267,52 @@ describeDatabase("D3.2 rabies vaccination documents", () => {
     expect(response.statusCode).toBe(403);
     await isolatedApp.close();
   });
+
+  it("records bounded 1/5/10 MiB ingestion and retrieval diagnostics", async () => {
+    const [owner] = await db<{ userId: string }[]>`
+      select user_id from business_memberships where business_id=${businessId} and is_owner
+    `;
+    const diagnostics: Array<{
+      sizeMiB: number; uploadMs: number[]; metadataMs: number; downloadMs: number; responseBytes: number;
+    }> = [];
+    for (const sizeMiB of [1,5,10]) {
+      const [customer] = await db<{ id: string }[]>`
+        insert into customers(business_id,first_name,last_name,created_by,updated_by)
+        values (${businessId},'Diagnostic',${`${sizeMiB} MiB`},${owner!.userId},${owner!.userId}) returning id
+      `;
+      const [pet] = await db<{ id: string }[]>`
+        insert into pets(business_id,customer_id,name,created_by,updated_by)
+        values (${businessId},${customer!.id},${`Diagnostic ${sizeMiB}`},${owner!.userId},${owner!.userId}) returning id
+      `;
+      const uploadMs: number[] = [];
+      let currentId = "";
+      for (let sample = 0; sample < 3; sample += 1) {
+        const current = currentId ? await db<{ documentVersion: number }[]>`
+          select document_version from pet_documents where id=${currentId}
+        ` : [];
+        const input = metadata(currentId ? {
+          expectedCurrentDocumentId: currentId, expectedCurrentDocumentVersion: current[0]!.documentVersion
+        } : {});
+        const upload = multipart(input, diagnosticPdf(sizeMiB * 1024 * 1024));
+        const started = performance.now();
+        const response = await app.inject({ method: "POST", url: `/api/pets/${pet!.id}/documents/rabies`,
+          headers: { cookie: ownerCookie, ...upload.headers }, payload: upload.payload });
+        uploadMs.push(Number((performance.now()-started).toFixed(2)));
+        expect([200,201]).toContain(response.statusCode);
+        currentId = response.json().id;
+      }
+      const metadataStarted = performance.now();
+      const history = await app.inject({ method: "GET", url: `/api/pets/${pet!.id}/documents`, headers: { cookie: ownerCookie } });
+      const metadataMs = Number((performance.now()-metadataStarted).toFixed(2));
+      const downloadStarted = performance.now();
+      const download = await app.inject({ method: "GET", url: `/api/pet-documents/${currentId}/download`, headers: { cookie: ownerCookie } });
+      const downloadMs = Number((performance.now()-downloadStarted).toFixed(2));
+      expect(download.statusCode).toBe(200);
+      diagnostics.push({ sizeMiB, uploadMs, metadataMs, downloadMs, responseBytes: Buffer.byteLength(history.body) });
+    }
+    console.log("D3_2_DOCUMENT_DIAGNOSTICS", JSON.stringify({
+      environment: "CI PostgreSQL plus deterministic memory object adapter; app/browser startup excluded",
+      samplesPerSize: 3, memoryModel: "one bounded PDF buffer per request", diagnostics
+    }));
+  }, 30_000);
 });

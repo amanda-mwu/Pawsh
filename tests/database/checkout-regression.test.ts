@@ -212,4 +212,33 @@ describeDatabase("D4 checkout, stale state, and error paths",()=>{
     expect(paymentIds).toEqual([paymentA.json().id,paymentB.json().id]);
     expect(receipt.json().items.map((item:{linePosition:number})=>item.linePosition)).toEqual([1]);
   });
+
+  it("records bounded D4 operation and replay diagnostics",async()=>{
+    const samples=[];
+    for(let index=0;index<5;index+=1){
+      const appointmentId=await createCompleted(9+index);
+      const checkoutKey=key();let started=performance.now();
+      const invoiceResponse=await checkout(appointmentId,{discountMinor:0,discountType:null,tipMinor:0},checkoutKey);
+      const checkoutMs=Number((performance.now()-started).toFixed(2));
+      const invoice=invoiceResponse.json();
+      started=performance.now();
+      const replay=await checkout(appointmentId,{discountMinor:0,discountType:null,tipMinor:0},checkoutKey);
+      const replayMs=Number((performance.now()-started).toFixed(2));
+      started=performance.now();
+      const payment=await pay(invoice.id,invoice.balanceMinor,invoice.balanceMinor);
+      const paymentMs=Number((performance.now()-started).toFixed(2));
+      started=performance.now();
+      const receipt=await app.inject({method:"GET",url:`/api/invoices/${invoice.id}/receipt`,headers:{cookie:ownerCookie}});
+      const receiptMs=Number((performance.now()-started).toFixed(2));
+      started=performance.now();
+      const voided=await app.inject({method:"POST",url:`/api/payments/${payment.json().id}/void`,headers:headers(),payload:{reason:"Diagnostic void"}});
+      const voidMs=Number((performance.now()-started).toFixed(2));
+      expect([invoiceResponse.statusCode,replay.statusCode,payment.statusCode,receipt.statusCode,voided.statusCode])
+        .toEqual([201,200,201,200,200]);
+      samples.push({checkoutMs,replayMs,paymentMs,receiptMs,voidMs,receiptBytes:Buffer.byteLength(receipt.body)});
+    }
+    console.log("D4_FINANCIAL_DIAGNOSTICS",JSON.stringify({
+      environment:"CI PostgreSQL/API injection; browser and worker startup excluded",sampleCount:samples.length,samples
+    }));
+  });
 });

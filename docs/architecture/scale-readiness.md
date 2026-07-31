@@ -67,6 +67,19 @@ inflate ordinary browser fixtures.
   API/mobile client that automatically retries mutations.
 - Status: Open.
 
+### ARCH-007 — Financial mutation durable idempotency
+
+- Evidence: invoice creation, manual payment recording, and manual payment void
+  previously depended on UI pending state and resource locks without a durable
+  payload-bound replay result.
+- Severity/current impact: duplicate transport execution could create a second
+  manual payment even though invoice uniqueness protected invoice creation.
+- Disposition: Must Fix Current D4.
+- Promotion trigger: immediate.
+- Status: Resolved in D4 with tenant/operation/key uniqueness, operation-specific
+  canonical hashes, atomic financial/audit/outbox/result transactions, current
+  replay authorization, response-loss coverage, and 30-day retention.
+
 ### LAT-001 — Calendar query pilot envelope
 
 - Evidence: the calendar endpoint is tenant- and start-range-bounded, performs

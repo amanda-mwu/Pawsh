@@ -60,7 +60,7 @@ test("@regression-checkout receipt failure preserves committed payment and retri
   await page.getByTestId("nav-calendar").click();
   await page.locator(`[data-appointment-id="${appointment.id}"]`).getByTestId("appointment-completed").click();
   await page.getByTestId("field-method").selectOption("cash");
-  await page.route("**/api/invoices/*/receipt",(route)=>route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:"temporary"})}));
+  await page.route("**/api/invoices/*/receipt",(route)=>route.fulfill({status:429,contentType:"application/json",body:JSON.stringify({error:"temporary"})}));
   await page.getByTestId("modal-submit").click();
   await expect(page.locator("#modal-error")).toContainText("Payment recorded successfully. Receipt is temporarily unavailable.");
   await page.unroute("**/api/invoices/*/receipt");

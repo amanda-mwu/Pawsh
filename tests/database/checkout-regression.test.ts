@@ -125,7 +125,9 @@ describeDatabase("D4 checkout, stale state, and error paths",()=>{
 
   it("serializes valid partial payments and rejects a stale aggregate overpayment",async()=>{
     const invoice=(await checkout(await createCompleted(5),{discountMinor:0,discountType:null,tipMinor:1500})).json();
-    const [a,b]=await Promise.all([pay(invoice.id,4000,10000),pay(invoice.id,3000,10000)]);
+    const [a,b]=await Promise.all([
+      pay(invoice.id,4000,invoice.balanceMinor),pay(invoice.id,3000,invoice.balanceMinor)
+    ]);
     expect([a.statusCode,b.statusCode]).toEqual([201,201]);
     const receipt=await app.inject({method:"GET",url:`/api/invoices/${invoice.id}/receipt`,headers:{cookie:ownerCookie}});
     const current=receipt.json().invoice.balanceMinor;
@@ -138,7 +140,7 @@ describeDatabase("D4 checkout, stale state, and error paths",()=>{
     const updated=(await app.inject({method:"GET",url:`/api/invoices/${invoice.id}/receipt`,headers:{cookie:ownerCookie}})).json();
     expect(updated.invoice.balanceMinor).toBeGreaterThanOrEqual(0);
     expect(updated.payments.filter((payment:{status:string})=>payment.status==="recorded")
-      .reduce((sum:number,payment:{amountMinor:number})=>sum+payment.amountMinor,0)).toBe(10000-updated.invoice.balanceMinor);
+      .reduce((sum:number,payment:{amountMinor:number})=>sum+payment.amountMinor,0)).toBe(invoice.totalMinor-updated.invoice.balanceMinor);
   });
 
   it("deduplicates same-key payment concurrency and preserves one void effect",async()=>{

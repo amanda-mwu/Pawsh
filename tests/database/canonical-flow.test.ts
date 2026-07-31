@@ -169,10 +169,9 @@ describeDatabase("canonical Pawsh workflow", () => {
   });
 
   it("enforces half-open scheduling and database overlap protection", async () => {
-    const startAt = "2031-08-01T16:00:00.000Z";
     const create = () => app.inject({
       method: "POST", url: "/api/appointments", headers: { cookie: ownerCookie },
-      payload: { locationId, customerId, petId, employeeId, serviceIds: [serviceId], startAt }
+      payload: { locationId, customerId, petId, employeeId, serviceIds: [serviceId], localStart:"2031-08-01T09:00",expectedLocationVersion:2 }
     });
     const [first, racing] = await Promise.all([create(), create()]);
     expect([first.statusCode, racing.statusCode].sort()).toEqual([201, 409]);

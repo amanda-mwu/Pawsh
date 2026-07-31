@@ -608,9 +608,12 @@ export function registerRoutes(
     const timezone = validateTimeZone(input.timezone);
     return db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
+      const [activeLocation]=await tx<{id:string}[]>`select id from locations where business_id=${context.businessId} and active`;
+      if(!activeLocation)return reply.code(404).send({error:"Active location not found"});
+      await tx`select pg_advisory_xact_lock(hashtextextended(${'location-settings:' + activeLocation.id},0))`;
       const [location] = await tx<{ id:string; timezone:string; version:number }[]>`
         select id,timezone,version from locations
-        where business_id=${context.businessId} and active and version=${input.locationVersion} for update
+        where id=${activeLocation.id} and version=${input.locationVersion} for update
       `;
       if (!location) return reply.code(409).send({ code:"STALE_LOCATION_SETTINGS", error:"Location settings changed. Refresh and try again." });
       const [updated] = await tx`
@@ -1650,9 +1653,10 @@ export function registerRoutes(
         ) as available
       `;
       if (!participants?.available) throw new Error("The selected customer or pet is unavailable");
+      await tx`select pg_advisory_xact_lock_shared(hashtextextended(${'location-settings:' + input.locationId},0))`;
       const [location] = await tx<{ timezone:string; version:number }[]>`
         select timezone,version from locations
-        where business_id=${context.businessId} and id=${input.locationId} and active for update
+        where business_id=${context.businessId} and id=${input.locationId} and active
       `;
       if (!location) return { kind:"location_missing" } as const;
       if (location.version !== input.expectedLocationVersion) return { kind:"location_stale" } as const;
@@ -1887,9 +1891,10 @@ export function registerRoutes(
       `;
       if (!current) return { kind: "stale" } as const;
       if (current.status !== "scheduled") throw new Error("Only scheduled appointments can be moved");
+      await tx`select pg_advisory_xact_lock_shared(hashtextextended(${'location-settings:' + current.locationId},0))`;
       const [location] = await tx<{ timezone:string; version:number }[]>`
         select timezone,version from locations
-        where business_id=${context.businessId} and id=${current.locationId} and active for update
+        where business_id=${context.businessId} and id=${current.locationId} and active
       `;
       if (!location) return { kind:"location_missing" } as const;
       if (location.version !== input.expectedLocationVersion) return { kind:"location_stale" } as const;

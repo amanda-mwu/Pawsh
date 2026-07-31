@@ -17,3 +17,8 @@ new database, and verifies that its public-table inventory and row counts match
 the source without mutating the restored copy. Managed production backup
 retention and point-in-time recovery still require validation
 in the selected hosting environment.
+
+Pet Care PDF bytes live outside PostgreSQL. Database backup and restore protects
+document metadata only. The object provider needs an independent versioning,
+retention, and recovery contract, followed by metadata/object reconciliation.
+Actual bucket recovery remains a staging gate.

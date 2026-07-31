@@ -31,5 +31,11 @@ describe("database migrations", () => {
     expect(petCare).toContain("update membership_invitations");
     expect(petCare).toContain("pets.care.view");
     expect(petCare).toContain("pets.care.edit");
+    const petDocuments = await readFile("migrations/0005_pet_documents.sql", "utf8");
+    expect(petDocuments).toContain("one_current_pet_document");
+    expect(petDocuments).toContain("pet_document_lifecycle_guard");
+    expect(petDocuments).toContain("foreign key (business_id,pet_id) references pets(business_id,id)");
+    expect(petDocuments).toContain("create policy tenant_isolation on pet_documents");
+    expect(petDocuments).toContain("create policy tenant_isolation on pet_document_requests");
   });
 });

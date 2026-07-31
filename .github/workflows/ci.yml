@@ -6,6 +6,7 @@ on:
 
 env:
   NODE_ENV: test
+  DOCUMENT_STORAGE_ADAPTER: memory
   TZ: America/Los_Angeles
   SESSION_SECRET: ci-session-secret-at-least-thirty-two-characters
   APP_ORIGIN: http://127.0.0.1:3000

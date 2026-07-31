@@ -8,7 +8,7 @@ let customerSearchSequence = 0;
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
-  if (options.body !== undefined) headers["content-type"] = "application/json";
+  if (options.body !== undefined && !(options.body instanceof FormData)) headers["content-type"] = "application/json";
   const response = await fetch(path, {
     credentials: "include",
     headers,
@@ -253,12 +253,13 @@ function renderCustomersEnhanced() {
   renderCustomers();
   $("#customer-grid").innerHTML = state.customers.length ? state.customers.map((customer) => {
     const pets = state.pets.filter((pet) => pet.customerId === customer.id);
-    return `<article class="customer-card" data-testid="customer-card" data-customer-id="${customer.id}"><p class="eyebrow">${pets.length} pet${pets.length === 1 ? "" : "s"}</p><h3>${escape(customer.firstName)} ${escape(customer.lastName)}</h3><p>${escape(customer.email || customer.phone || "No contact added")}</p><div class="pet-links">${pets.map((pet) => `<span data-pet-id="${pet.id}"><strong>${escape(pet.name)}${pet.safetyAlerts?" !":""}</strong>${allowed("pets.edit")?` <button type="button" class="text-button edit-pet" data-id="${pet.id}">Profile</button>`:""}${allowed("pets.care.view")&&allowed("pets.care.edit")?` <button type="button" class="text-button edit-pet-care" data-id="${pet.id}">Care</button>`:""}</span>`).join("") || "Add their first pet"}</div><div class="card-actions"><button type="button" class="text-button customer-history" data-id="${customer.id}">History</button>${allowed("customers.edit")?`<button type="button" class="text-button edit-customer" data-id="${customer.id}">Edit</button><button type="button" class="text-button archive-customer" data-id="${customer.id}">Archive</button>`:""}</div></article>`;
+    return `<article class="customer-card" data-testid="customer-card" data-customer-id="${customer.id}"><p class="eyebrow">${pets.length} pet${pets.length === 1 ? "" : "s"}</p><h3>${escape(customer.firstName)} ${escape(customer.lastName)}</h3><p>${escape(customer.email || customer.phone || "No contact added")}</p><div class="pet-links">${pets.map((pet) => `<span data-pet-id="${pet.id}"><strong>${escape(pet.name)}${pet.safetyAlerts?" !":""}</strong>${allowed("pets.edit")?` <button type="button" class="text-button edit-pet" data-id="${pet.id}">Profile</button>`:""}${allowed("pets.care.view")&&allowed("pets.care.edit")?` <button type="button" class="text-button edit-pet-care" data-id="${pet.id}">Care</button>`:""}${allowed("pets.care.view")?` <button type="button" class="text-button pet-documents" data-id="${pet.id}">Documents</button>`:""}</span>`).join("") || "Add their first pet"}</div><div class="card-actions"><button type="button" class="text-button customer-history" data-id="${customer.id}">History</button>${allowed("customers.edit")?`<button type="button" class="text-button edit-customer" data-id="${customer.id}">Edit</button><button type="button" class="text-button archive-customer" data-id="${customer.id}">Archive</button>`:""}</div></article>`;
   }).join("") : `<p class="empty">Create your first customer to begin building salon history.</p>`;
   $$(".edit-customer").forEach((button)=>button.addEventListener("click",()=>editCustomer(button.dataset.id)));
   $$(".archive-customer").forEach((button)=>button.addEventListener("click",()=>archiveCustomer(button.dataset.id)));
   $$(".edit-pet").forEach((button)=>button.addEventListener("click",()=>editPet(button.dataset.id)));
   $$(".edit-pet-care").forEach((button)=>button.addEventListener("click",()=>editPetCare(button.dataset.id)));
+  $$(".pet-documents").forEach((button)=>button.addEventListener("click",()=>showPetDocuments(button.dataset.id)));
   $$(".customer-history").forEach((button)=>button.addEventListener("click",()=>showCustomerHistory(button.dataset.id)));
 }
 function renderSetupEnhanced() {
@@ -352,12 +353,65 @@ async function showCustomerHistory(id) {
     const historyData=await api(`/api/customers/${id}/history`);
     const appointments=historyData.appointments.map(item=>`<div><span>${new Date(item.startAt).toLocaleDateString()} / ${escape(item.petName)}</span><strong>${escape(item.status.replace("_"," "))}</strong></div>`).join("")||"<p>No appointments yet.</p>";
     const invoices=historyData.invoices.map(item=>`<div><span>Invoice ${escape(item.invoiceNumber)}</span><span><strong>${money(item.totalMinor)} / ${escape(item.status)}</strong><button type="button" class="text-button history-receipt" data-invoice-id="${item.id}">Receipt</button></span></div>`).join("")||`<p>${allowed("payments.view")?"No invoices yet.":"Financial history requires payment access."}</p>`;
-    openModal(`${historyData.customer.firstName} ${historyData.customer.lastName} history`,`<div class="wide history-list"><h4>Appointments</h4>${appointments}<h4>Transactions</h4>${invoices}</div>`,async()=>{});
+    const petDocuments=allowed("pets.care.view")?historyData.pets.map(pet=>`<div><span>${escape(pet.name)}${pet.archivedAt?" (archived)":""}</span><button type="button" class="text-button history-pet-documents" data-pet-id="${pet.id}">Documents</button></div>`).join(""):"";
+    openModal(`${historyData.customer.firstName} ${historyData.customer.lastName} history`,`<div class="wide history-list">${petDocuments?`<h4>Pet Care documents</h4>${petDocuments}`:""}<h4>Appointments</h4>${appointments}<h4>Transactions</h4>${invoices}</div>`,async()=>{});
+    $$(".history-pet-documents").forEach(button=>button.addEventListener("click",()=>showPetDocuments(button.dataset.petId)));
     $$(".history-receipt").forEach(button=>button.addEventListener("click",async()=>{
       const receipt=await api(`/api/invoices/${button.dataset.invoiceId}/receipt`);
       $("#modal").close();setTimeout(()=>showReceipt(receipt),50);
     }));
   }catch(error){toast(error.message);}
+}
+
+async function showArchivedCareRecords(){
+  try{
+    const records=await api("/api/customers/archived");
+    const rows=records.map(record=>`<div><span>${escape(record.firstName)} ${escape(record.lastName)} / ${escape(record.petName)}${record.petArchivedAt?" (pet archived)":""}</span><button type="button" class="text-button archived-pet-documents" data-pet-id="${record.petId}">Documents</button></div>`).join("");
+    openModal("Archived Pet Care records",`<div class="wide history-list">${rows||"<p>No archived Pet Care records.</p>"}</div>`,async()=>{});
+    $$(".archived-pet-documents").forEach(button=>button.addEventListener("click",()=>showPetDocuments(button.dataset.petId,true)));
+  }catch(error){toast(error.message);}
+}
+
+async function showPetDocuments(petId,historicalOnly=false){
+  try{
+    const pet=state.pets.find(item=>item.id===petId);
+    const data=await api(`/api/pets/${petId}/documents`);
+    const current=data.current;
+    const previous=data.previous.map(item=>`<div><span>${escape(item.filename)}<small>${item.expiresOn?`Expires ${new Date(`${item.expiresOn}T00:00:00`).toLocaleDateString()}`:"Expiration date not recorded"}</small></span><button type="button" class="text-button download-pet-document" data-id="${item.id}">Download</button></div>`).join("");
+    const expired=current?.expiresOn&&new Date(`${current.expiresOn}T23:59:59`)<new Date();
+    const currentView=current?`<section class="wide document-current" data-testid="rabies-current"><p><strong>${escape(current.filename)}</strong></p><p>${current.expiresOn?`${expired?"Rabies vaccination expired — ":"Expires "}${new Date(`${current.expiresOn}T00:00:00`).toLocaleDateString()}`:"Expiration date not recorded"}</p><button type="button" class="text-button download-pet-document" data-id="${current.id}">Download</button></section>`:`<p class="wide empty">No rabies vaccination record uploaded</p>`;
+    const upload=!historicalOnly&&allowed("pets.edit")&&allowed("pets.care.edit")?`<fieldset class="wide"><legend>${current?"Replace":"Upload"} Rabies Vaccination Record</legend><label>PDF<input data-testid="field-rabiesPdf" name="rabiesPdf" type="file" accept="application/pdf" required></label><label>Document date<input name="documentDate" type="date"></label><label>Vaccination expiration<input name="expiration" type="date" value="${pet?.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):current?.expiresOn||""}"></label></fieldset>`:"";
+    openModal("Rabies Vaccination Record",currentView+upload+(previous?`<details class="wide"><summary>Previous records</summary><div class="history-list" data-testid="previous-rabies-records">${previous}</div></details>`:""),async(form)=>{
+      if(!form.get("rabiesPdf"))return;
+      const requestId=globalThis.crypto.randomUUID();
+      const operation=current?"replace":"upload";
+      const expiration=form.get("expiration");
+      const metadata={uploadRequestId:requestId,expectedCurrentDocumentId:current?.id||null,
+        ...(current?{expectedCurrentDocumentVersion:current.version}:{}),
+        documentDate:form.get("documentDate")||null,
+        expiration:expiration?{intent:"set",value:expiration}:{intent:"preserve"},
+        ...(expiration?{expectedPetVersion:pet?.version}: {})};
+      const uploadForm=new FormData();uploadForm.append("metadata",JSON.stringify(metadata));uploadForm.append("file",form.get("rabiesPdf"));
+      try{return await api(`/api/pets/${petId}/documents/rabies`,{method:"POST",body:uploadForm});}
+      catch(error){
+        if(error instanceof TypeError){
+          $("#modal-error").textContent="Checking upload status…";
+          const status=await api(`/api/pets/${petId}/document-requests/${requestId}?operation=${operation}`);
+          if(status.state==="completed")return status.result;
+        }
+        if(error.status===409) setTimeout(()=>showPetDocuments(petId),50);
+        throw error;
+      }
+    });
+    $$(".download-pet-document").forEach(button=>button.addEventListener("click",()=>downloadPetDocument(button.dataset.id)));
+  }catch(error){toast(error.message);}
+}
+
+async function downloadPetDocument(id){
+  const response=await fetch(`/api/pet-documents/${id}/download`,{credentials:"include"});
+  if(!response.ok){const result=await response.json().catch(()=>({}));toast(result.error||"Document unavailable");return;}
+  const blob=await response.blob();const url=globalThis.URL.createObjectURL(blob);const link=document.createElement("a");
+  link.href=url;link.download="rabies-vaccination.pdf";link.click();setTimeout(()=>globalThis.URL.revokeObjectURL(url),1000);
 }
 async function archiveCustomer(id) {
   if(!confirm("Archive this customer? Their operational and financial history will remain."))return;
@@ -636,6 +690,7 @@ async function showView(view) {
   }catch{return bootstrap();}
 }
 $$(".close").forEach((button)=>button.addEventListener("click",()=>$("#modal").close()));
+$("#archived-care-records")?.addEventListener("click",showArchivedCareRecords);
 $("#customer-search").addEventListener("input", async (event)=>{
   const sequence=++customerSearchSequence;
   const customers=await api(`/api/customers?q=${encodeURIComponent(event.target.value)}`);

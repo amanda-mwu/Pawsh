@@ -8,6 +8,7 @@ const databaseUrl = process.env.DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
 const config: Config = {
   NODE_ENV: "test",
+  DOCUMENT_STORAGE_ADAPTER: "memory",
   PORT: 3000,
   DATABASE_URL: databaseUrl ?? "postgres://unavailable",
   SESSION_SECRET: "test-session-secret-at-least-thirty-two-characters",

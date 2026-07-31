@@ -23,6 +23,7 @@
     "test:responsive": "playwright test --project=iphone-webkit --project=android-chromium --project=ipad-webkit",
     "test:watch": "vitest",
     "seed:qa": "node --env-file-if-exists=.env --import tsx scripts/seed-qa.ts",
+    "documents:reconcile": "node --env-file-if-exists=.env --import tsx scripts/reconcile-pet-documents.ts",
     "start:e2e": "node --env-file-if-exists=.env --import tsx src/server.ts",
     "db:migrate": "node --env-file-if-exists=.env --import tsx scripts/migrate.ts",
     "db:verify-restore": "node --import tsx scripts/verify-restored-db.ts",
@@ -34,12 +35,15 @@
     "prepare": "node scripts/install-hooks.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1100.0",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.1.0",
     "@fastify/helmet": "^13.0.2",
+    "@fastify/multipart": "^10.1.0",
     "@fastify/rate-limit": "^10.3.0",
     "@fastify/static": "^10.1.2",
     "@node-rs/argon2": "^2.0.2",
+    "@smithy/node-http-handler": "^4.9.13",
     "fastify": "^5.6.2",
     "nodemailer": "^9.0.3",
     "postgres": "^3.4.7",

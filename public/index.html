@@ -81,7 +81,7 @@
       </section>
 
       <section id="customers" data-testid="customers-view" class="view" hidden>
-        <div class="split-head"><div><p class="eyebrow">Relationships</p><h3>Customers &amp; pets</h3></div><div><button data-permission="pets.edit" type="button" class="secondary compact" data-action="new-pet">+ Pet</button><button data-testid="new-customer" data-permission="customers.edit" type="button" class="primary compact" data-action="new-customer">+ Customer</button></div></div>
+        <div class="split-head"><div><p class="eyebrow">Relationships</p><h3>Customers &amp; pets</h3></div><div><button data-permission="pets.care.view" type="button" class="secondary compact" id="archived-care-records">Archived records</button><button data-permission="pets.edit" type="button" class="secondary compact" data-action="new-pet">+ Pet</button><button data-testid="new-customer" data-permission="customers.edit" type="button" class="primary compact" data-action="new-customer">+ Customer</button></div></div>
         <label class="search"><span>Search</span><input data-testid="customer-search" id="customer-search" type="search" placeholder="Name, phone, or email"></label>
         <div id="customer-grid" class="card-grid"></div>
       </section>

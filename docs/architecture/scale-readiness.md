@@ -194,3 +194,38 @@ inflate ordinary browser fixtures.
 - Promotion trigger: immediate.
 - Status: Resolved in D3. Service-time identity and safety snapshots remain
   explicitly absent.
+
+### SEC-DOC-001 — No dedicated PDF malware scanning
+
+- Evidence: D3.2 restricts uploads to bounded PDFs with shallow signature/EOF
+  checks, private storage, permission-controlled attachment downloads, and no
+  Pawsh inline rendering. It does not scan or sanitize active PDF content.
+- Severity/current impact: a hostile PDF could reach an authorized staff
+  browser or device PDF handler.
+- Disposition: Must Fix Before Controlled Pilot.
+- Promotion trigger: before any pilot user can upload or download Pet Care PDFs.
+- Status: Open; evaluate scanning with quarantine semantics. Sanity validation
+  is not represented as malware scanning.
+
+### ARCH-DOC-001 — Buffered document ingestion
+
+- Evidence: Fastify enforces a 10 MiB limit and the application holds one
+  bounded PDF buffer while hashing and storing it. The pilot assumption is at
+  most two concurrent uploads per instance.
+- Severity/current impact: approximately 20 MiB plus framework/SDK overhead at
+  the provisional envelope; no unbounded allocation path.
+- Disposition: Accepted / Documented Current Limitation.
+- Promotion trigger: more than two concurrent uploads per instance, a larger
+  file limit, memory pressure, or horizontal instance scaling.
+- Status: Monitored; move to streaming when evidence promotes it.
+
+### GOV-DOC-001 — Superseded evidence retention
+
+- Evidence: current and superseded rabies records are retained until an approved
+  care-document retention schedule exists.
+- Severity/current impact: preserves evidence but creates storage/privacy growth
+  without a final deletion schedule.
+- Disposition: Must Fix Before General Availability.
+- Promotion trigger: GA planning or adoption of a formal retention policy.
+- Status: Engineering owner; review by 2026-10-31. Reconciliation cannot delete
+  current or superseded evidence.

@@ -4,13 +4,15 @@ import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import staticFiles from "@fastify/static";
+import multipart from "@fastify/multipart";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { Config } from "./config.js";
 import type { Database } from "./db/client.js";
 import { deliverNotifications, LogEmailProvider, processOutbox, SmtpEmailProvider } from "./engagement/worker.js";
 import { registerRoutes } from "./http/routes.js";
-import type { LifecycleHooks, SchedulingHooks } from "./http/routes.js";
+import type { DocumentHooks, LifecycleHooks, SchedulingHooks } from "./http/routes.js";
 import { openSecret } from "./security/secrets.js";
+import { createDocumentStorage, type DocumentStorage } from "./storage/documents.js";
 
 export async function createApp(
   config: Config,
@@ -20,6 +22,8 @@ export async function createApp(
     serveStatic?: boolean;
     schedulingHooks?: SchedulingHooks;
     lifecycleHooks?: LifecycleHooks;
+    documentStorage?: DocumentStorage;
+    documentHooks?: DocumentHooks;
   } = {}
 ): Promise<FastifyInstance> {
   const app = Fastify({
@@ -37,6 +41,9 @@ export async function createApp(
   await app.register(cors, { origin: config.APP_ORIGIN, credentials: true });
   await app.register(cookie, { secret: config.SESSION_SECRET });
   await app.register(rateLimit, { max: config.NODE_ENV === "test" ? 10_000 : 120, timeWindow: "1 minute" });
+  await app.register(multipart, {
+    limits: { files: 1, fields: 12, parts: 13, fileSize: 10 * 1024 * 1024 }
+  });
   if (options.serveStatic !== false) {
     await app.register(staticFiles, { root: resolve("public"), prefix: "/" });
   }
@@ -57,7 +64,8 @@ export async function createApp(
     return { status: "ok" };
   });
 
-  registerRoutes(app, db, config, options.schedulingHooks, options.lifecycleHooks);
+  registerRoutes(app, db, config, options.documentStorage ?? createDocumentStorage(config),
+    options.schedulingHooks, options.lifecycleHooks, options.documentHooks);
 
   let worker: NodeJS.Timeout | undefined;
   if (options.runWorker !== false) {

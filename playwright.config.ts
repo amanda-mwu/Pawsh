@@ -73,7 +73,7 @@ export default defineConfig({
     },
     {
       name:"chromium-regression",
-      grep:/@regression-booking|@regression-lifecycle|@regression-crm-history/,
+      grep:/@regression-booking|@regression-lifecycle|@regression-crm-history|@regression-pet-documents/,
       workers:1,
       use:{...devices["Desktop Chrome"]}
     },

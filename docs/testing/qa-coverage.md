@@ -19,6 +19,7 @@ because any registry edit creates a new SHA.
 
 | Critical Regression D3 — Customer/Pet History Valid | Backend and PostgreSQL runtime; Browser / chromium-regression | PostgreSQL integration and desktop Chromium | Database CRM/history regression; `@regression-crm-history` | Detailed service-history projection, pet-specific history, service-time safety snapshots, hard delete, customer optimistic concurrency, D4 checkout/error paths, performance gating, staging, manual UX, and physical-device behavior remain unvalidated |
 | D3.1 — Pet Care Authorization Terminology Migration Valid | Backend and PostgreSQL runtime; all inherited browser/security jobs | PostgreSQL 17 and inherited browser profiles | Database permission-migration and D3 CRM/history suites | Renames authorization/audit vocabulary only; pet documents, D4, staging, and Controlled Pilot readiness remain unvalidated |
+| Pet Care Document Management Valid — Rabies Vaccination PDF | Backend and PostgreSQL runtime; Browser / chromium-regression; inherited security/browser jobs | PostgreSQL integration, deterministic private-storage adapter, desktop Chromium | Database document regression; `@regression-pet-documents` | Deployed bucket/IAM/recovery, malware scanning, OCR, images, inline viewing, range requests, removal, reminders, booking enforcement, generalized documents, staging, and physical-device behavior remain unvalidated |
 
 ## Batch C security closure
 

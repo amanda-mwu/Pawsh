@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type postgres from "postgres";
-import type { ZodType } from "zod";
+import { z, type ZodType } from "zod";
 import type { Config } from "../config.js";
 import type { Database } from "../db/client.js";
+import { DocumentStorageError, sha256, type DocumentStorage } from "../storage/documents.js";
 import { canTransition, type AppointmentStatus } from "../domain/appointments.js";
 import { calculateInvoice } from "../domain/money.js";
 import { permissionPresets, permissions } from "../domain/permissions.js";
@@ -39,6 +40,76 @@ function mayViewPetCare(context: { isOwner: boolean; permissions: readonly strin
   return context.isOwner || context.permissions.includes("pets.care.view");
 }
 
+const documentUploadMetadataSchema = z.object({
+  uploadRequestId: z.string().uuid(),
+  expectedCurrentDocumentId: z.string().uuid().nullable(),
+  expectedCurrentDocumentVersion: z.number().int().positive().optional(),
+  expectedPetVersion: z.number().int().positive().optional(),
+  documentDate: z.string().date().nullish(),
+  expiration: z.discriminatedUnion("intent", [
+    z.object({ intent: z.literal("preserve") }),
+    z.object({ intent: z.literal("clear") }),
+    z.object({ intent: z.literal("set"), value: z.string().date() })
+  ]),
+  claimedDigest: z.string().regex(/^[0-9a-f]{64}$/).optional()
+}).superRefine((value, context) => {
+  if (value.expectedCurrentDocumentId && !value.expectedCurrentDocumentVersion) {
+    context.addIssue({ code: "custom", path: ["expectedCurrentDocumentVersion"], message: "Current document version is required" });
+  }
+  if (!value.expectedCurrentDocumentId && value.expectedCurrentDocumentVersion !== undefined) {
+    context.addIssue({ code: "custom", path: ["expectedCurrentDocumentVersion"], message: "Version is invalid without a current document" });
+  }
+  if (value.expiration.intent !== "preserve" && value.expectedPetVersion === undefined) {
+    context.addIssue({ code: "custom", path: ["expectedPetVersion"], message: "Pet version is required for expiration changes" });
+  }
+});
+
+type DocumentUploadMetadata = z.infer<typeof documentUploadMetadataSchema>;
+
+function documentRequestFingerprint(input: DocumentUploadMetadata): string {
+  return sha256(new TextEncoder().encode(JSON.stringify({
+    documentType: "rabies_vaccination",
+    expectedCurrentDocumentId: input.expectedCurrentDocumentId,
+    expectedCurrentDocumentVersion: input.expectedCurrentDocumentVersion ?? null,
+    expectedPetVersion: input.expectedPetVersion ?? null,
+    documentDate: input.documentDate ?? null,
+    expiration: input.expiration,
+    claimedDigest: input.claimedDigest ?? null
+  })));
+}
+
+function safePdfFilename(value: string): { original: string; download: string } {
+  const normalized = [...value.normalize("NFC")]
+    .map((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127 || character === "\\" || character === "/" ? " " : character)
+    .join("").trim();
+  const bounded = normalized.slice(0, 170).trim();
+  const base = bounded && !/^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(bounded) ? bounded : "rabies-vaccination.pdf";
+  const pdf = base.toLowerCase().endsWith(".pdf") ? base : `${base}.pdf`;
+  return { original: pdf, download: pdf.replace(/[";]/g, "_") };
+}
+
+function validPdf(bytes: Uint8Array): boolean {
+  if (bytes.byteLength === 0 || bytes.byteLength > 10 * 1024 * 1024) return false;
+  if (new TextDecoder("ascii").decode(bytes.slice(0, 5)) !== "%PDF-") return false;
+  const tail = new TextDecoder("ascii").decode(bytes.slice(Math.max(0, bytes.byteLength - 4096)));
+  return tail.includes("%%EOF");
+}
+
+interface DocumentApiRow {
+  id: string; documentType: string; state: string; documentVersion: number;
+  safeDownloadFilename: string; sizeBytes: number; documentDate: string | null;
+  expiresOn: string | null; createdAt: string;
+}
+
+function publicDocument(row: DocumentApiRow) {
+  return {
+    id: row.id, documentType: row.documentType, state: row.state,
+    version: row.documentVersion, filename: row.safeDownloadFilename,
+    sizeBytes: row.sizeBytes, documentDate: row.documentDate, expiresOn: row.expiresOn,
+    uploadedAt: row.createdAt
+  };
+}
+
 export interface SchedulingHooks {
   beforeLock?: (input: {
     operation: "create" | "reschedule";
@@ -57,6 +128,10 @@ export interface LifecycleHooks {
     appointmentId: string;
     targetStatus: AppointmentStatus;
   }) => Promise<void>;
+}
+
+export interface DocumentHooks {
+  beforeDocumentAudit?: (input: { businessId: string; petId: string; documentId: string }) => Promise<void>;
 }
 
 function body<T>(schema: ZodType<T>, value: unknown): T {
@@ -207,8 +282,10 @@ export function registerRoutes(
   app: FastifyInstance,
   db: Database,
   config: Config,
+  documentStorage: DocumentStorage,
   schedulingHooks: SchedulingHooks = {},
-  lifecycleHooks: LifecycleHooks = {}
+  lifecycleHooks: LifecycleHooks = {},
+  documentHooks: DocumentHooks = {}
 ): void {
   const authenticate = authentication(db);
   const authenticatePlatform = platformAuthentication(db);
@@ -840,6 +917,21 @@ export function registerRoutes(
     return reply.code(201).send(customer);
   });
 
+  app.get("/api/customers/archived", {
+    preHandler: [authenticate, requirePermission("customers.view"), requirePermission("pets.care.view")]
+  }, async (request) => {
+    const context = auth(request);
+    return db`
+      select customer.id as customer_id,customer.first_name,customer.last_name,
+        pet.id as pet_id,pet.name as pet_name,pet.archived_at as pet_archived_at
+      from customers customer
+      join pets pet on pet.business_id=customer.business_id and pet.customer_id=customer.id
+      where customer.business_id=${context.businessId} and customer.archived_at is not null
+      order by customer.last_name,customer.first_name,customer.id,pet.name,pet.id
+      limit 500
+    `;
+  });
+
   app.put("/api/customers/:id", {
     preHandler: [authenticate, requirePermission("customers.edit")]
   }, async (request, reply) => {
@@ -1086,6 +1178,299 @@ export function registerRoutes(
       return reply.code(409).send({ error: "Pet changed; refresh before continuing" });
     }
     return mayViewPetCare(context) ? updated.pet : redactPetCare(updated.pet);
+  });
+
+  app.get("/api/pets/:id/documents", {
+    preHandler: [authenticate, requirePermission("pets.care.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [pet] = await db<{ id: string }[]>`
+      select id from pets where business_id=${context.businessId} and id=${id}
+    `;
+    if (!pet) return reply.code(404).send({ error: "Pet not found" });
+    const rows = await db<DocumentApiRow[]>`
+      select id,document_type,state,document_version,safe_download_filename,size_bytes,
+        document_date,expires_on,created_at
+      from pet_documents
+      where business_id=${context.businessId} and pet_id=${id}
+        and document_type='rabies_vaccination' and state in ('current','superseded')
+      order by (state='current') desc,created_at desc,id desc
+    `;
+    return {
+      current: rows.find((row) => row.state === "current") ? publicDocument(rows.find((row) => row.state === "current")!) : null,
+      previous: rows.filter((row) => row.state === "superseded").map(publicDocument)
+    };
+  });
+
+  app.get("/api/pets/:id/document-requests/:requestId", {
+    preHandler: [authenticate, requirePermission("pets.edit"), requirePermission("pets.care.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const params = z.object({ id: z.string().uuid(), requestId: z.string().uuid() }).parse(request.params);
+    const query = z.object({ operation: z.enum(["upload","replace"]) }).parse(request.query);
+    const [requestRow] = await db<{
+      state: string; resultCode: string | null; resultDocumentId: string | null;
+      createdAt: string; updatedAt: string;
+    }[]>`
+      select state,result_code,result_document_id,created_at,updated_at
+      from pet_document_requests
+      where business_id=${context.businessId} and pet_id=${params.id}
+        and operation=${query.operation} and upload_request_id=${params.requestId}
+    `;
+    if (!requestRow) return reply.code(404).send({ error: "Upload request not found" });
+    let result = null;
+    if (requestRow.resultDocumentId) {
+      const [document] = await db<DocumentApiRow[]>`
+        select id,document_type,state,document_version,safe_download_filename,size_bytes,
+          document_date,expires_on,created_at
+        from pet_documents where business_id=${context.businessId} and id=${requestRow.resultDocumentId}
+      `;
+      if (document) result = publicDocument(document);
+    }
+    return { state: requestRow.state, code: requestRow.resultCode, result };
+  });
+
+  app.post("/api/pets/:id/documents/rabies", {
+    preHandler: [authenticate, requirePermission("pets.edit"), requirePermission("pets.care.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id: petId } = idParams.parse(request.params);
+    if (!request.isMultipart()) return reply.code(400).send({ error: "Multipart upload required" });
+    const iterator = request.parts()[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    if (first.done || first.value.type !== "field" || first.value.fieldname !== "metadata") {
+      return reply.code(400).send({ error: "Metadata must be the first multipart field" });
+    }
+    let metadataValue: unknown;
+    try { metadataValue = JSON.parse(String(first.value.value)); }
+    catch { return reply.code(400).send({ error: "Invalid upload metadata" }); }
+    const metadata = documentUploadMetadataSchema.parse(metadataValue);
+    const operation = metadata.expectedCurrentDocumentId ? "replace" : "upload";
+    const fingerprint = documentRequestFingerprint(metadata);
+
+    const [activePet] = await db<{ id: string }[]>`
+      select pet.id from pets pet join customers customer
+        on customer.business_id=pet.business_id and customer.id=pet.customer_id
+      where pet.business_id=${context.businessId} and pet.id=${petId}
+        and pet.archived_at is null and customer.archived_at is null
+    `;
+    if (!activePet) return reply.code(404).send({ error: "Active pet not found" });
+
+    const [createdRequest] = await db<{ id: string }[]>`
+      insert into pet_document_requests
+        (business_id,pet_id,operation,upload_request_id,metadata_fingerprint,state)
+      values (${context.businessId},${petId},${operation},${metadata.uploadRequestId},${fingerprint},'in_progress')
+      on conflict (business_id,pet_id,operation,upload_request_id) do nothing
+      returning id
+    `;
+    if (!createdRequest) {
+      const [existing] = await db<{
+        state: string; metadataFingerprint: string; resultDocumentId: string | null; resultCode: string | null;
+      }[]>`
+        select state,metadata_fingerprint,result_document_id,result_code
+        from pet_document_requests
+        where business_id=${context.businessId} and pet_id=${petId}
+          and operation=${operation} and upload_request_id=${metadata.uploadRequestId}
+      `;
+      if (!existing || existing.metadataFingerprint !== fingerprint) {
+        return reply.code(409).send({ code: "UPLOAD_REQUEST_CONFLICT", error: "Upload request identity was already used" });
+      }
+      if (existing.state === "completed" && existing.resultDocumentId) {
+        const [document] = await db<DocumentApiRow[]>`
+          select id,document_type,state,document_version,safe_download_filename,size_bytes,
+            document_date,expires_on,created_at
+          from pet_documents where business_id=${context.businessId} and id=${existing.resultDocumentId}
+        `;
+        return document ? publicDocument(document) : reply.code(409).send({ error: "Completed upload result is unavailable" });
+      }
+      if (existing.state === "in_progress") {
+        return reply.code(202).send({ state: "in_progress" });
+      }
+      return reply.code(409).send({ code: existing.resultCode ?? "UPLOAD_REQUEST_TERMINAL", error: "Use a new upload request identifier" });
+    }
+
+    const failRequest = async (state: "failed" | "conflict", code: string) => {
+      await db`
+        update pet_document_requests set state=${state},result_code=${code},updated_at=now(),completed_at=now()
+        where id=${createdRequest.id} and state='in_progress'
+      `;
+    };
+
+    const second = await iterator.next();
+    if (second.done || second.value.type !== "file" || second.value.fieldname !== "file") {
+      await failRequest("failed", "INVALID_MULTIPART");
+      return reply.code(400).send({ error: "Exactly one PDF file is required" });
+    }
+    if (second.value.mimetype !== "application/pdf") {
+      second.value.file.resume();
+      await failRequest("failed", "INVALID_MIME");
+      return reply.code(400).send({ error: "Only PDF files are supported" });
+    }
+    let bytes: Buffer;
+    try { bytes = await second.value.toBuffer(); }
+    catch {
+      await failRequest("failed", "UPLOAD_TOO_LARGE");
+      return reply.code(413).send({ error: "PDF must be 10 MB or smaller" });
+    }
+    const extra = await iterator.next();
+    if (!extra.done) {
+      if (extra.value.type === "file") extra.value.file.resume();
+      await failRequest("failed", "INVALID_MULTIPART");
+      return reply.code(400).send({ error: "Duplicate upload fields are not allowed" });
+    }
+    if (!validPdf(bytes)) {
+      await failRequest("failed", "INVALID_PDF");
+      return reply.code(400).send({ error: "The file did not pass PDF upload sanity validation" });
+    }
+    const digest = sha256(bytes);
+    if (metadata.claimedDigest && metadata.claimedDigest !== digest) {
+      await failRequest("failed", "DIGEST_MISMATCH");
+      return reply.code(400).send({ error: "The uploaded file digest did not match" });
+    }
+    const documentId = randomUUID();
+    const storageKey = `business/${context.businessId}/pets/${petId}/documents/${documentId}`;
+    const filename = safePdfFilename(second.value.filename || "rabies-vaccination.pdf");
+    await db`
+      insert into pet_documents
+        (id,business_id,pet_id,document_type,state,original_filename,safe_download_filename,
+         storage_key,content_type,document_date,expires_on,uploaded_by,request_id)
+      values (${documentId},${context.businessId},${petId},'rabies_vaccination','pending',
+        ${filename.original},${filename.download},${storageKey},'application/pdf',
+        ${metadata.documentDate ?? null},
+        ${metadata.expiration.intent === "set" ? metadata.expiration.value : null},${context.userId},${createdRequest.id})
+    `;
+    let uploaded = false;
+    try {
+      await documentStorage.put(storageKey, bytes);
+      uploaded = true;
+      await db`
+        update pet_documents set size_bytes=${bytes.byteLength},sha256=${digest},object_uploaded_at=now(),updated_at=now()
+        where business_id=${context.businessId} and id=${documentId} and state='pending'
+      `;
+      const result = await db.begin(async (tx) => {
+        await setTenant(tx, context.businessId);
+        const [pet] = await tx<{ version: number; vaccinationExpiresOn: string | null }[]>`
+          select pet.version,pet.vaccination_expires_on
+          from pets pet join customers customer
+            on customer.business_id=pet.business_id and customer.id=pet.customer_id
+          where pet.business_id=${context.businessId} and pet.id=${petId}
+            and pet.archived_at is null and customer.archived_at is null
+          for update of pet
+        `;
+        if (!pet) return { kind: "notFound" } as const;
+        const careEdit = await hasCurrentPermission(tx, {
+          businessId: context.businessId, membershipId: context.membershipId, permission: "pets.care.edit"
+        });
+        const petEdit = await hasCurrentPermission(tx, {
+          businessId: context.businessId, membershipId: context.membershipId, permission: "pets.edit"
+        });
+        if (!careEdit || !petEdit) return { kind: "forbidden" } as const;
+        const [current] = await tx<{ id: string; documentVersion: number }[]>`
+          select id,document_version from pet_documents
+          where business_id=${context.businessId} and pet_id=${petId}
+            and document_type='rabies_vaccination' and state='current'
+          for update
+        `;
+        if (metadata.expectedCurrentDocumentId === null) {
+          if (current) return { kind: "conflict" } as const;
+        } else if (!current || current.id !== metadata.expectedCurrentDocumentId
+          || current.documentVersion !== metadata.expectedCurrentDocumentVersion) {
+          return { kind: "conflict" } as const;
+        }
+        let expiration = pet.vaccinationExpiresOn;
+        if (metadata.expiration.intent === "set") expiration = metadata.expiration.value;
+        if (metadata.expiration.intent === "clear") expiration = null;
+        const careChanged = metadata.expiration.intent !== "preserve" && expiration !== pet.vaccinationExpiresOn;
+        if (metadata.expiration.intent !== "preserve" && pet.version !== metadata.expectedPetVersion) {
+          return { kind: "petStale" } as const;
+        }
+        if (current) {
+          await tx`update pet_documents set state='superseded',updated_at=now()
+            where business_id=${context.businessId} and id=${current.id} and state='current'`;
+        }
+        const [promoted] = await tx<DocumentApiRow[]>`
+          update pet_documents set state='current',expires_on=${expiration},updated_at=now()
+          where business_id=${context.businessId} and id=${documentId} and state='pending'
+          returning id,document_type,state,document_version,safe_download_filename,size_bytes,
+            document_date,expires_on,created_at
+        `;
+        if (!promoted) throw new Error("Pending document promotion failed");
+        if (careChanged) {
+          await tx`update pets set vaccination_expires_on=${expiration},version=version+1,
+            updated_by=${context.userId},updated_at=now()
+            where business_id=${context.businessId} and id=${petId}`;
+        }
+        await documentHooks.beforeDocumentAudit?.({ businessId: context.businessId, petId, documentId });
+        await record(tx, {
+          businessId: context.businessId, actorId: context.userId,
+          action: current ? "pet.document.replaced" : "pet.document.uploaded",
+          resourceType: "pet_document", resourceId: documentId,
+          after: { petId, documentType: "rabies_vaccination" }
+        });
+        if (careChanged) {
+          await record(tx, {
+            businessId: context.businessId, actorId: context.userId, action: "pet.care.update",
+            resourceType: "pet", resourceId: petId, after: { changedFields: ["vaccinationExpiresOn"] }
+          });
+        }
+        await tx`
+          update pet_document_requests set state='completed',result_document_id=${documentId},
+            result_code='COMPLETED',completed_at=now(),updated_at=now()
+          where id=${createdRequest.id} and state='in_progress'
+        `;
+        return { kind: "completed", document: promoted } as const;
+      });
+      if (result.kind !== "completed") {
+        const code = result.kind === "forbidden" ? "PERMISSION_REVOKED"
+          : result.kind === "petStale" ? "PET_STALE" : result.kind === "notFound" ? "PET_UNAVAILABLE" : "DOCUMENT_STALE";
+        await failRequest(result.kind === "forbidden" || result.kind === "notFound" ? "failed" : "conflict", code);
+        await documentStorage.delete(storageKey).catch(() => undefined);
+        const status = result.kind === "forbidden" ? 403 : result.kind === "notFound" ? 404 : 409;
+        return reply.code(status).send({ code, error: result.kind === "forbidden" ? "Pet Care permission changed during upload" : "Document or Pet Care data changed" });
+      }
+      return reply.code(metadata.expectedCurrentDocumentId ? 200 : 201).send(publicDocument(result.document));
+    } catch (error) {
+      await failRequest("failed", error instanceof DocumentStorageError ? error.code.toUpperCase() : "UPLOAD_FAILED");
+      if (uploaded) await documentStorage.delete(storageKey).catch(() => undefined);
+      request.log.warn({ errorName: (error as Error).name }, "pet document upload failed");
+      return reply.code(503).send({ error: "The document could not be stored" });
+    }
+  });
+
+  app.get("/api/pet-documents/:id/download", {
+    preHandler: [authenticate, requirePermission("pets.care.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [document] = await db<{
+      storageKey: string; sizeBytes: number; safeDownloadFilename: string;
+    }[]>`
+      select storage_key,size_bytes,safe_download_filename
+      from pet_documents
+      where business_id=${context.businessId} and id=${id} and state in ('current','superseded')
+    `;
+    if (!document) return reply.code(404).send({ error: "Document not found" });
+    try {
+      const head = await documentStorage.head(document.storageKey);
+      if (head.size !== Number(document.sizeBytes)) {
+        request.log.error({ documentId: id }, "pet document storage size mismatch");
+        return reply.code(503).send({ error: "Document is temporarily unavailable" });
+      }
+      const object = await documentStorage.get(document.storageKey);
+      if (object.size !== head.size) return reply.code(503).send({ error: "Document is temporarily unavailable" });
+      const encoded = encodeURIComponent(document.safeDownloadFilename).replace(/['()]/g, escape);
+      return reply
+        .header("Content-Type", "application/pdf")
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Content-Disposition", `attachment; filename="rabies-vaccination.pdf"; filename*=UTF-8''${encoded}`)
+        .header("Cache-Control", "private, no-store")
+        .header("Content-Length", object.size)
+        .code(200).send(Buffer.from(object.bytes));
+    } catch (error) {
+      request.log.warn({ documentId: id, errorName: (error as Error).name }, "pet document download unavailable");
+      return reply.code(503).send({ error: "Document is temporarily unavailable" });
+    }
   });
 
   app.post("/api/pets/:id/archive", {

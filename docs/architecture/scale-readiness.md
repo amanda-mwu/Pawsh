@@ -171,8 +171,10 @@ inflate ordinary browser fixtures.
 - Severity/current impact: pilot-blocking disclosure and unauthorized mutation.
 - Disposition: Must Fix Current D Batch.
 - Promotion trigger: immediate.
-- Status: Resolved in D3 with shared protected-field redaction, separate
-  profile/safety operations, and `pets.edit` + `pets.safety.edit` enforcement.
+- Status: Resolved in D3 with shared protected-field redaction and separate
+  profile/care operations. D3.1 superseded the authorization names with
+  `pets.care.view` and `pets.edit` + `pets.care.edit`; no compatibility alias
+  remains.
 
 ### ARCH-005 — Stale pet replacement
 

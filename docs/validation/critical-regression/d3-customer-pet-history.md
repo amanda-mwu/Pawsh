@@ -1,5 +1,11 @@
 # Critical Regression D3 — Customer/Pet History
 
+> Supersession note (D3.1): this immutable D3 record correctly describes the
+> identifiers validated at its historical SHA. D3.1 subsequently replaced
+> active `pets.safety.view` / `pets.safety.edit` authorization with
+> `pets.care.view` / `pets.care.edit`, and new mutations now emit
+> `pet.care.update`. Historical `pet.safety.update` events remain readable.
+
 ## Classification
 
 Critical Regression D3 — Customer/Pet History Valid.

@@ -18,6 +18,7 @@ because any registry edit creates a new SHA.
 | Critical Regression D2 — Appointment Lifecycle Valid | Backend and PostgreSQL runtime; Browser / chromium-regression | PostgreSQL integration and desktop Chromium | Database lifecycle/concurrency regression; `@regression-lifecycle` | Does not establish D3 customer/pet history, D4 checkout/stale-state/error-path, dedicated lifecycle timestamps, performance, staging, manual UX, or physical-device validity |
 
 | Critical Regression D3 — Customer/Pet History Valid | Backend and PostgreSQL runtime; Browser / chromium-regression | PostgreSQL integration and desktop Chromium | Database CRM/history regression; `@regression-crm-history` | Detailed service-history projection, pet-specific history, service-time safety snapshots, hard delete, customer optimistic concurrency, D4 checkout/error paths, performance gating, staging, manual UX, and physical-device behavior remain unvalidated |
+| D3.1 — Pet Care Authorization Terminology Migration Valid | Backend and PostgreSQL runtime; all inherited browser/security jobs | PostgreSQL 17 and inherited browser profiles | Database permission-migration and D3 CRM/history suites | Renames authorization/audit vocabulary only; pet documents, D4, staging, and Controlled Pilot readiness remain unvalidated |
 
 ## Batch C security closure
 

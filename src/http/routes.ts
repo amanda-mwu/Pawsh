@@ -589,7 +589,7 @@ export function registerRoutes(
   app.get("/api/me", { preHandler: authenticate }, async (request) => {
     const context = auth(request);
     const [business] = await db`
-      select b.*, l.id as location_id, l.name as location_name, l.timezone
+      select b.*, l.id as location_id, l.name as location_name, l.timezone, l.version as location_version
       from businesses b join locations l on l.business_id = b.id and l.active
       where b.id = ${context.businessId}
     `;

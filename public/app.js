@@ -190,7 +190,7 @@ function adjustServices(id) {
 function moveAppointment(id) {
   const appointment=state.appointments.find(item=>item.id===id);
   const local=String(appointment.scheduledLocalStart).slice(0,16);
-  openModal("Move appointment",select("employeeId","Groomer",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]))+field("startAt","Start time","datetime-local",`required value="${local}"`)+disambiguationField(appointment.scheduledDisambiguation||""),form=>schedulingMutation(`/api/appointments/${id}/schedule`,{employeeId:form.get("employeeId"),localStart:form.get("startAt"),disambiguation:form.get("disambiguation")||undefined,expectedLocationVersion:state.me.business.version,version:appointment.version},"Reschedule"));
+  openModal("Move appointment",select("employeeId","Groomer",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]))+field("startAt","Start time","datetime-local",`required value="${local}"`)+disambiguationField(appointment.scheduledDisambiguation||""),form=>schedulingMutation(`/api/appointments/${id}/schedule`,{employeeId:form.get("employeeId"),localStart:form.get("startAt"),disambiguation:form.get("disambiguation")||undefined,expectedLocationVersion:state.me.business.locationVersion,version:appointment.version},"Reschedule"));
 }
 async function terminalAppointment(id,status) {
   if(!confirm(status==="cancelled"?"Cancel this appointment?":"Mark this appointment as a no-show?"))return;
@@ -647,7 +647,7 @@ const actions = {
       await api("/api/business/settings",{method:"PUT",body:JSON.stringify({
         name:values.name,timezone:values.timezone,currency:values.currency,
         taxRateBasisPoints:Math.round(Number(values.taxRate)*100),
-        reminderLeadMinutes:Math.round(Number(values.reminderHours)*60),locationVersion:state.me.business.version
+        reminderLeadMinutes:Math.round(Number(values.reminderHours)*60),locationVersion:state.me.business.locationVersion
       })});
       state.me=await api("/api/me");$("#salon-name").textContent=state.me.business.name;
     }),
@@ -668,7 +668,7 @@ const actions = {
       select("employeeId","Groomer",state.employees.filter(e=>e.active).map(e=>[e.id,e.displayName]))+
       serviceCheckboxes()+
       field("startAt","Start time","datetime-local","required",true)+disambiguationField()+field("notes","Appointment notes","text","",true),
-      (form) => { const o=Object.fromEntries(form); return schedulingMutation("/api/appointments",{locationId:state.me.business.locationId,customerId:o.customerId,petId:o.petId,employeeId:o.employeeId,serviceIds:form.getAll("serviceIds"),localStart:o.startAt,disambiguation:o.disambiguation||undefined,expectedLocationVersion:state.me.business.version,notes:o.notes||null},"Booking"); });
+      (form) => { const o=Object.fromEntries(form); return schedulingMutation("/api/appointments",{locationId:state.me.business.locationId,customerId:o.customerId,petId:o.petId,employeeId:o.employeeId,serviceIds:form.getAll("serviceIds"),localStart:o.startAt,disambiguation:o.disambiguation||undefined,expectedLocationVersion:state.me.business.locationVersion,notes:o.notes||null},"Booking"); });
     const customerSelect=$('[name="customerId"]');const petSelect=$('[name="petId"]');
     customerSelect.addEventListener("change",()=>{
       const pets=state.pets.filter(pet=>pet.customerId===customerSelect.value);
@@ -679,7 +679,7 @@ const actions = {
     select("employeeId","Team member",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]))+
     field("startAt","Start","datetime-local","required")+field("endAt","End","datetime-local","required")+
     field("reason","Reason","text","required",true),
-    form=>api("/api/blocked-times",{method:"POST",body:JSON.stringify({employeeId:form.get("employeeId"),locationId:state.me.business.locationId,localStart:form.get("startAt"),localEnd:form.get("endAt"),expectedLocationVersion:state.me.business.version,reason:form.get("reason")})}))
+    form=>api("/api/blocked-times",{method:"POST",body:JSON.stringify({employeeId:form.get("employeeId"),locationId:state.me.business.locationId,localStart:form.get("startAt"),localEnd:form.get("endAt"),expectedLocationVersion:state.me.business.locationVersion,reason:form.get("reason")})}))
 };
 
 $("#auth-form").addEventListener("submit", async (event) => {

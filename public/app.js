@@ -11,8 +11,8 @@ async function api(path, options = {}) {
   if (options.body !== undefined && !(options.body instanceof FormData)) headers["content-type"] = "application/json";
   const response = await fetch(path, {
     credentials: "include",
-    headers,
-    ...options
+    ...options,
+    headers
   });
   if (response.status === 204) return null;
   const result = await response.json().catch(() => ({}));

@@ -83,7 +83,7 @@ describeDatabase("D4 checkout, stale state, and error paths",()=>{
           (${`d4-member-${suffix}@example.test`},${`d4-member-${suffix}@example.test`},${passwordHash}) returning id
       )
       insert into business_memberships(business_id,user_id,permissions)
-      select ${businessId},id,array['checkout.perform','payments.view'] from account returning id,user_id
+      select ${businessId},id,array['checkout.perform','payments.view','discounts.apply'] from account returning id,user_id
     `;
     await db`insert into sessions(user_id,token_hash,expires_at) values (${member!.userId},${tokenHash(token)},now()+interval '1 day')`;
     memberCookie=`pawsh_session=${token}`;
@@ -129,7 +129,7 @@ describeDatabase("D4 checkout, stale state, and error paths",()=>{
     expect([a.statusCode,b.statusCode]).toEqual([201,201]);
     const receipt=await app.inject({method:"GET",url:`/api/invoices/${invoice.id}/receipt`,headers:{cookie:ownerCookie}});
     const current=receipt.json().invoice.balanceMinor;
-    expect(current).toBe(3000);
+    expect(current).toBe(invoice.balanceMinor-7000);
     const valid=await pay(invoice.id,current,current);
     expect(valid.statusCode).toBe(201);
     const stale=await pay(invoice.id,current, current);

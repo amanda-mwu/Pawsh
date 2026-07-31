@@ -109,11 +109,14 @@ describeDatabase("D3.2 rabies vaccination documents", () => {
     expect(download.headers["cache-control"]).toBe("private, no-store");
     expect(download.rawPayload).toEqual(pdf);
 
-    const [pet] = await db<{ version: number; vaccinationExpiresOn: string }[]>`
+    const [pet] = await db<{ version: number; vaccinationExpiresOn: string | Date }[]>`
       select version,vaccination_expires_on from pets where id=${petId}
     `;
     expect(pet?.version).toBe(2);
-    expect(String(pet?.vaccinationExpiresOn).slice(0,10)).toBe("2036-04-12");
+    const vaccinationDate = pet?.vaccinationExpiresOn;
+    expect(vaccinationDate instanceof Date
+      ? vaccinationDate.toISOString().slice(0,10)
+      : String(vaccinationDate).slice(0,10)).toBe("2036-04-12");
     const [events] = await db<{ documents: number; care: number }[]>`
       select count(*) filter (where action in ('pet.document.uploaded','pet.document.replaced'))::int as documents,
         count(*) filter (where action='pet.care.update')::int as care

@@ -78,7 +78,12 @@ inflate ordinary browser fixtures.
 - Disposition: Must Fix Before Controlled Pilot.
 - Promotion trigger: release-candidate staging automation or introduction of an
   API/mobile client that automatically retries mutations.
-- Status: Open.
+- Status: Resolved in E3 with tenant/operation/key uniqueness, versioned E1
+  wall-time canonicalization, atomic claim/mutation/audit/outbox/result commits,
+  immutable historical replay results, current replay authorization, and
+  concurrent commit/rollback plus response-loss coverage. Pilot records are
+  retained without automatic deletion; post-pilot archival is reviewed after
+  GOV-001 establishes the actual envelope.
 
 ### ARCH-007 — Financial mutation durable idempotency
 

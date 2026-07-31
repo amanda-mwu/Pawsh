@@ -29,7 +29,9 @@ describeDatabase("D1 scheduling regression", () => {
   let app: Awaited<ReturnType<typeof createApp>>;
   let barrier: { expected: number; arrived: number; release: () => void; promise: Promise<void> } | null = null;
   let failAfterOverrideAudit = false;
+  let failAfterCommit: "create"|"reschedule"|null=null;
   let locationLockGate: { reached:()=>void; wait:Promise<void> } | null=null;
+  let claimRollbackGate:{reached:()=>void;wait:Promise<void>}|null=null;
   let ownerCookie: string;
   let businessId: string;
   let locationId: string;
@@ -54,7 +56,7 @@ describeDatabase("D1 scheduling regression", () => {
     app.inject({
       method: "POST",
       url: "/api/appointments",
-      headers: { cookie },
+      headers: { cookie, "idempotency-key": crypto.randomUUID() },
       payload: { ...schedulePayload(employeeId, startAt), ...extra }
     });
 
@@ -71,6 +73,10 @@ describeDatabase("D1 scheduling regression", () => {
       serveStatic: false,
       schedulingHooks: {
         async beforeLock({ operation }) {
+          if(operation==="create"&&claimRollbackGate){
+            const active=claimRollbackGate;claimRollbackGate=null;active.reached();await active.wait;
+            throw new Error("Controlled winner rollback");
+          }
           if (operation !== "create" || !barrier) return;
           const active = barrier;
           active.arrived += 1;
@@ -88,6 +94,11 @@ describeDatabase("D1 scheduling regression", () => {
           if (!failAfterOverrideAudit) return;
           failAfterOverrideAudit = false;
           throw new Error("Controlled post-audit transaction failure");
+        },
+        async afterCommit({operation}) {
+          if(failAfterCommit!==operation)return;
+          failAfterCommit=null;
+          throw new Error("Controlled post-commit response failure");
         }
       }
     });
@@ -129,7 +140,7 @@ describeDatabase("D1 scheduling regression", () => {
     const customer = await app.inject({
       method: "POST",
       url: "/api/customers",
-      headers: { cookie: ownerCookie },
+      headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
       payload: {
         firstName: "D1",
         lastName: "Customer",
@@ -141,7 +152,7 @@ describeDatabase("D1 scheduling regression", () => {
     const pet = await app.inject({
       method: "POST",
       url: "/api/pets",
-      headers: { cookie: ownerCookie },
+      headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
       payload: { customerId, name: "D1 Pet", species: "dog" }
     });
     petId = pet.json().id;
@@ -377,7 +388,7 @@ describeDatabase("D1 scheduling regression", () => {
     const rejected = await app.inject({
       method: "PATCH",
       url: `/api/appointments/${movable.json().id}/schedule`,
-      headers: { cookie: ownerCookie },
+      headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
       payload: { employeeId: employeeA, localStart:formatWallTime(existingStart,"America/Los_Angeles"),expectedLocationVersion:1, version: movable.json().version }
     });
     expect(rejected.statusCode).toBe(409);
@@ -389,7 +400,7 @@ describeDatabase("D1 scheduling regression", () => {
     const moved = await app.inject({
       method: "PATCH",
       url: `/api/appointments/${movable.json().id}/schedule`,
-      headers: { cookie: ownerCookie },
+      headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
       payload: {
         employeeId: employeeA,
         localStart:formatWallTime(existingStart,"America/Los_Angeles"),expectedLocationVersion:1,
@@ -410,7 +421,7 @@ describeDatabase("D1 scheduling regression", () => {
       app.inject({
         method: "PATCH",
         url: `/api/appointments/${first.json().id}/schedule`,
-        headers: { cookie: ownerCookie },
+        headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
         payload: {
           employeeId: employeeB,
           localStart: "2032-01-13T09:00",expectedLocationVersion:1,
@@ -420,7 +431,7 @@ describeDatabase("D1 scheduling regression", () => {
       app.inject({
         method: "PATCH",
         url: `/api/appointments/${second.json().id}/schedule`,
-        headers: { cookie: ownerCookie },
+        headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
         payload: {
           employeeId: employeeA,
           localStart: "2032-01-13T12:00",expectedLocationVersion:1,
@@ -557,6 +568,94 @@ describeDatabase("D1 scheduling regression", () => {
     expect(ambiguous.json().code).toBe("AMBIGUOUS_LOCAL_TIME");
     expect((await app.inject({method:"GET",url:"/api/appointments?localDate=2026-01-01&days=32",headers:{cookie:ownerCookie}})).statusCode).toBe(400);
     expect((await app.inject({method:"GET",url:"/api/appointments?localDate=not-a-date&days=7",headers:{cookie:ownerCookie}})).statusCode).toBe(400);
+  });
+
+  it("durably replays create requests, rejects key reuse, and survives response loss", async()=>{
+    const payload=schedulePayload(employeeA,"2032-03-10T17:00:00.000Z");
+    const missing=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie},payload});
+    expect(missing.statusCode).toBe(400);
+    expect(missing.json().code).toBe("IDEMPOTENCY_KEY_REQUIRED");
+
+    const key=crypto.randomUUID();
+    const send=(body=payload)=>app.inject({method:"POST",url:"/api/appointments",
+      headers:{cookie:ownerCookie,"idempotency-key":key},payload:body});
+    const first=await send();
+    const replay=await send();
+    expect(first.statusCode).toBe(201);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toMatchObject({id:first.json().id,version:first.json().version,scheduledLocalStart:payload.localStart});
+    const reused=await send({...payload,localStart:"2032-03-10T11:00"});
+    expect(reused.statusCode).toBe(409);
+    expect(reused.json().code).toBe("IDEMPOTENCY_KEY_REUSED");
+    const [counts]=await db<{appointments:number;replays:number;audits:number;outbox:number}[]>`
+      select
+        (select count(*)::integer from appointments where id=${first.json().id}) appointments,
+        (select count(*)::integer from scheduling_request_replays where business_id=${businessId} and idempotency_key=${key}) replays,
+        (select count(*)::integer from audit_events where business_id=${businessId} and resource_id=${first.json().id} and action='appointment.create') audits,
+        (select count(*)::integer from outbox_events where business_id=${businessId} and resource_id=${first.json().id} and event_type='AppointmentCreated') outbox
+    `;
+    expect(counts).toEqual({appointments:1,replays:1,audits:1,outbox:1});
+    await db`update business_memberships set permissions=${["appointments.create","appointments.view"]} where id=${memberId}`;
+    const crossActor=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:memberCookie,"idempotency-key":key},payload});
+    expect(crossActor.statusCode).toBe(200);
+    await db`update business_memberships set permissions=${["appointments.create"]} where id=${memberId}`;
+    const viewRevoked=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:memberCookie,"idempotency-key":key},payload});
+    expect(viewRevoked.statusCode).toBe(403);
+    expect(viewRevoked.json().code).toBe("PERMISSION_DENIED");
+
+    const lossKey=crypto.randomUUID();
+    const lossPayload=schedulePayload(employeeA,"2032-03-11T17:00:00.000Z");
+    failAfterCommit="create";
+    const lost=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":lossKey},payload:lossPayload});
+    expect(lost.statusCode).toBe(400);
+    const recovered=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":lossKey},payload:lossPayload});
+    expect(recovered.statusCode).toBe(200);
+    expect(recovered.json().id).toBeTruthy();
+  });
+
+  it("serializes concurrent create replay and returns immutable reschedule results",async()=>{
+    let reached!:()=>void;const winnerClaimed=new Promise<void>(resolve=>{reached=resolve;});
+    let release!:()=>void;const rollBackWinner=new Promise<void>(resolve=>{release=resolve;});
+    claimRollbackGate={reached,wait:rollBackWinner};
+    const rollbackKey=crypto.randomUUID();
+    const rollbackPayload=schedulePayload(employeeA,"2032-03-09T17:00:00.000Z");
+    const winner=app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":rollbackKey},payload:rollbackPayload});
+    await winnerClaimed;
+    const waiter=app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":rollbackKey},payload:rollbackPayload});
+    release();
+    const [rolledBack,claimed]=await Promise.all([winner,waiter]);
+    expect(rolledBack.statusCode).toBe(400);
+    expect(claimed.statusCode).toBe(201);
+    const [rollbackCounts]=await db<{appointments:number;replays:number}[]>`
+      select
+        (select count(*)::integer from appointments where business_id=${businessId} and scheduled_local_start=${rollbackPayload.localStart}) appointments,
+        (select count(*)::integer from scheduling_request_replays where business_id=${businessId} and idempotency_key=${rollbackKey}) replays
+    `;
+    expect(rollbackCounts).toEqual({appointments:1,replays:1});
+
+    const concurrentKey=crypto.randomUUID();
+    const concurrentPayload=schedulePayload(employeeA,"2032-03-12T17:00:00.000Z");
+    const send=()=>app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":concurrentKey},payload:concurrentPayload});
+    const [left,right]=await Promise.all([send(),send()]);
+    expect([left.statusCode,right.statusCode].sort()).toEqual([200,201]);
+    expect(left.json().id).toBe(right.json().id);
+
+    const created=await create(ownerCookie,employeeA,"2032-03-13T17:00:00.000Z");
+    const firstKey=crypto.randomUUID();
+    const firstMove={employeeId:employeeB,localStart:"2032-03-13T11:00",expectedLocationVersion:1,version:created.json().version};
+    failAfterCommit="reschedule";
+    const lost=await app.inject({method:"PATCH",url:`/api/appointments/${created.json().id}/schedule`,headers:{cookie:ownerCookie,"idempotency-key":firstKey},payload:firstMove});
+    expect(lost.statusCode).toBe(400);
+    const replay=await app.inject({method:"PATCH",url:`/api/appointments/${created.json().id}/schedule`,headers:{cookie:ownerCookie,"idempotency-key":firstKey},payload:firstMove});
+    expect(replay.statusCode).toBe(200);
+    const originalResult=replay.json();
+    const secondMove={employeeId:employeeA,localStart:"2032-03-13T13:00",expectedLocationVersion:1,version:originalResult.version};
+    const movedAgain=await app.inject({method:"PATCH",url:`/api/appointments/${created.json().id}/schedule`,headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},payload:secondMove});
+    expect(movedAgain.statusCode).toBe(200);
+    const oldReplay=await app.inject({method:"PATCH",url:`/api/appointments/${created.json().id}/schedule`,headers:{cookie:ownerCookie,"idempotency-key":firstKey},payload:firstMove});
+    expect(oldReplay.json()).toMatchObject({id:created.json().id,version:originalResult.version,startAt:originalResult.startAt,employeeId:employeeB});
+    const [current]=await db<{version:number;employeeId:string}[]>`select version,employee_id from appointments where id=${created.json().id}`;
+    expect(current).toMatchObject({version:movedAgain.json().version,employeeId:employeeA});
   });
 
   it("validates and version-protects audited location timezone settings", async () => {

@@ -104,7 +104,7 @@ test("@regression-booking hides override UX and denies direct intent without per
     const response = await fetch("/api/appointments", {
       method: "POST",
       credentials: "include",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "Idempotency-Key": crypto.randomUUID() },
       body: JSON.stringify({ ...payload, overrideConflict: true })
     });
     return response.status;

@@ -121,7 +121,7 @@ export async function createAppointment(
     ? new Intl.DateTimeFormat("en-CA",{timeZone:"America/Los_Angeles",hourCycle:"h23",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}).formatToParts(new Date(options.startAt)).reduce((p,part)=>({...p,[part.type]:part.value}),{} as Record<string,string>)
     : null);
   const wall=typeof localStart === "string" ? localStart : localStart ? `${localStart.year}-${localStart.month}-${localStart.day}T${localStart.hour}:${localStart.minute}` : `${tenant.anchor}T09:00`;
-  return json<{id:string;version:number}>(await api.post("/api/appointments",{data:{
+  return json<{id:string;version:number}>(await api.post("/api/appointments",{headers:{"Idempotency-Key":crypto.randomUUID()},data:{
     locationId:tenant.locationId,customerId:options.customerId??tenant.customerId,
     petId:options.petId??tenant.petId,employeeId:tenant.employeeId,
     serviceIds:options.serviceIds??[tenant.serviceId],

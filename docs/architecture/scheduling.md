@@ -12,7 +12,7 @@
 | Appointment conflict override | Yes | Yes | Yes | Explicit request by a caller with `appointments.override_conflict`; never inferred from role or permission alone |
 | Availability override | Yes | Yes | Yes | Separate existing override for hours/blocked-time availability; requires an explicit reason |
 | Duplicate UI submission protection | Yes | Yes | Yes | The active form submit is disabled until its mutation settles |
-| Request idempotency key | No | Not yet | No | Deferred before Controlled Pilot; ordinary exact overlap is conflict-safe, but the API has no general replay-key contract |
+| Request idempotency key | Yes | Yes | E3 | Durable tenant/operation/key replay identity for create and reschedule; payload-bound immutable results and current replay authorization |
 
 ## Authoritative model
 

@@ -570,15 +570,19 @@ function openModal(title, fields, submit) {
 }
 
 function schedulingMutation(path,payload,operationLabel){
-  return api(path,{method:path.includes("/schedule")?"PATCH":"POST",body:JSON.stringify(payload)}).catch(error=>{
+  const identity=`pawsh-scheduling:${path}:${JSON.stringify(payload)}`;
+  const key=globalThis.sessionStorage.getItem(identity)||globalThis.crypto.randomUUID();
+  globalThis.sessionStorage.setItem(identity,key);
+  return api(path,{method:path.includes("/schedule")?"PATCH":"POST",headers:{"Idempotency-Key":key},body:JSON.stringify(payload)}).then(result=>{
+    globalThis.sessionStorage.removeItem(identity);
+    return result;
+  }).catch(error=>{
+    if(error.status)globalThis.sessionStorage.removeItem(identity);
     if(error.status===409&&error.data?.code==="SCHEDULING_CONFLICT"&&error.data.canOverride){
       error.operationLabel=operationLabel;
       error.proposedEmployee=state.employees.find(item=>item.id===payload.employeeId)?.displayName||"Selected employee";
       error.proposedStart=payload.localStart.replace("T"," ");
-      error.retryConflictOverride=()=>api(path,{
-        method:path.includes("/schedule")?"PATCH":"POST",
-        body:JSON.stringify({...payload,overrideConflict:true})
-      });
+      error.retryConflictOverride=()=>schedulingMutation(path,{...payload,overrideConflict:true},operationLabel);
     }
     throw error;
   });

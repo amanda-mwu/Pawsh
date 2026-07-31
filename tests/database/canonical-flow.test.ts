@@ -170,7 +170,7 @@ describeDatabase("canonical Pawsh workflow", () => {
 
   it("enforces half-open scheduling and database overlap protection", async () => {
     const create = () => app.inject({
-      method: "POST", url: "/api/appointments", headers: { cookie: ownerCookie },
+      method: "POST", url: "/api/appointments", headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
       payload: { locationId, customerId, petId, employeeId, serviceIds: [serviceId], localStart:"2031-08-01T09:00",expectedLocationVersion:2 }
     });
     const [first, racing] = await Promise.all([create(), create()]);
@@ -178,7 +178,7 @@ describeDatabase("canonical Pawsh workflow", () => {
     appointmentId = (first.statusCode === 201 ? first : racing).json().id;
 
     const adjacent = await app.inject({
-      method: "POST", url: "/api/appointments", headers: { cookie: ownerCookie },
+      method: "POST", url: "/api/appointments", headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
       payload: {
         locationId, customerId, petId, employeeId, serviceIds: [serviceId],
         localStart: "2031-08-01T10:00", expectedLocationVersion:2
@@ -196,11 +196,11 @@ describeDatabase("canonical Pawsh workflow", () => {
       localStart: "2031-08-01T22:00", expectedLocationVersion:2
     };
     const unavailable = await app.inject({
-      method: "POST", url: "/api/appointments", headers: { cookie: ownerCookie }, payload: outsidePayload
+      method: "POST", url: "/api/appointments", headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() }, payload: outsidePayload
     });
     expect(unavailable.statusCode).toBe(400);
     const overridden = await app.inject({
-      method: "POST", url: "/api/appointments", headers: { cookie: ownerCookie },
+      method: "POST", url: "/api/appointments", headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
       payload: { ...outsidePayload, availabilityOverride: true, overrideReason: "Owner-approved after-hours request" }
     });
     expect(overridden.statusCode).toBe(201);

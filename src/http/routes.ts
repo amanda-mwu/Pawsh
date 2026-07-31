@@ -137,6 +137,7 @@ export interface SchedulingHooks {
     operation: "create" | "reschedule";
     appointmentId: string;
   }) => Promise<void>;
+  afterCommit?: (input:{operation:"create"|"reschedule";appointmentId:string})=>Promise<void>;
 }
 
 export interface LifecycleHooks {
@@ -157,11 +158,140 @@ export interface FinancialHooks {
 }
 
 type FinancialOperation = "checkout.create-invoice" | "payment.record" | "payment.void";
+type SchedulingOperation = "appointment.create" | "appointment.reschedule";
+type SchedulingCanonicalVersion = "appointment.create:v1" | "appointment.reschedule:v1";
+type SchedulingResultVersion = "appointment.create.result:v1" | "appointment.reschedule.result:v1";
 
 class FinancialRequestError extends Error {
   constructor(readonly status: number, readonly code: string, message: string, readonly details?: unknown) {
     super(message);
     this.name = "FinancialRequestError";
+  }
+}
+
+class SchedulingRequestError extends Error {
+  constructor(readonly status: number, readonly code: string, message: string, readonly details?: unknown) {
+    super(message);
+    this.name = "SchedulingRequestError";
+  }
+}
+
+function schedulingIdempotencyKey(request: { headers: Record<string, unknown> }): string {
+  const value=request.headers["idempotency-key"];
+  if(typeof value!=="string"||value.length<16||value.length>128||!/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new SchedulingRequestError(400,"IDEMPOTENCY_KEY_REQUIRED","A valid Idempotency-Key header is required");
+  }
+  return value;
+}
+
+function schedulingCanonicalHash(
+  operation: SchedulingOperation,
+  version: SchedulingCanonicalVersion,
+  fields: readonly unknown[]
+): string {
+  return canonicalHash([operation,version,...fields]);
+}
+
+interface SchedulingReplayResult {
+  resultSchemaVersion: SchedulingResultVersion;
+  appointmentId: string;
+  appointmentVersion: number;
+  startAt: Date;
+  endAt: Date;
+  schedulingTimezone: string;
+  scheduledLocalStart: string;
+  disambiguation: "earlier"|"later"|null;
+  utcOffsetMinutes: number;
+  employeeId: string;
+  locationId: string;
+  conflictDetected:boolean;
+  conflictOverrideRequested:boolean;
+  conflictOverrideAuthorized:boolean;
+  conflictOverrideApplied: boolean;
+  availabilityOverrideApplied: boolean;
+}
+
+interface SchedulingClaim {
+  id: string;
+  replay: SchedulingReplayResult|null;
+}
+
+async function claimSchedulingRequest(tx:Transaction,input:{
+  businessId:string;actorId:string;operation:SchedulingOperation;key:string;hash:string;
+  canonicalizationVersion:SchedulingCanonicalVersion;
+}):Promise<SchedulingClaim>{
+  const [created]=await tx<{id:string}[]>`
+    insert into scheduling_request_replays
+      (business_id,operation,idempotency_key,canonical_payload_hash,canonicalization_version,initiating_actor_id)
+    values (${input.businessId},${input.operation},${input.key},${input.hash},${input.canonicalizationVersion},${input.actorId})
+    on conflict (business_id,operation,idempotency_key) do nothing
+    returning id
+  `;
+  if(created)return {id:created.id,replay:null};
+  const [existing]=await tx<({id:string;canonicalPayloadHash:string;canonicalizationVersion:string;completedAt:Date|null}&SchedulingReplayResult)[]>`
+    select id,canonical_payload_hash,canonicalization_version,completed_at,
+      result_schema_version, resulting_appointment_id as appointment_id,
+      resulting_appointment_version as appointment_version,result_start_at as start_at,result_end_at as end_at,
+      result_scheduling_timezone as scheduling_timezone,
+      to_char(result_scheduled_local_start,'YYYY-MM-DD"T"HH24:MI') as scheduled_local_start,
+      result_disambiguation as disambiguation,result_utc_offset_minutes as utc_offset_minutes,
+      result_employee_id as employee_id,result_location_id as location_id,
+      result_conflict_detected as conflict_detected,
+      result_conflict_override_requested as conflict_override_requested,
+      result_conflict_override_authorized as conflict_override_authorized,
+      result_conflict_override_applied as conflict_override_applied,
+      result_availability_override_applied as availability_override_applied
+    from scheduling_request_replays
+    where business_id=${input.businessId} and operation=${input.operation} and idempotency_key=${input.key}
+  `;
+  if(!existing?.completedAt)throw new SchedulingRequestError(409,"IDEMPOTENCY_IN_PROGRESS","The scheduling request is still being processed");
+  if(existing.canonicalizationVersion!==input.canonicalizationVersion||existing.canonicalPayloadHash!==input.hash){
+    throw new SchedulingRequestError(409,"IDEMPOTENCY_KEY_REUSED","The idempotency key was already used for a different request");
+  }
+  if(!["appointment.create.result:v1","appointment.reschedule.result:v1"].includes(existing.resultSchemaVersion)){
+    throw new SchedulingRequestError(409,"IDEMPOTENCY_RESULT_UNAVAILABLE","The stored scheduling result cannot be replayed safely");
+  }
+  return {id:existing.id,replay:existing};
+}
+
+async function completeSchedulingRequest(tx:Transaction,id:string,result:SchedulingReplayResult):Promise<void>{
+  await tx`
+    update scheduling_request_replays set
+      result_schema_version=${result.resultSchemaVersion},resulting_appointment_id=${result.appointmentId},
+      resulting_appointment_version=${result.appointmentVersion},result_start_at=${result.startAt},result_end_at=${result.endAt},
+      result_scheduling_timezone=${result.schedulingTimezone},result_scheduled_local_start=${result.scheduledLocalStart},
+      result_disambiguation=${result.disambiguation},result_utc_offset_minutes=${result.utcOffsetMinutes},
+      result_employee_id=${result.employeeId},result_location_id=${result.locationId},
+      result_conflict_detected=${result.conflictDetected},
+      result_conflict_override_requested=${result.conflictOverrideRequested},
+      result_conflict_override_authorized=${result.conflictOverrideAuthorized},
+      result_conflict_override_applied=${result.conflictOverrideApplied},
+      result_availability_override_applied=${result.availabilityOverrideApplied},completed_at=now()
+    where id=${id} and completed_at is null
+  `;
+}
+
+function schedulingReplayResponse(result:SchedulingReplayResult){
+  return {
+    id:result.appointmentId,version:result.appointmentVersion,startAt:result.startAt,endAt:result.endAt,
+    schedulingTimezone:result.schedulingTimezone,scheduledLocalStart:result.scheduledLocalStart,
+    scheduledDisambiguation:result.disambiguation,scheduledUtcOffsetMinutes:result.utcOffsetMinutes,
+    employeeId:result.employeeId,locationId:result.locationId,
+    availabilityOverridden:result.availabilityOverrideApplied,conflictOverridden:result.conflictOverrideApplied,
+    scheduling:{conflictDetected:result.conflictDetected,overrideRequested:result.conflictOverrideRequested,
+      overrideAuthorized:result.conflictOverrideAuthorized,overrideApplied:result.conflictOverrideApplied}
+  };
+}
+
+async function authorizeSchedulingReplay(tx:Transaction,context:{businessId:string;membershipId:string},result:SchedulingReplayResult):Promise<void>{
+  if(!await hasCurrentPermission(tx,{businessId:context.businessId,membershipId:context.membershipId,permission:"appointments.view"})){
+    throw new SchedulingRequestError(403,"PERMISSION_DENIED","The scheduling result is not available");
+  }
+  if(result.conflictOverrideApplied&&!await hasCurrentPermission(tx,{businessId:context.businessId,membershipId:context.membershipId,permission:"appointments.override_conflict"})){
+    throw new SchedulingRequestError(403,"PERMISSION_DENIED","The scheduling result is not available");
+  }
+  if(result.availabilityOverrideApplied&&!await hasCurrentPermission(tx,{businessId:context.businessId,membershipId:context.membershipId,permission:"appointments.edit"})){
+    throw new SchedulingRequestError(403,"PERMISSION_DENIED","The scheduling result is not available");
   }
 }
 
@@ -1636,13 +1766,27 @@ export function registerRoutes(
     preHandler: [authenticate, requirePermission("appointments.create")]
   }, async (request, reply) => {
     const context = auth(request);
+    const requestKey=schedulingIdempotencyKey(request);
     const input = body(appointmentSchema, request.body);
+    const canonicalizationVersion="appointment.create:v1" as const;
+    const normalizedServiceIds=[...new Set(input.serviceIds)].sort();
+    const requestHash=schedulingCanonicalHash("appointment.create",canonicalizationVersion,[
+      input.locationId,input.customerId,input.petId,input.employeeId,normalizedServiceIds,input.localStart,
+      input.disambiguation??null,input.expectedLocationVersion,input.availabilityOverride,input.overrideConflict,
+      input.overrideReason??null,input.notes??null
+    ]);
     const appointmentId = randomUUID();
     const result = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
+      const claim=await claimSchedulingRequest(tx,{businessId:context.businessId,actorId:context.userId,
+        operation:"appointment.create",key:requestKey,hash:requestHash,canonicalizationVersion});
+      if(claim.replay){
+        await authorizeSchedulingReplay(tx,context,claim.replay);
+        return {kind:"replay",result:claim.replay} as const;
+      }
       const overrideAuthorized = await authorizeConflictOverride(tx, context, input.overrideConflict);
       if (input.overrideConflict && !overrideAuthorized) {
-        return { kind: "forbidden" } as const;
+        throw new SchedulingRequestError(403,"PERMISSION_DENIED","Missing permission: appointments.override_conflict");
       }
       const [participants] = await tx<{ available: boolean }[]>`
         select exists (
@@ -1658,8 +1802,8 @@ export function registerRoutes(
         select timezone,version from locations
         where business_id=${context.businessId} and id=${input.locationId} and active
       `;
-      if (!location) return { kind:"location_missing" } as const;
-      if (location.version !== input.expectedLocationVersion) return { kind:"location_stale" } as const;
+      if (!location) throw new SchedulingRequestError(404,"RESOURCE_NOT_FOUND","Location not found");
+      if (location.version !== input.expectedLocationVersion) throw new SchedulingRequestError(409,"STALE_LOCATION_SETTINGS","Location settings changed. Refresh and try again.");
       const resolved=resolveWallTime(input.localStart,location.timezone,input.disambiguation);
       await schedulingHooks.afterLocationLock?.({operation:"create",businessId:context.businessId,timezone:location.timezone,version:location.version});
       const catalog = await tx<{ id: string; name: string; baseDurationMinutes: number; basePriceMinor: number }[]>`
@@ -1696,7 +1840,7 @@ export function registerRoutes(
           membershipId: context.membershipId,
           permission: "appointments.override_conflict"
         });
-        return { kind: "conflict", conflicts, canOverride } as const;
+        throw new SchedulingRequestError(409,"SCHEDULING_CONFLICT","This employee already has an overlapping appointment during the selected time.",{conflicts,canOverride});
       }
       const overrideApplied = conflicts.length > 0 && input.overrideConflict && overrideAuthorized;
       if (overrideApplied) await permitConflictOverride(tx, appointmentId);
@@ -1739,7 +1883,7 @@ export function registerRoutes(
       if (input.availabilityOverride && !context.isOwner && !context.permissions.includes("appointments.edit")) {
         throw new Error("Availability override is not authorized");
       }
-      const [appointment] = await tx<{ id: string }[]>`
+      const [appointment] = await tx<{ id: string;version:number }[]>`
         insert into appointments
           (id, business_id, location_id, customer_id, pet_id, employee_id, start_at, end_at,
            scheduling_timezone,scheduled_local_start,scheduled_utc_offset_minutes,scheduled_disambiguation,
@@ -1787,37 +1931,23 @@ export function registerRoutes(
           appointmentId: appointment.id
         });
       }
+      const replayResult:SchedulingReplayResult={
+        resultSchemaVersion:"appointment.create.result:v1",appointmentId:appointment.id,
+        appointmentVersion:appointment.version,startAt,endAt,schedulingTimezone:resolved.timeZone,
+        scheduledLocalStart:input.localStart,disambiguation:resolved.disambiguation,
+        utcOffsetMinutes:resolved.offsetMinutes,employeeId:input.employeeId,locationId:input.locationId,
+        conflictDetected:conflicts.length>0,conflictOverrideRequested:input.overrideConflict,
+        conflictOverrideAuthorized:overrideAuthorized,conflictOverrideApplied:overrideApplied,
+        availabilityOverrideApplied:input.availabilityOverride
+      };
+      await completeSchedulingRequest(tx,claim.id,replayResult);
       return {
         kind: "created",
-        appointment,
-        scheduling: {
-          conflictDetected: conflicts.length > 0,
-          overrideRequested: input.overrideConflict,
-          overrideAuthorized,
-          overrideApplied
-        }
+        result:replayResult
       } as const;
     });
-    if (result.kind === "forbidden") {
-      return reply.code(403).send({ error: "Missing permission: appointments.override_conflict" });
-    }
-    if (result.kind === "location_missing") return reply.code(404).send({ error:"Location not found" });
-    if (result.kind === "location_stale") return reply.code(409).send({ code:"STALE_LOCATION_SETTINGS", error:"Location settings changed. Refresh and try again." });
-    if (result.kind === "conflict") {
-      return reply.code(409).send({
-        code: "SCHEDULING_CONFLICT",
-        error: "This employee already has an overlapping appointment during the selected time.",
-        conflicts: result.conflicts,
-        canOverride: result.canOverride
-      });
-    }
-    return reply.code(201).send({
-      ...result.appointment,
-      // Keep the wall-time snapshot offset-free. The PostgreSQL client otherwise
-      // deserializes this timestamp as a Date and JSON turns it into a false UTC instant.
-      scheduledLocalStart: input.localStart,
-      scheduling: result.scheduling
-    });
+    if(result.kind==="created")await schedulingHooks.afterCommit?.({operation:"create",appointmentId:result.result.appointmentId});
+    return reply.code(result.kind==="created"?201:200).send(schedulingReplayResponse(result.result));
   });
 
   app.post("/api/appointments/:id/transition", {
@@ -1875,15 +2005,27 @@ export function registerRoutes(
 
   app.patch("/api/appointments/:id/schedule", {
     preHandler: [authenticate, requirePermission("appointments.edit")]
-  }, async (request, reply) => {
+  }, async (request) => {
     const context = auth(request);
     const { id } = idParams.parse(request.params);
+    const requestKey=schedulingIdempotencyKey(request);
     const input = body(appointmentMoveSchema, request.body);
+    const canonicalizationVersion="appointment.reschedule:v1" as const;
+    const requestHash=schedulingCanonicalHash("appointment.reschedule",canonicalizationVersion,[
+      id,input.version,input.employeeId,input.localStart,input.disambiguation??null,input.expectedLocationVersion,
+      input.availabilityOverride,input.overrideConflict,input.overrideReason??null
+    ]);
     const moved = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
+      const claim=await claimSchedulingRequest(tx,{businessId:context.businessId,actorId:context.userId,
+        operation:"appointment.reschedule",key:requestKey,hash:requestHash,canonicalizationVersion});
+      if(claim.replay){
+        await authorizeSchedulingReplay(tx,context,claim.replay);
+        return {kind:"replay",result:claim.replay} as const;
+      }
       const overrideAuthorized = await authorizeConflictOverride(tx, context, input.overrideConflict);
       if (input.overrideConflict && !overrideAuthorized) {
-        return { kind: "forbidden" } as const;
+        throw new SchedulingRequestError(403,"PERMISSION_DENIED","Missing permission: appointments.override_conflict");
       }
       const [current] = await tx<{
         startAt: Date;
@@ -1895,15 +2037,15 @@ export function registerRoutes(
         select start_at,end_at,status,location_id,employee_id from appointments
         where business_id=${context.businessId} and id=${id} and version=${input.version} for update
       `;
-      if (!current) return { kind: "stale" } as const;
+      if (!current) throw new SchedulingRequestError(409,"STALE_APPOINTMENT","Appointment changed or no longer exists");
       if (current.status !== "scheduled") throw new Error("Only scheduled appointments can be moved");
       await tx`select pg_advisory_xact_lock_shared(hashtextextended(${'location-settings:' + current.locationId},0))`;
       const [location] = await tx<{ timezone:string; version:number }[]>`
         select timezone,version from locations
         where business_id=${context.businessId} and id=${current.locationId} and active
       `;
-      if (!location) return { kind:"location_missing" } as const;
-      if (location.version !== input.expectedLocationVersion) return { kind:"location_stale" } as const;
+      if (!location) throw new SchedulingRequestError(404,"RESOURCE_NOT_FOUND","Location not found");
+      if (location.version !== input.expectedLocationVersion) throw new SchedulingRequestError(409,"STALE_LOCATION_SETTINGS","Location settings changed. Refresh and try again.");
       const resolved=resolveWallTime(input.localStart,location.timezone,input.disambiguation);
       await schedulingHooks.afterLocationLock?.({operation:"reschedule",businessId:context.businessId,timezone:location.timezone,version:location.version});
       await schedulingHooks.beforeLock?.({
@@ -1947,7 +2089,7 @@ export function registerRoutes(
           membershipId: context.membershipId,
           permission: "appointments.override_conflict"
         });
-        return { kind: "conflict", conflicts, canOverride } as const;
+        throw new SchedulingRequestError(409,"SCHEDULING_CONFLICT","This employee already has an overlapping appointment during the selected time.",{conflicts,canOverride});
       }
       const overrideApplied = conflicts.length > 0 && input.overrideConflict && overrideAuthorized;
       if (overrideApplied) await permitConflictOverride(tx, id);
@@ -1985,7 +2127,7 @@ export function registerRoutes(
       if ((!availability?.withinHours || availability.blocked) && !input.availabilityOverride) {
         throw new Error("Requested time is outside employee availability; an explicit override is required");
       }
-      const [updated] = await tx`
+      const [updated] = await tx<{id:string;version:number}[]>`
         update appointments set employee_id=${input.employeeId},start_at=${startAt},end_at=${endAt},
           scheduling_timezone=${resolved.timeZone},scheduled_local_start=${input.localStart},
           scheduled_utc_offset_minutes=${resolved.offsetMinutes},scheduled_disambiguation=${resolved.disambiguation},
@@ -2022,38 +2164,24 @@ export function registerRoutes(
           appointmentId: id
         });
       }
+      if(!updated)throw new SchedulingRequestError(409,"STALE_APPOINTMENT","Appointment changed or no longer exists");
+      const replayResult:SchedulingReplayResult={
+        resultSchemaVersion:"appointment.reschedule.result:v1",appointmentId:id,
+        appointmentVersion:updated.version,startAt,endAt,schedulingTimezone:resolved.timeZone,
+        scheduledLocalStart:input.localStart,disambiguation:resolved.disambiguation,
+        utcOffsetMinutes:resolved.offsetMinutes,employeeId:input.employeeId,locationId:current.locationId,
+        conflictDetected:conflicts.length>0,conflictOverrideRequested:input.overrideConflict,
+        conflictOverrideAuthorized:overrideAuthorized,conflictOverrideApplied:overrideApplied,
+        availabilityOverrideApplied:input.availabilityOverride
+      };
+      await completeSchedulingRequest(tx,claim.id,replayResult);
       return {
         kind: "moved",
-        appointment: updated,
-        scheduling: {
-          conflictDetected: conflicts.length > 0,
-          overrideRequested: input.overrideConflict,
-          overrideAuthorized,
-          overrideApplied
-        }
+        result:replayResult
       } as const;
     });
-    if (moved.kind === "forbidden") {
-      return reply.code(403).send({ error: "Missing permission: appointments.override_conflict" });
-    }
-    if (moved.kind === "stale") {
-      return reply.code(409).send({ error: "Appointment changed or no longer exists" });
-    }
-    if (moved.kind === "location_missing") return reply.code(404).send({ error:"Location not found" });
-    if (moved.kind === "location_stale") return reply.code(409).send({ code:"STALE_LOCATION_SETTINGS", error:"Location settings changed. Refresh and try again." });
-    if (moved.kind === "conflict") {
-      return reply.code(409).send({
-        code: "SCHEDULING_CONFLICT",
-        error: "This employee already has an overlapping appointment during the selected time.",
-        conflicts: moved.conflicts,
-        canOverride: moved.canOverride
-      });
-    }
-    return {
-      ...moved.appointment,
-      scheduledLocalStart: input.localStart,
-      scheduling: moved.scheduling
-    };
+    if(moved.kind==="moved")await schedulingHooks.afterCommit?.({operation:"reschedule",appointmentId:moved.result.appointmentId});
+    return schedulingReplayResponse(moved.result);
   });
 
   app.patch("/api/appointments/:id/operations", {

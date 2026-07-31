@@ -74,7 +74,7 @@ describeDatabase("D2 appointment lifecycle regression", () => {
     app.inject({
       method: "POST",
       url: "/api/appointments",
-      headers: { cookie },
+      headers: { cookie, "idempotency-key": crypto.randomUUID() },
       payload: { locationId, customerId, petId, employeeId, serviceIds: [serviceId], localStart:formatWallTime(startAt,"America/Los_Angeles"),expectedLocationVersion:1 }
     });
   const transition = (

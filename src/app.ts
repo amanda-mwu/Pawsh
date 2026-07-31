@@ -117,6 +117,11 @@ export async function createApp(
       return reply.code(financial.status).send({ code: financial.code, error: financial.message,
         ...(financial.details && typeof financial.details === "object" ? financial.details : {}) });
     }
+    if (error.name === "SchedulingRequestError") {
+      const scheduling = error as Error & { status: number; code: string; details?: unknown };
+      return reply.code(scheduling.status).send({ code: scheduling.code, error: scheduling.message,
+        ...(scheduling.details && typeof scheduling.details === "object" ? scheduling.details : {}) });
+    }
     return reply.code(400).send({ error: error.message });
   });
 

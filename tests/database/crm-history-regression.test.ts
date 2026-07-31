@@ -262,7 +262,7 @@ describeDatabase("D3 customer, pet, and history regression", () => {
 
   it("preserves snapshot history, permission-projects finances, orders deterministically, and suppresses archived-parent pets", async () => {
     const appointment = await app.inject({
-      method: "POST", url: "/api/appointments", headers: { cookie: ownerCookie },
+      method: "POST", url: "/api/appointments", headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
       payload: {
         locationId, customerId, petId, employeeId, serviceIds: [serviceId],
         localStart: "2035-04-10T10:00", expectedLocationVersion:1

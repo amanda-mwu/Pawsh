@@ -2,7 +2,7 @@
 
 ## Classification
 
-Candidate classification: **Calendar & Time Integrity Valid**.
+Classification: **Calendar & Time Integrity Valid**.
 
 This record becomes final only when its final exact SHA is clean, equals
 `origin/main`, and every required CI job is green. It extends, and does not
@@ -101,7 +101,12 @@ terminal-state outbox behavior remains inherited.
 ## Closure evidence
 
 - Baseline SHA: `743fe52310d697b3d97fb3093b66f32e52fa2b62`
-- Candidate SHA: pending
-- Final SHA: pending
-- GitHub Actions run: pending
-- Exact-head required checks: pending
+- Tested implementation SHA: `ffdd66e8806d4dec11467a6cea2ddc8e9b3c9ebb`
+- GitHub Actions run: `30670517679`
+- Exact-head required checks: all 13 jobs passed, including static validation,
+  PostgreSQL runtime, backup/restore, Chromium regression/smoke/security,
+  Chromium/Firefox/WebKit cross-browser, iPhone security, and Android/iPhone/
+  iPad responsive jobs.
+- Evidence-documentation descendant: the commit containing this record. Its
+  exact SHA and required green CI run are reported in the final E1 handoff,
+  avoiding an impossible self-referential commit hash inside this file.

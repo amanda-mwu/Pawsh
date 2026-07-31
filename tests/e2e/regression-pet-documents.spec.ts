@@ -62,7 +62,7 @@ test("@regression-pet-documents keeps archived Pet Care evidence reachable outsi
   await page.getByTestId("nav-customers").click();
   await expect(card).toHaveCount(0);
   await page.getByRole("button", { name: "Archived records" }).click();
-  await page.getByRole("button", { name: "Documents" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Documents" }).click();
   await expect(page.getByTestId("rabies-current")).toContainText("rabies-vaccination.pdf");
   await expect(page.getByTestId("field-rabiesPdf")).toHaveCount(0);
 });

@@ -40,7 +40,6 @@ describeDatabase("D3.2 rabies vaccination documents", () => {
   let app: Awaited<ReturnType<typeof createApp>>;
   let ownerCookie: string;
   let businessId: string;
-  let membershipId: string;
   let petId: string;
   const suffix = crypto.randomUUID();
 
@@ -54,7 +53,7 @@ describeDatabase("D3.2 rabies vaccination documents", () => {
     }});
     expect(signup.statusCode).toBe(201);
     ownerCookie = cookie(signup);
-    ({ businessId, membershipId } = signup.json());
+    ({ businessId } = signup.json());
     const customer = await app.inject({ method: "POST", url: "/api/customers", headers: { cookie: ownerCookie }, payload: {
       firstName: "Document", lastName: "Customer", email: `customer-${suffix}@example.test`
     }});
@@ -113,7 +112,8 @@ describeDatabase("D3.2 rabies vaccination documents", () => {
     const [pet] = await db<{ version: number; vaccinationExpiresOn: string }[]>`
       select version,vaccination_expires_on from pets where id=${petId}
     `;
-    expect(pet).toMatchObject({ version: 2, vaccinationExpiresOn: "2036-04-12" });
+    expect(pet?.version).toBe(2);
+    expect(String(pet?.vaccinationExpiresOn).slice(0,10)).toBe("2036-04-12");
     const [events] = await db<{ documents: number; care: number }[]>`
       select count(*) filter (where action in ('pet.document.uploaded','pet.document.replaced'))::int as documents,
         count(*) filter (where action='pet.care.update')::int as care
@@ -225,16 +225,31 @@ describeDatabase("D3.2 rabies vaccination documents", () => {
     }
     const blocking = new BlockingStorage();
     const isolatedApp = await createApp(config, db, { runWorker: false, serveStatic: false, documentStorage: blocking });
-    await db`update business_memberships set status='active' where id=${membershipId}`;
-    const body = multipart(metadata({ expectedCurrentDocumentId: null }));
+    const email = `documents-revoked-${suffix}@example.test`;
+    const password = "correct horse revoked battery";
+    const [user] = await db<{ id: string }[]>`
+      insert into users(email,normalized_email,password_hash) values (${email},${email},${await hashPassword(password)}) returning id
+    `;
+    const [membership] = await db<{ id: string }[]>`
+      insert into business_memberships(business_id,user_id,permissions)
+      values (${businessId},${user!.id},${["pets.edit","pets.care.edit"]}) returning id
+    `;
+    const login = await isolatedApp.inject({ method: "POST", url: "/api/auth/login", payload: { email, password } });
+    const memberCookie = cookie(login);
+    const [current] = await db<{ id: string; documentVersion: number }[]>`
+      select id,document_version from pet_documents
+      where business_id=${businessId} and pet_id=${petId} and state='current'
+    `;
+    const body = multipart(metadata({
+      expectedCurrentDocumentId: current!.id, expectedCurrentDocumentVersion: current!.documentVersion
+    }));
     const pending = isolatedApp.inject({ method: "POST", url: `/api/pets/${petId}/documents/rabies`,
-      headers: { cookie: ownerCookie, ...body.headers }, payload: body.payload });
+      headers: { cookie: memberCookie, ...body.headers }, payload: body.payload });
     await blocking.started;
-    await db`update business_memberships set status='disabled' where id=${membershipId}`;
+    await db`update business_memberships set permissions='{}' where id=${membership!.id}`;
     blocking.release();
     const response = await pending;
     expect(response.statusCode).toBe(403);
-    await db`update business_memberships set status='active' where id=${membershipId}`;
     await isolatedApp.close();
   });
 });

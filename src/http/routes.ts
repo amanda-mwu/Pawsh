@@ -97,15 +97,20 @@ function validPdf(bytes: Uint8Array): boolean {
 
 interface DocumentApiRow {
   id: string; documentType: string; state: string; documentVersion: number;
-  safeDownloadFilename: string; sizeBytes: number; documentDate: string | null;
-  expiresOn: string | null; createdAt: string;
+  safeDownloadFilename: string; sizeBytes: number; documentDate: string | Date | null;
+  expiresOn: string | Date | null; createdAt: string;
+}
+
+function dateOnly(value: string | Date | null): string | null {
+  if (!value) return null;
+  return (value instanceof Date ? value.toISOString() : String(value)).slice(0, 10);
 }
 
 function publicDocument(row: DocumentApiRow) {
   return {
     id: row.id, documentType: row.documentType, state: row.state,
     version: row.documentVersion, filename: row.safeDownloadFilename,
-    sizeBytes: row.sizeBytes, documentDate: row.documentDate, expiresOn: row.expiresOn,
+    sizeBytes: row.sizeBytes, documentDate: dateOnly(row.documentDate), expiresOn: dateOnly(row.expiresOn),
     uploadedAt: row.createdAt
   };
 }

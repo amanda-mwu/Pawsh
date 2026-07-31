@@ -42,6 +42,7 @@ test("@security-desktop stale permission cannot mutate and reconciles capability
   await expect(checkout).toBeHidden();
 
   const ownerCheckout=await request.post(`/api/appointments/${appointment.id}/checkout`,{
+    headers:{"Idempotency-Key":crypto.randomUUID()},
     data:{discountMinor:0,tipMinor:0}
   });
   expect(ownerCheckout.status()).toBe(201);

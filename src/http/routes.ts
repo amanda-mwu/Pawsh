@@ -139,6 +139,74 @@ export interface DocumentHooks {
   beforeDocumentAudit?: (input: { businessId: string; petId: string; documentId: string }) => Promise<void>;
 }
 
+export interface FinancialHooks {
+  beforeFinancialAudit?: (operation: FinancialOperation) => Promise<void>;
+  afterFinancialCommit?: (operation: FinancialOperation) => Promise<void>;
+}
+
+type FinancialOperation = "checkout.create-invoice" | "payment.record" | "payment.void";
+
+class FinancialRequestError extends Error {
+  constructor(readonly status: number, readonly code: string, message: string, readonly details?: unknown) {
+    super(message);
+    this.name = "FinancialRequestError";
+  }
+}
+
+function idempotencyKey(request: { headers: Record<string, unknown> }): string {
+  const value = request.headers["idempotency-key"];
+  const parsed = z.string().uuid().safeParse(value);
+  if (!parsed.success) throw new FinancialRequestError(400, "IDEMPOTENCY_KEY_REQUIRED", "A valid Idempotency-Key header is required");
+  return parsed.data;
+}
+
+function canonicalHash(value: unknown): string {
+  return sha256(new TextEncoder().encode(JSON.stringify(value)));
+}
+
+interface FinancialClaim {
+  id: string;
+  existingResult: unknown | null;
+}
+
+async function claimFinancialRequest(
+  tx: Transaction,
+  input: { businessId: string; actorId: string; operation: FinancialOperation; key: string; hash: string }
+): Promise<FinancialClaim> {
+  const [created] = await tx<{ id: string }[]>`
+    insert into financial_idempotency_requests
+      (business_id,operation,idempotency_key,initiating_actor_id,canonical_payload_hash,state)
+    values (${input.businessId},${input.operation},${input.key},${input.actorId},${input.hash},'in_progress')
+    on conflict (business_id,operation,idempotency_key) do nothing
+    returning id
+  `;
+  if (created) return { id: created.id, existingResult: null };
+  const [existing] = await tx<{ id: string; canonicalPayloadHash: string; state: string; resultMetadata: unknown }[]>`
+    select id,canonical_payload_hash,state,result_metadata
+    from financial_idempotency_requests
+    where business_id=${input.businessId} and operation=${input.operation} and idempotency_key=${input.key}
+  `;
+  if (!existing) throw new FinancialRequestError(409, "IDEMPOTENCY_IN_PROGRESS", "The financial request is still being processed");
+  if (existing.canonicalPayloadHash !== input.hash) {
+    throw new FinancialRequestError(409, "IDEMPOTENCY_KEY_REUSED", "The idempotency key was already used for a different request");
+  }
+  if (existing.state !== "completed") {
+    throw new FinancialRequestError(409, "IDEMPOTENCY_IN_PROGRESS", "The financial request is still being processed");
+  }
+  return { id: existing.id, existingResult: existing.resultMetadata };
+}
+
+async function completeFinancialRequest(
+  tx: Transaction,
+  input: { id: string; resultType: string; resourceId: string; result: unknown }
+): Promise<void> {
+  await tx`
+    update financial_idempotency_requests set state='completed',result_type=${input.resultType},
+      result_resource_id=${input.resourceId},result_metadata=${tx.json(input.result as any)},completed_at=now()
+    where id=${input.id} and state='in_progress'
+  `;
+}
+
 function body<T>(schema: ZodType<T>, value: unknown): T {
   return schema.parse(value);
 }
@@ -290,7 +358,8 @@ export function registerRoutes(
   documentStorage: DocumentStorage,
   schedulingHooks: SchedulingHooks = {},
   lifecycleHooks: LifecycleHooks = {},
-  documentHooks: DocumentHooks = {}
+  documentHooks: DocumentHooks = {},
+  financialHooks: FinancialHooks = {}
 ): void {
   const authenticate = authentication(db);
   const authenticatePlatform = platformAuthentication(db);
@@ -1991,10 +2060,13 @@ export function registerRoutes(
     const context = auth(request);
     const { id } = idParams.parse(request.params);
     const input = body(checkoutSchema, request.body);
+    const requestKey = idempotencyKey(request);
     if (input.discountMinor > 0 && !context.isOwner && !context.permissions.includes("discounts.apply")) {
       return reply.code(403).send({ error: "Missing permission: discounts.apply" });
     }
-    const invoice = await db.begin(async (tx) => {
+    const clientHash = canonicalHash({ version: 1, appointmentId: id, discountMinor: input.discountMinor,
+      discountType: input.discountType?.trim() || null, tipMinor: input.tipMinor });
+    const outcome = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
       const [appointment] = await tx<{ customerId: string; status: string; taxRateBasisPoints: number }[]>`
         select a.customer_id, a.status, b.tax_rate_basis_points
@@ -2002,51 +2074,83 @@ export function registerRoutes(
         where a.business_id=${context.businessId} and a.id=${id} for update
       `;
       if (!appointment) return null;
-      if (appointment.status !== "completed") throw new Error("Only completed appointments can be checked out");
-      const [existing] = await tx`
-        select * from invoices
-        where business_id=${context.businessId} and appointment_id=${id} and status<>'void'
-      `;
-      if (existing) return existing;
+      const claim = await claimFinancialRequest(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        operation: "checkout.create-invoice", key: requestKey, hash: clientHash
+      });
+      if (claim.existingResult) return { result: claim.existingResult, created: false };
+      if (appointment.status !== "completed") {
+        throw new FinancialRequestError(409, "STALE_FINANCIAL_STATE", "Only completed appointments can be checked out");
+      }
       const services = await tx<{ id: string; serviceNameSnapshot: string; priceMinorSnapshot: number }[]>`
         select id, service_name_snapshot, price_minor_snapshot from appointment_services
         where business_id=${context.businessId} and appointment_id=${id}
+        order by id
       `;
+      if (!services.length) throw new FinancialRequestError(409, "CHECKOUT_REQUIRES_SERVICE", "Checkout requires at least one service");
       const totals = calculateInvoice({
         lineAmounts: services.map((service) => service.priceMinorSnapshot),
         discount: input.discountMinor, taxRateBasisPoints: appointment.taxRateBasisPoints,
         tip: input.tipMinor
       });
+      const intentFingerprint = canonicalHash({
+        version: 1, appointmentId: id, customerId: appointment.customerId,
+        services: services.map((service) => ({ id: service.id, name: service.serviceNameSnapshot, amountMinor: service.priceMinorSnapshot })),
+        subtotalMinor: totals.subtotal, discountMinor: totals.discount,
+        discountType: input.discountType?.trim() || null,
+        taxRateBasisPoints: appointment.taxRateBasisPoints, taxMinor: totals.tax,
+        tipMinor: totals.tip, totalMinor: totals.total
+      });
+      const [existing] = await tx<{ id: string; intentFingerprint: string | null }[]>`
+        select id,intent_fingerprint from invoices
+        where business_id=${context.businessId} and appointment_id=${id} and status<>'void'
+      `;
+      if (existing) {
+        if (existing.intentFingerprint !== intentFingerprint) {
+          const [authoritativeInvoice] = await tx`
+            select * from invoices where business_id=${context.businessId} and id=${existing.id}
+          `;
+          throw new FinancialRequestError(409, "INVOICE_ALREADY_EXISTS",
+            "An invoice already exists with different checkout totals", { invoice: authoritativeInvoice });
+        }
+        const [result] = await tx`select * from invoices where business_id=${context.businessId} and id=${existing.id}`;
+        await completeFinancialRequest(tx, { id: claim.id, resultType: "invoice", resourceId: existing.id, result });
+        return { result, created: false };
+      }
       const [created] = await tx<{ id: string }[]>`
         insert into invoices
           (business_id, appointment_id, customer_id, status, subtotal_minor, discount_minor,
-           tax_minor, tip_minor, total_minor, balance_minor, discount_type, discount_actor)
+           tax_minor, tip_minor, total_minor, balance_minor, discount_type, discount_actor,
+           intent_fingerprint,calculation_version,tax_rate_basis_points)
         values
-          (${context.businessId}, ${id}, ${appointment.customerId}, 'open',
+          (${context.businessId}, ${id}, ${appointment.customerId}, ${totals.total === 0 ? "paid" : "open"},
            ${totals.subtotal}, ${totals.discount}, ${totals.tax}, ${totals.tip},
            ${totals.total}, ${totals.total}, ${input.discountType ?? null},
-           ${input.discountMinor > 0 ? context.userId : null})
+           ${input.discountMinor > 0 ? context.userId : null},${intentFingerprint},1,${appointment.taxRateBasisPoints})
         returning *
       `;
       if (!created) throw new Error("Invoice creation failed");
-      for (const service of services) {
+      for (const [index,service] of services.entries()) {
         await tx`
           insert into invoice_items
             (business_id, invoice_id, description, quantity, unit_price_minor, amount_minor,
-             source_appointment_service_id)
+             source_appointment_service_id,line_position)
           values
             (${context.businessId}, ${created.id}, ${service.serviceNameSnapshot}, 1,
-             ${service.priceMinorSnapshot}, ${service.priceMinorSnapshot}, ${service.id})
+             ${service.priceMinorSnapshot}, ${service.priceMinorSnapshot}, ${service.id},${index + 1})
         `;
       }
+      await financialHooks.beforeFinancialAudit?.("checkout.create-invoice");
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "invoice.create",
         resourceType: "invoice", resourceId: created.id, after: totals, eventType: "InvoiceCreated"
       });
-      return created;
+      await completeFinancialRequest(tx, { id: claim.id, resultType: "invoice", resourceId: created.id, result: created });
+      return { result: created, created: true };
     });
-    if (!invoice) return reply.code(404).send({ error: "Appointment not found" });
-    return reply.code(201).send(invoice);
+    if (!outcome) return reply.code(404).send({ error: "Appointment not found" });
+    await financialHooks.afterFinancialCommit?.("checkout.create-invoice");
+    return reply.code(outcome.created ? 201 : 200).send(outcome.result);
   });
 
   app.post("/api/invoices/:id/payments", {
@@ -2055,15 +2159,28 @@ export function registerRoutes(
     const context = auth(request);
     const { id } = idParams.parse(request.params);
     const input = body(paymentSchema, request.body);
-    const payment = await db.begin(async (tx) => {
+    const requestKey = idempotencyKey(request);
+    const requestHash = canonicalHash({ version: 1, invoiceId: id, amountMinor: input.amountMinor,
+      expectedBalanceMinor: input.expectedBalanceMinor, method: input.method,
+      externalReference: input.externalReference?.trim() || null });
+    const outcome = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
       const [invoice] = await tx<{ balanceMinor: number; status: string }[]>`
         select balance_minor, status from invoices
         where business_id=${context.businessId} and id=${id} for update
       `;
       if (!invoice) return null;
-      if (!["open", "partially_paid"].includes(invoice.status)) throw new Error("Invoice cannot accept payment");
-      if (input.amountMinor > invoice.balanceMinor) throw new Error("Payment exceeds invoice balance");
+      const claim = await claimFinancialRequest(tx, { businessId: context.businessId, actorId: context.userId,
+        operation: "payment.record", key: requestKey, hash: requestHash });
+      if (claim.existingResult) return { result: claim.existingResult, created: false };
+      if (!["open", "partially_paid"].includes(invoice.status)) {
+        throw new FinancialRequestError(409, "STALE_FINANCIAL_STATE", "Invoice cannot accept payment");
+      }
+      if (input.amountMinor > invoice.balanceMinor) {
+        const stale=input.expectedBalanceMinor!==invoice.balanceMinor;
+        throw new FinancialRequestError(stale?409:400,stale?"STALE_FINANCIAL_STATE":"PAYMENT_EXCEEDS_CURRENT_BALANCE",
+          stale?"The invoice balance changed; review the current balance":"Payment exceeds invoice balance");
+      }
       const [created] = await tx<{ id: string }[]>`
         insert into payments
           (business_id, invoice_id, amount_minor, method, external_reference, recorded_by)
@@ -2078,16 +2195,21 @@ export function registerRoutes(
           status=${balance === 0 ? "paid" : "partially_paid"}, updated_at=now()
         where id=${id} and business_id=${context.businessId}
       `;
+      await financialHooks.beforeFinancialAudit?.("payment.record");
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "payment.record",
         resourceType: "payment", resourceId: created?.id,
         after: { invoiceId: id, amountMinor: input.amountMinor, method: input.method },
         eventType: "PaymentRecorded"
       });
-      return created;
+      if (!created) throw new Error("Payment creation failed");
+      const result = { ...created, balance };
+      await completeFinancialRequest(tx, { id: claim.id, resultType: "payment", resourceId: created.id, result });
+      return { result, created: true };
     });
-    if (!payment) return reply.code(404).send({ error: "Invoice not found" });
-    return reply.code(201).send(payment);
+    if (!outcome) return reply.code(404).send({ error: "Invoice not found" });
+    await financialHooks.afterFinancialCommit?.("payment.record");
+    return reply.code(outcome.created ? 201 : 200).send(outcome.result);
   });
 
   app.post("/api/payments/:id/void", {
@@ -2096,14 +2218,21 @@ export function registerRoutes(
     const context = auth(request);
     const { id } = idParams.parse(request.params);
     const input = body(voidPaymentSchema, request.body);
-    const result = await db.begin(async (tx) => {
+    const requestKey = idempotencyKey(request);
+    const requestHash = canonicalHash({ version: 1, paymentId: id, reason: input.reason.trim() });
+    const outcome = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
       const [payment] = await tx<{ invoiceId: string; amountMinor: number; status: string }[]>`
         select invoice_id, amount_minor, status from payments
         where business_id=${context.businessId} and id=${id} for update
       `;
       if (!payment) return null;
-      if (payment.status !== "recorded") throw new Error("Payment is already voided");
+      const claim = await claimFinancialRequest(tx, { businessId: context.businessId, actorId: context.userId,
+        operation: "payment.void", key: requestKey, hash: requestHash });
+      if (claim.existingResult) return { result: claim.existingResult, created: false };
+      if (payment.status !== "recorded") {
+        throw new FinancialRequestError(409, "PAYMENT_ALREADY_VOIDED", "Payment is already voided");
+      }
       await tx`
         update payments set status='voided',voided_by=${context.userId},voided_at=now(),
           void_reason=${input.reason} where business_id=${context.businessId} and id=${id}
@@ -2123,15 +2252,19 @@ export function registerRoutes(
           updated_at=now()
         where business_id=${context.businessId} and id=${payment.invoiceId}
       `;
+      await financialHooks.beforeFinancialAudit?.("payment.void");
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "payment.void",
         resourceType: "payment", resourceId: id, reason: input.reason,
         before: { status: "recorded" }, after: { status: "voided" }
       });
-      return { id, balance };
+      const result = { id, balance };
+      await completeFinancialRequest(tx, { id: claim.id, resultType: "payment", resourceId: id, result });
+      return { result, created: true };
     });
-    if (!result) return reply.code(404).send({ error: "Payment not found" });
-    return result;
+    if (!outcome) return reply.code(404).send({ error: "Payment not found" });
+    await financialHooks.afterFinancialCommit?.("payment.void");
+    return reply.code(200).send(outcome.result);
   });
 
   app.get("/api/invoices/:id/receipt", {
@@ -2146,8 +2279,8 @@ export function registerRoutes(
     `;
     if (!invoice) return reply.code(404).send({ error: "Invoice not found" });
     const [items, payments] = await Promise.all([
-      db`select * from invoice_items where business_id=${context.businessId} and invoice_id=${id}`,
-      db`select * from payments where business_id=${context.businessId} and invoice_id=${id}`
+      db`select * from invoice_items where business_id=${context.businessId} and invoice_id=${id} order by line_position,id`,
+      db`select * from payments where business_id=${context.businessId} and invoice_id=${id} order by recorded_at,id`
     ]);
     return { invoice, items, payments };
   });

@@ -10,7 +10,7 @@ import type { Config } from "./config.js";
 import type { Database } from "./db/client.js";
 import { deliverNotifications, LogEmailProvider, processOutbox, SmtpEmailProvider } from "./engagement/worker.js";
 import { registerRoutes } from "./http/routes.js";
-import type { DocumentHooks, LifecycleHooks, SchedulingHooks } from "./http/routes.js";
+import type { DocumentHooks, FinancialHooks, LifecycleHooks, SchedulingHooks } from "./http/routes.js";
 import { openSecret } from "./security/secrets.js";
 import { createDocumentStorage, type DocumentStorage } from "./storage/documents.js";
 
@@ -24,6 +24,7 @@ export async function createApp(
     lifecycleHooks?: LifecycleHooks;
     documentStorage?: DocumentStorage;
     documentHooks?: DocumentHooks;
+    financialHooks?: FinancialHooks;
   } = {}
 ): Promise<FastifyInstance> {
   const app = Fastify({
@@ -65,7 +66,7 @@ export async function createApp(
   });
 
   registerRoutes(app, db, config, options.documentStorage ?? createDocumentStorage(config),
-    options.schedulingHooks, options.lifecycleHooks, options.documentHooks);
+    options.schedulingHooks, options.lifecycleHooks, options.documentHooks, options.financialHooks);
 
   let worker: NodeJS.Timeout | undefined;
   if (options.runWorker !== false) {
@@ -100,6 +101,11 @@ export async function createApp(
     }
     if ((error as { code?: string }).code?.startsWith("23")) {
       return reply.code(409).send({ error: "The requested change violates a data integrity rule" });
+    }
+    if (error.name === "FinancialRequestError") {
+      const financial = error as Error & { status: number; code: string; details?: unknown };
+      return reply.code(financial.status).send({ code: financial.code, error: financial.message,
+        ...(financial.details && typeof financial.details === "object" ? financial.details : {}) });
     }
     return reply.code(400).send({ error: error.message });
   });

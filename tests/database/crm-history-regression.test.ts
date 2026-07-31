@@ -287,8 +287,8 @@ describeDatabase("D3 customer, pet, and history regression", () => {
     });
 
     await db`
-      insert into invoices(business_id,appointment_id,customer_id,status,total_minor,balance_minor)
-      values (${businessId},${appointmentId},${customerId},'open',7000,7000)
+      insert into invoices(business_id,appointment_id,customer_id,status,subtotal_minor,total_minor,balance_minor)
+      values (${businessId},${appointmentId},${customerId},'open',7000,7000,7000)
     `;
     const noPayments = await app.inject({
       method: "GET", url: `/api/customers/${customerId}/history`,

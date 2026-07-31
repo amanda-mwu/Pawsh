@@ -23,7 +23,7 @@ test("@smoke operations expose safety context and enforce the state machine",asy
   expect(invalid.status()).toBe(400);
 });
 
-test("@smoke checkout totals persist and manual payment correction remains explicit",async({page,request,tenant})=>{
+test("@smoke @regression-checkout checkout totals persist and manual payment correction remains explicit",async({page,request,tenant})=>{
   const appointment=await completeAppointment(request,tenant);
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();

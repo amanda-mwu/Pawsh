@@ -71,6 +71,15 @@ async function runOnce(key, operation) {
   finally { pendingActions.delete(key); }
 }
 
+async function financialMutation(path,operation,payload) {
+  const identity=`pawsh-financial:${operation}:${path}:${JSON.stringify(payload)}`;
+  const key=globalThis.sessionStorage.getItem(identity)||globalThis.crypto.randomUUID();
+  globalThis.sessionStorage.setItem(identity,key);
+  const result=await api(path,{method:"POST",headers:{"Idempotency-Key":key},body:JSON.stringify(payload)});
+  globalThis.sessionStorage.removeItem(identity);
+  return result;
+}
+
 async function bootstrap() {
   try {
     state.me = await api("/api/me");
@@ -208,13 +217,33 @@ function checkout(id) {
     select("method","Payment method",[["cash","Cash"],["external_card","External card"],["check","Check"],["other","Other"]],true),
     async (form) => {
       const values=Object.fromEntries(form);
-      const invoice=await api(`/api/appointments/${id}/checkout`,{method:"POST",body:JSON.stringify({
+      const invoicePayload={
         discountMinor:Math.round(Number(values.discount||0)*100),
         discountType:Number(values.discount||0)>0?"manual":null,
         tipMinor:Math.round(Number(values.tip||0)*100)
-      })});
-      if (Number(invoice.balanceMinor)>0) await api(`/api/invoices/${invoice.id}/payments`,{method:"POST",body:JSON.stringify({amountMinor:Number(invoice.balanceMinor),method:values.method})});
-      const receipt=await api(`/api/invoices/${invoice.id}/receipt`);
+      };
+      let invoice;
+      try{invoice=await financialMutation(`/api/appointments/${id}/checkout`,`checkout.create-invoice`,invoicePayload);}
+      catch(error){
+        if(error.data?.code==="INVOICE_ALREADY_EXISTS"&&error.data.invoice){
+          error.message=`${error.message}. Authoritative total: ${money(error.data.invoice.totalMinor)}.`;
+        }
+        throw error;
+      }
+      if(Number(invoice.balanceMinor)>0){
+        try{
+          await financialMutation(`/api/invoices/${invoice.id}/payments`,`payment.record`,{
+            amountMinor:Number(invoice.balanceMinor),expectedBalanceMinor:Number(invoice.balanceMinor),method:values.method
+          });
+        }catch(error){
+          error.message=`Invoice created; payment remains pending. ${error.message}`;
+          if(error.status===409)error.reconcileFinancial=true;
+          throw error;
+        }
+      }
+      let receipt;
+      try{receipt=await api(`/api/invoices/${invoice.id}/receipt`);}
+      catch(error){error.message="Payment recorded successfully. Receipt is temporarily unavailable.";throw error;}
       return ()=>showReceipt(receipt);
     });
 }
@@ -230,7 +259,7 @@ async function voidPayment(paymentId,invoiceId) {
   if(!confirm("Void this Pawsh payment record? This does not refund external funds."))return;
   await runOnce(`void:${paymentId}`,async()=>{
     try{
-      await api(`/api/payments/${paymentId}/void`,{method:"POST",body:JSON.stringify({reason})});
+      await financialMutation(`/api/payments/${paymentId}/void`,`payment.void`,{reason});
       const receipt=await api(`/api/invoices/${invoiceId}/receipt`);
       $("#modal").close();toast("Payment record voided; no external refund was issued");setTimeout(()=>showReceipt(receipt),50);
     }catch(error){toast(error.message);}
@@ -515,7 +544,7 @@ function openModal(title, fields, submit) {
       if(error.retryConflictOverride) renderConflictOverride(error);
       else {
         $("#modal-error").textContent = error.message;
-        if(error.reconcileLifecycle)await refresh();
+        if(error.reconcileLifecycle||error.reconcileFinancial)await refresh();
       }
     }
     finally{button.disabled=false;button.textContent=original;form.removeAttribute("aria-busy");}

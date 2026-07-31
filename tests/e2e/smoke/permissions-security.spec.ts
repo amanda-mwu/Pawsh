@@ -33,7 +33,9 @@ test("@smoke tenant identifiers do not cross browser-authenticated security boun
   const tenantBApi=await playwrightRequest.newContext({baseURL});
   const tenantB=await createTenant(tenantBApi,"tenant-b-security");
   const appointmentB=await completeAppointment(tenantBApi,tenantB);
-  const invoiceB=await tenantBApi.post(`/api/appointments/${appointmentB.id}/checkout`,{data:{discountMinor:0,tipMinor:0}});
+  const invoiceB=await tenantBApi.post(`/api/appointments/${appointmentB.id}/checkout`,{
+    headers:{"Idempotency-Key":crypto.randomUUID()},data:{discountMinor:0,tipMinor:0}
+  });
   const invoice=await invoiceB.json();
   const attempts=[
     await request.get(`/api/customers/${tenantB.customerId}/history`),

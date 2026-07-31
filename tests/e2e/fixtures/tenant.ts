@@ -140,11 +140,13 @@ export async function prepareReceipt(api: APIRequestContext, tenant: TenantFixtu
   const appointment = await completeAppointment(api, tenant);
   const invoice = await json<{id:string;totalMinor:number;balanceMinor:number}>(
     await api.post(`/api/appointments/${appointment.id}/checkout`, {
+      headers:{"Idempotency-Key":crypto.randomUUID()},
       data:{discountMinor:500,discountType:"manual",tipMinor:1500}
     })
   );
   await json(await api.post(`/api/invoices/${invoice.id}/payments`, {
-    data:{amountMinor:invoice.balanceMinor,method:"cash"}
+    headers:{"Idempotency-Key":crypto.randomUUID()},
+    data:{amountMinor:invoice.balanceMinor,expectedBalanceMinor:invoice.balanceMinor,method:"cash"}
   }));
   return {appointment,invoice};
 }

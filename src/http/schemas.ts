@@ -149,6 +149,7 @@ export const checkoutSchema = z.object({
 
 export const paymentSchema = z.object({
   amountMinor: z.number().int().positive(),
+  expectedBalanceMinor: z.number().int().nonnegative(),
   method: z.enum(["cash", "external_card", "check", "other"]),
   externalReference: z.string().trim().max(200).nullish()
 });

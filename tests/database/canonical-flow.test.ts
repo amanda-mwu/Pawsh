@@ -229,27 +229,27 @@ describeDatabase("canonical Pawsh workflow", () => {
 
     const checkout = await app.inject({
       method: "POST", url: `/api/appointments/${appointmentId}/checkout`,
-      headers: { cookie: ownerCookie }, payload: { discountMinor: 500, discountType: "courtesy", tipMinor: 1500 }
+      headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() }, payload: { discountMinor: 500, discountType: "courtesy", tipMinor: 1500 }
     });
     expect(checkout.statusCode).toBe(201);
     expect(checkout.json()).toMatchObject({ subtotalMinor: 8500, totalMinor: 10160, balanceMinor: 10160 });
     invoiceId = checkout.json().id;
     const checkoutRetry = await app.inject({
       method: "POST", url: `/api/appointments/${appointmentId}/checkout`,
-      headers: { cookie: ownerCookie }, payload: { discountMinor: 500, discountType: "courtesy", tipMinor: 1500 }
+      headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() }, payload: { discountMinor: 500, discountType: "courtesy", tipMinor: 1500 }
     });
-    expect(checkoutRetry.statusCode).toBe(201);
+    expect(checkoutRetry.statusCode).toBe(200);
     expect(checkoutRetry.json().id).toBe(invoiceId);
 
     const overpayment = await app.inject({
       method: "POST", url: `/api/invoices/${invoiceId}/payments`,
-      headers: { cookie: ownerCookie }, payload: { amountMinor: 10161, method: "cash" }
+      headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() }, payload: { amountMinor: 10161, expectedBalanceMinor: 10160, method: "cash" }
     });
     expect(overpayment.statusCode).toBe(400);
 
     const payment = await app.inject({
       method: "POST", url: `/api/invoices/${invoiceId}/payments`,
-      headers: { cookie: ownerCookie }, payload: { amountMinor: 10160, method: "external_card" }
+      headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() }, payload: { amountMinor: 10160, expectedBalanceMinor: 10160, method: "external_card" }
     });
     expect(payment.statusCode).toBe(201);
     paymentId = payment.json().id;
@@ -264,7 +264,7 @@ describeDatabase("canonical Pawsh workflow", () => {
 
   it("voids an incorrect manual record without claiming an external refund", async () => {
     const voided = await app.inject({
-      method: "POST", url: `/api/payments/${paymentId}/void`, headers: { cookie: ownerCookie },
+      method: "POST", url: `/api/payments/${paymentId}/void`, headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
       payload: { reason: "Recorded against the wrong terminal receipt" }
     });
     expect(voided.statusCode).toBe(200);
@@ -272,7 +272,7 @@ describeDatabase("canonical Pawsh workflow", () => {
 
     const replacement = await app.inject({
       method: "POST", url: `/api/invoices/${invoiceId}/payments`,
-      headers: { cookie: ownerCookie }, payload: { amountMinor: 10160, method: "external_card", externalReference: "corrected" }
+      headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() }, payload: { amountMinor: 10160, expectedBalanceMinor: 10160, method: "external_card", externalReference: "corrected" }
     });
     expect(replacement.statusCode).toBe(201);
 

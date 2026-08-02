@@ -69,7 +69,7 @@ jobs:
             command: npm run test:smoke
           - name: chromium-cross-browser
             browser: chromium
-            command: npx playwright test --project=chromium-desktop --grep @cross-browser
+            command: npx playwright test --project=chromium --grep @cross-browser
           - name: firefox-cross-browser
             browser: firefox
             command: npx playwright test --project=firefox-desktop --grep @cross-browser

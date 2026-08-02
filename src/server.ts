@@ -10,3 +10,20 @@ app.addHook("onClose", async () => {
 });
 
 await app.listen({ host: "0.0.0.0", port: config.PORT });
+
+let shuttingDown = false;
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  app.log.info({ signal }, "shutting down");
+  try {
+    await app.close();
+    process.exitCode = 0;
+  } catch (error) {
+    app.log.error({ err: error, signal }, "shutdown failed");
+    process.exitCode = 1;
+  }
+}
+
+process.once("SIGINT", () => void shutdown("SIGINT"));
+process.once("SIGTERM", () => void shutdown("SIGTERM"));

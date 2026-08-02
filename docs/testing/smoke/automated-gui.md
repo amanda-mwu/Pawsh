@@ -33,7 +33,7 @@ not physical-device evidence.
 
 ## Commands and environments
 
-- `npm run test:smoke`: tagged `chromium-desktop` smoke.
+- `npm run test:smoke`: tagged `chromium` smoke.
 - `npm run test:cross-browser`: the compatibility subset on all three desktop
   projects.
 - `npm run test:responsive`: shared responsive coverage across configured
@@ -47,6 +47,11 @@ mode. This prevents a base URL from being treated as proof that destructive setu
 is safe. Playwright starts the local server unless `PAWSH_E2E_BASE_URL` is
 supplied. Credentials are created by isolated fixtures; the persistent manual QA
 tenant is never used.
+
+The npm browser commands use `scripts/run-playwright.mjs` so the local server is
+owned and terminated deterministically on Windows as well as Unix. For direct
+`npx playwright test` debugging, start the server separately and set
+`PAWSH_E2E_BASE_URL` to its origin.
 
 CI runs static validation, backend/runtime validation, Chromium smoke, each
 browser compatibility subset, three responsive device profiles, and

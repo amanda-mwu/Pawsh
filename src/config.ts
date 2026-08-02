@@ -14,7 +14,7 @@ const schema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   DATABASE_URL: z.string().min(1),
   SESSION_SECRET: z.string().min(32),
-  APP_ORIGIN: z.string().url().default("http://localhost:3000"),
+  APP_ORIGIN: z.string().url().default("http://127.0.0.1:3000"),
   SMTP_HOST: optionalText,
   SMTP_PORT: z.coerce.number().int().positive().default(587),
   SMTP_SECURE: z.enum(["true","false"]).transform((value) => value === "true").default(false),

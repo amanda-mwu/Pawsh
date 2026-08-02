@@ -70,7 +70,8 @@ describeDatabase("canonical Pawsh workflow", () => {
     expect(me.json()).toMatchObject({ businessId, isOwner: true });
 
     const settings = await app.inject({
-      method: "PUT", url: "/api/business/settings", headers: { cookie: ownerCookie },
+      method: "PUT", url: "/api/business/settings",
+      headers: { cookie: ownerCookie, origin: config.APP_ORIGIN },
       payload: {
         name: "Mochi & Co.", timezone: "America/Los_Angeles", currency: "USD",
         taxRateBasisPoints: 825, reminderLeadMinutes: 1440, locationVersion:1
@@ -283,7 +284,20 @@ describeDatabase("canonical Pawsh workflow", () => {
   });
 
   it("creates notification intent once when outbox processing retries", async () => {
-    await processOutbox(db);
+    // The CI validation command runs the complete suite before rerunning the
+    // database suite, so an earlier pass can leave more than one worker batch
+    // of unrelated events in this shared validation database. Drain batches
+    // until this workflow's event is reached instead of assuming it is among
+    // the first 25 globally queued events.
+    for (let batch = 0; batch < 100; batch += 1) {
+      await processOutbox(db);
+      const [current] = await db<{ count: number }[]>`
+        select count(*)::integer as count from notification_intents
+        where business_id=${businessId} and appointment_id=${appointmentId}
+          and notification_type='appointment_confirmation'
+      `;
+      if (current?.count === 1) break;
+    }
     await processOutbox(db);
     const [count] = await db<{ count: number }[]>`
       select count(*)::integer as count from notification_intents

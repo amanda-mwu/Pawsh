@@ -11,7 +11,7 @@ Prerequisites: Node.js 22+ and PostgreSQL 17+.
 3. Run `npm install`.
 4. Run `npm run db:migrate`.
 5. Run `npm run dev`.
-6. Open `http://localhost:3000`.
+6. Open `http://127.0.0.1:3000`.
 
 Run `npm run validate` for lint, type checks, unit tests, and the production build. With `DATABASE_URL` set to an isolated test database, run `npm run test:db` for database invariants.
 

@@ -20,7 +20,7 @@ Pawsh prioritizes tenant boundaries and business invariants over exhaustive triv
   semantics, and generous performance-regression budgets. Tests use unique
   tenants and mutable records per test and run with zero retries.
 - Four explicitly tagged `@cross-browser` journeys run on the
-  `chromium-desktop`, `firefox-desktop`, and `webkit-desktop` projects. Project
+  `chromium`, `firefox-desktop`, and `webkit-desktop` projects. Project
   filters prevent the deep Chromium suite from expanding onto Firefox/WebKit.
 
 Skipped database tests are not a pass. Validation records must state when the PostgreSQL runtime was unavailable.

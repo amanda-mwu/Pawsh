@@ -20,6 +20,13 @@ try {
     if (applied.has(version)) continue;
     const migration = await readFile(resolve(directory, file), "utf8");
     await sql.unsafe(migration);
+    // Older migrations are inconsistent about recording themselves. Keep the
+    // runner authoritative so every successfully applied file is skipped on
+    // subsequent startup, while remaining compatible with self-recording SQL.
+    await sql`
+      insert into schema_migrations (version) values (${version})
+      on conflict (version) do nothing
+    `;
     console.log(`Applied ${version}`);
   }
 } finally {

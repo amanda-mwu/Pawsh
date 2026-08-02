@@ -3,6 +3,10 @@ import { resolve } from "node:path";
 
 process.env.PLAYWRIGHT_BROWSERS_PATH ||= resolve(".playwright-browsers");
 const baseURL = process.env.PAWSH_E2E_BASE_URL ?? "http://127.0.0.1:3000";
+// The browser, web server, CORS policy, and mutation-origin check must agree on
+// one exact origin. Preserve an explicit caller value, but make local
+// Playwright runs self-contained instead of relying on a matching shell value.
+process.env.APP_ORIGIN ||= new URL(baseURL).origin;
 const crossBrowserTag = /@cross-browser/;
 const mobileTag = /@mobile-core|@responsive/;
 const tabletTag = /@tablet-core|@responsive/;
@@ -25,14 +29,17 @@ export default defineConfig({
     video:"retain-on-failure"
   },
   webServer:process.env.PAWSH_E2E_BASE_URL ? undefined : {
-    command:"npm run start:e2e",
+    // Launch Node directly. On Windows, the npm.cmd wrapper can exit without
+    // terminating its server child, leaving Playwright stuck in teardown after
+    // the browser and context have already closed.
+    command:"node --env-file-if-exists=.env --import tsx src/server.ts",
     url:`${baseURL}/health`,
     reuseExistingServer:!process.env.CI,
     timeout:30_000
   },
   projects:[
     {
-      name:"chromium-desktop",
+      name:"chromium",
       use:{...devices["Desktop Chrome"]}
     },
     {

@@ -2,7 +2,8 @@
 
 ## Classification
 
-Candidate classification: **Node.js 22/24 Runtime Compatibility Valid**.
+**Node.js 22/24 Runtime Compatibility Valid** on tested candidate
+`85bdcbbf286245dc4732d603987c9e9ef83f4577`.
 
 Official application support is Node.js 22.x and 24.x with npm 11. Node 24 is
 the recommended local and canonical browser runtime. Final classification
@@ -60,6 +61,18 @@ browser suite.
 - Node 24 local static results: Node 24.18.0, clean `npm ci`, runtime guard,
   lint, typecheck, 30 unit/domain tests, production build, and production
   dependency audit passed; the lockfile SHA-256 was unchanged.
-- Playwright results: pending
-- Exact CI run: pending
-- Final evidence descendant: pending
+- Node 22 CI results: static validation, PostgreSQL runtime/integration,
+  development filesystem startup, test-only memory safeguard, and Chromium
+  smoke passed.
+- Node 24 CI results: static validation, PostgreSQL runtime/integration,
+  development filesystem startup, test-only memory safeguard, full Chromium
+  smoke/regression/security/cross-browser coverage, Firefox/WebKit compatibility,
+  iPhone security, responsive profiles, and backup/restore passed.
+- Playwright results: all browser and responsive jobs passed with retries set to
+  zero. A date-dependent lifecycle fixture exposed by the first candidate was
+  corrected to use explicit business wall time; the replacement regression job
+  passed.
+- Exact candidate CI run: [GitHub Actions 30845525388](https://github.com/amanda-mwu/Pawsh/actions/runs/30845525388),
+  16 of 16 jobs passed.
+- Final evidence-documentation descendant: exact-SHA rerun is required and is
+  reported in the release closure report, avoiding a self-referential SHA edit.

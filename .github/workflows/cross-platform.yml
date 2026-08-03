@@ -124,7 +124,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $env:PGPASSWORD = "pawsh-ci"
-          $service = Get-Service -Name "postgresql*" | Select-Object -First 1
+          $service = Get-Service -Name "postgresql*17*" | Select-Object -First 1
           if (-not $service) { throw "PostgreSQL 17 service was not installed" }
           if ($service.Status -ne "Running") { Start-Service $service.Name }
           $ready = $false
@@ -135,7 +135,7 @@ jobs:
           }
           if (-not $ready) { throw "PostgreSQL 17 did not become ready within 60 seconds" }
           $database = "pawsh_$($env:GITHUB_RUN_ID)_${{ matrix.node }}"
-          psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "create role pawsh login createrole password 'pawsh-ci'"
+          psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "create role pawsh login superuser password 'pawsh-ci'"
           psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "create database $database owner pawsh"
           "DATABASE_URL=postgres://pawsh:pawsh-ci@127.0.0.1:5432/$database" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "PAWSH_TEST_ISOLATION_ID=$env:GITHUB_RUN_ID-windows-${{ matrix.node }}" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
@@ -221,7 +221,7 @@ jobs:
           export PATH="$(brew --prefix postgresql@17)/bin:$PATH"
           for attempt in $(seq 1 60); do pg_isready -h 127.0.0.1 -p 5432 && break; sleep 1; done
           pg_isready -h 127.0.0.1 -p 5432
-          createuser --host 127.0.0.1 --port 5432 --createrole pawsh
+          createuser --host 127.0.0.1 --port 5432 --superuser pawsh
           DATABASE_NAME="pawsh_${GITHUB_RUN_ID}_24"
           createdb --host 127.0.0.1 --port 5432 --owner pawsh "$DATABASE_NAME"
           echo "DATABASE_URL=postgres://pawsh@127.0.0.1:5432/${DATABASE_NAME}" >> "$GITHUB_ENV"

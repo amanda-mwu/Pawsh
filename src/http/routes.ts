@@ -7,6 +7,8 @@ import type { Database } from "../db/client.js";
 import { DocumentStorageError, sha256, type DocumentStorage } from "../storage/documents.js";
 import { canTransition, type AppointmentStatus } from "../domain/appointments.js";
 import { calculateInvoice } from "../domain/money.js";
+import { canonicalHash } from "../domain/canonical.js";
+import { safePdfFilename } from "../domain/filenames.js";
 import { localDateBounds, localDateForInstant, resolveWallTime, validateTimeZone } from "../domain/time.js";
 import { permissionPresets, permissions } from "../domain/permissions.js";
 import { auth, authentication, issueToken, platformAuthentication, requirePermission, tokenHash } from "./context.js";
@@ -87,16 +89,6 @@ function documentRequestFingerprint(input: DocumentUploadMetadata): string {
     expiration: input.expiration,
     claimedDigest: input.claimedDigest ?? null
   })));
-}
-
-function safePdfFilename(value: string): { original: string; download: string } {
-  const normalized = [...value.normalize("NFC")]
-    .map((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127 || character === "\\" || character === "/" ? " " : character)
-    .join("").trim();
-  const bounded = normalized.slice(0, 170).trim();
-  const base = bounded && !/^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(bounded) ? bounded : "rabies-vaccination.pdf";
-  const pdf = base.toLowerCase().endsWith(".pdf") ? base : `${base}.pdf`;
-  return { original: pdf, download: pdf.replace(/[";]/g, "_") };
 }
 
 function validPdf(bytes: Uint8Array): boolean {
@@ -301,10 +293,6 @@ function idempotencyKey(request: { headers: Record<string, unknown> }): string {
   const parsed = z.string().uuid().safeParse(value);
   if (!parsed.success) throw new FinancialRequestError(400, "IDEMPOTENCY_KEY_REQUIRED", "A valid Idempotency-Key header is required");
   return parsed.data;
-}
-
-function canonicalHash(value: unknown): string {
-  return sha256(new TextEncoder().encode(JSON.stringify(value)));
 }
 
 interface FinancialClaim {

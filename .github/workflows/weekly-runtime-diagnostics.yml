@@ -1,0 +1,28 @@
+name: Weekly runtime diagnostics
+
+on:
+  schedule:
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+jobs:
+  dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm install --global npm@11.6.0
+      - run: npm ci
+      - name: Record outdated dependencies
+        run: npm outdated --json > npm-outdated.json || test "$?" -eq 1
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && !cancelled() }}
+        with:
+          name: weekly-npm-outdated
+          path: npm-outdated.json
+          if-no-files-found: warn
+          retention-days: 7

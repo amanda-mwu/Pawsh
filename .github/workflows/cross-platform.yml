@@ -1,0 +1,284 @@
+name: Cross-platform runtime compatibility
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NODE_ENV: test
+  DOCUMENT_STORAGE_ADAPTER: memory
+  SESSION_SECRET: ci-session-secret-at-least-thirty-two-characters
+  APP_ORIGIN: http://127.0.0.1:3000
+  PAWSH_E2E_MODE: disposable
+  TZ: America/Los_Angeles
+
+jobs:
+  ubuntu-runtime:
+    name: Runtime Compatibility — Ubuntu Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: pawsh
+          POSTGRES_PASSWORD: pawsh-ci
+        ports:
+          - 54322:5432
+        options: >-
+          --health-cmd "pg_isready -U pawsh -d postgres"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm install --global npm@11.6.0
+      - run: npm ci
+      - run: git diff --exit-code -- package-lock.json
+      - run: npm run compatibility:dependencies
+      - run: npm run validate
+      - name: Create isolated PostgreSQL database
+        shell: bash
+        run: |
+          set -euo pipefail
+          DATABASE_NAME="pawsh_${GITHUB_RUN_ID}_${{ matrix.node }}"
+          PGPASSWORD=pawsh-ci psql -h 127.0.0.1 -p 54322 -U pawsh -d postgres -v ON_ERROR_STOP=1 \
+            -c "create database ${DATABASE_NAME} owner pawsh"
+          echo "DATABASE_URL=postgres://pawsh:pawsh-ci@127.0.0.1:54322/${DATABASE_NAME}" >> "$GITHUB_ENV"
+          echo "PAWSH_TEST_ISOLATION_ID=${GITHUB_RUN_ID}-ubuntu-${{ matrix.node }}" >> "$GITHUB_ENV"
+      - run: npm run validate:runtime
+      - run: npm run compatibility:startup
+      - run: npm run compatibility:fixtures
+      - name: Install Chromium for Node 22 smoke
+        if: matrix.node == '22'
+        run: npx playwright install --with-deps chromium
+      - name: Critical Chromium smoke
+        if: matrix.node == '22'
+        run: npm run test:smoke
+      - name: Install canonical browser matrix
+        if: matrix.node == '24'
+        run: npx playwright install --with-deps chromium firefox webkit
+      - name: Full canonical browser, accessibility, responsive, security, and regression suite
+        if: matrix.node == '24'
+        run: npm run test:e2e
+      - run: npm run compatibility:metadata
+      - run: npm run artifacts:scan
+      - name: Upload compatibility evidence
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-evidence-ubuntu-node-${{ matrix.node }}
+          path: |
+            artifacts/
+            playwright-report/
+            test-results/
+          if-no-files-found: warn
+          retention-days: 7
+
+  windows-runtime:
+    name: Runtime Compatibility — Windows Node ${{ matrix.node }}
+    runs-on: windows-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm install --global npm@11.6.0
+      - run: npm ci
+      - run: git diff --exit-code -- package-lock.json
+      - run: npm run compatibility:dependencies
+      - run: npm run validate
+      - name: Verify npm scripts through cmd.exe
+        shell: cmd
+        run: npm run check:runtime && npm run typecheck
+      - name: Install PostgreSQL 17
+        shell: pwsh
+        run: choco install postgresql17 --yes --no-progress --params "/Password:pawsh-ci /Port:54322"
+      - name: Add PostgreSQL tools
+        shell: pwsh
+        run: '"C:\Program Files\PostgreSQL\17\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
+      - name: Create isolated PostgreSQL database
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:PGPASSWORD = "pawsh-ci"
+          $database = "pawsh_$env:GITHUB_RUN_ID_${{ matrix.node }}"
+          psql -h 127.0.0.1 -p 54322 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "create role pawsh login password 'pawsh-ci'"
+          psql -h 127.0.0.1 -p 54322 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "create database $database owner pawsh"
+          "DATABASE_URL=postgres://pawsh:pawsh-ci@127.0.0.1:54322/$database" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "PAWSH_TEST_ISOLATION_ID=$env:GITHUB_RUN_ID-windows-${{ matrix.node }}" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+      - run: npm run validate:runtime
+      - run: npm run compatibility:startup
+      - run: npm run compatibility:fixtures
+      - name: Windows filesystem and lock validation
+        if: matrix.node == '24'
+        shell: pwsh
+        run: ./scripts/validate-windows-filesystem.ps1
+      - name: Validate a repository path with spaces and Unicode
+        if: matrix.node == '24'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $target = Join-Path $env:RUNNER_TEMP "Pawsh repo space Unicode Ω"
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+          robocopy $env:GITHUB_WORKSPACE $target /E /XD .git node_modules .playwright-browsers artifacts dist | Out-Null
+          if ($LASTEXITCODE -gt 7) { throw "Repository copy failed with robocopy exit $LASTEXITCODE" }
+          Push-Location $target
+          try {
+            npm ci
+            npm run check:runtime
+            npm run build
+            npm run compatibility:startup
+          } finally { Pop-Location }
+      - run: npx playwright install chromium
+      - run: npm run test:smoke
+      - run: npm run compatibility:metadata
+      - run: npm run artifacts:scan
+      - name: Drop isolated PostgreSQL database
+        if: ${{ always() && !cancelled() }}
+        shell: pwsh
+        run: |
+          $env:PGPASSWORD = "pawsh-ci"
+          $database = "pawsh_$env:GITHUB_RUN_ID_${{ matrix.node }}"
+          psql -h 127.0.0.1 -p 54322 -U postgres -d postgres -c "drop database if exists $database with (force)" 2>$null
+      - name: Upload compatibility evidence
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-evidence-windows-node-${{ matrix.node }}
+          path: |
+            artifacts/
+            playwright-report/
+            test-results/
+          if-no-files-found: warn
+          retention-days: 7
+
+  macos-runtime:
+    name: Runtime Compatibility — macOS Node 24
+    runs-on: macos-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm install --global npm@11.6.0
+      - run: npm ci
+      - run: git diff --exit-code -- package-lock.json
+      - run: npm run compatibility:dependencies
+      - run: npm run validate
+      - name: Verify npm scripts through zsh
+        shell: zsh {0}
+        run: npm run check:runtime && npm run typecheck
+      - name: Install and start PostgreSQL 17
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install postgresql@17
+          brew services start postgresql@17
+          echo "$(brew --prefix postgresql@17)/bin" >> "$GITHUB_PATH"
+      - name: Create isolated PostgreSQL database
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$(brew --prefix postgresql@17)/bin:$PATH"
+          for attempt in $(seq 1 60); do pg_isready -h 127.0.0.1 -p 5432 && break; sleep 1; done
+          pg_isready -h 127.0.0.1 -p 5432
+          createuser --host 127.0.0.1 --port 5432 pawsh
+          DATABASE_NAME="pawsh_${GITHUB_RUN_ID}_24"
+          createdb --host 127.0.0.1 --port 5432 --owner pawsh "$DATABASE_NAME"
+          echo "DATABASE_URL=postgres://pawsh@127.0.0.1:5432/${DATABASE_NAME}" >> "$GITHUB_ENV"
+          echo "PAWSH_TEST_ISOLATION_ID=${GITHUB_RUN_ID}-macos-24" >> "$GITHUB_ENV"
+      - run: npm run validate:runtime
+      - run: npm run compatibility:startup
+      - run: npm run compatibility:fixtures
+      - run: npx playwright install chromium webkit
+      - run: npm run test:smoke
+      - run: node scripts/run-playwright.mjs --project=webkit-desktop --grep @cross-browser
+      - run: npm run compatibility:metadata
+      - run: npm run artifacts:scan
+      - name: Stop PostgreSQL and drop isolated database
+        if: ${{ always() && !cancelled() }}
+        shell: bash
+        run: |
+          export PATH="$(brew --prefix postgresql@17)/bin:$PATH"
+          dropdb --if-exists --force --host 127.0.0.1 --port 5432 "pawsh_${GITHUB_RUN_ID}_24" || true
+          brew services stop postgresql@17 || true
+      - name: Upload compatibility evidence
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-evidence-macos-node-24
+          path: |
+            artifacts/
+            playwright-report/
+            test-results/
+          if-no-files-found: warn
+          retention-days: 7
+
+  utc-canonicalization:
+    name: Runtime Compatibility — UTC Canonicalization
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: UTC
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm install --global npm@11.6.0
+      - run: npm ci
+      - run: git diff --exit-code -- package-lock.json
+      - run: npx vitest run tests/domain/time.test.ts tests/domain/money.test.ts tests/domain/cross-platform.test.ts tests/domain/runtime-policy.test.ts
+      - run: npm run compatibility:fixtures
+      - run: npm run compatibility:metadata
+      - run: npm run artifacts:scan
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-evidence-utc-node-24
+          path: artifacts/
+          retention-days: 7
+
+  required-matrix:
+    name: Cross-Platform Runtime Compatibility — Required Matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: ${{ always() }}
+    needs: [ubuntu-runtime, windows-runtime, macos-runtime, utc-canonicalization]
+    steps:
+      - name: Require every enumerated job group
+        env:
+          REQUIRED_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          node --eval 'const results=JSON.parse(process.env.REQUIRED_RESULTS); const failed=Object.entries(results).filter(([,job])=>job.result!=="success"); if(failed.length) throw new Error(`Required jobs did not pass: ${JSON.stringify(failed.map(([name,job])=>[name,job.result]))}`);'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: compatibility-evidence-*
+          path: compatibility-evidence
+      - name: Compare deterministic fixture artifacts
+        run: |
+          node --input-type=module --eval 'import{readdir,readFile}from"node:fs/promises";import{resolve}from"node:path";async function find(p){const e=await readdir(p,{withFileTypes:true});return(await Promise.all(e.map(x=>x.isDirectory()?find(resolve(p,x.name)):resolve(p,x.name).endsWith("cross-platform-fixture.json")?[resolve(p,x.name)]:[]))).flat()}const files=await find("compatibility-evidence");if(files.length!==6)throw new Error(`Expected 6 fixture artifacts, received ${files.length}`);const values=await Promise.all(files.map(f=>readFile(f,"utf8")));if(new Set(values).size!==1)throw new Error(`Cross-platform deterministic fixtures differ: ${files.join(", ")}`);console.log(`Matched ${files.length} deterministic fixture artifacts`);'

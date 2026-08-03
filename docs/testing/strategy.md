@@ -63,3 +63,29 @@ inherit those test-only values.
 prepare script. The hook runs `npm run validate` and rejects ordinary pushes when
 code validation fails. Runtime validation remains a separate release requirement
 because a local PostgreSQL service is not universally available.
+
+## Cross-platform compatibility gate
+
+The completed Node 22/24 classification remains Ubuntu CI scoped. The separate
+`cross-platform.yml` workflow is authoritative for the narrower GitHub-hosted
+runner compatibility claim. It enumerates Ubuntu x64 on Node 22 and 24, Windows
+x64 on Node 22 and 24, the architecture supplied by `macos-latest` on Node 24,
+and a focused Ubuntu Node 24 `TZ=UTC` lane. Branch protection should require the
+stable `Cross-Platform Runtime Compatibility — Required Matrix` aggregate as
+well as canonical CI. The aggregate fails if any required job group fails,
+cancels, or skips and compares six deterministic fixture artifacts byte-for-byte.
+
+Every required lane uses npm 11, `npm ci`, `npm ls --all`, and
+`npm ls --omit=dev --all`. Ubuntu uses a PostgreSQL 17 service container;
+Windows installs PostgreSQL 17 with Chocolatey; macOS installs Homebrew
+`postgresql@17`. Each creates a run/lane-specific database, applies migrations,
+runs real database tests, and performs bounded startup/shutdown. Critical
+Chromium smoke runs on every OS. Existing Ubuntu Node 24 jobs remain canonical
+for full browser, security, responsive, accessibility, regression, and
+backup/restore coverage; macOS additionally runs reduced WebKit smoke.
+
+Required checks are deterministic correctness gates. Hosted-runner latency,
+memory, dependency age, pool, event-loop, and index observations are diagnostic.
+The weekly diagnostic records `npm outdated` without making upstream release
+activity a PR failure. A diagnostic supported-platform correctness or security
+defect must still be registered and may invalidate the classification.

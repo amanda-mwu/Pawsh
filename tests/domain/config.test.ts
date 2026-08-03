@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../../src/config.js";
+import { loadConfig, normalizeAppOrigin } from "../../src/config.js";
 import { createDocumentStorage, MemoryDocumentStorage } from "../../src/storage/documents.js";
 
 const base = {
@@ -69,5 +69,45 @@ describe("runtime configuration", () => {
     expect(() => createDocumentStorage(developmentConfig)).toThrow(
       /Memory document storage is test-only/
     );
+  });
+
+  it.each([
+    ["http://localhost:3000", "http://localhost:3000"],
+    ["http://127.0.0.1:3000/", "http://127.0.0.1:3000"],
+    ["http://[::1]:3000", "http://[::1]:3000"],
+    ["https://app.pawsh.example:443", "https://app.pawsh.example"]
+  ])("normalizes a valid root origin %s", (value, expected) => {
+    expect(normalizeAppOrigin(value, "test")).toBe(expected);
+  });
+
+  it.each([
+    "ftp://app.pawsh.example",
+    "https://user:secret@app.pawsh.example",
+    "https://app.pawsh.example/path",
+    "https://app.pawsh.example?query=yes",
+    "https://app.pawsh.example#fragment",
+    "https://*.pawsh.example",
+    "not a URL"
+  ])("rejects an unsafe APP_ORIGIN %s", (value) => {
+    expect(() => normalizeAppOrigin(value, "test")).toThrow();
+  });
+
+  it("requires HTTPS origins in production while keeping loopback origins distinct", () => {
+    expect(() => normalizeAppOrigin("http://app.pawsh.example", "production")).toThrow(/HTTPS/);
+    expect(normalizeAppOrigin("https://app.pawsh.example", "production")).toBe("https://app.pawsh.example");
+    expect(normalizeAppOrigin("http://localhost:3000", "test"))
+      .not.toBe(normalizeAppOrigin("http://127.0.0.1:3000", "test"));
+  });
+
+  it.each(["not-a-url", "https://database.example/pawsh", "postgres://localhost"])(
+    "rejects invalid database configuration %s", (DATABASE_URL) => {
+      expect(() => loadConfig({ ...base, NODE_ENV: "test", DOCUMENT_STORAGE_ADAPTER: "memory", DATABASE_URL }))
+        .toThrow(/DATABASE_URL/);
+    }
+  );
+
+  it("reports incomplete configuration and rejects unknown adapters", () => {
+    expect(() => loadConfig({ NODE_ENV: "development" })).toThrow();
+    expect(() => loadConfig({ ...base, DOCUMENT_STORAGE_ADAPTER: "unknown" })).toThrow();
   });
 });

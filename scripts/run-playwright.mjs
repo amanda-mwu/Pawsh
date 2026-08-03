@@ -44,7 +44,7 @@ async function stop(child) {
 let server;
 try {
   if (!configuredBaseURL) {
-    server = run(process.execPath, ["--env-file-if-exists=.env", "--import", "tsx", "src/server.ts"]);
+    server = run(process.execPath, ["--import", "./scripts/load-env.mjs", "--import", "tsx", "src/server.ts"]);
     await waitForServer(`${baseURL}/health`, server);
   }
   const playwright = run(process.execPath, ["node_modules/@playwright/test/cli.js", "test", ...process.argv.slice(2)]);

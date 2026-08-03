@@ -8,11 +8,39 @@ const optionalEmail = z.preprocess(
   (value) => value === "" ? undefined : value,
   z.string().email().optional()
 );
+const databaseUrl = z.string().min(1).superRefine((value, context) => {
+  try {
+    const url = new URL(value);
+    if (!["postgres:", "postgresql:"].includes(url.protocol) || !url.hostname || !url.pathname.slice(1)) {
+      context.addIssue({ code: "custom", message: "DATABASE_URL must be a PostgreSQL URL with a host and database" });
+    }
+  } catch {
+    context.addIssue({ code: "custom", message: "DATABASE_URL must be a valid PostgreSQL URL" });
+  }
+});
+
+export function normalizeAppOrigin(value: string, nodeEnv: "development" | "test" | "production"): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("APP_ORIGIN must be a valid URL origin");
+  }
+  if (!["http:", "https:"].includes(url.protocol)) throw new Error("APP_ORIGIN uses an unsupported protocol");
+  if (url.username || url.password) throw new Error("APP_ORIGIN must not contain credentials");
+  if (url.search || url.hash) throw new Error("APP_ORIGIN must not contain a query or fragment");
+  if (url.pathname !== "/") throw new Error("APP_ORIGIN must not contain a path");
+  if (url.hostname.includes("*")) throw new Error("APP_ORIGIN must not contain a wildcard");
+  if (nodeEnv === "production" && url.protocol !== "https:") {
+    throw new Error("Production APP_ORIGIN must use HTTPS");
+  }
+  return url.origin;
+}
 
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(3000),
-  DATABASE_URL: z.string().min(1),
+  DATABASE_URL: databaseUrl,
   SESSION_SECRET: z.string().min(32),
   APP_ORIGIN: z.string().url().default("http://127.0.0.1:3000"),
   SMTP_HOST: optionalText,
@@ -58,5 +86,6 @@ const schema = z.object({
 export type Config = z.infer<typeof schema>;
 
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
-  return schema.parse(source);
+  const config = schema.parse(source);
+  return { ...config, APP_ORIGIN: normalizeAppOrigin(config.APP_ORIGIN, config.NODE_ENV) };
 }

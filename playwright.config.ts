@@ -32,7 +32,7 @@ export default defineConfig({
     // Launch Node directly. On Windows, the npm.cmd wrapper can exit without
     // terminating its server child, leaving Playwright stuck in teardown after
     // the browser and context have already closed.
-    command:"node --env-file-if-exists=.env --import tsx src/server.ts",
+    command:"node --import ./scripts/load-env.mjs --import tsx src/server.ts",
     url:`${baseURL}/health`,
     reuseExistingServer:!process.env.CI,
     timeout:30_000

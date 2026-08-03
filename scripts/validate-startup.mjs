@@ -44,7 +44,9 @@ const child = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], {
     PORT: String(port),
     APP_ORIGIN: `http://127.0.0.1:${port}`,
     DOCUMENT_STORAGE_ADAPTER: "filesystem",
-    DOCUMENT_STORAGE_PATH: storage
+    DOCUMENT_STORAGE_PATH: storage,
+    DOCUMENT_SCANNER_ADAPTER: "http",
+    DOCUMENT_SCANNER_ENDPOINT: "http://127.0.0.1:9/scan"
   },
   stdio: ["ignore", "pipe", "pipe"],
   windowsHide: true

@@ -91,6 +91,7 @@ jobs:
           set -euo pipefail
           NODE_ENV=development DOCUMENT_STORAGE_ADAPTER=filesystem \
             DOCUMENT_STORAGE_PATH=.pawsh-ci-documents APP_ORIGIN=http://127.0.0.1:3000 \
+            DOCUMENT_SCANNER_ADAPTER=http DOCUMENT_SCANNER_ENDPOINT=http://127.0.0.1:9/scan \
             node --import tsx src/server.ts >development-server.log 2>&1 &
           SERVER_PID=$!
           trap 'kill -TERM "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true' EXIT

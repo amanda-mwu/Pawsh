@@ -17,6 +17,7 @@ env:
   APP_ORIGIN: http://127.0.0.1:3000
   PAWSH_E2E_MODE: disposable
   TZ: America/Los_Angeles
+  PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
 
 jobs:
   ubuntu-runtime:
@@ -114,7 +115,7 @@ jobs:
         run: npm run check:runtime && npm run typecheck
       - name: Install PostgreSQL 17
         shell: pwsh
-        run: choco install postgresql17 --yes --no-progress --params "/Password:pawsh-ci /Port:54322"
+        run: choco install postgresql17 --yes --no-progress --params "/Password:pawsh-ci /Port:5432"
       - name: Add PostgreSQL tools
         shell: pwsh
         run: '"C:\Program Files\PostgreSQL\17\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
@@ -123,10 +124,20 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $env:PGPASSWORD = "pawsh-ci"
-          $database = "pawsh_$env:GITHUB_RUN_ID_${{ matrix.node }}"
-          psql -h 127.0.0.1 -p 54322 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "create role pawsh login password 'pawsh-ci'"
-          psql -h 127.0.0.1 -p 54322 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "create database $database owner pawsh"
-          "DATABASE_URL=postgres://pawsh:pawsh-ci@127.0.0.1:54322/$database" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          $service = Get-Service -Name "postgresql*" | Select-Object -First 1
+          if (-not $service) { throw "PostgreSQL 17 service was not installed" }
+          if ($service.Status -ne "Running") { Start-Service $service.Name }
+          $ready = $false
+          for ($attempt = 1; $attempt -le 60; $attempt++) {
+            & pg_isready -h 127.0.0.1 -p 5432 -U postgres | Out-Null
+            if ($LASTEXITCODE -eq 0) { $ready = $true; break }
+            Start-Sleep -Seconds 1
+          }
+          if (-not $ready) { throw "PostgreSQL 17 did not become ready within 60 seconds" }
+          $database = "pawsh_$($env:GITHUB_RUN_ID)_${{ matrix.node }}"
+          psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "create role pawsh login createrole password 'pawsh-ci'"
+          psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "create database $database owner pawsh"
+          "DATABASE_URL=postgres://pawsh:pawsh-ci@127.0.0.1:5432/$database" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "PAWSH_TEST_ISOLATION_ID=$env:GITHUB_RUN_ID-windows-${{ matrix.node }}" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
       - run: npm run validate:runtime
       - run: npm run compatibility:startup
@@ -160,8 +171,12 @@ jobs:
         shell: pwsh
         run: |
           $env:PGPASSWORD = "pawsh-ci"
-          $database = "pawsh_$env:GITHUB_RUN_ID_${{ matrix.node }}"
-          psql -h 127.0.0.1 -p 54322 -U postgres -d postgres -c "drop database if exists $database with (force)" 2>$null
+          $database = "pawsh_$($env:GITHUB_RUN_ID)_${{ matrix.node }}"
+          & pg_isready -h 127.0.0.1 -p 5432 -U postgres | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -c "drop database if exists $database with (force)"
+            if ($LASTEXITCODE -ne 0) { throw "Failed to drop isolated database" }
+          }
       - name: Upload compatibility evidence
         if: ${{ always() && !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -206,7 +221,7 @@ jobs:
           export PATH="$(brew --prefix postgresql@17)/bin:$PATH"
           for attempt in $(seq 1 60); do pg_isready -h 127.0.0.1 -p 5432 && break; sleep 1; done
           pg_isready -h 127.0.0.1 -p 5432
-          createuser --host 127.0.0.1 --port 5432 pawsh
+          createuser --host 127.0.0.1 --port 5432 --createrole pawsh
           DATABASE_NAME="pawsh_${GITHUB_RUN_ID}_24"
           createdb --host 127.0.0.1 --port 5432 --owner pawsh "$DATABASE_NAME"
           echo "DATABASE_URL=postgres://pawsh@127.0.0.1:5432/${DATABASE_NAME}" >> "$GITHUB_ENV"

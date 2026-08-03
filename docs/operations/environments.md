@@ -30,8 +30,8 @@ Supported browsers are the current and previous major versions of Chrome, Edge, 
 
 Cross-platform claims apply only to the exact GitHub-hosted runner image and
 architecture recorded by the compatibility workflow. Ubuntu uses a PostgreSQL
-17 service container, Windows uses the Chocolatey `postgresql17` package on an
-isolated port, and macOS uses Homebrew `postgresql@17`. These are disposable
+17 service container, Windows starts the GitHub-hosted runner's documented
+`postgresql-x64-17` service, and macOS uses Homebrew `postgresql@17`. These are disposable
 synthetic test environments, not staging or production deployment designs.
 
 Node's native `--env-file` loader is the only implicit file-loading mechanism.

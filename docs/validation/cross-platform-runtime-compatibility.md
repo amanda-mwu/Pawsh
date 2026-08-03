@@ -44,7 +44,7 @@ Candidate only until exact-SHA closure:
   authorization, tenant isolation, scheduling, financial calculations,
   transaction/outbox/audit semantics, and API contracts must be equivalent.
 - PostgreSQL is real and versioned on every supported runner: service container
-  on Ubuntu, Chocolatey on Windows, Homebrew on macOS. Database and isolation
+  on Ubuntu, the GitHub Windows runner's documented PostgreSQL 17 service, and Homebrew on macOS. Database and isolation
   identifiers include the workflow run and lane.
 - Runner image, architecture, Windows long-path policy, OS, Node/npm,
   PostgreSQL, ICU, OpenSSL, Playwright, timezone, commit, and run ID are captured

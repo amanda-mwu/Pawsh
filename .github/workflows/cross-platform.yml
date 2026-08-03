@@ -113,17 +113,23 @@ jobs:
       - name: Verify npm scripts through cmd.exe
         shell: cmd
         run: npm run check:runtime && npm run typecheck
-      - name: Install PostgreSQL 17
+      - name: Prepare hosted PostgreSQL 17
         shell: pwsh
-        run: choco install postgresql17 --yes --no-progress --params "/Password:pawsh-ci /Port:5432"
-      - name: Add PostgreSQL tools
-        shell: pwsh
-        run: '"C:\Program Files\PostgreSQL\17\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
+        run: |
+          $ErrorActionPreference = "Stop"
+          $postgresBin = "C:\Program Files\PostgreSQL\17\bin"
+          if (-not (Test-Path "$postgresBin\psql.exe")) { throw "Hosted PostgreSQL 17 tools are missing" }
+          $service = Get-Service -Name "postgresql-x64-17" -ErrorAction Stop
+          if ($service.StartType -eq "Disabled") { Set-Service $service.Name -StartupType Manual }
+          if ($service.Status -ne "Running") { Start-Service $service.Name }
+          $version = & "$postgresBin\psql.exe" --version
+          if ($version -notmatch "PostgreSQL\) 17\.") { throw "Expected PostgreSQL 17, received: $version" }
+          $postgresBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Create isolated PostgreSQL database
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $env:PGPASSWORD = "pawsh-ci"
+          $env:PGPASSWORD = "root"
           $service = Get-Service -Name "postgresql*17*" | Select-Object -First 1
           if (-not $service) { throw "PostgreSQL 17 service was not installed" }
           if ($service.Status -ne "Running") { Start-Service $service.Name }
@@ -170,7 +176,7 @@ jobs:
         if: ${{ always() && !cancelled() }}
         shell: pwsh
         run: |
-          $env:PGPASSWORD = "pawsh-ci"
+          $env:PGPASSWORD = "root"
           $database = "pawsh_$($env:GITHUB_RUN_ID)_${{ matrix.node }}"
           & pg_isready -h 127.0.0.1 -p 5432 -U postgres | Out-Null
           if ($LASTEXITCODE -eq 0) {

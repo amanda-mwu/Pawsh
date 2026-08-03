@@ -7,7 +7,12 @@ import process from "node:process";
 
 function command(command, args) {
   try {
-    return execFileSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return execFileSync(command, args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 10_000,
+      windowsHide: true
+    }).trim();
   } catch {
     return null;
   }
@@ -20,8 +25,11 @@ async function browserMetadata() {
       import("node:fs/promises").then(({ readFile }) => readFile(resolve("node_modules/playwright-core/browsers.json"), "utf8"))
     ]);
     const manifest = JSON.parse(manifestText);
+    const browser = await chromium.launch({ timeout: 10_000 });
+    const chromiumVersion = browser.version();
+    await browser.close();
     return {
-      chromium: command(chromium.executablePath(), ["--version"]),
+      chromium: chromiumVersion,
       revisions: Object.fromEntries(manifest.browsers.map((browser) => [browser.name, browser.revision]))
     };
   } catch {

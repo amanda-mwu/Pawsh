@@ -52,7 +52,12 @@ const metadata = {
     openssl: process.versions.openssl,
     v8: process.versions.v8
   },
-  postgres: command("psql", ["--version"]),
+  postgres: {
+    client: command("psql", ["--version"]),
+    server: process.env.DATABASE_URL
+      ? command("psql", [process.env.DATABASE_URL, "--tuples-only", "--no-align", "--command", "show server_version"])
+      : null
+  },
   playwright: command(process.execPath, ["node_modules/@playwright/test/cli.js", "--version"]),
   browsers: await browserMetadata(),
   timezone: process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone,

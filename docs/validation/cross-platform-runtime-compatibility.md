@@ -6,10 +6,10 @@ Current preserved classification:
 
 > Node.js 22/24 Runtime Compatibility Valid — Ubuntu CI Scope
 
-Candidate only until exact-SHA closure:
+Engineering candidate; classification remains blocked by branch protection:
 
 > Cross-Platform Runtime Compatibility Valid — GitHub-hosted Ubuntu x64,
-> Windows x64, and macOS [runner-recorded architecture] CI Scope
+> Windows x64, and macOS arm64 CI Scope
 
 ## Inspection findings and decisions
 
@@ -89,16 +89,18 @@ is permitted.
 
 ## Governance and diagnostics
 
-Provisional cost before evidence: roughly 70–130 billed runner-minutes and
-20–45 minutes wall time, dominated by Windows PostgreSQL and browser setup.
-Expected evidence storage is 25–100 MB/run, with failure traces the main
-variable. Exact-run evidence replaces these estimates.
+Green evidence run 30857253141 consumed about 20 job-minutes across the required
+matrix and 5 minutes 38 seconds wall time. Its six retained evidence artifacts
+total about 1.8 MB. Windows no longer downloads PostgreSQL because the recorded
+GitHub-hosted image provides PostgreSQL 17.10.
 
 Branch protection must require
 `Cross-Platform Runtime Compatibility — Required Matrix` after merge while
 retaining canonical CI requirements. Generated matrix names are evidence, not
-the sole protection contract. Branch-protection state is inspected at closure;
-missing protection is an explicit operational follow-up/blocker.
+the sole protection contract. The authenticated protection API returned HTTP
+403 because this private repository's current GitHub plan does not enable
+branch protection. This is an operational closure blocker; upgrade the plan or
+make the repository public, then require the stable aggregate check.
 
 Weekly diagnostics record dependency age and can later add latency, memory,
 event-loop, pool, and index observations. Owner roles: runtime/toolchain,
@@ -110,15 +112,49 @@ Runner image, Node/npm patch, PostgreSQL patch, Playwright/browser, ICU, and
 OpenSSL drift is recorded. Material updates trigger the required matrix. A new
 failure is a new finding, not proof earlier timestamped evidence was false.
 
-## Evidence pending exact-SHA execution
+## Exact-SHA engineering evidence
 
-- Final HEAD: pending
-- Commits and workflow run: pending
-- Per-job versions/statuses and architecture: pending
-- Artifact references/redaction: pending
-- Measured runtime/cost: pending
-- Branch-protection status: pending
-- Findings: pending
+Green implementation candidate:
+
+- SHA: `81b7da7f9579fce9a1554c344bd945841a8affda`
+- Cross-platform run: `30857253141` — all six lanes and stable aggregate passed
+- Canonical CI run: `30857253152` — passed
+- Normalized fixture SHA-256 on all six lanes:
+  `83361fc6da18cdd8e4b764ece19e6f8a3eb94c72442577a7baef36a27f14aacd`
+- Unit/static/build baseline: 73 unit tests passed; database and browser suites
+  ran in their required lanes with retries set to zero
+- Artifact redaction: passed in every lane; retention expires after seven days
+- Windows long paths: enabled on the recorded runner; a 329-character path and
+  exclusive locked-file cleanup passed
+
+Recorded toolchain:
+
+| Lane | Runner image | Architecture | Node/npm | PostgreSQL | ICU/OpenSSL | Browser |
+| --- | --- | --- | --- | --- | --- | --- |
+| Ubuntu Node 22 | `ubuntu24` `20260720.247.2` | x64 | 22.23.1 / 11.6.0 | server 17; client 16.14 | 78.2 / 3.5.7 | Chromium 151.0.7922.34 |
+| Ubuntu Node 24 | `ubuntu24` `20260720.247.2` | x64 | 24.18.0 / 11.6.0 | server 17; client 16.14 | 78.3 / 3.5.7 | Chromium 151.0.7922.34; full configured matrix |
+| Windows Node 22 | `win25-vs2026` `20260728.188.1` | x64 | 22.23.1 / 11.6.0 | 17.10 | 78.2 / 3.5.7 | Chromium 151.0.7922.34 |
+| Windows Node 24 | `win25-vs2026` `20260728.188.1` | x64 | 24.18.0 / 11.6.0 | 17.10 | 78.3 / 3.5.7 | Chromium 151.0.7922.34 |
+| macOS Node 24 | `macos26` `20260728.0273.1` | arm64 | 24.18.0 / 11.6.0 | 17.10 Homebrew | 78.3 / 3.5.7 | Chromium 151.0.7922.34; reduced WebKit |
+| UTC focused | `ubuntu24` `20260720.247.2` | x64 | 24.18.0 / 11.6.0 | not required | 78.3 / 3.5.7 | not required |
+
+All lanes used Playwright 1.62.1. The canonical timezone was
+`America/Los_Angeles`; the focused comparison used `UTC`. The evidence-recording
+descendant adds explicit PostgreSQL server-version capture and must pass a new
+exact-SHA run before final reporting.
+
+Confirmed findings resolved during execution:
+
+- Repository-local Playwright browser installation was made consistent.
+- Windows now starts its exact documented PostgreSQL 17 service instead of
+  reinstalling an already-provisioned server.
+- Disposable macOS database test authority matches the canonical RLS test lane.
+- Browser version discovery is headless and bounded on Windows.
+- PostgreSQL client and tested server versions are recorded separately.
+
+Remaining operational blocker: stable branch protection cannot be enabled on
+the current private-repository GitHub plan. Until that changes, preserve the
+Ubuntu-scope classification even when engineering matrix evidence is green.
 
 ## Explicit limitations
 

@@ -1601,7 +1601,11 @@ export function registerRoutes(
       return reply.code(202).send({ state: "pending_scan", requestId: metadata.uploadRequestId });
     } catch (error) {
       await failRequest("failed", error instanceof DocumentStorageError ? error.code.toUpperCase() : "UPLOAD_FAILED");
-      if (uploaded) await documentStorage.delete(storageKey).catch(() => undefined);
+      if (uploaded) {
+        await db`update pet_documents set state='rejected',updated_at=now()
+          where business_id=${context.businessId} and id=${documentId} and state='pending_scan'`;
+        await documentStorage.delete(storageKey).catch(() => undefined);
+      }
       request.log.warn({ errorName: (error as Error).name }, "pet document upload failed");
       return reply.code(503).send({ error: "The document could not be stored" });
     }

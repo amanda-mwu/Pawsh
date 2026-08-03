@@ -69,7 +69,7 @@ export async function processDocumentScans(
       resultCode = error instanceof DocumentScannerError ? `SCANNER_${error.code.toUpperCase()}` : "SCAN_IO_FAILURE";
     }
 
-    await db.begin(async (tx) => {
+    try { await db.begin(async (tx) => {
       await tenant(tx, claimed.businessId);
       await tx`insert into pet_document_scan_attempts
         (business_id,document_id,attempt_number,object_key,object_sha256,object_size,
@@ -95,7 +95,12 @@ export async function processDocumentScans(
       }
       const promoted = await promote(tx, claimed, hooks);
       if (promoted) summary.clean += 1; else summary.rejected += 1;
-    });
+    }); } catch (error) {
+      await db`update pet_document_requests set scan_attempt_count=greatest(0,scan_attempt_count-1),
+        scan_available_at=now()+interval '15 seconds',last_scan_error='WORKER_TRANSACTION_FAILURE',updated_at=now()
+        where id=${claimed.requestId} and state='in_progress' and scan_available_at is null`;
+      throw error;
+    }
   }
   return summary;
 }

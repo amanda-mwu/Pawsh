@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../../src/config.js";
+import { createDocumentStorage, MemoryDocumentStorage } from "../../src/storage/documents.js";
 
 const base = {
   DATABASE_URL: "postgres://localhost/pawsh",
@@ -51,5 +52,22 @@ describe("runtime configuration", () => {
       ...base, NODE_ENV: "production", SMTP_HOST: "smtp.example", EMAIL_FROM: "hello@pawsh.example",
       DOCUMENT_STORAGE_ADAPTER: "memory"
     })).toThrow(/Production requires S3/);
+  });
+
+  it("keeps memory document storage test-only", () => {
+    const testConfig = loadConfig({
+      ...base,
+      NODE_ENV: "test",
+      DOCUMENT_STORAGE_ADAPTER: "memory"
+    });
+    expect(createDocumentStorage(testConfig)).toBeInstanceOf(MemoryDocumentStorage);
+    const developmentConfig = loadConfig({
+      ...base,
+      NODE_ENV: "development",
+      DOCUMENT_STORAGE_ADAPTER: "memory"
+    });
+    expect(() => createDocumentStorage(developmentConfig)).toThrow(
+      /Memory document storage is test-only/
+    );
   });
 });

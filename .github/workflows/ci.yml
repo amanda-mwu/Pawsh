@@ -14,15 +14,22 @@ env:
 
 jobs:
   static-validation:
-    name: Static validation
+    name: Static validation / Node ${{ matrix.node }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version-file: .node-version
+          node-version: ${{ matrix.node }}
           cache: npm
+      - run: npm install --global npm@11.6.0
       - run: npm ci
+      - name: Confirm npm ci leaves the lockfile unchanged
+        run: git diff --exit-code -- package-lock.json
       - run: npm audit --omit=dev --audit-level=high
       - run: npm run lint
       - run: npm run typecheck
@@ -30,8 +37,12 @@ jobs:
       - run: npm run build
 
   backend-runtime:
-    name: Backend and PostgreSQL runtime
+    name: Backend and PostgreSQL runtime / Node ${{ matrix.node }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
     services:
       postgres:
         image: postgres:17-alpine
@@ -52,10 +63,45 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version-file: .node-version
+          node-version: ${{ matrix.node }}
           cache: npm
+      - run: npm install --global npm@11.6.0
       - run: npm ci
+      - name: Confirm npm ci leaves the lockfile unchanged
+        run: git diff --exit-code -- package-lock.json
       - run: npm run validate:runtime
+      - name: Validate test-only memory storage safeguard
+        shell: bash
+        run: |
+          set -euo pipefail
+          NODE_ENV=test DOCUMENT_STORAGE_ADAPTER=memory PAWSH_E2E_MODE=disposable \
+            node --import tsx --eval "const { loadConfig } = await import('./src/config.ts'); const { createDocumentStorage } = await import('./src/storage/documents.ts'); createDocumentStorage(loadConfig());"
+          if NODE_ENV=development DOCUMENT_STORAGE_ADAPTER=memory \
+            node --import tsx --eval "const { loadConfig } = await import('./src/config.ts'); const { createDocumentStorage } = await import('./src/storage/documents.ts'); createDocumentStorage(loadConfig());"; then
+            echo "Development unexpectedly accepted memory document storage" >&2
+            exit 1
+          fi
+      - name: Validate development startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          NODE_ENV=development DOCUMENT_STORAGE_ADAPTER=filesystem \
+            DOCUMENT_STORAGE_PATH=.pawsh-ci-documents APP_ORIGIN=http://127.0.0.1:3000 \
+            node --import tsx src/server.ts >development-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill -TERM "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 100); do
+            if curl --fail --silent http://127.0.0.1:3000/health >/dev/null; then
+              exit 0
+            fi
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              cat development-server.log
+              exit 1
+            fi
+            sleep 0.1
+          done
+          cat development-server.log
+          exit 1
 
   browser:
     name: Browser / ${{ matrix.name }}
@@ -66,24 +112,35 @@ jobs:
         include:
           - name: chromium-smoke
             browser: chromium
+            node: "24"
+            command: npm run test:smoke
+          - name: chromium-smoke-node22
+            browser: chromium
+            node: "22"
             command: npm run test:smoke
           - name: chromium-cross-browser
             browser: chromium
+            node: "24"
             command: npx playwright test --project=chromium --grep @cross-browser
           - name: firefox-cross-browser
             browser: firefox
+            node: "24"
             command: npx playwright test --project=firefox-desktop --grep @cross-browser
           - name: webkit-cross-browser
             browser: webkit
+            node: "24"
             command: npx playwright test --project=webkit-desktop --grep @cross-browser
           - name: chromium-security
             browser: chromium
+            node: "24"
             command: npx playwright test --project=chromium-security
           - name: chromium-regression
             browser: chromium
+            node: "24"
             command: npx playwright test --project=chromium-regression
           - name: iphone-security
             browser: webkit
+            node: "24"
             command: npx playwright test --project=iphone-security
     services:
       postgres:
@@ -106,8 +163,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version-file: .node-version
+          node-version: ${{ matrix.node }}
           cache: npm
+      - name: Use supported npm on Node 22
+        if: matrix.node == '22'
+        run: npm install --global npm@11.6.0
       - run: npm ci
       - name: Migrate isolated browser database
         run: npm run db:migrate

@@ -438,7 +438,14 @@ async function showPetDocuments(petId,historicalOnly=false){
         expiration:expiration?{intent:"set",value:expiration}:{intent:"preserve"},
         ...(expiration?{expectedPetVersion:pet?.version}: {})};
       const uploadForm=new FormData();uploadForm.append("metadata",JSON.stringify(metadata));uploadForm.append("file",form.get("rabiesPdf"));
-      try{return await api(`/api/pets/${petId}/documents/rabies`,{method:"POST",body:uploadForm});}
+      try{
+        const result=await api(`/api/pets/${petId}/documents/rabies`,{method:"POST",body:uploadForm});
+        if(result.state==="pending_scan"){
+          $("#modal-error").textContent="Uploaded securely. Malware scan pending…";
+          return await waitForDocumentScan(petId,requestId,operation);
+        }
+        return result;
+      }
       catch(error){
         if(error instanceof TypeError){
           $("#modal-error").textContent="Checking upload status…";
@@ -451,6 +458,20 @@ async function showPetDocuments(petId,historicalOnly=false){
     });
     $$(".download-pet-document").forEach(button=>button.addEventListener("click",()=>downloadPetDocument(button.dataset.id)));
   }catch(error){toast(error.message);}
+}
+
+async function waitForDocumentScan(petId,requestId,operation){
+  for(let attempt=0;attempt<60;attempt+=1){
+    const status=await api(`/api/pets/${petId}/document-requests/${requestId}?operation=${operation}`);
+    if(status.state==="completed")return status.result;
+    if(status.state==="failed"||status.state==="conflict"){
+      const error=new Error(status.code==="MALWARE_SIMULATED"?"The document was rejected by security scanning.":
+        "The document could not be promoted. The previous valid document remains available.");
+      error.status=409;throw error;
+    }
+    await new Promise(resolve=>setTimeout(resolve,1000));
+  }
+  throw new Error("The document is still being scanned. Check its status again shortly.");
 }
 
 async function downloadPetDocument(id){

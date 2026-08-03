@@ -3,7 +3,9 @@ import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
 import { hashPassword } from "../../src/security/passwords.js";
-import { MemoryDocumentStorage } from "../../src/storage/documents.js";
+import { MemoryDocumentStorage,sha256 } from "../../src/storage/documents.js";
+import { DeterministicDocumentScanner } from "../../src/security/document-scanner.js";
+import { processDocumentScans } from "../../src/documents/scan-worker.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -160,6 +162,48 @@ describeDatabase("D3.2 rabies vaccination documents", () => {
     `;
     expect(after?.id).toBe(before?.id);
     await failingApp.close();
+  });
+
+  it("rejects a malicious replacement and preserves immutable scan evidence and the last-known-good document", async () => {
+    const [before] = await db<{ id:string;documentVersion:number }[]>`
+      select id,document_version from pet_documents where business_id=${businessId} and pet_id=${petId} and state='current'`;
+    const malicious = new DeterministicDocumentScanner(new Map([[sha256(pdf),"malicious"]]));
+    const rejectingApp=await createApp(config,db,{runWorker:false,serveStatic:false,documentStorage:storage,documentScanner:malicious});
+    const value=multipart(metadata({expectedCurrentDocumentId:before!.id,expectedCurrentDocumentVersion:before!.documentVersion}));
+    const response=await rejectingApp.inject({method:"POST",url:`/api/pets/${petId}/documents/rabies`,
+      headers:{cookie:ownerCookie,...value.headers},payload:value.payload});
+    expect(response.statusCode).toBe(409);
+    const [after]=await db<{id:string}[]>`select id from pet_documents where business_id=${businessId} and pet_id=${petId} and state='current'`;
+    expect(after!.id).toBe(before!.id);
+    const [attempt]=await db<{id:string;result:string;scannerVersion:string;signatureVersion:string}[]>`
+      select id,result,scanner_version,signature_version from pet_document_scan_attempts
+      where business_id=${businessId} order by completed_at desc limit 1`;
+    expect(attempt).toMatchObject({result:"malicious",scannerVersion:"1",signatureVersion:"fixture-v1"});
+    await expect(db`update pet_document_scan_attempts set result_code='ALTERED' where id=${attempt!.id}`)
+      .rejects.toThrow(/scan attempts are immutable/);
+    await rejectingApp.close();
+  });
+
+  it("bounds scanner outage retries and dead-letters without promotion", async () => {
+    const digest=sha256(pdf);
+    const unavailable=new DeterministicDocumentScanner(new Map([[digest,"unavailable"]]));
+    const outageApp=await createApp(config,db,{runWorker:false,serveStatic:false,documentStorage:storage,documentScanner:unavailable});
+    const customer=await outageApp.inject({method:"POST",url:"/api/customers",headers:{cookie:ownerCookie},payload:{firstName:"Scan",lastName:"Outage"}});
+    const pet=await outageApp.inject({method:"POST",url:"/api/pets",headers:{cookie:ownerCookie},payload:{customerId:customer.json().id,name:"Retry",species:"dog"}});
+    const value=multipart(metadata());
+    const upload=await outageApp.inject({method:"POST",url:`/api/pets/${pet.json().id}/documents/rabies`,
+      headers:{cookie:ownerCookie,...value.headers},payload:value.payload});
+    expect(upload.statusCode).toBe(202);
+    for(let retry=0;retry<2;retry+=1){
+      await db`update pet_document_requests set scan_available_at=now() where pet_id=${pet.json().id} and state='in_progress'`;
+      await processDocumentScans(db,storage,unavailable);
+    }
+    const [request]=await db<{state:string;resultCode:string;scanAttemptCount:number}[]>`
+      select state,result_code,scan_attempt_count from pet_document_requests where pet_id=${pet.json().id}`;
+    expect(request).toMatchObject({state:"failed",resultCode:"SCAN_DEAD_LETTER",scanAttemptCount:3});
+    const [document]=await db<{state:string}[]>`select state from pet_documents where pet_id=${pet.json().id}`;
+    expect(document!.state).toBe("rejected");
+    await outageApp.close();
   });
 
   it("serializes true first-upload races with one handled loser", async () => {

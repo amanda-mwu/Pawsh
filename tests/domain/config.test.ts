@@ -8,7 +8,9 @@ const base = {
   APP_ORIGIN: "https://app.pawsh.example",
   DOCUMENT_STORAGE_ADAPTER: "s3",
   DOCUMENT_STORAGE_BUCKET: "pawsh-private-test",
-  DOCUMENT_STORAGE_REGION: "us-west-2"
+  DOCUMENT_STORAGE_REGION: "us-west-2",
+  DOCUMENT_SCANNER_ADAPTER: "http",
+  DOCUMENT_SCANNER_ENDPOINT: "https://scanner.pawsh.example/scan"
 };
 
 describe("runtime configuration", () => {
@@ -69,6 +71,15 @@ describe("runtime configuration", () => {
     expect(() => createDocumentStorage(developmentConfig)).toThrow(
       /Memory document storage is test-only/
     );
+  });
+
+  it("fails closed unless non-test environments use a configured managed scanner", () => {
+    expect(() => loadConfig({ ...base, NODE_ENV:"development", DOCUMENT_SCANNER_ADAPTER:"deterministic" }))
+      .toThrow(/managed HTTP document scanner/);
+    expect(() => loadConfig({ ...base, NODE_ENV:"production", SMTP_HOST:"smtp.example",
+      EMAIL_FROM:"hello@pawsh.example", DOCUMENT_SCANNER_ENDPOINT:"" })).toThrow(/SCANNER_ENDPOINT/);
+    expect(loadConfig({ ...base, NODE_ENV:"test", DOCUMENT_STORAGE_ADAPTER:"memory",
+      DOCUMENT_SCANNER_ADAPTER:"deterministic" }).DOCUMENT_SCANNER_ADAPTER).toBe("deterministic");
   });
 
   it.each([

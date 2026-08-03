@@ -14,6 +14,8 @@ import type { DocumentHooks, FinancialHooks, LifecycleHooks, SchedulingHooks } f
 import { openSecret } from "./security/secrets.js";
 import { createDocumentStorage, type DocumentStorage } from "./storage/documents.js";
 import { WallTimeError } from "./domain/time.js";
+import { DeterministicDocumentScanner, HttpDocumentScanner, type DocumentScanner } from "./security/document-scanner.js";
+import { documentScanQueueHealth, processDocumentScans } from "./documents/scan-worker.js";
 
 export async function createApp(
   config: Config,
@@ -26,6 +28,7 @@ export async function createApp(
     documentStorage?: DocumentStorage;
     documentHooks?: DocumentHooks;
     financialHooks?: FinancialHooks;
+    documentScanner?: DocumentScanner;
   } = {}
 ): Promise<FastifyInstance> {
   const app = Fastify({
@@ -66,21 +69,38 @@ export async function createApp(
     return { status: "ok" };
   });
 
-  registerRoutes(app, db, config, options.documentStorage ?? createDocumentStorage(config),
-    options.schedulingHooks, options.lifecycleHooks, options.documentHooks, options.financialHooks);
-
+  const documentStorage = options.documentStorage ?? createDocumentStorage(config);
+  const documentScanner = options.documentScanner ?? (config.DOCUMENT_SCANNER_ADAPTER === "http"
+    ? new HttpDocumentScanner(config.DOCUMENT_SCANNER_ENDPOINT!,config.DOCUMENT_SCANNER_TOKEN)
+    : new DeterministicDocumentScanner());
+  registerRoutes(app, db, config, documentStorage,
+    options.schedulingHooks, options.lifecycleHooks, options.financialHooks,
+    config.NODE_ENV === "test" ? async()=>{ await processDocumentScans(db,documentStorage,documentScanner,10,options.documentHooks); } : undefined);
   let worker: NodeJS.Timeout | undefined;
+  let documentWorker: NodeJS.Timeout | undefined;
   if (options.runWorker !== false) {
     const emailProvider = config.SMTP_HOST ? new SmtpEmailProvider(config) : new LogEmailProvider();
     worker = setInterval(async () => {
       try {
         await processOutbox(db);
         await deliverNotifications(db, emailProvider, (value) => openSecret(value, config.SESSION_SECRET));
+        const scanHealth=await documentScanQueueHealth(db);
+        if(scanHealth.deadLetters>0 || (scanHealth.oldestSeconds ?? 0)>300) {
+          app.log.warn({securityEvent:"document_scan_queue_unhealthy",...scanHealth},"document scan queue requires attention");
+        }
       } catch (error) {
         app.log.error({ err: error }, "background processing failed");
       }
     }, 15_000);
     worker.unref();
+    documentWorker = setInterval(async () => {
+      try {
+        const result=await processDocumentScans(db,documentStorage,documentScanner);
+        if(result.retried||result.rejected) app.log.warn({securityEvent:"document_scan_result",...result},"document scan requires attention");
+      }
+      catch(error) { app.log.error({err:error},"document scan processing failed"); }
+    },2_000);
+    documentWorker.unref();
   }
 
   app.setErrorHandler<Error>((error, request, reply) => {
@@ -127,6 +147,7 @@ export async function createApp(
 
   app.addHook("onClose", async () => {
     if (worker) clearInterval(worker);
+    if (documentWorker) clearInterval(documentWorker);
   });
   return app;
 }

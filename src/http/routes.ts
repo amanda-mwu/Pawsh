@@ -489,8 +489,8 @@ export function registerRoutes(
   documentStorage: DocumentStorage,
   schedulingHooks: SchedulingHooks = {},
   lifecycleHooks: LifecycleHooks = {},
-  documentHooks: DocumentHooks = {},
-  financialHooks: FinancialHooks = {}
+  financialHooks: FinancialHooks = {},
+  processPendingDocumentScans?: () => Promise<void>
 ): void {
   const authenticate = authentication(db);
   const authenticatePlatform = platformAuthentication(db);
@@ -1484,8 +1484,14 @@ export function registerRoutes(
 
     const [createdRequest] = await db<{ id: string }[]>`
       insert into pet_document_requests
-        (business_id,pet_id,operation,upload_request_id,metadata_fingerprint,state)
-      values (${context.businessId},${petId},${operation},${metadata.uploadRequestId},${fingerprint},'in_progress')
+        (business_id,pet_id,operation,upload_request_id,metadata_fingerprint,state,requested_by,membership_id,
+         expected_current_document_id,expected_current_document_version,expected_pet_version,
+         expiration_intent,expiration_value,document_date)
+      values (${context.businessId},${petId},${operation},${metadata.uploadRequestId},${fingerprint},'in_progress',
+        ${context.userId},${context.membershipId},${metadata.expectedCurrentDocumentId},
+        ${metadata.expectedCurrentDocumentVersion ?? null},${metadata.expectedPetVersion ?? null},
+        ${metadata.expiration.intent},${metadata.expiration.intent === 'set' ? metadata.expiration.value : null},
+        ${metadata.documentDate ?? null})
       on conflict (business_id,pet_id,operation,upload_request_id) do nothing
       returning id
     `;
@@ -1570,91 +1576,29 @@ export function registerRoutes(
       await documentStorage.put(storageKey, bytes);
       uploaded = true;
       await db`
-        update pet_documents set size_bytes=${bytes.byteLength},sha256=${digest},object_uploaded_at=now(),updated_at=now()
+        update pet_documents set state='pending_scan',size_bytes=${bytes.byteLength},sha256=${digest},
+          object_uploaded_at=now(),updated_at=now()
         where business_id=${context.businessId} and id=${documentId} and state='pending'
       `;
-      const result = await db.begin(async (tx) => {
-        await setTenant(tx, context.businessId);
-        const [pet] = await tx<{ version: number; vaccinationExpiresOn: string | null }[]>`
-          select pet.version,pet.vaccination_expires_on
-          from pets pet join customers customer
-            on customer.business_id=pet.business_id and customer.id=pet.customer_id
-          where pet.business_id=${context.businessId} and pet.id=${petId}
-            and pet.archived_at is null and customer.archived_at is null
-          for update of pet
-        `;
-        if (!pet) return { kind: "notFound" } as const;
-        const careEdit = await hasCurrentPermission(tx, {
-          businessId: context.businessId, membershipId: context.membershipId, permission: "pets.care.edit"
-        });
-        const petEdit = await hasCurrentPermission(tx, {
-          businessId: context.businessId, membershipId: context.membershipId, permission: "pets.edit"
-        });
-        if (!careEdit || !petEdit) return { kind: "forbidden" } as const;
-        const [current] = await tx<{ id: string; documentVersion: number }[]>`
-          select id,document_version from pet_documents
-          where business_id=${context.businessId} and pet_id=${petId}
-            and document_type='rabies_vaccination' and state='current'
-          for update
-        `;
-        if (metadata.expectedCurrentDocumentId === null) {
-          if (current) return { kind: "conflict" } as const;
-        } else if (!current || current.id !== metadata.expectedCurrentDocumentId
-          || current.documentVersion !== metadata.expectedCurrentDocumentVersion) {
-          return { kind: "conflict" } as const;
+      await db`update pet_document_requests set scan_available_at=now(),result_code='PENDING_SCAN',updated_at=now()
+        where id=${createdRequest.id} and state='in_progress'`;
+      if (processPendingDocumentScans) {
+        await processPendingDocumentScans();
+        const [finished] = await db<{state:string;resultCode:string|null;resultDocumentId:string|null}[]>`
+          select state,result_code,result_document_id from pet_document_requests where id=${createdRequest.id}`;
+        if (finished?.state === 'completed' && finished.resultDocumentId) {
+          const [document] = await db<DocumentApiRow[]>`select id,document_type,state,document_version,
+            safe_download_filename,size_bytes,document_date,expires_on,created_at from pet_documents
+            where business_id=${context.businessId} and id=${finished.resultDocumentId}`;
+          return reply.code(metadata.expectedCurrentDocumentId ? 200 : 201).send(publicDocument(document!));
         }
-        let expiration = pet.vaccinationExpiresOn;
-        if (metadata.expiration.intent === "set") expiration = metadata.expiration.value;
-        if (metadata.expiration.intent === "clear") expiration = null;
-        const careChanged = metadata.expiration.intent !== "preserve" && expiration !== pet.vaccinationExpiresOn;
-        if (metadata.expiration.intent !== "preserve" && pet.version !== metadata.expectedPetVersion) {
-          return { kind: "petStale" } as const;
+        if (finished?.state === 'failed' || finished?.state === 'conflict') {
+          const code=finished.resultCode ?? 'SCAN_FAILED';
+          const status=code==='PERMISSION_REVOKED'?403:code==='PET_UNAVAILABLE'?404:409;
+          return reply.code(status).send({code,error:'The document could not be promoted; the previous valid document remains available'});
         }
-        if (current) {
-          await tx`update pet_documents set state='superseded',updated_at=now()
-            where business_id=${context.businessId} and id=${current.id} and state='current'`;
-        }
-        const [promoted] = await tx<DocumentApiRow[]>`
-          update pet_documents set state='current',expires_on=${expiration},updated_at=now()
-          where business_id=${context.businessId} and id=${documentId} and state='pending'
-          returning id,document_type,state,document_version,safe_download_filename,size_bytes,
-            document_date,expires_on,created_at
-        `;
-        if (!promoted) throw new Error("Pending document promotion failed");
-        if (careChanged) {
-          await tx`update pets set vaccination_expires_on=${expiration},version=version+1,
-            updated_by=${context.userId},updated_at=now()
-            where business_id=${context.businessId} and id=${petId}`;
-        }
-        await documentHooks.beforeDocumentAudit?.({ businessId: context.businessId, petId, documentId });
-        await record(tx, {
-          businessId: context.businessId, actorId: context.userId,
-          action: current ? "pet.document.replaced" : "pet.document.uploaded",
-          resourceType: "pet_document", resourceId: documentId,
-          after: { petId, documentType: "rabies_vaccination" }
-        });
-        if (careChanged) {
-          await record(tx, {
-            businessId: context.businessId, actorId: context.userId, action: "pet.care.update",
-            resourceType: "pet", resourceId: petId, after: { changedFields: ["vaccinationExpiresOn"] }
-          });
-        }
-        await tx`
-          update pet_document_requests set state='completed',result_document_id=${documentId},
-            result_code='COMPLETED',completed_at=now(),updated_at=now()
-          where id=${createdRequest.id} and state='in_progress'
-        `;
-        return { kind: "completed", document: promoted } as const;
-      });
-      if (result.kind !== "completed") {
-        const code = result.kind === "forbidden" ? "PERMISSION_REVOKED"
-          : result.kind === "petStale" ? "PET_STALE" : result.kind === "notFound" ? "PET_UNAVAILABLE" : "DOCUMENT_STALE";
-        await failRequest(result.kind === "forbidden" || result.kind === "notFound" ? "failed" : "conflict", code);
-        await documentStorage.delete(storageKey).catch(() => undefined);
-        const status = result.kind === "forbidden" ? 403 : result.kind === "notFound" ? 404 : 409;
-        return reply.code(status).send({ code, error: result.kind === "forbidden" ? "Pet Care permission changed during upload" : "Document or Pet Care data changed" });
       }
-      return reply.code(metadata.expectedCurrentDocumentId ? 200 : 201).send(publicDocument(result.document));
+      return reply.code(202).send({ state: "pending_scan", requestId: metadata.uploadRequestId });
     } catch (error) {
       await failRequest("failed", error instanceof DocumentStorageError ? error.code.toUpperCase() : "UPLOAD_FAILED");
       if (uploaded) await documentStorage.delete(storageKey).catch(() => undefined);

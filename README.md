@@ -41,6 +41,8 @@ origin identical to `APP_ORIGIN`:
 $env:NODE_ENV = "development"
 $env:DOCUMENT_STORAGE_ADAPTER = "filesystem"
 $env:DOCUMENT_STORAGE_PATH = ".pawsh-documents"
+$env:DOCUMENT_SCANNER_ADAPTER = "http"
+$env:DOCUMENT_SCANNER_ENDPOINT = "https://scanner.example/scan"
 $env:APP_ORIGIN = "http://127.0.0.1:3000"
 npm run db:migrate
 npm run dev
@@ -55,6 +57,7 @@ For isolated Chromium validation against the same canonical origin:
 ```powershell
 $env:NODE_ENV = "test"
 $env:DOCUMENT_STORAGE_ADAPTER = "memory"
+$env:DOCUMENT_SCANNER_ADAPTER = "deterministic"
 $env:PAWSH_E2E_MODE = "disposable"
 $env:APP_ORIGIN = "http://127.0.0.1:3000"
 $env:DATABASE_URL = "postgres://postgres:postgres@127.0.0.1:54322/postgres"

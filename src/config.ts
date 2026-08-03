@@ -56,6 +56,9 @@ const schema = z.object({
   DOCUMENT_STORAGE_ENDPOINT: optionalText,
   DOCUMENT_STORAGE_ACCESS_KEY_ID: optionalText,
   DOCUMENT_STORAGE_SECRET_ACCESS_KEY: optionalText
+  ,DOCUMENT_SCANNER_ADAPTER: z.enum(["deterministic","http"]).optional(),
+  DOCUMENT_SCANNER_ENDPOINT: optionalText,
+  DOCUMENT_SCANNER_TOKEN: optionalText
 }).superRefine((value, context) => {
   if (value.NODE_ENV === "production" && (!value.SMTP_HOST || !value.EMAIL_FROM)) {
     context.addIssue({
@@ -80,6 +83,12 @@ const schema = z.object({
   }
   if (Boolean(value.DOCUMENT_STORAGE_ACCESS_KEY_ID) !== Boolean(value.DOCUMENT_STORAGE_SECRET_ACCESS_KEY)) {
     context.addIssue({ code: "custom", message: "S3 static credentials require both access key ID and secret" });
+  }
+  if (value.NODE_ENV !== "test" && value.DOCUMENT_SCANNER_ADAPTER !== "http") {
+    context.addIssue({ code:"custom",message:"Non-test environments require the managed HTTP document scanner" });
+  }
+  if (value.DOCUMENT_SCANNER_ADAPTER === "http" && !value.DOCUMENT_SCANNER_ENDPOINT) {
+    context.addIssue({ code:"custom",message:"HTTP document scanner requires DOCUMENT_SCANNER_ENDPOINT" });
   }
 });
 

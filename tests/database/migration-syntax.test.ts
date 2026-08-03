@@ -37,5 +37,10 @@ describe("database migrations", () => {
     expect(petDocuments).toContain("foreign key (business_id,pet_id) references pets(business_id,id)");
     expect(petDocuments).toContain("create policy tenant_isolation on pet_documents");
     expect(petDocuments).toContain("create policy tenant_isolation on pet_document_requests");
+    const malwareProtection = await readFile("migrations/0009_document_malware_protection.sql", "utf8");
+    expect(malwareProtection).toContain("create table pet_document_scan_attempts");
+    expect(malwareProtection).toContain("pet_document_scan_attempts_immutable");
+    expect(malwareProtection).toContain("state in ('pending','pending_scan','rejected','current','superseded')");
+    expect(malwareProtection).toContain("create policy tenant_isolation on pet_document_scan_attempts");
   });
 });

@@ -60,7 +60,7 @@ expected version, preventing mixed-zone commits. Existing appointment instants
 and snapshots do not change with settings; a reschedule creates new intent under
 the then-current location zone.
 
-The authoritative conversion implementation uses Node 24 `Intl`/ICU timezone
+The authoritative conversion implementation uses supported Node 22/24 `Intl`/ICU timezone
 data behind `src/domain/time.ts`; browsers only present server-authoritative
 context. Runtime/ICU updates require the known-transition regression suite.
 Conversion failure is fail-closed. Reminder occurrence remains UTC appointment

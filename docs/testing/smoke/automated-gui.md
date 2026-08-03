@@ -53,7 +53,8 @@ owned and terminated deterministically on Windows as well as Unix. For direct
 `npx playwright test` debugging, start the server separately and set
 `PAWSH_E2E_BASE_URL` to its origin.
 
-CI runs static validation, backend/runtime validation, Chromium smoke, each
+CI runs static and backend/runtime validation on Node 22 and Node 24. It runs a
+light Chromium smoke on Node 22, while Node 24 runs the full Chromium suite, each
 browser compatibility subset, three responsive device profiles, and
 backup/restore as separate jobs. Every mutable browser job receives its own
 PostgreSQL 17 service and runtime. Browser install, startup, test, and total job

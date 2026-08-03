@@ -38,7 +38,7 @@ current location timezone.
 
 Mutation input is exactly minute-precision `YYYY-MM-DDTHH:mm`. Seconds,
 fractions, offsets, `Z`, whitespace, `24:00`, and invalid calendar dates are
-rejected. Node 24 `Intl`/ICU provides IANA data behind a centralized server
+rejected. Supported Node 22/24 `Intl`/ICU provides IANA data behind a centralized server
 resolver. Nonexistent spring-forward time is rejected. Repeated fall-back time
 requires `earlier` or `later`. Conversion failure never falls back to UTC,
 browser time, or a fixed offset.

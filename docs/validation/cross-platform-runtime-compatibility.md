@@ -2,14 +2,16 @@
 
 ## Classification
 
-Current preserved classification:
-
-> Node.js 22/24 Runtime Compatibility Valid — Ubuntu CI Scope
-
-Engineering candidate; classification remains blocked by branch protection:
-
 > Cross-Platform Runtime Compatibility Valid — GitHub-hosted Ubuntu x64,
 > Windows x64, and macOS arm64 CI Scope
+
+> Required-Check Enforcement Pending — GitHub branch protection unavailable
+> under the repository's current plan
+
+This classification records engineering compatibility evidence for the exact
+hosted runners and toolchain below. It is separate from enforcement: direct
+pushes to `main` can still bypass required checks until branch protection or
+rulesets become available.
 
 ## Inspection findings and decisions
 
@@ -99,8 +101,10 @@ Branch protection must require
 retaining canonical CI requirements. Generated matrix names are evidence, not
 the sole protection contract. The authenticated protection API returned HTTP
 403 because this private repository's current GitHub plan does not enable
-branch protection. This is an operational closure blocker; upgrade the plan or
-make the repository public, then require the stable aggregate check.
+branch protection. This is an external administrative limitation, not an
+application, CI, architecture, security, or runtime defect. Upgrade the plan or
+make the repository public, then require the stable aggregate check. Until
+then, controlled prevention of unvalidated future pushes is not enforced.
 
 Weekly diagnostics record dependency age and can later add latency, memory,
 event-loop, pool, and index observations. Owner roles: runtime/toolchain,
@@ -114,11 +118,11 @@ failure is a new finding, not proof earlier timestamped evidence was false.
 
 ## Exact-SHA engineering evidence
 
-Green implementation candidate:
+Green exact-SHA implementation evidence:
 
-- SHA: `81b7da7f9579fce9a1554c344bd945841a8affda`
-- Cross-platform run: `30857253141` — all six lanes and stable aggregate passed
-- Canonical CI run: `30857253152` — passed
+- SHA: `cf03e076ac33849674671668ce5146927644dbf2`
+- Cross-platform run: `30858932128` — all six lanes and stable aggregate passed
+- Canonical CI run: `30858932124` — passed
 - Normalized fixture SHA-256 on all six lanes:
   `83361fc6da18cdd8e4b764ece19e6f8a3eb94c72442577a7baef36a27f14aacd`
 - Unit/static/build baseline: 73 unit tests passed; database and browser suites
@@ -138,10 +142,12 @@ Recorded toolchain:
 | macOS Node 24 | `macos26` `20260728.0273.1` | arm64 | 24.18.0 / 11.6.0 | 17.10 Homebrew | 78.3 / 3.5.7 | Chromium 151.0.7922.34; reduced WebKit |
 | UTC focused | `ubuntu24` `20260720.247.2` | x64 | 24.18.0 / 11.6.0 | not required | 78.3 / 3.5.7 | not required |
 
-All lanes used Playwright 1.62.1. The canonical timezone was
-`America/Los_Angeles`; the focused comparison used `UTC`. The evidence-recording
-descendant adds explicit PostgreSQL server-version capture and must pass a new
-exact-SHA run before final reporting.
+All lanes used Playwright 1.62.1. `macos-latest` resolved to an arm64 runner for
+these recorded runs; the alias may resolve to a different image or architecture
+in the future. Node 22.23.1 and 24.18.0 are exact validated patch-level evidence;
+future latest-patched Node 22 or Node 24 releases require fresh CI evidence.
+The canonical timezone was `America/Los_Angeles`; the focused comparison used
+`UTC`. The workflow records PostgreSQL client and server versions separately.
 
 Confirmed findings resolved during execution:
 
@@ -155,9 +161,20 @@ Confirmed findings resolved during execution:
   changing assertions or enabling retries.
 - PostgreSQL client and tested server versions are recorded separately.
 
-Remaining operational blocker: stable branch protection cannot be enabled on
-the current private-repository GitHub plan. Until that changes, preserve the
-Ubuntu-scope classification even when engineering matrix evidence is green.
+## CI closure
+
+- Cross-platform engineering validation: closed.
+- Exact-SHA required matrix: closed.
+- Stable aggregate check: implemented and passing.
+- Branch-protection enforcement: pending external repository-plan capability.
+- Controlled prevention of unvalidated future pushes: not enforced.
+
+Final validated status:
+
+> Cross-Platform Runtime Compatibility Valid — GitHub-hosted Ubuntu x64,
+> Windows x64, and macOS arm64 CI Scope
+
+> Required-Check Enforcement Pending — Repository plan limitation
 
 ## Explicit limitations
 

@@ -55,7 +55,7 @@ test("@regression-lifecycle completes the primary lifecycle with persisted UI st
 test("@regression-lifecycle keeps completed and no-show terminal controls coherent", async ({ page, request, tenant }) => {
   const completed = await completeAppointment(request, tenant);
   const noShow = await createAppointment(request, tenant, {
-    startAt: new Date(new Date(tenant.anchor).getTime() + 86_400_000 + 17 * 3_600_000).toISOString()
+    localStart: `${tenant.anchor}T11:00`
   });
   const noShowResponse = await request.post(`/api/appointments/${noShow.id}/transition`, {
     data: { status: "no_show", version: noShow.version }

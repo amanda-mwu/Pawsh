@@ -152,6 +152,8 @@ jobs:
         if: matrix.node == '24'
         shell: pwsh
         run: ./scripts/validate-windows-filesystem.ps1
+      - run: npx playwright install chromium
+      - run: npm run test:smoke -- --workers=1
       - name: Validate a repository path with spaces and Unicode
         if: matrix.node == '24'
         shell: pwsh
@@ -168,8 +170,6 @@ jobs:
             npm run build
             npm run compatibility:startup
           } finally { Pop-Location }
-      - run: npx playwright install chromium
-      - run: npm run test:smoke
       - run: npm run compatibility:metadata
       - run: npm run artifacts:scan
       - name: Drop isolated PostgreSQL database

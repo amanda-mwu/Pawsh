@@ -150,6 +150,9 @@ Confirmed findings resolved during execution:
   reinstalling an already-provisioned server.
 - Disposable macOS database test authority matches the canonical RLS test lane.
 - Browser version discovery is headless and bounded on Windows.
+- Windows Chromium smoke runs before the second path-portability install and
+  uses one worker, preventing hosted-runner socket-buffer exhaustion without
+  changing assertions or enabling retries.
 - PostgreSQL client and tested server versions are recorded separately.
 
 Remaining operational blocker: stable branch protection cannot be enabled on

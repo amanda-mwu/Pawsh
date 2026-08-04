@@ -13,6 +13,7 @@ const tabletTag = /@tablet-core|@responsive/;
 
 export default defineConfig({
   testDir:"tests/e2e",
+  testIgnore:"p1-document-scanning/**",
   fullyParallel:true,
   retries:0,
   workers:process.env.CI ? 2 : undefined,

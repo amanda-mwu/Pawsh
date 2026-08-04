@@ -43,3 +43,5 @@ The P1 job uses a fresh job-local PostgreSQL service but retains the existing sc
 ## Qualification
 
 Initial closure requires ten sequential fresh CI environments, with 10/10 passes, no retries, and no leaked process or storage state. This evidence must come from the final candidate SHA. Do not substitute ten executions against one mutable database. The normal exact-SHA P1 job remains required after qualification.
+
+Trigger `.github/workflows/p1-qualification.yml` manually on the exact candidate SHA. Its matrix is restricted to one active iteration, so all ten fresh hosted environments execute sequentially. Any iteration failure stops qualification; do not rerun a failed qualification and present it as zero-retry evidence.

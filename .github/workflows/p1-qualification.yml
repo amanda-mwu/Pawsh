@@ -1,0 +1,100 @@
+name: P1 asynchronous scanning qualification
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: p1-qualification-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  TZ: America/Los_Angeles
+  PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+
+jobs:
+  qualify:
+    name: P1 qualification / iteration ${{ matrix.iteration }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        iteration: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: pawsh_p1
+          POSTGRES_USER: pawsh
+          POSTGRES_PASSWORD: pawsh-ci
+        ports:
+          - 54322:5432
+        options: >-
+          --health-cmd "pg_isready -U pawsh -d pawsh_p1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      NODE_ENV: development
+      DATABASE_URL: postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh_p1
+      PAWSH_E2E_MODE: disposable
+      PAWSH_E2E_BASE_URL: http://127.0.0.1:3301
+      APP_ORIGIN: http://127.0.0.1:3301
+      PORT: "3301"
+      DOCUMENT_STORAGE_ADAPTER: filesystem
+      DOCUMENT_STORAGE_PATH: .pawsh-p1-storage-${{ matrix.iteration }}
+      DOCUMENT_SCANNER_ADAPTER: http
+      DOCUMENT_SCANNER_TOKEN: p1-scan-${{ github.run_id }}-${{ matrix.iteration }}
+      PAWSH_P1_SCANNER_TOKEN: p1-scan-${{ github.run_id }}-${{ matrix.iteration }}
+      PAWSH_P1_SCANNER_CONTROL_SECRET: p1-control-${{ github.run_id }}-${{ matrix.iteration }}
+      PAWSH_P1_RUN_ID: gha-${{ github.run_id }}-qualification-${{ matrix.iteration }}
+      PAWSH_P1_SCENARIO_ID: p1-pending-reload-v1
+      DOCUMENT_SCANNER_ENDPOINT: http://127.0.0.1:4319/scan?run=gha-${{ github.run_id }}-qualification-${{ matrix.iteration }}&scenario=p1-pending-reload-v1
+      SESSION_SECRET: p1-qualification-secret-at-least-thirty-two-characters
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate
+      - run: npm run qa:p1:fixtures
+      - run: npx playwright install --with-deps chromium
+      - name: Run isolated qualification iteration
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run qa:p1:scanner:serve >p1-scanner.log 2>&1 &
+          SCANNER_PID=$!
+          npm run start:e2e >p1-app.log 2>&1 &
+          APP_PID=$!
+          cleanup() {
+            kill -TERM "$APP_PID" "$SCANNER_PID" 2>/dev/null || true
+            wait "$APP_PID" 2>/dev/null || true
+            wait "$SCANNER_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for attempt in $(seq 1 100); do
+            if curl --fail --silent http://127.0.0.1:3301/health >/dev/null; then break; fi
+            if ! kill -0 "$APP_PID" 2>/dev/null || ! kill -0 "$SCANNER_PID" 2>/dev/null; then
+              cat p1-app.log p1-scanner.log
+              exit 1
+            fi
+            sleep 0.1
+          done
+          curl --fail --silent http://127.0.0.1:3301/health >/dev/null
+          npm run qa:p1:test
+          npm run qa:p1:evidence
+      - name: Upload qualification evidence
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: p1-qualification-${{ github.sha }}-${{ matrix.iteration }}
+          path: |
+            artifacts/p1/
+            playwright-report/p1/
+            test-results/p1/
+            p1-app.log
+            p1-scanner.log
+          if-no-files-found: ignore
+          retention-days: 7

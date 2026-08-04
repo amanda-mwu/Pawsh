@@ -1,6 +1,6 @@
 # P1 asynchronous scanning QA evidence
 
-Classification: P1 QA Incomplete until exact-SHA CI, ten-run qualification, and human Security review complete.
+Classification: P1 QA Incomplete pending human Security review. Automated implementation evidence is valid.
 
 Originating runtime artifact: `62330228d6fd20e20d75c4847649cec919e9eb99`
 
@@ -47,9 +47,18 @@ Documentation/evidence-only:
 - Unit tests: PASS
 - Build: PASS
 - P1 project mapping: PASS, one test in one file
-- PostgreSQL integration/browser execution: NOT COMPLETE locally; exact-SHA CI required
-- Ten-run qualification: NOT COMPLETE
+- Tested runtime SHA: `0076315d397e7de701d6ab3de800da344779adeb`
+- Runtime build digest: `sha256:8484e03692ac1ca31db27cd45edae5bd561813680fec4266fbe067ca5f639bd0`
+- Migration version: `0009_document_malware_protection`
+- Exact-SHA CI: PASS, run `30938614687`
+- P1 asynchronous browser job: PASS, zero retries
+- Inherited CI jobs: PASS
+- Cross-platform required matrix: PASS, run `30938619624`
+- Ten-run sequential qualification: PASS 10/10, zero failed iterations and zero retries, run `30938632409`
+- Qualification environments: ten fresh hosted runners, PostgreSQL services, app/scanner processes, and storage namespaces
 - Human Security approval: NOT COMPLETE
+
+The documentation commit containing this record is evidence-only. The tested runtime SHA and digest above remain the runtime artifact under review; final evidence-descendant SHA is captured by Git/CI closure rather than folded into the runtime claim.
 
 ## Open boundaries
 

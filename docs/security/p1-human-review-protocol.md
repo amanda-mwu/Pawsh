@@ -2,6 +2,14 @@
 
 Administrative status: not approved. A named human Security approver must review the exact tested runtime artifact.
 
+Artifact prepared for review:
+
+- Tested runtime SHA: `0076315d397e7de701d6ab3de800da344779adeb`
+- Runtime build digest: `sha256:8484e03692ac1ca31db27cd45edae5bd561813680fec4266fbe067ca5f639bd0`
+- Exact-SHA CI: `30938614687`
+- Cross-platform matrix: `30938619624`
+- Ten-run qualification: `30938632409` (10/10, zero retries)
+
 ## Reviewer checks
 
 1. Record commit SHA, runtime build digest, migration version, CI run, P1 job result, fixture manifest, and evidence digest.

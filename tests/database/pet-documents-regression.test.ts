@@ -245,6 +245,30 @@ describeDatabase("D3.2 rabies vaccination documents", () => {
     expect(upload.statusCode).toBe(403);
   });
 
+  it("returns a bounded safe pending summary for reload reconciliation", async () => {
+    const pendingStorage = new MemoryDocumentStorage();
+    const pendingApp = await createApp(config, db, {
+      runWorker: false, serveStatic: false, documentStorage: pendingStorage,
+      documentScanner: new DeterministicDocumentScanner()
+    });
+    const customer = await pendingApp.inject({ method:"POST", url:"/api/customers", headers:{cookie:ownerCookie},
+      payload:{firstName:"Pending",lastName:"Reload"} });
+    const pet = await pendingApp.inject({ method:"POST", url:"/api/pets", headers:{cookie:ownerCookie},
+      payload:{customerId:customer.json().id,name:"Reload",species:"dog"} });
+    const requestId=crypto.randomUUID();
+    const value=multipart(metadata({uploadRequestId:requestId}));
+    const upload=await pendingApp.inject({method:"POST",url:`/api/pets/${pet.json().id}/documents/rabies`,
+      headers:{cookie:ownerCookie,...value.headers},payload:value.payload});
+    expect(upload.statusCode).toBe(202);
+    const list=await pendingApp.inject({method:"GET",url:`/api/pets/${pet.json().id}/documents`,headers:{cookie:ownerCookie}});
+    expect(list.statusCode).toBe(200);
+    expect(list.json().activity).toEqual([expect.objectContaining({
+      requestId,status:"pending_scan",operation:"upload",filename:"rabies-certificate.pdf",canUpload:false
+    })]);
+    expect(JSON.stringify(list.json())).not.toMatch(/storage|objectKey|scanner|signature|MALWARE/i);
+    await pendingApp.close();
+  });
+
   it("does not disclose known document or pet identifiers across tenants", async () => {
     const signup = await app.inject({ method: "POST", url: "/api/auth/signup", payload: {
       email: `documents-foreign-${suffix}@example.test`, password: "correct horse foreign battery",

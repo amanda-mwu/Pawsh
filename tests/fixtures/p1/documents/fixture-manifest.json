@@ -1,0 +1,11 @@
+{
+  "format": "pawsh-p1-document-fixtures-v1",
+  "synthetic": true,
+  "containsActiveMalware": false,
+  "fixtures": [
+    {"name":"malformed-rabies.pdf","sha256":"fd6dafce11c91693c5f51df754bafac544a782532c445d1054946383738288d2","size":76,"expected":"invalid_pdf"},
+    {"name":"non-pdf-mime-mismatch.txt","sha256":"8cc36fa470c5308e8237c1dacffd23cf85442cdfe12a9090a43d14d9a8cf9815","size":74,"expected":"mime_mismatch"},
+    {"name":"valid-rabies-clean.pdf","sha256":"b4c821f37994cc9219161c1b625ef99bfe773763b42c26060096b71cc422abc8","size":114,"expected":"clean"},
+    {"name":"valid-rabies-malicious-simulation.pdf","sha256":"83f2433a41ff0398f136af51464a2d0839a85fe59e5bfc4796e61b3eef391b34","size":112,"expected":"malicious_simulation"}
+  ]
+}

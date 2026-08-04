@@ -249,6 +249,91 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  p1-document-scanning:
+    name: Document Scanning / P1 Asynchronous Security QA
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: pawsh_p1
+          POSTGRES_USER: pawsh
+          POSTGRES_PASSWORD: pawsh-ci
+        ports:
+          - 54322:5432
+        options: >-
+          --health-cmd "pg_isready -U pawsh -d pawsh_p1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      NODE_ENV: development
+      DATABASE_URL: postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh_p1
+      PAWSH_E2E_MODE: disposable
+      PAWSH_E2E_BASE_URL: http://127.0.0.1:3301
+      APP_ORIGIN: http://127.0.0.1:3301
+      PORT: "3301"
+      DOCUMENT_STORAGE_ADAPTER: filesystem
+      DOCUMENT_STORAGE_PATH: .pawsh-p1-storage
+      DOCUMENT_SCANNER_ADAPTER: http
+      DOCUMENT_SCANNER_TOKEN: p1-scan-${{ github.run_id }}-${{ github.run_attempt }}
+      PAWSH_P1_SCANNER_TOKEN: p1-scan-${{ github.run_id }}-${{ github.run_attempt }}
+      PAWSH_P1_SCANNER_CONTROL_SECRET: p1-control-${{ github.run_id }}-${{ github.run_attempt }}
+      PAWSH_P1_RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
+      PAWSH_P1_SCENARIO_ID: p1-pending-reload-v1
+      DOCUMENT_SCANNER_ENDPOINT: http://127.0.0.1:4319/scan?run=gha-${{ github.run_id }}-${{ github.run_attempt }}&scenario=p1-pending-reload-v1
+      SESSION_SECRET: p1-ci-session-secret-at-least-thirty-two-characters
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate
+      - run: npm run qa:p1:fixtures
+      - run: npx playwright install --with-deps chromium
+      - name: Verify isolated P1 mapping
+        run: npx playwright test --config=playwright.p1.config.ts --project=p1-document-scanning-chromium --list
+      - name: Run P1 asynchronous scanner path
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run qa:p1:scanner:serve >p1-scanner.log 2>&1 &
+          SCANNER_PID=$!
+          npm run start:e2e >p1-app.log 2>&1 &
+          APP_PID=$!
+          cleanup() {
+            kill -TERM "$APP_PID" "$SCANNER_PID" 2>/dev/null || true
+            wait "$APP_PID" 2>/dev/null || true
+            wait "$SCANNER_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for attempt in $(seq 1 100); do
+            if curl --fail --silent http://127.0.0.1:3301/health >/dev/null; then break; fi
+            if ! kill -0 "$APP_PID" 2>/dev/null || ! kill -0 "$SCANNER_PID" 2>/dev/null; then
+              cat p1-app.log p1-scanner.log
+              exit 1
+            fi
+            sleep 0.1
+          done
+          curl --fail --silent http://127.0.0.1:3301/health >/dev/null
+          npm run qa:p1:test
+          npm run qa:p1:evidence
+      - name: Upload sanitized P1 evidence
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: p1-document-scanning-${{ github.sha }}
+          path: |
+            artifacts/p1/
+            playwright-report/p1/
+            test-results/p1/
+            p1-app.log
+            p1-scanner.log
+          if-no-files-found: ignore
+          retention-days: 7
+
   backup-restore:
     name: Backup and restore
     runs-on: ubuntu-latest

@@ -1,0 +1,1 @@
+This is a synthetic non-PDF fixture used for MIME and content validation.

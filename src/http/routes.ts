@@ -118,6 +118,28 @@ function publicDocument(row: DocumentApiRow) {
   };
 }
 
+interface DocumentActivityRow {
+  requestId: string; operation: "upload" | "replace"; requestState: string;
+  resultCode: string | null; lastScanError: string | null; filename: string; createdAt: string; updatedAt: string;
+}
+
+function publicDocumentActivity(row: DocumentActivityRow) {
+  const retryable = row.requestState === "in_progress" && row.lastScanError !== null;
+  const status = row.requestState === "in_progress"
+    ? retryable ? "failed_retryable" : "pending_scan"
+    : row.resultCode === "MALWARE_SIMULATED" ? "rejected" : "failed_terminal";
+  return {
+    requestId: row.requestId,
+    documentType: "rabies_vaccination",
+    operation: row.operation,
+    filename: row.filename,
+    status,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    canUpload: row.requestState !== "in_progress"
+  };
+}
+
 export interface SchedulingHooks {
   afterLocationLock?: (input:{operation:"create"|"reschedule";businessId:string;timezone:string;version:number})=>Promise<void>;
   beforeLock?: (input: {
@@ -1422,9 +1444,21 @@ export function registerRoutes(
         and document_type='rabies_vaccination' and state in ('current','superseded')
       order by (state='current') desc,created_at desc,id desc
     `;
+    const activity = await db<DocumentActivityRow[]>`
+      select request.upload_request_id request_id,request.operation,request.state request_state,
+        request.result_code,request.last_scan_error,document.safe_download_filename filename,request.created_at,request.updated_at
+      from pet_document_requests request
+      join pet_documents document on document.business_id=request.business_id and document.request_id=request.id
+      where request.business_id=${context.businessId} and request.pet_id=${id}
+        and request.created_at>=now()-interval '7 days'
+        and request.state<>'completed'
+      order by request.updated_at desc,request.id desc
+      limit 5
+    `;
     return {
       current: rows.find((row) => row.state === "current") ? publicDocument(rows.find((row) => row.state === "current")!) : null,
-      previous: rows.filter((row) => row.state === "superseded").map(publicDocument)
+      previous: rows.filter((row) => row.state === "superseded").map(publicDocument),
+      activity: activity.map(publicDocumentActivity)
     };
   });
 

@@ -13,7 +13,7 @@ const password="correct horse p1 disposable";
 async function control(path:string,value?:unknown){
   const response=await fetch(`${controlURL}${path}`,{method:value?"POST":"GET",headers:{authorization:`Bearer ${secret}`,
     ...(value?{"content-type":"application/json"}:{})},...(value?{body:JSON.stringify(value)}:{})});
-  expect(response.ok,await response.text()).toBeTruthy();return response.json();
+  const text=await response.text();expect(response.ok,text).toBeTruthy();return JSON.parse(text);
 }
 
 test("@regression-document-scanning preserves pending state across reload and promotes through the worker",async({page,request})=>{

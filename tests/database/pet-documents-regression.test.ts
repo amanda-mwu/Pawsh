@@ -247,7 +247,10 @@ describeDatabase("D3.2 rabies vaccination documents", () => {
 
   it("returns a bounded safe pending summary for reload reconciliation", async () => {
     const pendingStorage = new MemoryDocumentStorage();
-    const pendingApp = await createApp(config, db, {
+    const asynchronousConfig: Config = { ...config, NODE_ENV:"development", DOCUMENT_STORAGE_ADAPTER:"filesystem",
+      DOCUMENT_STORAGE_PATH:"unused-injected-storage", DOCUMENT_SCANNER_ADAPTER:"http",
+      DOCUMENT_SCANNER_ENDPOINT:"http://127.0.0.1:9/scan" };
+    const pendingApp = await createApp(asynchronousConfig, db, {
       runWorker: false, serveStatic: false, documentStorage: pendingStorage,
       documentScanner: new DeterministicDocumentScanner()
     });

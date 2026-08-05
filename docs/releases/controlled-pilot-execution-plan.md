@@ -5,11 +5,11 @@ does not replace the Master Release Gate or authorize launch.
 
 | Gate | Requirement/evidence authority | Missing evidence | Technical status | Human/external requirement | Blocking |
 |---|---|---|---|---|---|
-| BASE-AUTO | Critical regression validation | Final exact-SHA CI | Open -- automatable | None | Yes |
-| CAL-TIME | Calendar/time integrity | Final exact-SHA evidence | Open -- automatable | None | Yes |
-| REPLAY | Scheduling/financial replay | Final exact-SHA evidence | Open -- automatable | None | Yes |
-| RABIES | Compliance contract and suites | Manual workflow evidence | Technical evidence in progress | Product/Privacy decision, manual UX | Yes for this scope |
-| P1-APP | ADR-005/P1 scanner contract | Final exact-SHA regression | Automated evidence ready after green CI | Security review | Yes |
+| BASE-AUTO | Critical regression validation | None technical | Complete -- automated evidence sufficient | None | No technical blocker |
+| CAL-TIME | Calendar/time integrity | None technical | Complete -- automated evidence sufficient | None | No technical blocker |
+| REPLAY | Scheduling/financial replay | None technical | Complete -- automated evidence sufficient | None | No technical blocker |
+| RABIES | Compliance contract and suites | Manual workflow evidence | Complete -- technical evidence ready, human approval pending | Product/Privacy decision, manual UX | Yes for human approval |
+| P1-APP | ADR-005/P1 scanner contract | Formal decision | Complete -- technical evidence ready, human approval pending | Security review | Yes |
 | SEC-DOC-001 | Managed scanner in staging | Real integration, alerts, harmless test | Open -- external infrastructure | Security/Ops | Yes |
 | SEC-DB-001 | Schema-owner/RLS finding | Approved disposition | Open -- human approval | Engineering/Security/launch approver | Existing authority decides |
 | P2-A11Y | WCAG pilot workflows | Manual AT matrix and final automation | Open -- human execution | Accessibility approver | Yes |
@@ -18,11 +18,24 @@ does not replace the Master Release Gate or authorize launch.
 | P5-PERF | Staging load/degradation/recovery | Real topology and thresholds | Open -- external infrastructure | Operations/Product | Yes |
 | P6-MANUAL | Versioned workflows | Execution evidence | Open -- human execution | QA | Yes |
 | P7-DEVICE | Real device/Safari matrix | Physical evidence | Open -- human execution | QA | Yes |
-| BACKUP | Backup/restore/migrations | Final SHA and staging restore | Open -- automatable plus staging | Operations at P4 | Yes |
+| BACKUP | Backup/restore/migrations | Staging restore | Complete -- automated evidence sufficient locally/CI | Operations at P4 | Yes at staging gate |
 | OPS | Monitoring/runbooks/suspension | Owners and alert delivery tests | Open -- human/external | Operations/launch approver | Yes |
 | GOV | Pilot envelope and launch decision | Approver, thresholds, approvals | Open -- human approval | Product/Security/Ops/Privacy | Yes |
 
 No gate is superseded by a recommendation.
+
+## Automated evidence closure
+
+Executable SHA `2207573173206635fbf27e85127d9c737fb86d37` passed the complete
+[CI run](https://github.com/amanda-mwu/Pawsh/actions/runs/31025733364) and
+[cross-platform runtime run](https://github.com/amanda-mwu/Pawsh/actions/runs/31025732921)
+on 2026-08-05. Evidence includes Node 22/24 PostgreSQL runtime, migrations,
+backup/restore, unit and API integration, tenant and authorization regression,
+scheduling/replay, invoice/payment, outbox, scanner contract, Chromium/Firefox/
+WebKit, responsive emulation, security projects, accessibility automation, and
+the new rabies-compliance browser scenario. This does not satisfy physical-device,
+manual assistive-technology, managed-scanner staging, operational-alert, or
+formal approval gates.
 
 ## Human handoff checklists
 

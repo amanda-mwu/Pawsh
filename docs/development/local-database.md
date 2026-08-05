@@ -71,6 +71,11 @@ graceful HTTP/worker/database shutdown. Use `NODE_ENV=test` only for automated
 tests; it intentionally suppresses normal runtime logs and selects deterministic
 test behavior.
 
+Automated startup validation asserts graceful SIGTERM lifecycle output on
+POSIX runners. Windows CI verifies startup and port release because terminating
+a detached child process cannot faithfully synthesize an interactive console
+Ctrl+C; manual Windows Ctrl+C remains part of developer/runtime validation.
+
 Open `http://127.0.0.1:3000`. `db:seed` creates synthetic `.example`/`.test`
 data with a fixed logical anchor. Generated UUIDs and password hashes may differ
 without changing the logical fixture. Override the local seed password through

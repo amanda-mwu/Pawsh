@@ -57,8 +57,10 @@ try {
   }
   child.kill(process.platform === "win32" ? undefined : "SIGTERM");
   await waitForExit(child);
-  for (const expected of ["[STOP] Stopping HTTP server and workers", "[STOP] Database pool closed", "[STOP] Shutdown complete"]) {
-    if (!stdout.includes(expected)) throw new Error(`Missing shutdown lifecycle output: ${expected}\n${stdout}\n${stderr}`);
+  if (process.platform !== "win32") {
+    for (const expected of ["[STOP] Stopping HTTP server and workers", "[STOP] Database pool closed", "[STOP] Shutdown complete"]) {
+      if (!stdout.includes(expected)) throw new Error(`Missing shutdown lifecycle output: ${expected}\n${stdout}\n${stderr}`);
+    }
   }
   const verification = createServer();
   await new Promise((resolve, reject) => verification.once("error", reject).listen(port, "127.0.0.1", resolve));

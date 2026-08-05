@@ -43,8 +43,8 @@ jobs:
           --health-timeout 3s
           --health-retries 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -81,7 +81,7 @@ jobs:
       - run: npm run artifacts:scan
       - name: Upload compatibility evidence
         if: ${{ always() && !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: compatibility-evidence-ubuntu-node-${{ matrix.node }}
           path: |
@@ -100,8 +100,8 @@ jobs:
       matrix:
         node: ["22", "24"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -185,7 +185,7 @@ jobs:
           }
       - name: Upload compatibility evidence
         if: ${{ always() && !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: compatibility-evidence-windows-node-${{ matrix.node }}
           path: |
@@ -200,8 +200,8 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 55
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "24"
           cache: npm
@@ -249,7 +249,7 @@ jobs:
           brew services stop postgresql@17 || true
       - name: Upload compatibility evidence
         if: ${{ always() && !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: compatibility-evidence-macos-node-24
           path: |
@@ -266,8 +266,8 @@ jobs:
     env:
       TZ: UTC
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "24"
           cache: npm
@@ -278,7 +278,7 @@ jobs:
       - run: npm run compatibility:fixtures
       - run: npm run compatibility:metadata
       - run: npm run artifacts:scan
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: compatibility-evidence-utc-node-24
           path: artifacts/
@@ -296,7 +296,7 @@ jobs:
           REQUIRED_RESULTS: ${{ toJSON(needs) }}
         run: |
           node --eval 'const results=JSON.parse(process.env.REQUIRED_RESULTS); const failed=Object.entries(results).filter(([,job])=>job.result!=="success"); if(failed.length) throw new Error(`Required jobs did not pass: ${JSON.stringify(failed.map(([name,job])=>[name,job.result]))}`);'
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: compatibility-evidence-*
           path: compatibility-evidence

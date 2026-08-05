@@ -25,8 +25,8 @@ jobs:
       matrix:
         node: ["22", "24"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -64,8 +64,8 @@ jobs:
     env:
       DATABASE_URL: postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -165,8 +165,8 @@ jobs:
       DATABASE_URL: postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh
       PAWSH_E2E_MODE: disposable
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -182,7 +182,7 @@ jobs:
         run: ${{ matrix.command }}
       - name: Upload browser failure artifacts
         if: ${{ always() && !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-failures-${{ matrix.name }}
           path: |
@@ -222,8 +222,8 @@ jobs:
       DATABASE_URL: postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh
       PAWSH_E2E_MODE: disposable
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
           cache: npm
@@ -240,7 +240,7 @@ jobs:
         run: npx playwright test --project=${{ matrix.project }}
       - name: Upload responsive failure artifacts
         if: ${{ always() && !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-failures-${{ matrix.project }}
           path: |
@@ -284,8 +284,8 @@ jobs:
       DOCUMENT_SCANNER_ENDPOINT: http://127.0.0.1:4319/scan?run=gha-${{ github.run_id }}-${{ github.run_attempt }}&scenario=p1-pending-reload-v1
       SESSION_SECRET: p1-ci-session-secret-at-least-thirty-two-characters
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
           cache: npm
@@ -322,7 +322,7 @@ jobs:
           npm run qa:p1:evidence
       - name: Upload sanitized P1 evidence
         if: ${{ always() && !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: p1-document-scanning-${{ github.sha }}
           path: |
@@ -354,8 +354,8 @@ jobs:
     env:
       DATABASE_URL: postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
           cache: npm

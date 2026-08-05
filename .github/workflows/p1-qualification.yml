@@ -51,8 +51,8 @@ jobs:
       DOCUMENT_SCANNER_ENDPOINT: http://127.0.0.1:4319/scan?run=gha-${{ github.run_id }}-qualification-${{ matrix.iteration }}&scenario=p1-pending-reload-v1
       SESSION_SECRET: p1-qualification-secret-at-least-thirty-two-characters
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
           cache: npm
@@ -87,7 +87,7 @@ jobs:
           npm run qa:p1:evidence
       - name: Upload qualification evidence
         if: ${{ always() && !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: p1-qualification-${{ github.sha }}-${{ matrix.iteration }}
           path: |

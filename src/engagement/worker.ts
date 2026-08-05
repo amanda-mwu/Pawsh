@@ -21,12 +21,14 @@ export async function reconcileRabiesNotifications(
 ): Promise<number> {
   const appointments=await db<{
     id:string;customerId:string;petId:string;employeeId:string;localDate:string|Date;
-    currentLocalDate:string|Date;
-    expirationDate:string|Date|null;verificationStatus:string;email:string|null;emailAllowed:boolean;
+    expirationDate:string|Date|null;requiresNotification:boolean;
+    email:string|null;emailAllowed:boolean;
   }[]>`
     select a.id,a.customer_id,a.pet_id,a.employee_id,a.scheduled_local_start::date::text as local_date,
-      (now() at time zone l.timezone)::date::text as current_local_date,
-      p.vaccination_expires_on::text as expiration_date,p.rabies_verification_status,
+      p.vaccination_expires_on::text as expiration_date,
+      (p.rabies_verification_status='staff_verified'
+        and p.vaccination_expires_on >= (now() at time zone l.timezone)::date
+        and p.vaccination_expires_on < a.scheduled_local_start::date) as requires_notification,
       c.email,c.email_allowed
     from appointments a
     join pets p on p.business_id=a.business_id and p.id=a.pet_id
@@ -49,12 +51,8 @@ export async function reconcileRabiesNotifications(
   let created=0;
   for(const appointment of appointments) {
     const localDate=dateOnly(appointment.localDate)!;
-    const currentLocalDate=dateOnly(appointment.currentLocalDate)!;
     const expirationDate=dateOnly(appointment.expirationDate);
-    const invalid=appointment.verificationStatus === "staff_verified"
-      && expirationDate !== null
-      && expirationDate >= currentLocalDate
-      && expirationDate < localDate;
+    const invalid=appointment.requiresNotification;
     if(!invalid) {
       await db`update notification_intents set status='cancelled',resolved_at=now(),updated_at=now()
         where business_id=${input.businessId} and appointment_id=${appointment.id}

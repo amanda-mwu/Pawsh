@@ -1247,14 +1247,16 @@ export function registerRoutes(
     const context = auth(request);
     const query = request.query as { q?: string; customerId?: string };
     const rows = await db`
-      select p.*, concat_ws(' ', c.first_name, c.last_name) as customer_name
-        , verifier_user.display_name as rabies_verified_by_name
+      select p.*, concat_ws(' ', c.first_name, c.last_name) as customer_name,
+        coalesce(verifier_employee.display_name,verifier_user.email) as rabies_verified_by_name
       from pets p
       join customers c on c.id=p.customer_id and c.business_id=p.business_id
         and c.archived_at is null
       left join business_memberships verifier on verifier.business_id=p.business_id
         and verifier.id=p.rabies_verified_by_membership_id
       left join users verifier_user on verifier_user.id=verifier.user_id
+      left join employees verifier_employee on verifier_employee.business_id=p.business_id
+        and verifier_employee.membership_id=verifier.id
       where p.business_id=${context.businessId} and p.archived_at is null
         and (${query.customerId ?? null}::uuid is null or p.customer_id=${query.customerId ?? null}::uuid)
         and (${query.q ?? ""}='' or p.name ilike ${`%${query.q ?? ""}%`} or p.breed ilike ${`%${query.q ?? ""}%`})

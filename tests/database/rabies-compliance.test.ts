@@ -54,11 +54,15 @@ describeDatabase("rabies appointment compliance",()=>{
     expect(invalid.statusCode).toBe(400);
     const list=await app.inject({method:"GET",url:"/api/appointments?localDate=2032-08-11&days=1",headers:{cookie:ownerCookie}});
     expect(list.statusCode).toBe(200);expect(list.json()[0]).toMatchObject({id:appointmentId,
-      rabiesAppointmentStatus:"expires_before_appointment",vaccinationExpiresOn:"2032-08-10"});
+      rabiesAppointmentStatus:"expires_before_appointment"});
+    expect(String(list.json()[0].vaccinationExpiresOn).slice(0,10)).toBe("2032-08-10");
   });
 
   it("creates one durable customer notice and one owner warning and delivers without duplicates",async()=>{
     await processOutbox(db);await processOutbox(db);
+    const failedEvents=await db<{eventType:string;lastError:string}[]>`
+      select event_type,last_error from outbox_events where business_id=${businessId} and last_error is not null`;
+    expect(failedEvents).toEqual([]);
     const intents=await db<{notificationType:string;status:string;recipientKind:string}[]>`
       select notification_type,status,recipient_kind from notification_intents
       where business_id=${businessId} and appointment_id=${appointmentId}

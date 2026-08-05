@@ -4,15 +4,20 @@ Pawsh is a multi-tenant grooming-salon operations MVP covering business setup, c
 
 ## Local development
 
-Prerequisites: Node.js 22.x or 24.x, npm 11, and PostgreSQL 17+. Node 24 is
+Prerequisites: Node.js 22.x or 24.x, npm 11, and PostgreSQL 17. Node 24 is
 the recommended local runtime and is pinned by `.node-version` and `.nvmrc`.
 
-1. Copy `.env.example` to `.env` and replace the session secret.
-2. Start PostgreSQL with `docker compose up -d postgres`, or provide another PostgreSQL database.
+1. Install native PostgreSQL 17 (preferred) and create the local role/database,
+   following [local database development](docs/development/local-database.md).
+2. Copy `.env.example` to `.env`, replace the local database password, and
+   replace the session secret.
 3. Run `npm install`.
-4. Run `npm run db:migrate`.
+4. Run `npm run db:health`, `npm run db:migrate`, and `npm run db:verify`.
 5. Run `npm run dev`.
 6. Open `http://127.0.0.1:3000`.
+
+Docker Desktop is not required. `docker compose up -d postgres` remains an
+optional PostgreSQL 17 parity profile on host port `55432`.
 
 Run `npm run validate` for lint, type checks, unit tests, and the production build. With `DATABASE_URL` set to an isolated test database, run `npm run test:db` for database invariants.
 
@@ -42,7 +47,7 @@ $env:NODE_ENV = "development"
 $env:DOCUMENT_STORAGE_ADAPTER = "filesystem"
 $env:DOCUMENT_STORAGE_PATH = ".pawsh-documents"
 $env:DOCUMENT_SCANNER_ADAPTER = "http"
-$env:DOCUMENT_SCANNER_ENDPOINT = "https://scanner.example/scan"
+$env:DOCUMENT_SCANNER_ENDPOINT = "http://127.0.0.1:4319/scan"
 $env:APP_ORIGIN = "http://127.0.0.1:3000"
 npm run db:migrate
 npm run dev
@@ -60,7 +65,7 @@ $env:DOCUMENT_STORAGE_ADAPTER = "memory"
 $env:DOCUMENT_SCANNER_ADAPTER = "deterministic"
 $env:PAWSH_E2E_MODE = "disposable"
 $env:APP_ORIGIN = "http://127.0.0.1:3000"
-$env:DATABASE_URL = "postgres://postgres:postgres@127.0.0.1:54322/postgres"
+$env:DATABASE_URL = "postgres://pawsh:pawsh-local-only@127.0.0.1:55432/pawsh?options=-c%20TimeZone%3DUTC"
 npm run db:migrate
 node scripts/run-playwright.mjs --project=chromium --grep "@smoke|@cross-browser"
 node scripts/run-playwright.mjs --project=chromium-security

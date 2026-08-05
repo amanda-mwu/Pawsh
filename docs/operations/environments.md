@@ -1,6 +1,10 @@
 # Environments
 
-Local development uses `.env` and an isolated PostgreSQL database. Staging and production require injected secrets and managed PostgreSQL; credentials must never be committed.
+Local development preferably uses native PostgreSQL 17 and `.env`; the optional
+Docker parity profile publishes PostgreSQL 17 on port `55432`. CI uses fresh
+PostgreSQL 17 service containers. Staging and production require injected
+secrets and managed PostgreSQL 17; credentials must never be committed. See
+[local database development](../development/local-database.md).
 
 Required configuration:
 
@@ -17,6 +21,11 @@ Required configuration:
 - optional paired `DOCUMENT_STORAGE_ACCESS_KEY_ID` / `DOCUMENT_STORAGE_SECRET_ACCESS_KEY`; workload credentials are preferred
 
 Production must terminate TLS, use a non-owner PostgreSQL application role so row policies apply, restrict database network access, and inject secrets through the deployment environment. Pawsh uses the SMTP adapter whenever `SMTP_HOST` is configured; development without SMTP uses a metadata-only logging adapter.
+
+`DATABASE_URL` is the only database-selection mechanism. Migration, runtime,
+test, and operational processes may receive different least-privilege credentials
+through that variable, but application code never branches on native, Docker,
+managed, operating-system, local, CI, staging, or production database topology.
 
 Changing `SESSION_SECRET` revokes session-cookie trust and prevents decryption of already queued password-reset messages. Drain or cancel those short-lived intents before rotating it.
 

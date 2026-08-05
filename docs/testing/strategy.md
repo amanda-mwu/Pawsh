@@ -32,6 +32,9 @@ Skipped database tests are not a pass. Validation records must state when the Po
 - Local runtime validation: with `DATABASE_URL` pointing to an isolated
   PostgreSQL 17 database, `npm run validate:runtime` applies migrations and runs
   the database/runtime suite.
+- Local database operations: `npm run db:health`, `db:migrate`, `db:verify`,
+  `db:seed`, and guarded `db:reset` work identically with preferred native
+  PostgreSQL 17 or the optional Docker parity profile.
 - CI parity: `npm run validate:ci` applies migrations, runs code validation, and
   reruns the database suite.
 - GUI smoke: `npm run test:smoke` runs the tagged Chromium suite;

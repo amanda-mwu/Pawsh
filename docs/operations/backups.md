@@ -22,3 +22,9 @@ Pet Care PDF bytes live outside PostgreSQL. Database backup and restore protects
 document metadata only. The object provider needs an independent versioning,
 retention, and recovery contract, followed by metadata/object reconciliation.
 Actual bucket recovery remains a staging gate.
+
+Local development data is disposable and is not part of the production backup
+contract. No production backup or production-derived dump is needed for local
+setup or automated tests. Native and Docker parity environments use migrations
+and synthetic seed data; CI restore rehearsal remains authoritative for the
+repository-level PostgreSQL backup contract.

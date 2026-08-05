@@ -24,6 +24,11 @@ successful `GET /health`, and only then opens the default browser. `NODE_ENV=tes
 remains reserved for deterministic automation and intentionally suppresses
 normal application logging.
 
+If startup does not reach `[READY]`, the final `[BOOT]` component identifies the
+unfinished Fastify plugin, storage/scanner construction, route registration, or
+worker registration step. See the local database guide's startup lifecycle for
+the complete expected sequence and safe troubleshooting behavior.
+
 Docker Desktop is not required. `docker compose up -d postgres` remains an
 optional PostgreSQL 17 parity profile on host port `55432`.
 Set `POSTGRES_PORT` before `docker compose up -d postgres` to select another

@@ -3,6 +3,11 @@ import type { Config } from "./config.js";
 
 export type StartupPhase = "BOOT" | "READY" | "STOP" | "ERROR";
 
+export interface StartupDiagnostics {
+  log(message: string, details?: Record<string, string | number>): void;
+  run(component: string, operation: string, task: () => PromiseLike<unknown> | unknown): Promise<void>;
+}
+
 export function lifecycleLoggingEnabled(environment: Config["NODE_ENV"]): boolean {
   return environment !== "test";
 }
@@ -34,4 +39,40 @@ export function startupFailureMessage(error: unknown): string {
     return "PostgreSQL connection failed";
   }
   return "Application initialization failed";
+}
+
+export function createStartupDiagnostics(startedAt: number, waitDiagnosticMs = 3_000): StartupDiagnostics {
+  return {
+    log(message, details = {}) {
+      writeLifecycleLog(true, "BOOT", message, details);
+    },
+    async run(component: string, operation: string, task: () => PromiseLike<unknown> | unknown): Promise<void> {
+      const operationStartedAt = performance.now();
+      writeLifecycleLog(true, "BOOT", `${operation} begin`, { component });
+      const diagnostic = setTimeout(() => {
+        writeLifecycleLog(true, "BOOT", `Still waiting for ${component}`, {
+          operation,
+          elapsedMs: Math.round(performance.now() - operationStartedAt)
+        });
+      }, waitDiagnosticMs);
+      diagnostic.unref();
+      try {
+        await task();
+        writeLifecycleLog(true, "BOOT", `${operation} complete`, {
+          component,
+          elapsedMs: Math.round(performance.now() - operationStartedAt)
+        });
+      } catch (error) {
+        writeLifecycleLog(true, "ERROR", "Startup component failed", {
+          component,
+          operation,
+          elapsedMs: Math.round(performance.now() - startedAt),
+          error: startupFailureMessage(error)
+        });
+        throw error;
+      } finally {
+        clearTimeout(diagnostic);
+      }
+    }
+  };
 }

@@ -76,6 +76,36 @@ POSIX runners. Windows CI verifies startup and port release because terminating
 a detached child process cannot faithfully synthesize an interactive console
 Ctrl+C; manual Windows Ctrl+C remains part of developer/runtime validation.
 
+### Startup lifecycle and troubleshooting
+
+Development startup emits this deterministic sequence before listening:
+
+1. Configuration loading and validation
+2. PostgreSQL readiness
+3. `createApp begin` and Fastify instance creation
+4. Individual Helmet, CORS, authentication-cookie, rate-limit, multipart, and
+   static-file plugin registrations
+5. Document-storage construction
+6. Document-scanner construction
+7. Authentication and API-route registration
+8. Background-worker registration
+9. `createApp complete`
+10. HTTP listener startup and `[READY] Pawsh listening`
+
+Every awaited plugin registration has paired `begin` and `complete` messages.
+After three seconds, an unfinished awaited operation emits `Still waiting for`
+with its component and elapsed time; this diagnostic does not cancel, retry, or
+otherwise alter initialization. A safe component failure reports the component,
+operation, and elapsed startup time without printing connection strings,
+credentials, tokens, or storage/scanner secrets, then rethrows to the server
+entry point.
+
+If startup appears paused, the final lifecycle line identifies the operation in
+progress. These detailed component diagnostics are enabled only for
+`NODE_ENV=development`; they do not change test determinism, `/health`, scanner
+availability policy, migration ownership, worker behavior, or production
+architecture.
+
 Open `http://127.0.0.1:3000`. `db:seed` creates synthetic `.example`/`.test`
 data with a fixed logical anchor. Generated UUIDs and password hashes may differ
 without changing the logical fixture. Override the local seed password through

@@ -51,7 +51,10 @@ try {
     timeoutMs: 20_000,
     output: () => `${stdout}\n${stderr}`
   });
-  for (const expected of ["[BOOT] Configuration loaded", "[BOOT] PostgreSQL ready", "[READY] Pawsh listening",
+  for (const expected of ["[BOOT] Configuration loaded", "[BOOT] PostgreSQL ready", "[BOOT] createApp begin",
+    "component=\"helmet\"", "[BOOT] Document storage ready", "[BOOT] Document scanner ready",
+    "[BOOT] Authentication and API routes registered", "[BOOT] Background workers registered",
+    "[BOOT] createApp complete", "[BOOT] Starting HTTP server", "[READY] Pawsh listening",
     `appOrigin="http://127.0.0.1:${port}"`, "boundAddress=", "startupMs="]) {
     if (!stdout.includes(expected)) throw new Error(`Missing startup lifecycle output: ${expected}\n${stdout}\n${stderr}`);
   }

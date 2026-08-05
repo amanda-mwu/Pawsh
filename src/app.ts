@@ -16,6 +16,7 @@ import { createDocumentStorage, type DocumentStorage } from "./storage/documents
 import { WallTimeError } from "./domain/time.js";
 import { DeterministicDocumentScanner, HttpDocumentScanner, type DocumentScanner } from "./security/document-scanner.js";
 import { documentScanQueueHealth, processDocumentScans } from "./documents/scan-worker.js";
+import type { StartupDiagnostics } from "./startup.js";
 
 export async function createApp(
   config: Config,
@@ -29,8 +30,12 @@ export async function createApp(
     documentHooks?: DocumentHooks;
     financialHooks?: FinancialHooks;
     documentScanner?: DocumentScanner;
+    startupDiagnostics?: StartupDiagnostics;
   } = {}
 ): Promise<FastifyInstance> {
+  const startup = options.startupDiagnostics;
+  startup?.log("createApp begin");
+  startup?.log("Creating Fastify instance");
   const app = Fastify({
     logger: config.NODE_ENV === "test" ? false : {
       level: config.NODE_ENV === "production" ? "info" : "debug",
@@ -41,17 +46,23 @@ export async function createApp(
     },
     genReqId: () => crypto.randomUUID()
   });
+  startup?.log("Fastify instance ready");
 
-  await app.register(helmet, { contentSecurityPolicy: false });
-  await app.register(cors, { origin: config.APP_ORIGIN, credentials: true });
-  await app.register(cookie, { secret: config.SESSION_SECRET });
-  await app.register(rateLimit, { max: config.NODE_ENV === "test" ? 10_000 : 120, timeWindow: "1 minute" });
-  await app.register(multipart, {
-    limits: { files: 1, fields: 12, parts: 13, fileSize: 10 * 1024 * 1024 }
-  });
+  await runStartupOperation(startup, "helmet", "Plugin registration", () =>
+    app.register(helmet, { contentSecurityPolicy: false }));
+  await runStartupOperation(startup, "cors", "Plugin registration", () =>
+    app.register(cors, { origin: config.APP_ORIGIN, credentials: true }));
+  await runStartupOperation(startup, "authentication cookie", "Plugin registration", () =>
+    app.register(cookie, { secret: config.SESSION_SECRET }));
+  await runStartupOperation(startup, "rate limiting", "Plugin registration", () =>
+    app.register(rateLimit, { max: config.NODE_ENV === "test" ? 10_000 : 120, timeWindow: "1 minute" }));
+  await runStartupOperation(startup, "multipart uploads", "Plugin registration", () =>
+    app.register(multipart, { limits: { files: 1, fields: 12, parts: 13, fileSize: 10 * 1024 * 1024 } }));
   if (options.serveStatic !== false) {
-    await app.register(staticFiles, { root: resolve("public"), prefix: "/" });
+    await runStartupOperation(startup, "static files", "Plugin registration", () =>
+      app.register(staticFiles, { root: resolve("public"), prefix: "/" }));
   }
+  startup?.log("Plugins registered");
   app.addHook("onRequest", async (request, reply) => {
     if (!["POST","PUT","PATCH","DELETE"].includes(request.method)) return;
     const origin = request.headers.origin;
@@ -69,15 +80,22 @@ export async function createApp(
     return { status: "ok" };
   });
 
+  startup?.log("Creating document storage");
   const documentStorage = options.documentStorage ?? createDocumentStorage(config);
+  startup?.log("Document storage ready");
+  startup?.log("Creating document scanner");
   const documentScanner = options.documentScanner ?? (config.DOCUMENT_SCANNER_ADAPTER === "http"
     ? new HttpDocumentScanner(config.DOCUMENT_SCANNER_ENDPOINT!,config.DOCUMENT_SCANNER_TOKEN)
     : new DeterministicDocumentScanner());
+  startup?.log("Document scanner ready");
+  startup?.log("Registering authentication and API routes");
   registerRoutes(app, db, config, documentStorage,
     options.schedulingHooks, options.lifecycleHooks, options.financialHooks,
     config.NODE_ENV === "test" ? async()=>{ await processDocumentScans(db,documentStorage,documentScanner,10,options.documentHooks); } : undefined);
+  startup?.log("Authentication and API routes registered");
   let worker: NodeJS.Timeout | undefined;
   let documentWorker: NodeJS.Timeout | undefined;
+  startup?.log("Registering background workers");
   if (options.runWorker !== false) {
     const emailProvider = config.SMTP_HOST ? new SmtpEmailProvider(config) : new LogEmailProvider();
     worker = setInterval(async () => {
@@ -102,6 +120,7 @@ export async function createApp(
     },2_000);
     documentWorker.unref();
   }
+  startup?.log("Background workers registered");
 
   app.setErrorHandler<Error>((error, request, reply) => {
     request.log.error({
@@ -149,5 +168,15 @@ export async function createApp(
     if (worker) clearInterval(worker);
     if (documentWorker) clearInterval(documentWorker);
   });
+  startup?.log("createApp complete");
   return app;
+}
+
+function runStartupOperation(
+  diagnostics: StartupDiagnostics | undefined,
+  component: string,
+  operation: string,
+  task: () => PromiseLike<unknown> | unknown
+): Promise<void> | PromiseLike<unknown> | unknown {
+  return diagnostics ? diagnostics.run(component, operation, task) : task();
 }

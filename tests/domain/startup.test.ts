@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { browserLaunchCommand } from "../../src/default-browser.js";
 import {
   formatBoundAddress,
+  createStartupDiagnostics,
   lifecycleLoggingEnabled,
   startupFailureMessage,
   writeLifecycleLog
@@ -39,5 +40,30 @@ describe("startup developer experience", () => {
     expect(startupFailureMessage(Object.assign(new Error("invalid"), { name: "ZodError" }))).toBe(
       "Configuration validation failed"
     );
+  });
+
+  it("logs paired diagnostics around awaited startup operations", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const diagnostics = createStartupDiagnostics(performance.now(), 10_000);
+    await expect(diagnostics.run("fixture plugin", "Plugin registration", async () => undefined)).resolves.toBeUndefined();
+    const output = write.mock.calls.map(([value]) => String(value)).join("");
+    expect(output).toContain('[BOOT] Plugin registration begin component="fixture plugin"');
+    expect(output).toContain('[BOOT] Plugin registration complete component="fixture plugin"');
+    write.mockRestore();
+  });
+
+  it("identifies and rethrows component failures without logging raw secrets", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const diagnostics = createStartupDiagnostics(performance.now(), 10_000);
+    const failure = new Error("scanner-token=do-not-log");
+    await expect(diagnostics.run("scanner plugin", "Plugin registration", async () => {
+      throw failure;
+    })).rejects.toBe(failure);
+    const output = write.mock.calls.map(([value]) => String(value)).join("");
+    expect(output).toContain('component="scanner plugin"');
+    expect(output).toContain('operation="Plugin registration"');
+    expect(output).toContain('error="Application initialization failed"');
+    expect(output).not.toContain("do-not-log");
+    write.mockRestore();
   });
 });

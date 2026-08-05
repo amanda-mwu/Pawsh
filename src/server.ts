@@ -2,7 +2,13 @@ import type { FastifyInstance } from "fastify";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { createDatabase, type Database } from "./db/client.js";
-import { formatBoundAddress, lifecycleLoggingEnabled, startupFailureMessage, writeLifecycleLog } from "./startup.js";
+import {
+  createStartupDiagnostics,
+  formatBoundAddress,
+  lifecycleLoggingEnabled,
+  startupFailureMessage,
+  writeLifecycleLog
+} from "./startup.js";
 
 async function main(): Promise<void> {
   const startedAt = performance.now();
@@ -29,7 +35,10 @@ async function main(): Promise<void> {
     writeLifecycleLog(lifecycleLogs, "BOOT", "PostgreSQL ready");
 
     writeLifecycleLog(lifecycleLogs, "BOOT", "Registering application services");
-    app = await createApp(config, db);
+    const startupOptions = config.NODE_ENV === "development"
+      ? { startupDiagnostics: createStartupDiagnostics(startedAt) }
+      : {};
+    app = await createApp(config, db, startupOptions);
     app.addHook("onClose", async () => {
       await db!.end();
     });

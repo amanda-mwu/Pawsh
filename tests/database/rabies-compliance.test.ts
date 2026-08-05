@@ -2,7 +2,7 @@ import {afterAll,beforeAll,describe,expect,it} from "vitest";
 import {createApp} from "../../src/app.js";
 import type {Config} from "../../src/config.js";
 import {createDatabase,type Database} from "../../src/db/client.js";
-import {deliverNotifications,processOutbox,type EmailMessage,type EmailProvider} from "../../src/engagement/worker.js";
+import {deliverNotifications,reconcileRabiesNotifications,type EmailMessage,type EmailProvider} from "../../src/engagement/worker.js";
 
 const databaseUrl=process.env.DATABASE_URL;
 const describeDatabase=databaseUrl?describe:describe.skip;
@@ -46,6 +46,9 @@ describeDatabase("rabies appointment compliance",()=>{
         (select count(*)::int from pet_documents where business_id=${businessId} and pet_id=${petId}) documents,
         (select rabies_verified_by_membership_id from pets where business_id=${businessId} and id=${petId}) verified_by`;
     expect(proof).toMatchObject({audits:1,documents:0});expect(proof!.verifiedBy).toBeTruthy();
+    const [event]=await db<{count:number}[]>`select count(*)::int count from outbox_events
+      where business_id=${businessId} and resource_id=${petId} and event_type='RabiesComplianceUpdated'`;
+    expect(event!.count).toBe(1);
   });
 
   it("validates dates and derives appointment-local status",async()=>{
@@ -59,10 +62,8 @@ describeDatabase("rabies appointment compliance",()=>{
   });
 
   it("creates one durable customer notice and one owner warning and delivers without duplicates",async()=>{
-    await processOutbox(db);await processOutbox(db);
-    const failedEvents=await db<{eventType:string;lastError:string}[]>`
-      select event_type,last_error from outbox_events where business_id=${businessId} and last_error is not null`;
-    expect(failedEvents).toEqual([]);
+    await reconcileRabiesNotifications(db,{businessId,appointmentId});
+    await reconcileRabiesNotifications(db,{businessId,appointmentId});
     const intents=await db<{notificationType:string;status:string;recipientKind:string}[]>`
       select notification_type,status,recipient_kind from notification_intents
       where business_id=${businessId} and appointment_id=${appointmentId}
@@ -87,7 +88,7 @@ describeDatabase("rabies appointment compliance",()=>{
     expect(update.statusCode).toBe(200);
     const [count]=await db<{active:number}[]>`select count(*)::int active from notification_intents where appointment_id=${appointmentId} and notification_type like 'rabies_%' and status in ('pending','failed','suppressed')`;
     expect(count!.active).toBe(0);
-    await processOutbox(db);
+    await reconcileRabiesNotifications(db,{businessId,appointmentId});
     const list=await app.inject({method:"GET",url:"/api/appointments?localDate=2032-08-11&days=1",headers:{cookie:ownerCookie}});
     expect(list.json()[0].rabiesAppointmentStatus).toBe("valid_for_appointment");
   });

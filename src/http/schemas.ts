@@ -78,7 +78,7 @@ const petBaseSchema = z.object({
   vaccinationExpiresOn: z.string().date().nullish(),
   rabiesVaccinationDate: z.string().date().nullish(),
   rabiesCertificateReference: z.string().trim().max(200).nullish(),
-  rabiesVerificationStatus: z.enum(rabiesVerificationStatuses).default("not_provided"),
+  rabiesVerificationStatus: z.enum(rabiesVerificationStatuses).optional(),
   rabiesVerificationMethod: z.enum(rabiesVerificationMethods).nullish(),
   rabiesVerificationDate: z.string().date().nullish(),
   photoPermission: z.boolean().nullish()

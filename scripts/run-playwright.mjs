@@ -1,6 +1,7 @@
-/* global URL, fetch, setTimeout */
+/* global URL, setTimeout */
 import { spawn } from "node:child_process";
 import process from "node:process";
+import { waitForHealth } from "./health-readiness.mjs";
 
 const configuredBaseURL = process.env.PAWSH_E2E_BASE_URL;
 const baseURL = configuredBaseURL ?? "http://127.0.0.1:3000";
@@ -12,23 +13,6 @@ const environment = {
 
 function run(command, args) {
   return spawn(command, args, { env: environment, stdio: "inherit" });
-}
-
-async function waitForServer(url, child) {
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) {
-      throw new Error(`Pawsh test server exited before becoming ready (${child.exitCode})`);
-    }
-    try {
-      const response = await fetch(url);
-      if (response.ok) return;
-    } catch {
-      // The server is still starting.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error(`Timed out waiting for ${url}`);
 }
 
 async function stop(child) {
@@ -45,7 +29,7 @@ let server;
 try {
   if (!configuredBaseURL) {
     server = run(process.execPath, ["--import", "./scripts/load-env.mjs", "--import", "tsx", "src/server.ts"]);
-    await waitForServer(`${baseURL}/health`, server);
+    await waitForHealth(`${baseURL}/health`, server);
   }
   const playwright = run(process.execPath, ["node_modules/@playwright/test/cli.js", "test", ...process.argv.slice(2)]);
   process.exitCode = await new Promise((resolve) =>

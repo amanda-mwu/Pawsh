@@ -1,10 +1,11 @@
-/* global console, fetch, setTimeout */
+/* global console, setTimeout */
 import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
+import { waitForHealth } from "./health-readiness.mjs";
 
 async function availablePort() {
   const server = createServer();
@@ -13,16 +14,6 @@ async function availablePort() {
   const port = typeof address === "object" && address ? address.port : 0;
   await new Promise((resolve) => server.close(resolve));
   return port;
-}
-
-async function waitForHealth(url, child, output) {
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`Server exited before readiness (${child.exitCode})\n${output()}`);
-    try { if ((await fetch(url)).ok) return; } catch { /* starting */ }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error(`Server readiness timed out\n${output()}`);
 }
 
 async function waitForExit(child) {
@@ -56,9 +47,19 @@ child.stderr.setEncoding("utf8");
 child.stdout.on("data", (value) => { stdout += value; });
 child.stderr.on("data", (value) => { stderr += value; });
 try {
-  await waitForHealth(`http://127.0.0.1:${port}/health`, child, () => `${stdout}\n${stderr}`);
+  await waitForHealth(`http://127.0.0.1:${port}/health`, child, {
+    timeoutMs: 20_000,
+    output: () => `${stdout}\n${stderr}`
+  });
+  for (const expected of ["[BOOT] Configuration loaded", "[BOOT] PostgreSQL ready", "[READY] Pawsh listening",
+    `appOrigin="http://127.0.0.1:${port}"`, "boundAddress=", "startupMs="]) {
+    if (!stdout.includes(expected)) throw new Error(`Missing startup lifecycle output: ${expected}\n${stdout}\n${stderr}`);
+  }
   child.kill(process.platform === "win32" ? undefined : "SIGTERM");
   await waitForExit(child);
+  for (const expected of ["[STOP] Stopping HTTP server and workers", "[STOP] Database pool closed", "[STOP] Shutdown complete"]) {
+    if (!stdout.includes(expected)) throw new Error(`Missing shutdown lifecycle output: ${expected}\n${stdout}\n${stderr}`);
+  }
   const verification = createServer();
   await new Promise((resolve, reject) => verification.once("error", reject).listen(port, "127.0.0.1", resolve));
   await new Promise((resolve) => verification.close(resolve));

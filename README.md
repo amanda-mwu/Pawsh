@@ -16,8 +16,19 @@ the recommended local runtime and is pinned by `.node-version` and `.nvmrc`.
 5. Run `npm run dev`.
 6. Open `http://127.0.0.1:3000`.
 
+`npm run dev` is the interactive development runtime and should use
+`NODE_ENV=development`. It reports configuration, PostgreSQL readiness, service
+registration, the bound listener, `APP_ORIGIN`, startup duration, and graceful
+shutdown. `npm run dev:browser` starts the same development server, waits for a
+successful `GET /health`, and only then opens the default browser. `NODE_ENV=test`
+remains reserved for deterministic automation and intentionally suppresses
+normal application logging.
+
 Docker Desktop is not required. `docker compose up -d postgres` remains an
 optional PostgreSQL 17 parity profile on host port `55432`.
+Set `POSTGRES_PORT` before `docker compose up -d postgres` to select another
+loopback host port. The service retains its named volume and uses
+`restart: unless-stopped` so it returns after Docker Desktop restarts.
 
 Run `npm run validate` for lint, type checks, unit tests, and the production build. With `DATABASE_URL` set to an isolated test database, run `npm run test:db` for database invariants.
 

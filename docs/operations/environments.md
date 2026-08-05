@@ -27,6 +27,12 @@ test, and operational processes may receive different least-privilege credential
 through that variable, but application code never branches on native, Docker,
 managed, operating-system, local, CI, staging, or production database topology.
 
+Interactive local startup uses `NODE_ENV=development`; `NODE_ENV=test` is
+reserved for deterministic automation and intentionally suppresses normal
+Fastify and lifecycle output. `/health` remains the database-backed readiness
+probe in every environment. Scanner availability is not a readiness condition:
+document processing fails closed and reports failures asynchronously.
+
 Changing `SESSION_SECRET` revokes session-cookie trust and prevents decryption of already queued password-reset messages. Drain or cancel those short-lived intents before rotating it.
 
 Development may explicitly select `filesystem` with `DOCUMENT_STORAGE_PATH`.

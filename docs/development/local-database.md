@@ -58,6 +58,19 @@ npm run db:seed
 npm run dev
 ```
 
+Use `NODE_ENV=development` for this interactive workflow. Startup reports each
+boot stage, PostgreSQL readiness, the public `APP_ORIGIN`, the separate bound
+listener address, and elapsed startup time. A delayed database connection emits
+`Still waiting for PostgreSQL` without terminating startup. `GET /health`
+remains the authoritative database-backed readiness probe.
+
+Run `npm run dev:browser` to start the development server and open the system
+browser only after `/health` returns HTTP 200. If configuration or PostgreSQL
+startup fails, the browser is not opened. Press Ctrl+C to initiate logged,
+graceful HTTP/worker/database shutdown. Use `NODE_ENV=test` only for automated
+tests; it intentionally suppresses normal runtime logs and selects deterministic
+test behavior.
+
 Open `http://127.0.0.1:3000`. `db:seed` creates synthetic `.example`/`.test`
 data with a fixed logical anchor. Generated UUIDs and password hashes may differ
 without changing the logical fixture. Override the local seed password through
@@ -90,7 +103,10 @@ DATABASE_URL=postgres://pawsh:pawsh-local-only@127.0.0.1:55432/pawsh?options=-c%
 ```
 
 Then run the same health, migration, verification, seed, runtime, and browser
-commands. `docker compose down` preserves the named database volume;
+commands. Override the host port with `POSTGRES_PORT` and update `DATABASE_URL`
+to match. The container uses `restart: unless-stopped`; Docker Desktop restart
+therefore restarts PostgreSQL while preserving the named volume. A deliberate
+`docker compose down` preserves the named database volume;
 `docker compose down -v` intentionally destroys it.
 
 Parity means the application contract and test results agree, not that native

@@ -10,6 +10,7 @@
   "packageManager": "npm@11.6.0",
   "scripts": {
     "dev": "node --import ./scripts/load-env.mjs --import tsx --watch src/server.ts",
+    "dev:browser": "node --import ./scripts/load-env.mjs --import tsx scripts/dev-browser.mjs",
     "build": "tsc -p tsconfig.build.json",
     "start": "node --import ./scripts/load-env.mjs dist/server.js",
     "check:runtime": "node scripts/check-runtime.mjs",

@@ -74,6 +74,11 @@ jobs:
       - name: Confirm npm ci leaves the lockfile unchanged
         run: git diff --exit-code -- package-lock.json
       - run: npm run validate:runtime
+      - name: Recheck rabies notification intent isolation
+        shell: bash
+        run: |
+          npx vitest run tests/database/rabies-compliance.test.ts
+          npx vitest run tests/database/rabies-compliance.test.ts
       - name: Validate test-only memory storage safeguard
         shell: bash
         run: |

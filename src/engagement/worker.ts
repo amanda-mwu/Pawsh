@@ -6,6 +6,11 @@ import { createHash } from "node:crypto";
 const RABIES_CUSTOMER="rabies_expiration_customer";
 const RABIES_STAFF="rabies_expiration_staff";
 
+function dateOnly(value:string|Date|null):string|null {
+  if(value===null)return null;
+  return value instanceof Date ? value.toISOString().slice(0,10) : String(value).slice(0,10);
+}
+
 function materialKey(parts: readonly (string|null)[]): string {
   return `rabies:${createHash("sha256").update(JSON.stringify(parts)).digest("hex")}`;
 }
@@ -15,9 +20,9 @@ export async function reconcileRabiesNotifications(
   input: {businessId:string;appointmentId?:string;petId?:string}
 ): Promise<number> {
   const appointments=await db<{
-    id:string;customerId:string;petId:string;employeeId:string;localDate:string;
-    currentLocalDate:string;
-    expirationDate:string|null;verificationStatus:string;email:string|null;emailAllowed:boolean;
+    id:string;customerId:string;petId:string;employeeId:string;localDate:string|Date;
+    currentLocalDate:string|Date;
+    expirationDate:string|Date|null;verificationStatus:string;email:string|null;emailAllowed:boolean;
   }[]>`
     select a.id,a.customer_id,a.pet_id,a.employee_id,a.scheduled_local_start::date::text as local_date,
       (now() at time zone l.timezone)::date::text as current_local_date,
@@ -43,10 +48,13 @@ export async function reconcileRabiesNotifications(
     order by m.id,e.id limit 100`;
   let created=0;
   for(const appointment of appointments) {
+    const localDate=dateOnly(appointment.localDate)!;
+    const currentLocalDate=dateOnly(appointment.currentLocalDate)!;
+    const expirationDate=dateOnly(appointment.expirationDate);
     const invalid=appointment.verificationStatus === "staff_verified"
-      && appointment.expirationDate !== null
-      && appointment.expirationDate >= appointment.currentLocalDate
-      && appointment.expirationDate < appointment.localDate;
+      && expirationDate !== null
+      && expirationDate >= currentLocalDate
+      && expirationDate < localDate;
     if(!invalid) {
       await db`update notification_intents set status='cancelled',resolved_at=now(),updated_at=now()
         where business_id=${input.businessId} and appointment_id=${appointment.id}
@@ -55,7 +63,7 @@ export async function reconcileRabiesNotifications(
       continue;
     }
     const customerKey=materialKey([input.businessId,appointment.id,appointment.customerId,
-      RABIES_CUSTOMER,appointment.localDate,appointment.expirationDate,"email",appointment.email]);
+      RABIES_CUSTOMER,localDate,expirationDate,"email",appointment.email]);
     await db`update notification_intents set status='cancelled',resolved_at=now(),updated_at=now()
       where business_id=${input.businessId} and appointment_id=${appointment.id}
         and notification_type=${RABIES_CUSTOMER} and material_key<>${customerKey}
@@ -75,7 +83,7 @@ export async function reconcileRabiesNotifications(
       .map((recipient)=>[recipient.membershipId,recipient])).values()].slice(0,25);
     for(const recipient of recipients) {
       const staffKey=materialKey([input.businessId,appointment.id,recipient.membershipId,
-        RABIES_STAFF,appointment.localDate,appointment.expirationDate,"email"]);
+        RABIES_STAFF,localDate,expirationDate,"email"]);
       await db`update notification_intents set status='cancelled',resolved_at=now(),updated_at=now()
         where business_id=${input.businessId} and appointment_id=${appointment.id}
           and notification_type=${RABIES_STAFF} and recipient_membership_id=${recipient.membershipId}

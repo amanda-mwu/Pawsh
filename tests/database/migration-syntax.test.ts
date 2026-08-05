@@ -41,6 +41,10 @@ describe("database migrations", () => {
     expect(malwareProtection).toContain("create table pet_document_scan_attempts");
     expect(malwareProtection).toContain("pet_document_scan_attempts_immutable");
     expect(malwareProtection).toContain("state in ('pending','pending_scan','rejected','current','superseded')");
+    const rabiesCompliance = await readFile("migrations/0010_rabies_appointment_compliance.sql", "utf8");
+    expect(rabiesCompliance).toContain("pet_rabies_verification_consistency");
+    expect(rabiesCompliance).toContain("unique_notification_material_recipient");
+    expect(rabiesCompliance).toContain("0010_rabies_appointment_compliance");
     expect(malwareProtection).toContain("create policy tenant_isolation on pet_document_scan_attempts");
   });
 });

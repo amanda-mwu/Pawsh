@@ -1,0 +1,33 @@
+import {expect,login,test} from "./fixtures/tenant.js";
+
+function addDays(dateOnly:string,days:number):string {
+  const date=new Date(`${dateOnly}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate()+days);
+  return date.toISOString().slice(0,10);
+}
+
+test("@regression-lifecycle enters rabies data manually and warns for the appointment date",async({page,tenant})=>{
+  const expiration=addDays(tenant.anchor,-1);
+  await login(page,tenant.ownerEmail);
+  await page.getByTestId("nav-customers").click();
+  await page.locator(`[data-pet-id="${tenant.petId}"]`).getByRole("button",{name:"Care"}).click();
+  await expect(page.getByRole("group",{name:"Rabies Information"})).toBeVisible();
+  await page.getByTestId("field-vaccinationExpiresOn").fill(expiration);
+  await page.getByTestId("field-rabiesVerificationStatus").selectOption("staff_verified");
+  await page.getByTestId("field-rabiesVerificationMethod").selectOption("veterinarian_confirmation");
+  await page.getByTestId("modal-submit").click();
+  await expect(page.getByTestId("modal")).toBeHidden();
+
+  await page.getByTestId("nav-calendar").click();
+  await page.getByTestId("calendar-add-appointment").click();
+  await page.getByTestId("field-customerId").selectOption(tenant.customerId);
+  await page.getByTestId("field-petId").selectOption(tenant.petId);
+  await page.getByTestId("field-employeeId").selectOption(tenant.employeeId);
+  await page.getByLabel("Full Groom").check();
+  await page.getByTestId("field-startAt").fill(`${tenant.anchor}T09:00`);
+  await expect(page.getByTestId("booking-rabies-status")).toContainText("Expires before appointment");
+  await page.getByTestId("modal-submit").click();
+  await expect(page.getByTestId("modal")).toBeHidden();
+  await expect(page.getByTestId("rabies-appointment-status")).toContainText("Expires before appointment");
+  await expect(page.getByTestId("rabies-appointment-status")).toContainText("Update required");
+});

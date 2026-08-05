@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { passwordSchema } from "../security/passwords.js";
+import { rabiesVerificationMethods, rabiesVerificationStatuses } from "../domain/rabies.js";
 
 export const idParams = z.object({ id: z.string().uuid() });
 
@@ -57,7 +58,7 @@ export const customerSchema = z.object({
   notes: z.string().max(5000).nullish()
 });
 
-export const petSchema = z.object({
+const petBaseSchema = z.object({
   customerId: z.string().uuid(),
   name: z.string().trim().min(1).max(80),
   species: z.string().trim().min(1).max(60).default("dog"),
@@ -75,10 +76,37 @@ export const petSchema = z.object({
   veterinarian: z.string().max(500).nullish(),
   vaccinationNotes: z.string().max(2000).nullish(),
   vaccinationExpiresOn: z.string().date().nullish(),
+  rabiesVaccinationDate: z.string().date().nullish(),
+  rabiesCertificateReference: z.string().trim().max(200).nullish(),
+  rabiesVerificationStatus: z.enum(rabiesVerificationStatuses).default("not_provided"),
+  rabiesVerificationMethod: z.enum(rabiesVerificationMethods).nullish(),
+  rabiesVerificationDate: z.string().date().nullish(),
   photoPermission: z.boolean().nullish()
 });
 
-export const petProfileUpdateSchema = petSchema.omit({
+function validateRabiesDates(value: {
+  rabiesVaccinationDate?:string|null|undefined;vaccinationExpiresOn?:string|null|undefined;
+  rabiesVerificationStatus?:"not_provided"|"unverified"|"staff_verified"|undefined;
+  rabiesVerificationMethod?:(typeof rabiesVerificationMethods)[number]|null|undefined;
+}, context:z.RefinementCtx) {
+  if (value.rabiesVaccinationDate && value.vaccinationExpiresOn
+      && value.vaccinationExpiresOn < value.rabiesVaccinationDate) {
+    context.addIssue({code:"custom",path:["vaccinationExpiresOn"],message:"Expiration cannot precede vaccination"});
+  }
+  if (value.rabiesVerificationStatus === "staff_verified" && !value.vaccinationExpiresOn) {
+    context.addIssue({code:"custom",path:["vaccinationExpiresOn"],message:"Expiration is required for verification"});
+  }
+  if (value.rabiesVerificationStatus === "staff_verified" && !value.rabiesVerificationMethod) {
+    context.addIssue({code:"custom",path:["rabiesVerificationMethod"],message:"Verification method is required"});
+  }
+  if (value.rabiesVerificationStatus !== "staff_verified" && value.rabiesVerificationMethod) {
+    context.addIssue({code:"custom",path:["rabiesVerificationMethod"],message:"Method is only valid for staff verification"});
+  }
+}
+
+export const petSchema = petBaseSchema.superRefine(validateRabiesDates);
+
+export const petProfileUpdateSchema = petBaseSchema.omit({
   safetyAlerts: true,
   medicalNotes: true,
   behaviorNotes: true,
@@ -90,17 +118,22 @@ export const petProfileUpdateSchema = petSchema.omit({
   version: z.number().int().positive()
 });
 
-export const petCareUpdateSchema = petSchema.pick({
+export const petCareUpdateSchema = petBaseSchema.pick({
   safetyAlerts: true,
   medicalNotes: true,
   behaviorNotes: true,
   emergencyContact: true,
   veterinarian: true,
   vaccinationNotes: true,
-  vaccinationExpiresOn: true
+  vaccinationExpiresOn: true,
+  rabiesVaccinationDate: true,
+  rabiesCertificateReference: true,
+  rabiesVerificationStatus: true,
+  rabiesVerificationMethod: true,
+  rabiesVerificationDate: true
 }).partial().extend({
   version: z.number().int().positive()
-}).refine(
+}).strict().superRefine(validateRabiesDates).refine(
   (value) => Object.keys(value).some((key) => key !== "version"),
   { message: "At least one protected safety field is required" }
 );

@@ -1,6 +1,97 @@
 import type { Database } from "../db/client.js";
 import nodemailer from "nodemailer";
 import type { Config } from "../config.js";
+import { createHash } from "node:crypto";
+
+const RABIES_CUSTOMER="rabies_expiration_customer";
+const RABIES_STAFF="rabies_expiration_staff";
+
+function materialKey(parts: readonly (string|null)[]): string {
+  return `rabies:${createHash("sha256").update(JSON.stringify(parts)).digest("hex")}`;
+}
+
+export async function reconcileRabiesNotifications(
+  db: Database,
+  input: {businessId:string;appointmentId?:string;petId?:string}
+): Promise<number> {
+  const appointments=await db<{
+    id:string;customerId:string;petId:string;employeeId:string;localDate:string;
+    currentLocalDate:string;
+    expirationDate:string|null;verificationStatus:string;email:string|null;emailAllowed:boolean;
+  }[]>`
+    select a.id,a.customer_id,a.pet_id,a.employee_id,a.scheduled_local_start::date::text as local_date,
+      (now() at time zone l.timezone)::date::text as current_local_date,
+      p.vaccination_expires_on::text as expiration_date,p.rabies_verification_status,
+      c.email,c.email_allowed
+    from appointments a
+    join pets p on p.business_id=a.business_id and p.id=a.pet_id
+    join customers c on c.business_id=a.business_id and c.id=a.customer_id
+    join locations l on l.business_id=a.business_id and l.id=a.location_id
+    where a.business_id=${input.businessId} and a.status='scheduled'
+      and (${input.appointmentId??null}::uuid is null or a.id=${input.appointmentId??null}::uuid)
+      and (${input.petId??null}::uuid is null or a.pet_id=${input.petId??null}::uuid)
+      and a.start_at>now()
+    order by a.start_at,a.id limit 200
+  `;
+  const availableStaff=await db<{membershipId:string;email:string;employeeId:string|null;defaultRecipient:boolean}[]>`
+    select distinct m.id as membership_id,u.email,e.id as employee_id,
+      (m.is_owner or 'settings.manage'=any(m.permissions)) as default_recipient
+    from business_memberships m join users u on u.id=m.user_id
+    left join employees e on e.business_id=m.business_id and e.membership_id=m.id and e.active
+    where m.business_id=${input.businessId} and m.status='active'
+      and (m.is_owner or 'settings.manage'=any(m.permissions) or e.id is not null)
+    order by m.id,e.id limit 100`;
+  let created=0;
+  for(const appointment of appointments) {
+    const invalid=appointment.verificationStatus === "staff_verified"
+      && appointment.expirationDate !== null
+      && appointment.expirationDate >= appointment.currentLocalDate
+      && appointment.expirationDate < appointment.localDate;
+    if(!invalid) {
+      await db`update notification_intents set status='cancelled',resolved_at=now(),updated_at=now()
+        where business_id=${input.businessId} and appointment_id=${appointment.id}
+          and notification_type in (${RABIES_CUSTOMER},${RABIES_STAFF})
+          and status in ('pending','failed','suppressed')`;
+      continue;
+    }
+    const customerKey=materialKey([input.businessId,appointment.id,appointment.customerId,
+      RABIES_CUSTOMER,appointment.localDate,appointment.expirationDate,"email",appointment.email]);
+    await db`update notification_intents set status='cancelled',resolved_at=now(),updated_at=now()
+      where business_id=${input.businessId} and appointment_id=${appointment.id}
+        and notification_type=${RABIES_CUSTOMER} and material_key<>${customerKey}
+        and status in ('pending','failed','suppressed')`;
+    const customerStatus=appointment.email && appointment.emailAllowed ? "pending" : "suppressed";
+    const customerRows=await db`
+      insert into notification_intents
+        (business_id,appointment_id,customer_id,notification_type,scheduled_occurrence,channel,
+         destination,status,recipient_kind,material_key)
+      values (${input.businessId},${appointment.id},${appointment.customerId},${RABIES_CUSTOMER},now(),'email',
+        ${customerStatus === "pending" ? appointment.email : null},${customerStatus},'customer',${customerKey})
+      on conflict do nothing returning id`;
+    created+=customerRows.length;
+
+    const recipients=[...new Map(availableStaff
+      .filter((recipient)=>recipient.defaultRecipient || recipient.employeeId===appointment.employeeId)
+      .map((recipient)=>[recipient.membershipId,recipient])).values()].slice(0,25);
+    for(const recipient of recipients) {
+      const staffKey=materialKey([input.businessId,appointment.id,recipient.membershipId,
+        RABIES_STAFF,appointment.localDate,appointment.expirationDate,"email"]);
+      await db`update notification_intents set status='cancelled',resolved_at=now(),updated_at=now()
+        where business_id=${input.businessId} and appointment_id=${appointment.id}
+          and notification_type=${RABIES_STAFF} and recipient_membership_id=${recipient.membershipId}
+          and material_key<>${staffKey} and status in ('pending','failed')`;
+      const staffRows=await db`
+        insert into notification_intents
+          (business_id,appointment_id,customer_id,notification_type,scheduled_occurrence,channel,
+           destination,status,recipient_kind,recipient_membership_id,material_key)
+        values (${input.businessId},${appointment.id},${appointment.customerId},${RABIES_STAFF},now(),'email',
+          ${recipient.email},'pending','staff',${recipient.membershipId},${staffKey})
+        on conflict do nothing returning id`;
+      created+=staffRows.length;
+    }
+  }
+  return created;
+}
 
 export interface EmailMessage {
   idempotencyKey: string;
@@ -124,6 +215,11 @@ export async function processOutbox(db: Database): Promise<number> {
           }
         }
       }
+      if(["AppointmentCreated","AppointmentUpdated"].includes(event.eventType) && event.resourceId) {
+        await reconcileRabiesNotifications(db,{businessId:event.businessId,appointmentId:event.resourceId});
+      } else if(event.eventType === "RabiesComplianceUpdated" && event.resourceId) {
+        await reconcileRabiesNotifications(db,{businessId:event.businessId,petId:event.resourceId});
+      }
       await db`update outbox_events set processed_at=now(),last_error=null where id=${event.id}`;
     } catch (error) {
       await db`
@@ -144,7 +240,7 @@ export async function deliverNotifications(
   const intents = await db<{
     id: string;
     businessId: string;
-    destination: string;
+    destination: string | null;
     notificationType: string;
     attempts: number;
     encryptedBody: string | null;
@@ -152,6 +248,12 @@ export async function deliverNotifications(
     timezone: string | null;
     businessName: string | null;
     petName: string | null;
+    customerName: string | null;
+    expirationDate: string | null;
+    verificationStatus: string | null;
+    businessPhone: string | null;
+    businessEmail: string | null;
+    customerNotificationStatus: string | null;
   }[]>`
     with claim as (
       select id from notification_intents
@@ -170,7 +272,20 @@ export async function deliverNotifications(
       (select appointment.start_at from appointments appointment where appointment.id=intent.appointment_id) as start_at,
       (select appointment.scheduling_timezone from appointments appointment where appointment.id=intent.appointment_id) as timezone,
       (select business.name from businesses business where business.id=intent.business_id) as business_name,
-      (select pet.name from appointments appointment join pets pet on pet.id=appointment.pet_id where appointment.id=intent.appointment_id) as pet_name
+      (select pet.name from appointments appointment join pets pet on pet.id=appointment.pet_id where appointment.id=intent.appointment_id) as pet_name,
+      (select concat_ws(' ',customer.first_name,customer.last_name) from appointments appointment
+        join customers customer on customer.id=appointment.customer_id where appointment.id=intent.appointment_id) as customer_name,
+      (select pet.vaccination_expires_on::text from appointments appointment
+        join pets pet on pet.id=appointment.pet_id where appointment.id=intent.appointment_id) as expiration_date,
+      (select pet.rabies_verification_status from appointments appointment
+        join pets pet on pet.id=appointment.pet_id where appointment.id=intent.appointment_id) as verification_status,
+      (select business.phone from businesses business where business.id=intent.business_id) as business_phone,
+      (select business.email from businesses business where business.id=intent.business_id) as business_email,
+      (select customer_intent.status from notification_intents customer_intent
+        where customer_intent.business_id=intent.business_id
+          and customer_intent.appointment_id=intent.appointment_id
+          and customer_intent.notification_type='rabies_expiration_customer'
+        order by customer_intent.created_at desc limit 1) as customer_notification_status
   `;
   for (const intent of intents) {
     const attempt = intent.attempts;
@@ -180,14 +295,23 @@ export async function deliverNotifications(
           timeZone: intent.timezone, dateStyle: "full", timeStyle: "short"
         }).format(intent.startAt)
         : null;
-      const body = intent.encryptedBody
-        ? decryptBody?.(intent.encryptedBody)
-        : `${intent.businessName ?? "Your salon"}: ${intent.petName ?? "Your pet"} has an appointment update${when ? ` for ${when}` : ""}.`;
+      const expiration=intent.expirationDate ? new Intl.DateTimeFormat("en-US",{dateStyle:"long",timeZone:"UTC"})
+        .format(new Date(`${intent.expirationDate}T12:00:00.000Z`)) : "the recorded date";
+      const contact=intent.businessPhone??intent.businessEmail??intent.businessName??"the business";
+      const generated=intent.notificationType===RABIES_CUSTOMER
+        ? `Your pet ${intent.petName??"pet"} is scheduled for ${when??"an upcoming appointment"}. The rabies vaccination information we have expires on ${expiration}, so it will not be current for the appointment. Please provide updated rabies information before the visit or contact ${intent.businessName??"the business"} at ${contact}.`
+        : intent.notificationType===RABIES_STAFF
+          ? `Rabies information for ${intent.petName??"the pet"} (${intent.customerName??"customer"}) expires on ${expiration}, before the appointment scheduled for ${when??"an upcoming date"}. Current verification status: ${intent.verificationStatus??"unknown"}. Updated rabies information is required. Customer notification status: ${intent.customerNotificationStatus??"unknown"}.`
+          : `${intent.businessName ?? "Your salon"}: ${intent.petName ?? "Your pet"} has an appointment update${when ? ` for ${when}` : ""}.`;
+      const body = intent.encryptedBody ? decryptBody?.(intent.encryptedBody) : generated;
       if (!body) throw new Error("Notification body cannot be decrypted");
+      if(!intent.destination) throw new Error("Notification destination is unavailable");
       const result = await provider.send({
         idempotencyKey: intent.id,
         to: intent.destination,
         subject: intent.notificationType === "password_reset" ? "Reset your Pawsh password"
+          : intent.notificationType === RABIES_CUSTOMER ? "Updated rabies information needed"
+          : intent.notificationType === RABIES_STAFF ? "Rabies information needs attention"
           : intent.notificationType === "appointment_reminder" ? "Upcoming Pawsh appointment"
           : intent.notificationType === "appointment_cancellation" ? "Pawsh appointment cancelled"
           : "Pawsh appointment confirmation",

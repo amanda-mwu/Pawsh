@@ -137,7 +137,10 @@ function renderDashboard(data) {
 }
 
 function safetyContext(item) {
+  const rabiesLabels={valid_for_appointment:"Valid for appointment",expires_before_appointment:"Expires before appointment",expired:"Expired",unverified:"Unverified",not_provided:"Not provided"};
+  const rabies=item.rabiesAppointmentStatus?`<p class="rabies-status rabies-${escape(item.rabiesAppointmentStatus)}" role="status" data-testid="rabies-appointment-status"><strong>Rabies:</strong> ${escape(rabiesLabels[item.rabiesAppointmentStatus]||item.rabiesAppointmentStatus)}${item.vaccinationExpiresOn?` · Expires ${new Date(`${String(item.vaccinationExpiresOn).slice(0,10)}T12:00:00Z`).toLocaleDateString()}`:""}${item.rabiesAppointmentStatus==="expires_before_appointment"?` · Appointment ${new Date(`${String(item.scheduledLocalStart).slice(0,10)}T12:00:00Z`).toLocaleDateString()} · Update required`:""}${item.rabiesCustomerNotificationStatus&&item.rabiesCustomerNotificationStatus!=="not_required"?` · Customer notice ${escape(item.rabiesCustomerNotificationStatus)}`:""}</p>`:"";
   const details = [
+    rabies,
     item.safetyAlerts ? `<strong>Safety alert:</strong> ${escape(item.safetyAlerts)}` : "",
     item.behaviorNotes ? `<strong>Behavior:</strong> ${escape(item.behaviorNotes)}` : "",
     item.medicalNotes ? `<strong>Medical:</strong> ${escape(item.medicalNotes)}` : "",
@@ -546,9 +549,17 @@ function petCareFields(pet){
     field("behaviorNotes","Behavior notes","text",`value="${escape(pet.behaviorNotes||"")}"`,true)+
     field("medicalNotes","Medical notes","text",`value="${escape(pet.medicalNotes||"")}"`,true)+
     field("emergencyContact","Emergency contact","text",`value="${escape(pet.emergencyContact||"")}"`,true)+
-    field("veterinarian","Veterinarian","text",`value="${escape(pet.veterinarian||"")}"`,true)+
-    field("vaccinationNotes","Vaccination notes","text",`value="${escape(pet.vaccinationNotes||"")}"`,true)+
-    field("vaccinationExpiresOn","Vaccination expires","date",`value="${pet.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):""}"`);
+    `<fieldset class="wide"><legend>Rabies Information</legend>`+
+    field("rabiesVaccinationDate","Vaccination date (optional)","date",`value="${pet.rabiesVaccinationDate?String(pet.rabiesVaccinationDate).slice(0,10):""}"`)+
+    field("vaccinationExpiresOn","Expiration date","date",`value="${pet.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):""}"`)+
+    field("veterinarian","Veterinarian or clinic (optional)","text",`maxlength="500" value="${escape(pet.veterinarian||"")}"`)+
+    field("rabiesCertificateReference","Certificate or vaccine reference (optional)","text",`maxlength="200" value="${escape(pet.rabiesCertificateReference||"")}"`)+
+    select("rabiesVerificationStatus","Verification status",[["not_provided","Not provided"],["unverified","Unverified"],["staff_verified","Staff verified"]],true,pet.rabiesVerificationStatus||"not_provided")+
+    select("rabiesVerificationMethod","Verification method",[["document_review","Document review"],["veterinarian_confirmation","Veterinarian confirmation"],["verbal_confirmation","Verbal confirmation"],["customer_provided","Customer provided"],["other","Other"]],true,pet.rabiesVerificationMethod||"",false)+
+    field("rabiesVerificationDate","Verification date (defaults to today)","date",`value="${pet.rabiesVerificationDate?String(pet.rabiesVerificationDate).slice(0,10):""}"`)+
+    field("vaccinationNotes","Rabies notes","text",`maxlength="2000" value="${escape(pet.vaccinationNotes||"")}"`,true)+
+    `${pet.rabiesVerifiedByName?`<p class="wide"><strong>Verified by:</strong> ${escape(pet.rabiesVerifiedByName)}</p>`:""}`+
+    `<p class="wide">Supporting PDF evidence is optional and never establishes staff verification automatically.</p></fieldset>`;
 }
 
 function editPetCare(id){
@@ -563,6 +574,11 @@ function editPetCare(id){
         veterinarian:form.get("veterinarian")||null,
         vaccinationNotes:form.get("vaccinationNotes")||null,
         vaccinationExpiresOn:form.get("vaccinationExpiresOn")||null,
+        rabiesVaccinationDate:form.get("rabiesVaccinationDate")||null,
+        rabiesCertificateReference:form.get("rabiesCertificateReference")||null,
+        rabiesVerificationStatus:form.get("rabiesVerificationStatus"),
+        rabiesVerificationMethod:form.get("rabiesVerificationStatus")==="staff_verified"?(form.get("rabiesVerificationMethod")||null):null,
+        rabiesVerificationDate:form.get("rabiesVerificationStatus")==="staff_verified"?(form.get("rabiesVerificationDate")||null):null,
         version:pet.version
       })});
     }catch(error){
@@ -579,8 +595,8 @@ function editPetCare(id){
 function field(name, label, type = "text", extra = "", wide = false) {
   return `<label class="${wide ? "wide" : ""}">${label}<input data-testid="field-${name}" name="${name}" type="${type}" ${extra}></label>`;
 }
-function select(name, label, options, wide = false) {
-  return `<label class="${wide ? "wide" : ""}">${label}<select data-testid="field-${name}" name="${name}" required><option value="">Choose…</option>${options.map(([v,l]) => `<option value="${v}">${escape(l)}</option>`).join("")}</select></label>`;
+function select(name, label, options, wide = false, selectedValue = "", required = true) {
+  return `<label class="${wide ? "wide" : ""}">${label}<select data-testid="field-${name}" name="${name}" ${required?"required":""}><option value="">Choose…</option>${options.map(([v,l]) => `<option value="${v}" ${String(v)===String(selectedValue)?"selected":""}>${escape(l)}</option>`).join("")}</select></label>`;
 }
 function openModal(title, fields, submit) {
   $("#modal-title").textContent = title; $("#modal-fields").innerHTML = fields; $("#modal-error").textContent = "";
@@ -707,13 +723,29 @@ const actions = {
       select("petId","Pet",[])+
       select("employeeId","Groomer",state.employees.filter(e=>e.active).map(e=>[e.id,e.displayName]))+
       serviceCheckboxes()+
-      field("startAt","Start time","datetime-local","required",true)+disambiguationField()+field("notes","Appointment notes","text","",true),
+      field("startAt","Start time","datetime-local","required",true)+disambiguationField()+
+      `<p class="wide" role="status" aria-live="polite" data-testid="booking-rabies-status">Choose a pet and appointment time to evaluate rabies information.</p>`+
+      field("notes","Appointment notes","text","",true),
       (form) => { const o=Object.fromEntries(form); return schedulingMutation("/api/appointments",{locationId:state.me.business.locationId,customerId:o.customerId,petId:o.petId,employeeId:o.employeeId,serviceIds:form.getAll("serviceIds"),localStart:o.startAt,disambiguation:o.disambiguation||undefined,expectedLocationVersion:state.me.business.locationVersion,notes:o.notes||null},"Booking"); });
     const customerSelect=$('[name="customerId"]');const petSelect=$('[name="petId"]');
+    const startInput=$('[name="startAt"]');const rabiesStatus=$('[data-testid="booking-rabies-status"]');
+    const updateRabiesPreview=()=>{
+      const pet=state.pets.find(item=>item.id===petSelect.value),appointmentDate=String(startInput.value||"").slice(0,10);
+      if(!pet||!appointmentDate){rabiesStatus.textContent="Choose a pet and appointment time to evaluate rabies information.";return;}
+      const expiration=pet.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):null;
+      const status=!expiration||pet.rabiesVerificationStatus==="not_provided"?"Not provided"
+        :pet.rabiesVerificationStatus!=="staff_verified"?"Unverified"
+        :expiration<businessDate()?"Expired"
+        :expiration<appointmentDate?"Expires before appointment — updated rabies information is required"
+        :"Valid for appointment";
+      rabiesStatus.textContent=`Rabies: ${status}${expiration?`. Expiration ${expiration}. Appointment ${appointmentDate}.`:""}`;
+    };
     customerSelect.addEventListener("change",()=>{
       const pets=state.pets.filter(pet=>pet.customerId===customerSelect.value);
       petSelect.innerHTML=`<option value="">Choose…</option>${pets.map(pet=>`<option value="${pet.id}">${escape(pet.name)}</option>`).join("")}`;
+      updateRabiesPreview();
     });
+    petSelect.addEventListener("change",updateRabiesPreview);startInput.addEventListener("change",updateRabiesPreview);
   }),
   "blocked-time": () => openModal("Block team time",
     select("employeeId","Team member",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]))+

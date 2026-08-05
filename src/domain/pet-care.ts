@@ -5,10 +5,27 @@ export const protectedPetCareFields = [
   "emergencyContact",
   "veterinarian",
   "vaccinationNotes",
-  "vaccinationExpiresOn"
+  "vaccinationExpiresOn",
+  "rabiesVaccinationDate",
+  "rabiesCertificateReference",
+  "rabiesVerificationStatus",
+  "rabiesVerificationMethod",
+  "rabiesVerificationDate",
+  "rabiesVerifiedByMembershipId",
+  "rabiesVerifiedByName",
+  "rabiesAppointmentStatus",
+  "rabiesCustomerNotificationStatus"
+] as const;
+
+export const writablePetCareFields = [
+  "safetyAlerts","medicalNotes","behaviorNotes","emergencyContact","veterinarian",
+  "vaccinationNotes","vaccinationExpiresOn","rabiesVaccinationDate",
+  "rabiesCertificateReference","rabiesVerificationStatus","rabiesVerificationMethod",
+  "rabiesVerificationDate"
 ] as const;
 
 export type ProtectedPetCareField = (typeof protectedPetCareFields)[number];
+export type WritablePetCareField = (typeof writablePetCareFields)[number];
 export type PetCareRecord = Partial<Record<ProtectedPetCareField, unknown>>;
 
 export function redactPetCare<T extends PetCareRecord>(record: T): T {
@@ -18,8 +35,8 @@ export function redactPetCare<T extends PetCareRecord>(record: T): T {
   } as T;
 }
 
-export function suppliedPetCareFields(record: PetCareRecord): ProtectedPetCareField[] {
-  return protectedPetCareFields.filter((field) =>
+export function suppliedPetCareFields(record: PetCareRecord): WritablePetCareField[] {
+  return writablePetCareFields.filter((field) =>
     Object.prototype.hasOwnProperty.call(record, field)
   );
 }
@@ -27,8 +44,8 @@ export function suppliedPetCareFields(record: PetCareRecord): ProtectedPetCareFi
 export function changedPetCareFields(
   before: PetCareRecord,
   after: PetCareRecord
-): ProtectedPetCareField[] {
-  return protectedPetCareFields.filter((field) =>
+): WritablePetCareField[] {
+  return writablePetCareFields.filter((field) =>
     comparable(before[field]) !== comparable(after[field])
   );
 }

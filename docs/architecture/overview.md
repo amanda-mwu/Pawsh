@@ -10,3 +10,6 @@ See the [product roadmap](../product/roadmap.md) for Pawsh's lifecycle stage,
 customer-value sequencing, approval status, and the boundary between controlled
 pilot and later initiatives. It does not supersede architecture decisions,
 validation evidence, security findings, or release gates.
+
+The [controlled-pilot execution plan](../releases/controlled-pilot-execution-plan.md)
+tracks automated evidence and remaining human and external gates.

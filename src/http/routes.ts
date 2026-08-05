@@ -25,7 +25,7 @@ import { hashPassword, validateNewPassword, verifyPassword } from "../security/p
 import { AuthAbuseProtector } from "../security/auth-abuse.js";
 import {
   changedPetCareFields,
-  protectedPetCareFields,
+  writablePetCareFields,
   redactPetCare,
   suppliedPetCareFields,
   type PetCareRecord
@@ -1248,9 +1248,13 @@ export function registerRoutes(
     const query = request.query as { q?: string; customerId?: string };
     const rows = await db`
       select p.*, concat_ws(' ', c.first_name, c.last_name) as customer_name
+        , verifier_user.display_name as rabies_verified_by_name
       from pets p
       join customers c on c.id=p.customer_id and c.business_id=p.business_id
         and c.archived_at is null
+      left join business_memberships verifier on verifier.business_id=p.business_id
+        and verifier.id=p.rabies_verified_by_membership_id
+      left join users verifier_user on verifier_user.id=verifier.user_id
       where p.business_id=${context.businessId} and p.archived_at is null
         and (${query.customerId ?? null}::uuid is null or p.customer_id=${query.customerId ?? null}::uuid)
         and (${query.q ?? ""}='' or p.name ilike ${`%${query.q ?? ""}%`} or p.breed ilike ${`%${query.q ?? ""}%`})
@@ -1271,12 +1275,19 @@ export function registerRoutes(
     }
     const pet = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [created] = await tx<(PetCareRecord & { id: string })[]>`
+      const verificationStatus=input.rabiesVerificationStatus === "staff_verified"
+        ? "staff_verified" : input.vaccinationExpiresOn ? "unverified" : "not_provided";
+      const verifiedAt=verificationStatus === "staff_verified"
+        ? input.rabiesVerificationDate ? new Date(`${input.rabiesVerificationDate}T12:00:00.000Z`) : new Date()
+        : null;
+      const [created] = await tx<{ id: string }[]>`
         insert into pets
           (business_id, customer_id, name, species, breed, date_of_birth, approximate_age,
            weight_ounces, sex, coat_notes, grooming_preferences, behavior_notes, medical_notes,
            safety_alerts, emergency_contact, veterinarian, vaccination_notes,
-           vaccination_expires_on, photo_permission, created_by, updated_by)
+           vaccination_expires_on,rabies_vaccination_date,rabies_certificate_reference,
+           rabies_verification_status,rabies_verification_method,rabies_verified_at,
+           rabies_verified_by_membership_id,photo_permission, created_by, updated_by)
         values
           (${context.businessId}, ${input.customerId}, ${input.name}, ${input.species},
            ${input.breed ?? null}, ${input.dateOfBirth ?? null}, ${input.approximateAge ?? null},
@@ -1285,6 +1296,9 @@ export function registerRoutes(
            ${input.medicalNotes ?? null}, ${input.safetyAlerts ?? null},
            ${input.emergencyContact ?? null}, ${input.veterinarian ?? null},
            ${input.vaccinationNotes ?? null}, ${input.vaccinationExpiresOn ?? null},
+           ${input.rabiesVaccinationDate ?? null},${input.rabiesCertificateReference ?? null},
+           ${verificationStatus},${verificationStatus === "staff_verified" ? input.rabiesVerificationMethod ?? null : null},
+           ${verifiedAt},${verificationStatus === "staff_verified" ? context.membershipId : null},
            ${input.photoPermission ?? null}, ${context.userId}, ${context.userId})
         returning *
       `;
@@ -1301,7 +1315,7 @@ export function registerRoutes(
       });
       return created;
     });
-    return reply.code(201).send(mayViewPetCare(context) ? pet : redactPetCare(pet));
+    return reply.code(201).send(mayViewPetCare(context) ? pet : redactPetCare(pet as PetCareRecord & {id:string}));
   });
 
   app.put("/api/pets/:id", {
@@ -1377,10 +1391,19 @@ export function registerRoutes(
         veterinarian: string | null;
         vaccinationNotes: string | null;
         vaccinationExpiresOn: string | null;
+        rabiesVaccinationDate: string | null;
+        rabiesCertificateReference: string | null;
+        rabiesVerificationStatus: string;
+        rabiesVerificationMethod: string | null;
+        rabiesVerificationDate: string | null;
+        rabiesVerifiedByMembershipId: string | null;
         version: number;
       }[]>`
         select safety_alerts,medical_notes,behavior_notes,emergency_contact,veterinarian,
-          vaccination_notes,vaccination_expires_on,version
+          vaccination_notes,vaccination_expires_on,rabies_vaccination_date,
+          rabies_certificate_reference,rabies_verification_status,rabies_verification_method,
+          rabies_verified_at as rabies_verification_date,
+          rabies_verified_by_membership_id,version
         from pets
         where business_id=${context.businessId} and id=${id} and archived_at is null
         for update
@@ -1388,10 +1411,26 @@ export function registerRoutes(
       if (!before) return null;
       if (before.version !== input.version) return { kind: "stale" } as const;
       const after: PetCareRecord = { ...before };
-      for (const field of protectedPetCareFields) {
+      for (const field of writablePetCareFields) {
         if (supplied.has(field)) after[field] = input[field];
       }
       const changedFields = changedPetCareFields(before, after);
+      const expiration=supplied.has("vaccinationExpiresOn") ? input.vaccinationExpiresOn ?? null : before.vaccinationExpiresOn;
+      const requestedStatus=supplied.has("rabiesVerificationStatus")
+        ? input.rabiesVerificationStatus ?? "not_provided" : before.rabiesVerificationStatus;
+      const verificationStatus=requestedStatus === "staff_verified"
+        ? "staff_verified" : expiration ? "unverified" : "not_provided";
+      const method=verificationStatus === "staff_verified"
+        ? (supplied.has("rabiesVerificationMethod") ? input.rabiesVerificationMethod ?? null : before.rabiesVerificationMethod)
+        : null;
+      if(verificationStatus === "staff_verified" && !method) {
+        throw new Error("Verification method is required for staff verification");
+      }
+      const verifiedAt=verificationStatus === "staff_verified"
+        ? supplied.has("rabiesVerificationDate") && input.rabiesVerificationDate
+          ? new Date(`${input.rabiesVerificationDate}T12:00:00.000Z`)
+          : new Date()
+        : null;
       const [pet] = await tx`
         update pets set
           safety_alerts=${supplied.has("safetyAlerts") ? input.safetyAlerts ?? null : before.safetyAlerts},
@@ -1403,19 +1442,36 @@ export function registerRoutes(
           vaccination_expires_on=${
             supplied.has("vaccinationExpiresOn") ? input.vaccinationExpiresOn ?? null : before.vaccinationExpiresOn
           },
+          rabies_vaccination_date=${supplied.has("rabiesVaccinationDate") ? input.rabiesVaccinationDate ?? null : before.rabiesVaccinationDate},
+          rabies_certificate_reference=${supplied.has("rabiesCertificateReference") ? input.rabiesCertificateReference ?? null : before.rabiesCertificateReference},
+          rabies_verification_status=${verificationStatus},
+          rabies_verification_method=${method},
+          rabies_verified_at=${verifiedAt},
+          rabies_verified_by_membership_id=${verificationStatus === "staff_verified" ? context.membershipId : null},
           version=version+1,updated_by=${context.userId},updated_at=now()
         where business_id=${context.businessId} and id=${id} and version=${input.version}
         returning *
       `;
       if (!pet) return { kind: "stale" } as const;
       if (changedFields.length) {
+        const rabiesChanged=changedFields.some((field)=>field.startsWith("rabies") || field === "vaccinationExpiresOn");
+        if(rabiesChanged) {
+          await tx`
+            update notification_intents set status='cancelled',resolved_at=now(),updated_at=now()
+            where business_id=${context.businessId}
+              and appointment_id in (select id from appointments where business_id=${context.businessId} and pet_id=${id})
+              and notification_type in ('rabies_expiration_customer','rabies_expiration_staff')
+              and status in ('pending','failed','suppressed')
+          `;
+        }
         await record(tx, {
           businessId: context.businessId,
           actorId: context.userId,
           action: "pet.care.update",
           resourceType: "pet",
           resourceId: id,
-          after: { changedFields }
+          after: { changedFields },
+          eventType: rabiesChanged ? "RabiesComplianceUpdated" : undefined
         });
       }
       return { kind: "updated", pet } as const;
@@ -1711,6 +1767,18 @@ export function registerRoutes(
     const rows = await db`
       select a.*, c.first_name, c.last_name, p.name as pet_name, p.safety_alerts,
         p.behavior_notes, p.medical_notes, p.grooming_preferences, p.coat_notes,
+        p.vaccination_expires_on,p.rabies_verification_status,p.rabies_verification_method,
+        case
+          when p.vaccination_expires_on is null or p.rabies_verification_status='not_provided' then 'not_provided'
+          when p.rabies_verification_status<>'staff_verified' then 'unverified'
+          when p.vaccination_expires_on < (now() at time zone l.timezone)::date then 'expired'
+          when p.vaccination_expires_on < a.scheduled_local_start::date then 'expires_before_appointment'
+          else 'valid_for_appointment'
+        end as rabies_appointment_status,
+        coalesce((select ni.status from notification_intents ni
+          where ni.business_id=a.business_id and ni.appointment_id=a.id
+            and ni.notification_type='rabies_expiration_customer'
+          order by ni.created_at desc limit 1),'not_required') as rabies_customer_notification_status,
         e.display_name as employee_name,
         coalesce(json_agg(json_build_object(
           'id', aps.id, 'name', aps.service_name_snapshot, 'durationMinutes',
@@ -1720,6 +1788,7 @@ export function registerRoutes(
       from appointments a
       join customers c on c.id=a.customer_id
       join pets p on p.id=a.pet_id
+      join locations l on l.business_id=a.business_id and l.id=a.location_id
       join employees e on e.id=a.employee_id
       left join appointment_services aps on aps.appointment_id=a.id
       where a.business_id=${context.businessId} and a.location_id=${location.id}
@@ -1727,7 +1796,7 @@ export function registerRoutes(
           ? db`a.start_at < ${to} and a.end_at > ${from}`
           : db`a.start_at >= ${from} - interval '2 days' and a.start_at < ${to} + interval '2 days'
               and a.scheduled_local_start >= ${localDate}::date and a.scheduled_local_start < ${endLocal.toISOString().slice(0,10)}::date`}
-      group by a.id,c.id,p.id,e.id order by a.start_at,a.employee_id,a.id
+      group by a.id,c.id,p.id,e.id,l.id order by a.start_at,a.employee_id,a.id
     `;
     if (mayViewPetCare(context)) return rows;
     return rows.map((appointment) => redactPetCare(appointment));
@@ -1958,6 +2027,14 @@ export function registerRoutes(
           updated_by=${context.userId}, updated_at=now()
         where business_id=${context.businessId} and id=${id} returning *
       `;
+      if(input.status === "cancelled" || input.status === "no_show") {
+        await tx`
+          update notification_intents set status='cancelled',resolved_at=now(),updated_at=now()
+          where business_id=${context.businessId} and appointment_id=${id}
+            and notification_type in ('rabies_expiration_customer','rabies_expiration_staff')
+            and status in ('pending','failed','suppressed')
+        `;
+      }
       await record(tx, {
         businessId: context.businessId, actorId: context.userId,
         action: `appointment.${input.status}`, resourceType: "appointment", resourceId: id,
@@ -2115,6 +2192,12 @@ export function registerRoutes(
         after: { startAt, endAt, employeeId: input.employeeId },
         reason: input.overrideReason, eventType: "AppointmentUpdated"
       });
+      await tx`
+        update notification_intents set status='cancelled',resolved_at=now(),updated_at=now()
+        where business_id=${context.businessId} and appointment_id=${id}
+          and notification_type in ('rabies_expiration_customer','rabies_expiration_staff')
+          and status in ('pending','failed','suppressed')
+      `;
       if (overrideApplied) {
         await record(tx, {
           businessId: context.businessId,

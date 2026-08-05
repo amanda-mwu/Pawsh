@@ -17,3 +17,7 @@ Pawsh has completed the working-product stage and is in controlled-pilot
 hardening. The [product roadmap](roadmap.md) is authoritative for lifecycle,
 future product sequencing, conditional candidates, and approval status. It does
 not replace validation evidence or release gates.
+
+The controlled-pilot extension for structured manual rabies information,
+appointment-date evaluation, and optional supporting evidence is defined in the
+[rabies compliance contract](rabies-appointment-compliance.md).

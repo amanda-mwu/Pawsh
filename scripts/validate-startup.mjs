@@ -53,6 +53,7 @@ try {
   });
   for (const expected of ["[BOOT] Configuration loaded", "[BOOT] PostgreSQL ready", "[BOOT] createApp begin",
     "component=\"helmet\"", "[BOOT] Document storage ready", "[BOOT] Document scanner ready",
+    "[BOOT] HTTP document scanner configured",
     "[BOOT] Authentication and API routes registered", "[BOOT] Background workers registered",
     "[BOOT] createApp complete", "[BOOT] Starting HTTP server", "[READY] Pawsh listening",
     `appOrigin="http://127.0.0.1:${port}"`, "boundAddress=", "startupMs="]) {

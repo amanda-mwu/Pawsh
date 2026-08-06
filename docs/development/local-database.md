@@ -64,9 +64,13 @@ listener address, and elapsed startup time. A delayed database connection emits
 `Still waiting for PostgreSQL` without terminating startup. `GET /health`
 remains the authoritative database-backed readiness probe.
 
-Run `npm run dev:browser` to start the development server and open the system
-browser only after `/health` returns HTTP 200. If configuration or PostgreSQL
-startup fails, the browser is not opened. Press Ctrl+C to initiate logged,
+Run `npm run dev:browser` to start the development server. The helper opens the
+system default browser exactly once only after its newly spawned Pawsh child
+emits its first `[READY]` event and a subsequent `/health` request completes
+with HTTP 200. The deadline is 60 seconds. A stale Pawsh listener cannot satisfy
+the child lifecycle condition; child exit, configuration failure, port conflict,
+or timeout is reported with the last safe lifecycle state and does not open a
+browser. Press Ctrl+C to forward shutdown to the child and initiate logged,
 graceful HTTP/worker/database shutdown. Use `NODE_ENV=test` only for automated
 tests; it intentionally suppresses normal runtime logs and selects deterministic
 test behavior.
@@ -117,9 +121,15 @@ than `pawsh` or `pawsh_dev`. The target is printed before destruction. Back up
 local work you intend to retain.
 
 The development filesystem document directory is `.pawsh-documents`. The HTTP
-scanner endpoint remains required in development; if no approved local scanner
-is available, supporting uploads fail closed while structured rabies and other
-non-document workflows remain usable. Never select the deterministic test
+scanner adapter and endpoint configuration remain required in development.
+`http://127.0.0.1:4319/scan` is an example endpoint only: Pawsh does not bundle
+or start a scanner service at that address. Network availability is not probed
+during startup, so a configured offline scanner does not delay `[READY]`,
+`/health`, login, CRM, scheduling, invoicing, reporting, or other non-document
+workflows. Supporting uploads still fail closed asynchronously when scanning
+cannot complete. Testing document uploads requires an actual approved scanner
+service. Startup diagnostics state only that the HTTP adapter is configured and
+never print the endpoint or credentials. Never select the deterministic test
 adapter in a normal development or production process.
 
 ## Optional Docker parity

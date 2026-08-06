@@ -19,10 +19,14 @@ the recommended local runtime and is pinned by `.node-version` and `.nvmrc`.
 `npm run dev` is the interactive development runtime and should use
 `NODE_ENV=development`. It reports configuration, PostgreSQL readiness, service
 registration, the bound listener, `APP_ORIGIN`, startup duration, and graceful
-shutdown. `npm run dev:browser` starts the same development server, waits for a
-successful `GET /health`, and only then opens the default browser. `NODE_ENV=test`
-remains reserved for deterministic automation and intentionally suppresses
-normal application logging.
+shutdown. `npm run dev:browser` starts the same development server, observes
+that specific child's first `[READY]` lifecycle event, and opens the system
+default browser only after a subsequent `GET /health` completes with HTTP 200.
+Its 60-second readiness deadline prevents a stale process on the same port from
+causing an early browser launch; child exit, configuration failure, or timeout
+is reported without opening a browser. `NODE_ENV=test` remains reserved for
+deterministic automation and intentionally suppresses normal application
+logging.
 
 If startup does not reach `[READY]`, the final `[BOOT]` component identifies the
 unfinished Fastify plugin, storage/scanner construction, route registration, or
@@ -68,6 +72,13 @@ $env:APP_ORIGIN = "http://127.0.0.1:3000"
 npm run db:migrate
 npm run dev
 ```
+
+The scanner URL above is an example local endpoint; Pawsh does not create or
+start a scanner service there. A configured but offline scanner does not block
+startup, `/health`, or non-document workflows. Upload testing requires an
+actual approved scanner service, and unavailable scans continue to fail closed
+asynchronously. Startup logs only that the HTTP adapter is configured, never
+the scanner endpoint or credentials.
 
 Do not set `DOCUMENT_STORAGE_ADAPTER=memory` in development. Memory storage is
 intentionally test-only; the resulting startup failure is an environment

@@ -88,6 +88,7 @@ export async function createApp(
     ? new HttpDocumentScanner(config.DOCUMENT_SCANNER_ENDPOINT!,config.DOCUMENT_SCANNER_TOKEN)
     : new DeterministicDocumentScanner());
   startup?.log("Document scanner ready");
+  if (config.DOCUMENT_SCANNER_ADAPTER === "http") startup?.log("HTTP document scanner configured");
   startup?.log("Registering authentication and API routes");
   registerRoutes(app, db, config, documentStorage,
     options.schedulingHooks, options.lifecycleHooks, options.financialHooks,

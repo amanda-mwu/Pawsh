@@ -54,6 +54,12 @@ rulesets become available.
 
 ## Required matrix
 
+This remains the supported release-candidate and scheduled matrix. Ordinary
+beta-development operating-system selection follows the
+[cross-platform CI policy](../testing/cross-platform-ci-policy.md): executable
+changes retain Ubuntu Node 22/24, while Windows/macOS are conditional on
+platform impact. The policy does not change the supported runtime claim.
+
 | Stable job/check | Scope |
 | --- | --- |
 | Runtime Compatibility — Ubuntu Node 22 | Static/unit, dependency trees, PostgreSQL integration/concurrency/idempotency, startup/shutdown, Argon2, fixtures, Chromium smoke |
@@ -105,6 +111,12 @@ branch protection. This is an external administrative limitation, not an
 application, CI, architecture, security, or runtime defect. Upgrade the plan or
 make the repository public, then require the stable aggregate check. Until
 then, controlled prevention of unvalidated future pushes is not enforced.
+
+The aggregate name remains stable and always runs. Conditional skipped groups
+are reported as not required rather than passed. Release-candidate, scheduled,
+workflow/dependency, unknown, platform-sensitive, and manually forced runs use
+the full matrix. `PAWSH_FORCE_FULL_MATRIX` is an increase-only rollback control;
+absence or malformed input forces full coverage.
 
 Weekly diagnostics record dependency age and can later add latency, memory,
 event-loop, pool, and index observations. Owner roles: runtime/toolchain,

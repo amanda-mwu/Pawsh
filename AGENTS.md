@@ -63,3 +63,28 @@ Documentation-only changes receive documentation-level validation. Executable
 changes receive full engineering validation. Do not apply runtime validation to
 a Markdown-only diff merely because runtime checks exist elsewhere in the
 repository.
+
+## Cross-platform CI proportionality
+
+For executable beta-development changes, preserve validation on every currently
+supported Ubuntu/Node runtime. Require the full supported operating-system
+matrix when behavior is platform-sensitive, classification is unknown or mixed,
+workflows or dependencies change, or a trusted reviewer forces full coverage.
+Paths are conservative signals; behavioral risk may only increase coverage.
+
+Beta release-candidate promotion requires the complete supported matrix for the
+exact candidate SHA regardless of classification. Scheduled full-matrix runs
+supplement but never replace release-candidate evidence. A skipped conditional
+platform job means **Not required under beta impact policy**, never passed.
+
+Use `Cross-Platform Runtime Compatibility — Required Matrix` as the stable
+engineering summary. Hosted-runner failures before checkout permit at most one
+immediate and one later same-SHA retry and never justify empty commits or
+unrelated changes. Alternative evidence requires external authorization from
+Engineering/QA, Operations when applicable, and the launch approver; Codex and
+CI cannot self-approve it.
+
+`PAWSH_FORCE_FULL_MATRIX` is the increase-only rollback control. Missing,
+malformed, or `true` values force full coverage; only the trusted repository
+value `false` enables proportionate beta-development selection. See
+`docs/testing/cross-platform-ci-policy.md`.

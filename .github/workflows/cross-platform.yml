@@ -4,11 +4,26 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: "23 8 * * *"
   workflow_dispatch:
+    inputs:
+      release_candidate:
+        description: Require exact-SHA beta release-candidate coverage
+        type: boolean
+        default: false
+      force_full_matrix:
+        description: Force the complete supported compatibility matrix
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  actions: read
+  contents: read
 
 env:
   NODE_ENV: test
@@ -20,9 +35,54 @@ env:
   PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
 
 jobs:
+  classify:
+    name: Classify cross-platform impact
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      enforcement_level: ${{ steps.classify.outputs.enforcement_level }}
+      change_class: ${{ steps.classify.outputs.change_class }}
+      documentation_only: ${{ steps.classify.outputs.documentation_only }}
+      executable: ${{ steps.classify.outputs.executable }}
+      platform_sensitive: ${{ steps.classify.outputs.platform_sensitive }}
+      database: ${{ steps.classify.outputs.database }}
+      browser: ${{ steps.classify.outputs.browser }}
+      workflow: ${{ steps.classify.outputs.workflow }}
+      dependency: ${{ steps.classify.outputs.dependency }}
+      full_matrix: ${{ steps.classify.outputs.full_matrix }}
+      reasons: ${{ steps.classify.outputs.reasons }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: classify
+        name: Classify exact-SHA impact
+        env:
+          PAWSH_FORCE_FULL_MATRIX: ${{ vars.PAWSH_FORCE_FULL_MATRIX }}
+        run: node scripts/classify-ci-change.mjs
+      - name: Summarize classification
+        env:
+          ENFORCEMENT_LEVEL: ${{ steps.classify.outputs.enforcement_level }}
+          CHANGE_CLASS: ${{ steps.classify.outputs.change_class }}
+          FULL_MATRIX: ${{ steps.classify.outputs.full_matrix }}
+          REASONS: ${{ steps.classify.outputs.reasons }}
+        run: |
+          {
+            echo "## Compatibility impact classification"
+            echo
+            echo "- Enforcement level: \`$ENFORCEMENT_LEVEL\`"
+            echo "- Change class: \`$CHANGE_CLASS\`"
+            echo "- Full matrix required: \`$FULL_MATRIX\`"
+            echo "- Trusted reasons: \`$REASONS\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   ubuntu-runtime:
     name: Runtime Compatibility — Ubuntu Node ${{ matrix.node }}
     runs-on: ubuntu-latest
+    needs: classify
+    if: ${{ needs.classify.outputs.executable == 'true' }}
     timeout-minutes: 35
     strategy:
       fail-fast: false
@@ -94,6 +154,8 @@ jobs:
   windows-runtime:
     name: Runtime Compatibility — Windows Node ${{ matrix.node }}
     runs-on: windows-latest
+    needs: classify
+    if: ${{ needs.classify.outputs.full_matrix == 'true' }}
     timeout-minutes: 55
     strategy:
       fail-fast: false
@@ -200,6 +262,8 @@ jobs:
   macos-runtime:
     name: Runtime Compatibility — macOS Node 24
     runs-on: macos-latest
+    needs: classify
+    if: ${{ needs.classify.outputs.full_matrix == 'true' }}
     timeout-minutes: 55
     steps:
       - uses: actions/checkout@v6
@@ -264,6 +328,8 @@ jobs:
   utc-canonicalization:
     name: Runtime Compatibility — UTC Canonicalization
     runs-on: ubuntu-latest
+    needs: classify
+    if: ${{ needs.classify.outputs.full_matrix == 'true' }}
     timeout-minutes: 15
     env:
       TZ: UTC
@@ -291,17 +357,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: ${{ always() }}
-    needs: [ubuntu-runtime, windows-runtime, macos-runtime, utc-canonicalization]
+    needs: [classify, ubuntu-runtime, windows-runtime, macos-runtime, utc-canonicalization]
     steps:
-      - name: Require every enumerated job group
+      - uses: actions/checkout@v6
+      - name: Evaluate proportionate requirements
         env:
-          REQUIRED_RESULTS: ${{ toJSON(needs) }}
-        run: |
-          node --eval 'const results=JSON.parse(process.env.REQUIRED_RESULTS); const failed=Object.entries(results).filter(([,job])=>job.result!=="success"); if(failed.length) throw new Error(`Required jobs did not pass: ${JSON.stringify(failed.map(([name,job])=>[name,job.result]))}`);'
+          CLASSIFICATION_RESULT: ${{ needs.classify.result }}
+          ENFORCEMENT_LEVEL: ${{ needs.classify.outputs.enforcement_level }}
+          CHANGE_CLASS: ${{ needs.classify.outputs.change_class }}
+          EXECUTABLE: ${{ needs.classify.outputs.executable }}
+          FULL_MATRIX: ${{ needs.classify.outputs.full_matrix }}
+          TRUSTED_REASONS: ${{ needs.classify.outputs.reasons }}
+          JOB_RESULTS: ${{ toJSON(needs) }}
+          GH_ACTIONS_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_API_URL: ${{ github.api_url }}
+        run: node scripts/evaluate-cross-platform-policy.mjs
       - uses: actions/download-artifact@v7
+        if: ${{ needs.classify.outputs.executable == 'true' }}
         with:
           pattern: compatibility-evidence-*
           path: compatibility-evidence
       - name: Compare deterministic fixture artifacts
-        run: |
-          node --input-type=module --eval 'import{readdir,readFile}from"node:fs/promises";import{resolve}from"node:path";async function find(p){const e=await readdir(p,{withFileTypes:true});return(await Promise.all(e.map(x=>x.isDirectory()?find(resolve(p,x.name)):resolve(p,x.name).endsWith("cross-platform-fixture.json")?[resolve(p,x.name)]:[]))).flat()}const files=await find("compatibility-evidence");if(files.length!==6)throw new Error(`Expected 6 fixture artifacts, received ${files.length}`);const values=await Promise.all(files.map(f=>readFile(f,"utf8")));if(new Set(values).size!==1)throw new Error(`Cross-platform deterministic fixtures differ: ${files.join(", ")}`);console.log(`Matched ${files.length} deterministic fixture artifacts`);'
+        if: ${{ needs.classify.outputs.executable == 'true' }}
+        env:
+          EXPECTED_FIXTURE_COUNT: ${{ needs.classify.outputs.full_matrix == 'true' && '6' || '2' }}
+        run: node scripts/compare-compatibility-artifacts.mjs compatibility-evidence

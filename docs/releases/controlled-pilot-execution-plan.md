@@ -3,6 +3,12 @@
 Pawsh is in controlled-pilot hardening. This matrix inventories evidence; it
 does not replace the Master Release Gate or authorize launch.
 
+Ordinary beta development follows the proportionate
+[cross-platform CI policy](../testing/cross-platform-ci-policy.md). Beta
+release-candidate promotion still requires the full supported exact-SHA matrix
+or an externally authorized alternative-evidence disposition; scheduled and
+earlier-SHA evidence are not substitutes.
+
 | Gate | Requirement/evidence authority | Missing evidence | Technical status | Human/external requirement | Blocking |
 |---|---|---|---|---|---|
 | BASE-AUTO | Critical regression validation | None technical | Complete -- automated evidence sufficient | None | No technical blocker |

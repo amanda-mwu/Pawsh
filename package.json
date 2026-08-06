@@ -19,6 +19,7 @@
     "compatibility:startup": "node scripts/validate-startup.mjs",
     "compatibility:dev-child-spawn": "node scripts/validate-dev-child-spawn.mjs",
     "compatibility:dependencies": "node scripts/capture-dependencies.mjs",
+    "ci:classify": "node scripts/classify-ci-change.mjs",
     "artifacts:scan": "node scripts/scan-artifacts.mjs artifacts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",

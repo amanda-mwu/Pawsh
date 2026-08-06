@@ -70,10 +70,20 @@ emits its first `[READY]` event and a subsequent `/health` request completes
 with HTTP 200. The deadline is 60 seconds. A stale Pawsh listener cannot satisfy
 the child lifecycle condition; child exit, configuration failure, port conflict,
 or timeout is reported with the last safe lifecycle state and does not open a
-browser. Press Ctrl+C to forward shutdown to the child and initiate logged,
-graceful HTTP/worker/database shutdown. Use `NODE_ENV=test` only for automated
-tests; it intentionally suppresses normal runtime logs and selects deterministic
-test behavior.
+browser. Press Ctrl+C to stop the development child: POSIX forwards the signal
+to Pawsh's logged graceful shutdown, while Windows terminates the complete
+command-process tree so npm/tsx cannot remain orphaned. The application shutdown
+ordering itself is unchanged. Use `NODE_ENV=test` only for automated tests; it
+intentionally suppresses normal runtime logs and selects deterministic test
+behavior.
+
+The helper is supported on Windows, macOS, and Linux. Windows starts the fixed
+`npm run dev` command through `ComSpec` (falling back to `cmd.exe`) because
+direct `.cmd` spawning is not portable across supported Node releases. The
+server child is never detached. A process-spawn failure exits immediately with
+a safe platform/category diagnostic, without polling readiness or opening a
+browser. An interactive Ctrl+C is forwarded to stop the development process
+tree; the browser does not open after shutdown begins.
 
 Automated startup validation asserts graceful SIGTERM lifecycle output on
 POSIX runners. Windows CI verifies startup and port release because terminating

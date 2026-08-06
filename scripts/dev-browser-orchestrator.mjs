@@ -1,6 +1,84 @@
 import process from "node:process";
 import { URL } from "node:url";
 
+export function developmentChildCommand(platform, environment, script = "dev") {
+  if (!/^[a-z0-9:_-]+$/i.test(script)) throw new Error("Invalid repository npm script name");
+  const common = {
+    env: environment,
+    stdio: ["inherit", "pipe", "pipe"],
+    detached: false
+  };
+  if (platform === "win32") {
+    return {
+      command: environment.ComSpec || environment.COMSPEC || "cmd.exe",
+      args: ["/d", "/s", "/c", `npm run ${script}`],
+      options: { ...common, windowsHide: true }
+    };
+  }
+  return { command: "npm", args: ["run", script], options: common };
+}
+
+export async function spawnDevelopmentChild({
+  platform = process.platform,
+  environment = process.env,
+  script = "dev",
+  spawnImplementation
+}) {
+  const launch = developmentChildCommand(platform, environment, script);
+  let child;
+  try {
+    child = spawnImplementation(launch.command, launch.args, launch.options);
+  } catch (error) {
+    throw spawnFailure(error, platform);
+  }
+  await new Promise((resolve, reject) => {
+    const onSpawn = () => {
+      child.removeListener("error", onError);
+      resolve();
+    };
+    const onError = (error) => {
+      child.removeListener("spawn", onSpawn);
+      reject(spawnFailure(error, platform));
+    };
+    child.once("spawn", onSpawn);
+    child.once("error", onError);
+  });
+  return child;
+}
+
+export function formatDevelopmentChildSpawnFailure(error) {
+  const category = error && typeof error === "object" && "category" in error
+    ? error.category : "process_spawn_failed";
+  const platform = error && typeof error === "object" && "platform" in error
+    ? error.platform : process.platform;
+  return [
+    "[ERROR] Failed to start Pawsh development process",
+    `Platform: ${platform}`,
+    `Error category: ${category}`
+  ].join("\n");
+}
+
+export function terminateDevelopmentChild(child, platform, signal, spawnImplementation) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  if (platform !== "win32") {
+    child.kill(signal);
+    return;
+  }
+  const killer = spawnImplementation("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {
+    stdio: "ignore",
+    windowsHide: true
+  });
+  killer.once("error", () => child.kill(signal));
+}
+
+function spawnFailure(error, platform) {
+  const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+  const category = code === "EINVAL" ? "invalid_spawn_configuration" : "process_spawn_failed";
+  return Object.assign(new Error("Pawsh development child could not be spawned"), {
+    kind: "spawn_failure", category, platform, cause: error
+  });
+}
+
 export function createLifecycleTracker(tailLimit = 8_192) {
   const state = {
     latestBoot: undefined,

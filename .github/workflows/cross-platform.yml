@@ -113,6 +113,8 @@ jobs:
       - name: Verify npm scripts through cmd.exe
         shell: cmd
         run: npm run check:runtime && npm run typecheck
+      - name: Verify dev browser npm child spawn
+        run: npm run compatibility:dev-child-spawn
       - name: Prepare hosted PostgreSQL 17
         shell: pwsh
         run: |

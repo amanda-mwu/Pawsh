@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
 import {
   createLifecycleTracker,
+  developmentChildCommand,
+  formatDevelopmentChildSpawnFailure,
   formatBrowserReadinessFailure,
+  spawnDevelopmentChild,
+  terminateDevelopmentChild,
   waitAndLaunchBrowser
 } from "../../scripts/dev-browser-orchestrator.mjs";
 import { waitForHealth } from "../../scripts/health-readiness.mjs";
@@ -11,6 +16,102 @@ function runningChild() {
 }
 
 describe("dev browser readiness correlation", () => {
+  it("constructs a Windows cmd child using ComSpec without detaching", () => {
+    const environment = { ComSpec: "C:\\Windows\\System32\\cmd.exe", EXAMPLE: "preserved" };
+    const launch = developmentChildCommand("win32", environment);
+    expect(launch).toEqual({
+      command: environment.ComSpec,
+      args: ["/d", "/s", "/c", "npm run dev"],
+      options: {
+        env: environment,
+        stdio: ["inherit", "pipe", "pipe"],
+        detached: false,
+        windowsHide: true
+      }
+    });
+  });
+
+  it("falls back to cmd.exe on Windows and invokes npm directly elsewhere", () => {
+    expect(developmentChildCommand("win32", {}).command).toBe("cmd.exe");
+    for (const platform of ["darwin", "linux"]) {
+      expect(developmentChildCommand(platform, { EXAMPLE: "preserved" })).toEqual({
+        command: "npm",
+        args: ["run", "dev"],
+        options: {
+          env: { EXAMPLE: "preserved" },
+          stdio: ["inherit", "pipe", "pipe"],
+          detached: false
+        }
+      });
+    }
+  });
+
+  it("reports synchronous EINVAL safely and does not begin readiness", async () => {
+    const health = vi.fn();
+    const launch = vi.fn();
+    let failure;
+    try {
+      await spawnDevelopmentChild({
+        platform: "win32",
+        environment: { ComSpec: "cmd.exe", SECRET: "not-reported" },
+        spawnImplementation: () => { throw Object.assign(new Error("raw secret"), { code: "EINVAL" }); }
+      });
+    } catch (error) {
+      failure = error;
+    }
+    const message = formatDevelopmentChildSpawnFailure(failure);
+    expect(message).toContain("invalid_spawn_configuration");
+    expect(message).not.toContain("raw secret");
+    expect(message).not.toContain("not-reported");
+    expect(health).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it("reports an emitted spawn error immediately", async () => {
+    const child = new EventEmitter();
+    child.stdout = null;
+    child.stderr = null;
+    const pending = spawnDevelopmentChild({
+      platform: "win32",
+      environment: {},
+      spawnImplementation: () => child
+    });
+    child.emit("error", Object.assign(new Error("missing command processor"), { code: "ENOENT" }));
+    await expect(pending).rejects.toMatchObject({ kind: "spawn_failure", category: "process_spawn_failed" });
+  });
+
+  it("accepts a real spawn event before returning the child", async () => {
+    const child = new EventEmitter();
+    child.stdout = null;
+    child.stderr = null;
+    const pending = spawnDevelopmentChild({
+      platform: "linux",
+      environment: {},
+      spawnImplementation: () => child
+    });
+    child.emit("spawn");
+    await expect(pending).resolves.toBe(child);
+  });
+
+  it("terminates the full Windows child tree without detaching a helper", () => {
+    const child = { exitCode: null, signalCode: null, pid: 321, kill: vi.fn() };
+    const killer = new EventEmitter();
+    const spawnImplementation = vi.fn(() => killer);
+    terminateDevelopmentChild(child, "win32", "SIGINT", spawnImplementation);
+    expect(spawnImplementation).toHaveBeenCalledWith(
+      "taskkill.exe",
+      ["/pid", "321", "/t", "/f"],
+      { stdio: "ignore", windowsHide: true }
+    );
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it("forwards signals directly on POSIX", () => {
+    const child = { exitCode: null, signalCode: null, kill: vi.fn() };
+    terminateDevelopmentChild(child, "linux", "SIGTERM", vi.fn());
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
   it("waits for child READY before accepting a later HTTP 200 and launches once", async () => {
     const tracker = createLifecycleTracker();
     const child = runningChild();

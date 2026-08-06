@@ -17,6 +17,7 @@
     "compatibility:metadata": "node scripts/runtime-metadata.mjs",
     "compatibility:fixtures": "npm run build && node scripts/cross-platform-fixtures.mjs",
     "compatibility:startup": "node scripts/validate-startup.mjs",
+    "compatibility:dev-child-spawn": "node scripts/validate-dev-child-spawn.mjs",
     "compatibility:dependencies": "node scripts/capture-dependencies.mjs",
     "artifacts:scan": "node scripts/scan-artifacts.mjs artifacts",
     "typecheck": "tsc --noEmit",

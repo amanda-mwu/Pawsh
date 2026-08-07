@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process";
 import process from "node:process";
 import { terminateOwnedProcessTree, createBoundedOutputTail, redactDiagnosticText } from "./playwright-lifecycle.mjs";
+import { createPlaywrightQaEnvironment, currentQaIdentity, loadQaState, QA_STATE_PATH, writeQaState } from "./qa-environment.mjs";
 
 export const QA_MODES = new Set(["quick", "standard", "full", "release-candidate"]);
 const DEFAULT_STAGE_TIMEOUTS = Object.freeze({
@@ -111,28 +112,61 @@ function runStageProcess(stage, timeoutMs, env = process.env) {
   });
 }
 
-export async function runQaCascade({ mode = "quick", env = process.env, stageRunner = runStageProcess, timeouts = parseQaTimeouts(env) } = {}) {
+export async function runQaCascade({ mode = "quick", env = process.env, stageRunner = runStageProcess, timeouts = parseQaTimeouts(env), statePath = QA_STATE_PATH, persistState = true, restart = false, allowPriorFailure = false, startAt = 0 } = {}) {
   if (!QA_MODES.has(mode)) throw new Error(`Unknown QA mode: ${mode}`);
+  const qaEnv = createPlaywrightQaEnvironment(env);
+  const identity = currentQaIdentity(qaEnv);
+  const prior = persistState ? await loadQaState(statePath) : null;
+  if ((mode === "full" || mode === "release-candidate") && prior && prior.sha === identity.sha && prior.overallStatus === "failed" && !restart && !allowPriorFailure) {
+    return { mode, status: "failed", blocker: { name: "progression", classification: "prior_run_unresolved", error: `A prior ${prior.mode} run failed at ${prior.firstFailedStage ?? "an unknown stage"}. Use qa:resume or --restart.` }, results: [] };
+  }
+  const stages = stageDefinitions(mode);
   const results = [];
   let blocker = null;
-  for (const stage of stageDefinitions(mode)) {
+  for (let index = 0; index < stages.length; index += 1) {
+    const stage = stages[index];
+    if (index < startAt) {
+      results.push({ name: stage.name, status: "passed", reused: true, skippedReason: "reused after compatible state validation" });
+      continue;
+    }
     if (blocker) {
       results.push({ name: stage.name, status: "blocked", skippedReason: `blocked by ${blocker.name}` });
       continue;
     }
     const startedAt = Date.now();
     let result;
-    try { result = stage.run ? await stage.run(env, timeouts[stage.timeoutClass], stageRunner) : await stageRunner(stage, timeouts[stage.timeoutClass], env); }
+    try { result = stage.run ? await stage.run(qaEnv, timeouts[stage.timeoutClass], stageRunner) : await stageRunner(stage, timeouts[stage.timeoutClass], qaEnv); }
     catch (error) { result = { status: "failed", classification: "stage_exception", error: redactDiagnosticText(error.message) }; }
     result = { status: "passed", ...result, name: stage.name, startedAt, completedAt: Date.now(), durationMs: result.durationMs ?? Date.now() - startedAt, timeoutMs: timeouts[stage.timeoutClass] };
     results.push(result);
     if (result.status !== "passed") blocker = result;
+    if (persistState) await writeQaState({ sha: identity.sha, branch: identity.branch, mode, startedAt: results[0]?.startedAt ?? Date.now(), completedAt: result.status === "passed" && index === stages.length - 1 ? Date.now() : undefined, overallStatus: result.status === "passed" && index === stages.length - 1 ? "passed" : "failed", lastCompletedStage: result.status === "passed" ? stage.name : results[index - 1]?.name, firstFailedStage: result.status === "passed" ? undefined : stage.name, failureClassification: result.classification, cleanupStatus: result.cleanupStatus ?? "complete", environmentFingerprint: identity.fingerprint, orchestratorVersion: "1" }, statePath);
   }
-  return { mode, status: blocker ? "failed" : "passed", blocker, results };
+  const report = { mode, status: blocker ? "failed" : "passed", blocker, results };
+  if (persistState) await writeQaState({ sha: identity.sha, branch: identity.branch, mode, startedAt: results[0]?.startedAt ?? Date.now(), completedAt: Date.now(), overallStatus: report.status, lastCompletedStage: results.at(-1)?.name, firstFailedStage: blocker?.name, failureClassification: blocker?.classification, cleanupStatus: results.every((item) => item.cleanupStatus !== "incomplete") ? "complete" : "incomplete", environmentFingerprint: identity.fingerprint, orchestratorVersion: "1" }, statePath);
+  return report;
+}
+
+export async function runQaResume({ env = process.env, stageRunner = runStageProcess, statePath = QA_STATE_PATH } = {}) {
+  const state = await loadQaState(statePath);
+  if (!state) throw new Error("No valid QA state is available for resume");
+  const qaEnv = createPlaywrightQaEnvironment(env);
+  const identity = currentQaIdentity(qaEnv);
+  if (state.sha !== identity.sha) throw new Error("QA resume requires an exact SHA match");
+  if (state.environmentFingerprint !== identity.fingerprint) throw new Error("QA resume requires a compatible environment fingerprint");
+  if (state.cleanupStatus !== "complete") throw new Error("QA resume refused because prior cleanup was incomplete");
+  if (state.overallStatus !== "failed" || !state.firstFailedStage) throw new Error("QA resume requires a failed stage");
+  const index = stageDefinitions(state.mode).findIndex((stage) => stage.name === state.firstFailedStage);
+  if (index < 0) throw new Error("QA resume state names an unknown stage");
+  return runQaCascade({ mode: state.mode, env, stageRunner, statePath, persistState: true, allowPriorFailure: true, startAt: index });
 }
 
 export function formatQaReport(report) {
   const lines = [`QA mode: ${report.mode}`, `Overall: ${report.status}`];
+  if (report.blocker && !report.results.includes(report.blocker)) {
+    lines.push(`First failure: ${report.blocker.classification ?? "stage failure"}${report.blocker.error ? ` — ${report.blocker.error}` : ""}`);
+    lines.push("Use npm run qa:resume to retry a compatible failed stage, or npm run qa:full -- --restart for a clearly new run.");
+  }
   for (const stage of report.results) {
     const suffix = stage.status === "blocked" ? ` (${stage.skippedReason})` : stage.durationMs === undefined ? "" : ` (${stage.durationMs} ms)`;
     lines.push(`${stage.name}: ${stage.status}${suffix}`);

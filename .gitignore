@@ -11,3 +11,4 @@ artifacts/
 *.log
 .DS_Store
 .npm-cache/
+.pawsh-qa/

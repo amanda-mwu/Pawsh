@@ -11,6 +11,9 @@ Pawsh provides bounded local QA modes through `scripts/run-qa.mjs`:
   locally executable release checks.
 - `npm run qa:release-candidate` runs the same complete local sequence without
   reducing coverage; hosted exact-SHA validation is still required.
+- `npm run qa:resume` retries the first failed stage from the last compatible
+  run and continues only after it passes. It requires the same SHA, Node/test
+  environment fingerprint, and complete prior cleanup.
 
 Stages run in dependency order and stop at the first failure, timeout, or
 cleanup failure. Later stages are reported as `blocked`, with the prerequisite
@@ -19,6 +22,22 @@ Each child has a bounded stage timeout and owned process cleanup. Browser
 stages reuse the Playwright lifecycle guard; external servers and databases are
 never terminated by the cascade. `PAWSH_QA_STAGE_TIMEOUT_MS` can set a bounded
 test/local diagnostic timeout for every command (1 second to 1 hour).
+
+All repository-owned mutable browser stages receive an explicit disposable
+environment: `NODE_ENV=test`, `PAWSH_E2E_MODE=disposable`, loopback
+`DATABASE_URL`, memory document storage, deterministic scanning, a local
+`APP_ORIGIN`, and a validation-only session secret. The Playwright fixture guard
+remains unchanged and still rejects direct mutable runs without disposable mode.
+The child environment is assembled centrally and never mutates the parent
+process.
+
+The orchestrator records a small atomic state file at `.pawsh-qa/last-run.json`.
+It contains only the SHA, mode, stage outcome, cleanup status, safe environment
+fingerprint, and orchestrator version; it contains no credentials or logs. A
+same-SHA unresolved failure prevents an accidental direct `qa:full` run. Use
+`qa:resume` to retry the failed stage, or `qa:full -- --restart` to explicitly
+start a fresh full run. Release-candidate mode always performs its complete
+cascade.
 
 The environment stage requires a loopback `DATABASE_URL`, a supported installed
 Node runtime, and no production target. Node 22 is reported as unavailable when

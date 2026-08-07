@@ -10,7 +10,7 @@ describe("cascading QA orchestrator", () => {
     const report = await runQaCascade({ env, stageRunner: async (stage) => {
       commands.push(stage.command);
       return stage.command === "lint" ? { status: "failed", classification: "command_failure" } : { status: "passed" };
-    } });
+    }, persistState: false });
     expect(report.status).toBe("failed");
     expect(report.blocker.name).toBe("static");
     expect(commands).toEqual(["lint"]);
@@ -22,7 +22,7 @@ describe("cascading QA orchestrator", () => {
     const report = await runQaCascade({ env, stageRunner: async (stage) => {
       commands.push(stage.command);
       return stage.command === "db:migrate" ? { status: "failed", classification: "migration_failure" } : { status: "passed" };
-    } });
+    }, persistState: false });
     expect(report.blocker.name).toBe("database");
     expect(commands).toContain("db:health");
     expect(commands).toContain("db:migrate");
@@ -32,21 +32,21 @@ describe("cascading QA orchestrator", () => {
   it("blocks dependents after a stage timeout and preserves the timeout classification", async () => {
     const report = await runQaCascade({ env, stageRunner: async (stage) => stage.command === "db:health"
       ? { status: "timed_out", classification: "stage_timeout", cleanupStatus: "complete" }
-      : { status: "passed" } });
+      : { status: "passed" }, persistState: false });
     expect(report.blocker.name).toBe("database");
     expect(report.blocker.classification).toBe("stage_timeout");
     expect(report.results.find((stage) => stage.name === "smoke").status).toBe("blocked");
   });
 
   it("reports quick omissions truthfully and keeps output concise", async () => {
-    const report = await runQaCascade({ env, stageRunner: passRunner });
+    const report = await runQaCascade({ env, stageRunner: passRunner, persistState: false });
     expect(report.status).toBe("passed");
     expect(report.results.map((stage) => stage.name)).toEqual(["environment", "static", "critical", "database", "startup", "preflight", "smoke"]);
     expect(formatQaReport(report)).toContain("QA mode: quick");
   });
 
   it("includes expansion and release stages in full mode", async () => {
-    const report = await runQaCascade({ mode: "full", env, stageRunner: passRunner });
+    const report = await runQaCascade({ mode: "full", env, stageRunner: passRunner, persistState: false });
     expect(report.status).toBe("passed");
     expect(report.results.map((stage) => stage.name)).toContain("expansion");
     expect(report.results.map((stage) => stage.name)).toContain("release");
@@ -54,7 +54,7 @@ describe("cascading QA orchestrator", () => {
 
   it("runs full browser preflights sequentially before smoke", async () => {
     const commands = [];
-    const report = await runQaCascade({ mode: "full", env, stageRunner: async (stage) => { commands.push(stage.command); return { status: "passed" }; } });
+    const report = await runQaCascade({ mode: "full", env, stageRunner: async (stage) => { commands.push(stage.command); return { status: "passed" }; }, persistState: false });
     expect(report.status).toBe("passed");
     expect(commands.filter((command) => command.startsWith("qa:browser-preflight"))).toEqual([
       "qa:browser-preflight chromium", "qa:browser-preflight firefox", "qa:browser-preflight webkit"

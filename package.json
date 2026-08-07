@@ -34,6 +34,7 @@
     "qa:standard": "node scripts/run-qa.mjs standard",
     "qa:full": "node scripts/run-qa.mjs full",
     "qa:release-candidate": "node scripts/run-qa.mjs release-candidate",
+    "qa:resume": "node scripts/run-qa.mjs resume",
     "test:watch": "vitest",
     "seed:qa": "node --import ./scripts/load-env.mjs --import tsx scripts/seed-qa.ts",
     "documents:reconcile": "node --import ./scripts/load-env.mjs --import tsx scripts/reconcile-pet-documents.ts",

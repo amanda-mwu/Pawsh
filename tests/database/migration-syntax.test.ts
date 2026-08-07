@@ -46,5 +46,7 @@ describe("database migrations", () => {
     expect(rabiesCompliance).toContain("unique_notification_material_recipient");
     expect(rabiesCompliance).toContain("0010_rabies_appointment_compliance");
     expect(malwareProtection).toContain("create policy tenant_isolation on pet_document_scan_attempts");
+    const attachmentMvp = await readFile("migrations/0011_rabies_attachment_mvp.sql", "utf8");
+    expect(attachmentMvp).toContain("old.state='pending' and new.state not in ('pending','current','pending_scan')");
   });
 });

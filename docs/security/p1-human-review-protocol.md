@@ -1,4 +1,12 @@
-# P1 human Security review protocol
+# P1 human Security review protocol (superseded for MVP)
+
+ADR-010 supersedes the managed-scanner requirement for the MVP. SEC-DOC-001
+remains historical evidence and is replaced for MVP by the Rabies Attachment
+Minimum Safety gate: authenticated same-tenant authorization, strict PDF and
+size validation, private immutable storage identity, authorized download,
+attachment disposition, `nosniff`, and auditability. Managed scanning remains a
+post-MVP deployment-hardening candidate; its residual malware-detection risk is
+accepted only within this narrow scope.
 
 Administrative status: not approved. A named human Security approver must review the exact tested runtime artifact.
 

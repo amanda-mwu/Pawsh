@@ -24,7 +24,6 @@ export function validateDisposableQaEnvironment(env) {
   if (!/^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/i.test(env.APP_ORIGIN)) throw new Error("Unsafe QA APP_ORIGIN override: origin is not local");
   if (!env.SESSION_SECRET || env.SESSION_SECRET.length < 32 || env.SESSION_SECRET.length > 512) throw new Error("QA SESSION_SECRET must be between 32 and 512 characters");
   if (env.DOCUMENT_STORAGE_ADAPTER !== "memory") throw new Error("Unsafe QA storage override: disposable QA requires memory document storage");
-  if (env.DOCUMENT_SCANNER_ADAPTER !== "deterministic") throw new Error("Unsafe QA scanner override: disposable QA requires the deterministic scanner adapter");
   return env;
 }
 
@@ -32,10 +31,9 @@ export function createPlaywrightQaEnvironment(parent = process.env) {
   if (parent.NODE_ENV && !["development", "test"].includes(parent.NODE_ENV)) throw new Error("Unsafe QA NODE_ENV override: use a development shell or test child environment");
   if (parent.PAWSH_E2E_MODE && parent.PAWSH_E2E_MODE !== "disposable") throw new Error("QA Playwright environment requires PAWSH_E2E_MODE=disposable");
   if (parent.DOCUMENT_STORAGE_ADAPTER && parent.DOCUMENT_STORAGE_ADAPTER !== "memory") throw new Error("Disposable Playwright QA requires memory document storage");
-  if (parent.DOCUMENT_SCANNER_ADAPTER && parent.DOCUMENT_SCANNER_ADAPTER !== "deterministic") throw new Error("Disposable Playwright QA requires the deterministic scanner adapter");
   if (parent.PAWSH_E2E_BASE_URL) throw new Error("Repository-owned QA owns its Pawsh server; remove PAWSH_E2E_BASE_URL before running the cascade");
   const inherited = { ...parent };
-  for (const key of ["DOCUMENT_SCANNER_ENDPOINT", "DOCUMENT_SCANNER_TOKEN", "DOCUMENT_STORAGE_PATH", "DOCUMENT_STORAGE_BUCKET", "DOCUMENT_STORAGE_REGION", "DOCUMENT_STORAGE_ENDPOINT", "DOCUMENT_STORAGE_ACCESS_KEY_ID", "DOCUMENT_STORAGE_SECRET_ACCESS_KEY"]) delete inherited[key];
+  for (const key of ["DOCUMENT_SCANNER_ADAPTER", "DOCUMENT_SCANNER_ENDPOINT", "DOCUMENT_SCANNER_TOKEN", "DOCUMENT_STORAGE_PATH", "DOCUMENT_STORAGE_BUCKET", "DOCUMENT_STORAGE_REGION", "DOCUMENT_STORAGE_ENDPOINT", "DOCUMENT_STORAGE_ACCESS_KEY_ID", "DOCUMENT_STORAGE_SECRET_ACCESS_KEY"]) delete inherited[key];
   const env = {
     ...inherited,
     NODE_ENV: "test",
@@ -44,7 +42,6 @@ export function createPlaywrightQaEnvironment(parent = process.env) {
     DATABASE_URL: parent.DATABASE_URL || DEFAULT_DATABASE_URL,
     APP_ORIGIN: parent.APP_ORIGIN || DEFAULT_APP_ORIGIN,
     DOCUMENT_STORAGE_ADAPTER: parent.DOCUMENT_STORAGE_ADAPTER || "memory",
-    DOCUMENT_SCANNER_ADAPTER: parent.DOCUMENT_SCANNER_ADAPTER || "deterministic"
   };
   return validateDisposableQaEnvironment(env);
 }
@@ -54,7 +51,7 @@ export function environmentFingerprint(env) {
     ? "loopback-disposable" : "invalid";
   const originClass = /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/i.test(env.APP_ORIGIN ?? "")
     ? "loopback" : "invalid";
-  const safe = [QA_ENVIRONMENT_SCHEMA_VERSION, QA_ORCHESTRATOR_VERSION, process.versions.node, env.NODE_ENV, env.PAWSH_E2E_MODE, databaseTarget, originClass, env.DOCUMENT_STORAGE_ADAPTER, env.DOCUMENT_SCANNER_ADAPTER].join("|");
+  const safe = [QA_ENVIRONMENT_SCHEMA_VERSION, QA_ORCHESTRATOR_VERSION, process.versions.node, env.NODE_ENV, env.PAWSH_E2E_MODE, databaseTarget, originClass, env.DOCUMENT_STORAGE_ADAPTER].join("|");
   return createHash("sha256").update(safe).digest("hex");
 }
 

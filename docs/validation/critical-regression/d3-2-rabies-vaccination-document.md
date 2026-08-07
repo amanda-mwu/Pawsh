@@ -95,7 +95,7 @@ bounded to one PDF per request. Promote history pagination above 100 records or
 
 | Finding | Disposition | Status |
 | --- | --- | --- |
-| SEC-DOC-001 — no malware scanning | Must Fix Before Controlled Pilot | Open |
+| Rabies Attachment Minimum Safety (ADR-010) | Required for MVP | Replacement controls validated locally; hosted exact-SHA pending |
 | ARCH-DOC-001 — bounded buffering | Accepted current limitation | Monitored |
 | GOV-DOC-001 — superseded retention schedule | Must Fix Before GA | Open |
 
@@ -130,7 +130,7 @@ bounded to one PDF per request. Promote history pagination above 100 records or
 ## Known limitations
 
 Deployed provider configuration/recovery remains staging-owned. Dedicated
-malware scanning is open before pilot. PostgreSQL backup alone does not protect
+managed malware scanning is deferred post-MVP by ADR-010. PostgreSQL backup alone does not protect
 PDF bytes. Range requests, removal, OCR, images, customer uploads, reminders,
 booking enforcement, inline rendering, and generalized document management are
 not validated. D4 remains open.

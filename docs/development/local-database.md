@@ -100,11 +100,10 @@ Development startup emits this deterministic sequence before listening:
 4. Individual Helmet, CORS, authentication-cookie, rate-limit, multipart, and
    static-file plugin registrations
 5. Document-storage construction
-6. Document-scanner construction
-7. Authentication and API-route registration
-8. Background-worker registration
-9. `createApp complete`
-10. HTTP listener startup and `[READY] Pawsh listening`
+6. Authentication and API-route registration
+7. Background-worker registration
+8. `createApp complete`
+9. HTTP listener startup and `[READY] Pawsh listening`
 
 Every awaited plugin registration has paired `begin` and `complete` messages.
 After three seconds, an unfinished awaited operation emits `Still waiting for`
@@ -116,8 +115,8 @@ entry point.
 
 If startup appears paused, the final lifecycle line identifies the operation in
 progress. These detailed component diagnostics are enabled only for
-`NODE_ENV=development`; they do not change test determinism, `/health`, scanner
-availability policy, migration ownership, worker behavior, or production
+`NODE_ENV=development`; they do not change test determinism, migration
+ownership, worker behavior, or production
 architecture.
 
 Open `http://127.0.0.1:3000`. `db:seed` creates synthetic `.example`/`.test`
@@ -130,17 +129,9 @@ migrations. It refuses production mode, remote hosts, and any database other
 than `pawsh` or `pawsh_dev`. The target is printed before destruction. Back up
 local work you intend to retain.
 
-The development filesystem document directory is `.pawsh-documents`. The HTTP
-scanner adapter and endpoint configuration remain required in development.
-`http://127.0.0.1:4319/scan` is an example endpoint only: Pawsh does not bundle
-or start a scanner service at that address. Network availability is not probed
-during startup, so a configured offline scanner does not delay `[READY]`,
-`/health`, login, CRM, scheduling, invoicing, reporting, or other non-document
-workflows. Supporting uploads still fail closed asynchronously when scanning
-cannot complete. Testing document uploads requires an actual approved scanner
-service. Startup diagnostics state only that the HTTP adapter is configured and
-never print the endpoint or credentials. Never select the deterministic test
-adapter in a normal development or production process.
+The development filesystem document directory is `.pawsh-documents`. Rabies
+supporting attachments use bounded PDF validation and private storage; no
+scanner adapter, endpoint, service, or scanner credentials are required.
 
 ## Optional Docker parity
 

@@ -14,8 +14,6 @@ import type { DocumentHooks, FinancialHooks, LifecycleHooks, SchedulingHooks } f
 import { openSecret } from "./security/secrets.js";
 import { createDocumentStorage, type DocumentStorage } from "./storage/documents.js";
 import { WallTimeError } from "./domain/time.js";
-import { DeterministicDocumentScanner, HttpDocumentScanner, type DocumentScanner } from "./security/document-scanner.js";
-import { documentScanQueueHealth, processDocumentScans } from "./documents/scan-worker.js";
 import type { StartupDiagnostics } from "./startup.js";
 
 export async function createApp(
@@ -29,7 +27,6 @@ export async function createApp(
     documentStorage?: DocumentStorage;
     documentHooks?: DocumentHooks;
     financialHooks?: FinancialHooks;
-    documentScanner?: DocumentScanner;
     startupDiagnostics?: StartupDiagnostics;
   } = {}
 ): Promise<FastifyInstance> {
@@ -83,19 +80,12 @@ export async function createApp(
   startup?.log("Creating document storage");
   const documentStorage = options.documentStorage ?? createDocumentStorage(config);
   startup?.log("Document storage ready");
-  startup?.log("Creating document scanner");
-  const documentScanner = options.documentScanner ?? (config.DOCUMENT_SCANNER_ADAPTER === "http"
-    ? new HttpDocumentScanner(config.DOCUMENT_SCANNER_ENDPOINT!,config.DOCUMENT_SCANNER_TOKEN)
-    : new DeterministicDocumentScanner());
-  startup?.log("Document scanner ready");
-  if (config.DOCUMENT_SCANNER_ADAPTER === "http") startup?.log("HTTP document scanner configured");
   startup?.log("Registering authentication and API routes");
   registerRoutes(app, db, config, documentStorage,
     options.schedulingHooks, options.lifecycleHooks, options.financialHooks,
-    config.NODE_ENV === "test" ? async()=>{ await processDocumentScans(db,documentStorage,documentScanner,10,options.documentHooks); } : undefined);
+    options.documentHooks);
   startup?.log("Authentication and API routes registered");
   let worker: NodeJS.Timeout | undefined;
-  let documentWorker: NodeJS.Timeout | undefined;
   startup?.log("Registering background workers");
   if (options.runWorker !== false) {
     const emailProvider = config.SMTP_HOST ? new SmtpEmailProvider(config) : new LogEmailProvider();
@@ -103,23 +93,11 @@ export async function createApp(
       try {
         await processOutbox(db);
         await deliverNotifications(db, emailProvider, (value) => openSecret(value, config.SESSION_SECRET));
-        const scanHealth=await documentScanQueueHealth(db);
-        if(scanHealth.deadLetters>0 || (scanHealth.oldestSeconds ?? 0)>300) {
-          app.log.warn({securityEvent:"document_scan_queue_unhealthy",...scanHealth},"document scan queue requires attention");
-        }
       } catch (error) {
         app.log.error({ err: error }, "background processing failed");
       }
     }, 15_000);
     worker.unref();
-    documentWorker = setInterval(async () => {
-      try {
-        const result=await processDocumentScans(db,documentStorage,documentScanner);
-        if(result.retried||result.rejected) app.log.warn({securityEvent:"document_scan_result",...result},"document scan requires attention");
-      }
-      catch(error) { app.log.error({err:error},"document scan processing failed"); }
-    },2_000);
-    documentWorker.unref();
   }
   startup?.log("Background workers registered");
 
@@ -167,7 +145,6 @@ export async function createApp(
 
   app.addHook("onClose", async () => {
     if (worker) clearInterval(worker);
-    if (documentWorker) clearInterval(documentWorker);
   });
   startup?.log("createApp complete");
   return app;

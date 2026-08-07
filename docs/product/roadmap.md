@@ -1,5 +1,13 @@
 # Pawsh product roadmap
 
+## MVP attachment security supersession
+
+ADR-010 supersedes earlier roadmap language that treated managed malware
+scanning, quarantine, retries, or scanner operations as MVP or controlled-pilot
+runtime requirements. MVP uses the Rabies Attachment Minimum Safety controls;
+managed scanning is deferred post-MVP. The older sections below are retained as
+historical planning context and must be read through ADR-010.
+
 ## Authority and lifecycle
 
 This is Pawsh's single authoritative customer-value roadmap. It governs product
@@ -63,9 +71,8 @@ customer-facing discount metadata, and feedback automation.
    authorization, permissions, financial integrity, auditability, migration and
    backup correctness, and secure password handling.
 2. **Deployment and operational security -- before controlled pilot:** restore
-   validation, document quarantine and managed scanning, staging validation,
-   accessibility gates, monitoring, recovery, and operational readiness required
-   by existing authority.
+   validation, Rabies Attachment Minimum Safety, accessibility gates, monitoring,
+   recovery, and operational readiness required by the approved MVP scope.
 3. **Scale and compliance hardening -- GA/Growth:** controls for broader scale,
    data classes, compliance, and retention automation.
 4. **Enterprise governance and assurance -- Enterprise:** formal assurance,
@@ -85,7 +92,7 @@ MVP minimum safety
 ├── Safe filenames and randomized immutable object identity
 └── Authorized download
 
-Controlled-pilot security requirement
+Controlled-pilot security requirement (MVP)
 ├── Fail-closed quarantine and application scanning contract
 ├── Managed-scanner integration
 ├── Timeout and outage handling

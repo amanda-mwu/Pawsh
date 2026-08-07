@@ -89,7 +89,6 @@ describe("cascading QA orchestrator", () => {
       for (const entry of observed) {
         expect(entry.env.NODE_ENV).toBe("test");
         expect(entry.env.PAWSH_E2E_MODE).toBe("disposable");
-        expect(entry.env.DOCUMENT_SCANNER_ADAPTER).toBe("deterministic");
         expect(entry.env.DOCUMENT_STORAGE_ADAPTER).toBe("memory");
         expect(entry.env.PAWSH_E2E_BASE_URL).toBeUndefined();
       }

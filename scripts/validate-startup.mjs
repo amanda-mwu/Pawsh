@@ -32,12 +32,12 @@ const child = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], {
   env: {
     ...process.env,
     NODE_ENV: "development",
+    DATABASE_URL: process.env.DATABASE_URL ?? "postgres://pawsh:pawsh-local-only@127.0.0.1:55432/pawsh",
+    SESSION_SECRET: process.env.SESSION_SECRET ?? "validation-only-startup-secret-at-least-32-characters",
     PORT: String(port),
     APP_ORIGIN: `http://127.0.0.1:${port}`,
     DOCUMENT_STORAGE_ADAPTER: "filesystem",
     DOCUMENT_STORAGE_PATH: storage,
-    DOCUMENT_SCANNER_ADAPTER: "http",
-    DOCUMENT_SCANNER_ENDPOINT: "http://127.0.0.1:9/scan"
   },
   stdio: ["ignore", "pipe", "pipe"],
   windowsHide: true
@@ -52,8 +52,7 @@ try {
     output: () => `${stdout}\n${stderr}`
   });
   for (const expected of ["[BOOT] Configuration loaded", "[BOOT] PostgreSQL ready", "[BOOT] createApp begin",
-    "component=\"helmet\"", "[BOOT] Document storage ready", "[BOOT] Document scanner ready",
-    "[BOOT] HTTP document scanner configured",
+    "component=\"helmet\"", "[BOOT] Document storage ready",
     "[BOOT] Authentication and API routes registered", "[BOOT] Background workers registered",
     "[BOOT] createApp complete", "[BOOT] Starting HTTP server", "[READY] Pawsh listening",
     `appOrigin="http://127.0.0.1:${port}"`, "boundAddress=", "startupMs="]) {

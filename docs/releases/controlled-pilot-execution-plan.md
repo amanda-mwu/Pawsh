@@ -15,8 +15,8 @@ earlier-SHA evidence are not substitutes.
 | CAL-TIME | Calendar/time integrity | None technical | Complete -- automated evidence sufficient | None | No technical blocker |
 | REPLAY | Scheduling/financial replay | None technical | Complete -- automated evidence sufficient | None | No technical blocker |
 | RABIES | Compliance contract and suites | Manual workflow evidence | Complete -- technical evidence ready, human approval pending | Product/Privacy decision, manual UX | Yes for human approval |
-| P1-APP | ADR-005/P1 scanner contract | Formal decision | Complete -- technical evidence ready, human approval pending | Security review | Yes |
-| SEC-DOC-001 | Managed scanner in staging | Real integration, alerts, harmless test | Open -- external infrastructure | Security/Ops | Yes |
+| RABIES-ATTACHMENT | ADR-010 minimum attachment safety | Upload authorization, bounded PDF validation, private retrieval, tenant isolation | Complete -- technical evidence required on exact SHA | Security/Product review | Yes |
+| SEC-DOC-001 | Managed scanner in staging | Superseded by ADR-010 for MVP; historical finding retained | Superseded for MVP; post-MVP hardening candidate | Security/Product approval | No for MVP |
 | SEC-DB-001 | Schema-owner/RLS finding | Approved disposition | Open -- human approval | Engineering/Security/launch approver | Existing authority decides |
 | P2-A11Y | WCAG pilot workflows | Manual AT matrix and final automation | Open -- human execution | Accessibility approver | Yes |
 | P3-PERF | Pre-staging characterization | Approved envelope and run | Open -- approval then automatable | Product approval | P5 controls launch |

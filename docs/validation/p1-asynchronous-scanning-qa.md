@@ -1,4 +1,6 @@
-# P1 asynchronous scanning QA evidence
+# P1 asynchronous scanning QA evidence (retired for MVP)
+
+Historical evidence only. ADR-010 replaces this scanner gate for MVP.
 
 Classification: P1 QA Incomplete pending human Security review. Automated implementation evidence is valid.
 

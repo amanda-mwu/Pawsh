@@ -40,4 +40,4 @@ PostgreSQL backup protects metadata and request identity, not PDF bytes. Provide
 
 `pets.care.view` controls metadata/history/download. Upload and replacement require `pets.edit` plus `pets.care.edit`, checked before ingestion and before promotion. Object keys and provider details never appear in ordinary APIs.
 
-PDF checks are deliberately shallow: MIME, byte limit, `%PDF-` at byte zero, and `%%EOF` within 4 KiB. This is not structural validation, sanitization, encryption detection, or malware scanning. `SEC-DOC-001` requires dedicated scanning before Controlled Pilot.
+PDF checks are deliberately shallow: MIME, byte limit, `%PDF-` at byte zero, and `%%EOF` within 4 KiB. This is not structural validation, sanitization, encryption detection, or malware scanning. For MVP, ADR-010 accepts this residual risk within the narrow rabies-supporting-attachment scope; managed scanning is deferred post-MVP.

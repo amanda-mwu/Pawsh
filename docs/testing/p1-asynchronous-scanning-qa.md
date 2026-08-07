@@ -1,4 +1,7 @@
-# P1 asynchronous document-scanning QA
+# P1 asynchronous document-scanning QA (retired for MVP)
+
+Historical evidence only. The scanner workflow is no longer a supported MVP
+execution path; see ADR-010.
 
 Status: implementation candidate; automated CI and human Security approval pending.
 

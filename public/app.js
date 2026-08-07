@@ -426,14 +426,11 @@ async function showPetDocuments(petId,historicalOnly=false){
     const pet=state.pets.find(item=>item.id===petId);
     const data=await api(`/api/pets/${petId}/documents`);
     const current=data.current;
-    const activity=data.activity||[];
-    const activeRequest=activity.find(item=>item.status==="pending_scan"||item.status==="failed_retryable");
-    const latestTerminal=activity.find(item=>item.status==="rejected"||item.status==="failed_terminal");
+    const activeRequest=null;
     const previous=data.previous.map(item=>`<div><span>${escape(item.filename)}<small>${item.expiresOn?`Expires ${new Date(`${item.expiresOn}T00:00:00`).toLocaleDateString()}`:"Expiration date not recorded"}</small></span><button type="button" class="text-button download-pet-document" data-id="${item.id}">Download</button></div>`).join("");
     const expired=current?.expiresOn&&new Date(`${current.expiresOn}T23:59:59`)<new Date();
     const currentView=current?`<section class="wide document-current" data-testid="rabies-current"><p><strong>${escape(current.filename)}</strong></p><p>${current.expiresOn?`${expired?"Rabies vaccination expired — ":"Expires "}${new Date(`${current.expiresOn}T00:00:00`).toLocaleDateString()}`:"Expiration date not recorded"}</p><button type="button" class="text-button download-pet-document" data-id="${current.id}">Download</button></section>`:`<p class="wide empty">No rabies vaccination record uploaded</p>`;
-    const activityView=activeRequest?`<p class="wide" role="status" aria-live="polite" data-testid="rabies-scan-status">${activeRequest.status==="failed_retryable"?"The document could not be verified right now. Pawsh will retry.":current?"Your current record remains active while the replacement is checked.":"Checking document security…"}</p>`:
-      latestTerminal?`<p class="wide" role="status" data-testid="rabies-scan-status">${latestTerminal.status==="rejected"?"The document could not be accepted because it did not pass the security check.":"The document could not be verified. Upload the document again or contact support."}</p>`:"";
+    const activityView="";
     const upload=!activeRequest&&!historicalOnly&&allowed("pets.edit")&&allowed("pets.care.edit")?`<fieldset class="wide"><legend>${current?"Replace":"Upload"} Rabies Vaccination Record</legend><label>PDF<input data-testid="field-rabiesPdf" name="rabiesPdf" type="file" accept="application/pdf" required></label><label>Document date<input name="documentDate" type="date"></label><label>Vaccination expiration<input name="expiration" type="date" value="${pet?.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):current?.expiresOn||""}"></label></fieldset>`:"";
     openModal("Rabies Vaccination Record",currentView+activityView+upload+(previous?`<details class="wide"><summary>Previous records</summary><div class="history-list" data-testid="previous-rabies-records">${previous}</div></details>`:""),async(form)=>{
       if(!form.get("rabiesPdf"))return;
@@ -448,10 +445,6 @@ async function showPetDocuments(petId,historicalOnly=false){
       const uploadForm=new FormData();uploadForm.append("metadata",JSON.stringify(metadata));uploadForm.append("file",form.get("rabiesPdf"));
       try{
         const result=await api(`/api/pets/${petId}/documents/rabies`,{method:"POST",body:uploadForm});
-        if(result.state==="pending_scan"){
-          $("#modal-error").textContent="Uploaded securely. Malware scan pending…";
-          return await waitForDocumentScan(petId,requestId,operation);
-        }
         return result;
       }
       catch(error){
@@ -465,31 +458,7 @@ async function showPetDocuments(petId,historicalOnly=false){
       }
     });
     $$(".download-pet-document").forEach(button=>button.addEventListener("click",()=>downloadPetDocument(button.dataset.id)));
-    if(activeRequest)void waitForDocumentActivity(petId);
   }catch(error){toast(error.message);}
-}
-
-async function waitForDocumentActivity(petId){
-  for(let attempt=0;attempt<60;attempt+=1){
-    await new Promise(resolve=>setTimeout(resolve,1000));
-    const data=await api(`/api/pets/${petId}/documents`);
-    const active=(data.activity||[]).some(item=>item.status==="pending_scan"||item.status==="failed_retryable");
-    if(!active){await showPetDocuments(petId);return;}
-  }
-}
-
-async function waitForDocumentScan(petId,requestId,operation){
-  for(let attempt=0;attempt<60;attempt+=1){
-    const status=await api(`/api/pets/${petId}/document-requests/${requestId}?operation=${operation}`);
-    if(status.state==="completed")return status.result;
-    if(status.state==="failed"||status.state==="conflict"){
-      const error=new Error(status.code==="MALWARE_SIMULATED"?"The document was rejected by security scanning.":
-        "The document could not be promoted. The previous valid document remains available.");
-      error.status=409;throw error;
-    }
-    await new Promise(resolve=>setTimeout(resolve,1000));
-  }
-  throw new Error("The document is still being scanned. Check its status again shortly.");
 }
 
 async function downloadPetDocument(id){

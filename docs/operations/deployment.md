@@ -3,7 +3,7 @@
 Production authority is a containerized Pawsh artifact or managed container
 platform connected to managed PostgreSQL 17, managed object storage, managed
 secrets, monitoring, encrypted automated backups, and point-in-time recovery.
-Staging mirrors configuration, permissions, authentication, storage, scanner,
+Staging mirrors configuration, permissions, authentication, and storage;
 backup, monitoring, and topology where behavior depends on them; it need not
 match production scale.
 

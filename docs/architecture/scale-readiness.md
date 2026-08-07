@@ -226,7 +226,7 @@ inflate ordinary browser fixtures.
 - Status: Resolved in D3. Service-time identity and safety snapshots remain
   explicitly absent.
 
-### SEC-DOC-001 — No dedicated PDF malware scanning
+### SEC-DOC-001 — No dedicated PDF malware scanning (superseded for MVP)
 
 - Evidence: D3.2 restricts uploads to bounded PDFs with shallow signature/EOF
   checks, private storage, permission-controlled attachment downloads, and no
@@ -235,8 +235,8 @@ inflate ordinary browser fixtures.
   browser or device PDF handler.
 - Disposition: Must Fix Before Controlled Pilot.
 - Promotion trigger: before any pilot user can upload or download Pet Care PDFs.
-- Status: Open; evaluate scanning with quarantine semantics. Sanity validation
-  is not represented as malware scanning.
+- Status: Superseded for MVP by ADR-010; evaluate managed scanning later as
+  deployment hardening. Sanity validation is not represented as malware scanning.
 
 ### ARCH-DOC-001 — Buffered document ingestion
 

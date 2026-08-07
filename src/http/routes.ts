@@ -124,10 +124,7 @@ interface DocumentActivityRow {
 }
 
 function publicDocumentActivity(row: DocumentActivityRow) {
-  const retryable = row.requestState === "in_progress" && row.lastScanError !== null;
-  const status = row.requestState === "in_progress"
-    ? retryable ? "failed_retryable" : "pending_scan"
-    : row.resultCode === "MALWARE_SIMULATED" ? "rejected" : "failed_terminal";
+  const status = row.requestState === "in_progress" ? "pending" : "unavailable";
   return {
     requestId: row.requestId,
     documentType: "rabies_vaccination",
@@ -512,7 +509,7 @@ export function registerRoutes(
   schedulingHooks: SchedulingHooks = {},
   lifecycleHooks: LifecycleHooks = {},
   financialHooks: FinancialHooks = {},
-  processPendingDocumentScans?: () => Promise<void>
+  documentHooks?: DocumentHooks
 ): void {
   const authenticate = authentication(db);
   const authenticatePlatform = platformAuthentication(db);
@@ -1668,36 +1665,45 @@ export function registerRoutes(
       await documentStorage.put(storageKey, bytes);
       uploaded = true;
       await db`
-        update pet_documents set state='pending_scan',size_bytes=${bytes.byteLength},sha256=${digest},
+        update pet_documents set size_bytes=${bytes.byteLength},sha256=${digest},
           object_uploaded_at=now(),updated_at=now()
         where business_id=${context.businessId} and id=${documentId} and state='pending'
       `;
-      await db`update pet_document_requests set scan_available_at=now(),result_code='PENDING_SCAN',updated_at=now()
-        where id=${createdRequest.id} and state='in_progress'`;
-      if (processPendingDocumentScans) {
-        await processPendingDocumentScans();
-        const [finished] = await db<{state:string;resultCode:string|null;resultDocumentId:string|null}[]>`
-          select state,result_code,result_document_id from pet_document_requests where id=${createdRequest.id}`;
-        if (finished?.state === 'completed' && finished.resultDocumentId) {
-          const [document] = await db<DocumentApiRow[]>`select id,document_type,state,document_version,
-            safe_download_filename,size_bytes,document_date,expires_on,created_at from pet_documents
-            where business_id=${context.businessId} and id=${finished.resultDocumentId}`;
-          return reply.code(metadata.expectedCurrentDocumentId ? 200 : 201).send(publicDocument(document!));
+      await db.begin(async (tx) => {
+        const [requestRow] = await tx<{petId:string;requestedBy:string;expectedCurrentDocumentId:string|null;expectedCurrentDocumentVersion:number|null;expectedPetVersion:number|null;expirationIntent:string;expirationValue:string|null}[]>`
+          select pet_id,requested_by,expected_current_document_id,expected_current_document_version,expected_pet_version,expiration_intent,expiration_value
+          from pet_document_requests where id=${createdRequest.id} and state='in_progress' for update`;
+        if (!requestRow) throw new Error("Upload request is no longer active");
+        const [membership] = await tx<{isOwner:boolean;permissions:string[]}[]>`select is_owner,permissions from business_memberships where business_id=${context.businessId} and id=${context.membershipId} and user_id=${context.userId} and status='active' for update`;
+        if (!membership || (!membership.isOwner && (!membership.permissions.includes('pets.edit') || !membership.permissions.includes('pets.care.edit')))) throw new Error("PERMISSION_REVOKED");
+        const [pet] = await tx<{version:number;vaccinationExpiresOn:string|null}[]>`select version,vaccination_expires_on from pets where business_id=${context.businessId} and id=${requestRow.petId} for update`;
+        const [current] = await tx<{id:string;documentVersion:number}[]>`select id,document_version from pet_documents where business_id=${context.businessId} and pet_id=${requestRow.petId} and document_type='rabies_vaccination' and state='current' for update`;
+        if ((requestRow.expectedCurrentDocumentId === null && current) || (requestRow.expectedCurrentDocumentId && (!current || current.id !== requestRow.expectedCurrentDocumentId || current.documentVersion !== requestRow.expectedCurrentDocumentVersion))) throw new Error("DOCUMENT_STALE");
+        if (requestRow.expirationIntent !== 'preserve' && (!pet || pet.version !== requestRow.expectedPetVersion)) throw new Error("PET_STALE");
+        if (current) await tx`update pet_documents set state='superseded',updated_at=now() where id=${current.id}`;
+        const expiration: string | null = requestRow.expirationIntent === 'set' ? (requestRow.expirationValue ?? null) : requestRow.expirationIntent === 'clear' ? null : (pet?.vaccinationExpiresOn ?? null);
+        await tx`update pet_documents set state='current',expires_on=${expiration},updated_at=now() where id=${documentId} and state='pending'`;
+        const careChanged = Boolean(pet && requestRow.expirationIntent !== 'preserve' && expiration !== pet.vaccinationExpiresOn);
+        if (careChanged) {
+          await tx`update pets set vaccination_expires_on=${expiration},version=version+1,updated_by=${context.userId},updated_at=now() where business_id=${context.businessId} and id=${requestRow.petId}`;
+          await tx`insert into audit_events(business_id,actor_id,action,resource_type,resource_id,correlation_id,after_data) values (${context.businessId},${context.userId},'pet.care.update','pet',${requestRow.petId},${randomUUID()},${tx.json({changedFields:['vaccinationExpiresOn']})})`;
         }
-        if (finished?.state === 'failed' || finished?.state === 'conflict') {
-          const code=finished.resultCode ?? 'SCAN_FAILED';
-          const status=code==='PERMISSION_REVOKED'?403:code==='PET_UNAVAILABLE'?404:409;
-          return reply.code(status).send({code,error:'The document could not be promoted; the previous valid document remains available'});
-        }
-      }
-      return reply.code(202).send({ state: "pending_scan", requestId: metadata.uploadRequestId });
+        await documentHooks?.beforeDocumentAudit?.({ businessId: context.businessId, petId: requestRow.petId, documentId });
+        await tx`update pet_document_requests set state='completed',result_document_id=${documentId},result_code='COMPLETED',completed_at=now(),updated_at=now() where id=${createdRequest.id}`;
+        await tx`insert into audit_events(business_id,actor_id,action,resource_type,resource_id,correlation_id,after_data) values (${context.businessId},${context.userId},${current ? 'pet.document.replaced' : 'pet.document.uploaded'},'pet_document',${documentId},${randomUUID()},${tx.json({petId:requestRow.petId,documentType:'rabies_vaccination',supportingAttachment:true})})`;
+      });
+      const [document] = await db<DocumentApiRow[]>`select id,document_type,state,document_version,safe_download_filename,size_bytes,document_date,expires_on,created_at from pet_documents where business_id=${context.businessId} and id=${documentId}`;
+      return reply.code(metadata.expectedCurrentDocumentId ? 200 : 201).send(publicDocument(document!));
     } catch (error) {
+      const code = error instanceof Error ? error.message : "UPLOAD_FAILED";
       await failRequest("failed", error instanceof DocumentStorageError ? error.code.toUpperCase() : "UPLOAD_FAILED");
       if (uploaded) {
-        await db`update pet_documents set state='rejected',updated_at=now()
-          where business_id=${context.businessId} and id=${documentId} and state='pending_scan'`;
+        await db`delete from pet_documents where business_id=${context.businessId} and id=${documentId} and state='pending'`;
         await documentStorage.delete(storageKey).catch(() => undefined);
       }
+      if (code === "PERMISSION_REVOKED") return reply.code(403).send({ error: "Pet Care permission is required" });
+      if (code === "DOCUMENT_STALE" || code === "PET_STALE") return reply.code(409).send({ error: "The pet or document changed; refresh and try again" });
+      if (code === "Upload request is no longer active") return reply.code(409).send({ error: code });
       request.log.warn({ errorName: (error as Error).name }, "pet document upload failed");
       return reply.code(503).send({ error: "The document could not be stored" });
     }

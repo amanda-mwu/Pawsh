@@ -5,7 +5,8 @@
 Structured Pet Care data is the operational source for appointment-date rabies
 evaluation. Authorized staff may enter it without a document. A supporting PDF
 is optional, never establishes verification automatically, and remains
-unavailable until an approved scanner returns a bound clean result.
+available as supporting evidence after bounded PDF validation; an attachment
+never verifies rabies status. Structured staff verification remains authoritative.
 
 The record includes vaccination and expiration dates, veterinarian/clinic,
 certificate reference, bounded notes, verification status and method,

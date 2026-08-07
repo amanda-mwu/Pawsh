@@ -13,7 +13,6 @@ describe("disposable QA environment and resumable state", () => {
     expect(env.NODE_ENV).toBe("test");
     expect(env.PAWSH_E2E_MODE).toBe("disposable");
     expect(env.DOCUMENT_STORAGE_ADAPTER).toBe("memory");
-    expect(env.DOCUMENT_SCANNER_ADAPTER).toBe("deterministic");
     expect(env.CUSTOM_TEST_VALUE).toBe("preserved");
     expect(base.PAWSH_E2E_MODE).toBeUndefined();
   });
@@ -21,7 +20,6 @@ describe("disposable QA environment and resumable state", () => {
   it("rejects unsafe database and explicit unsafe modes", () => {
     expect(() => createPlaywrightQaEnvironment({ ...base, DATABASE_URL: "postgres://user:pw@example.com/pawsh" })).toThrow(/loopback/);
     expect(() => createPlaywrightQaEnvironment({ ...base, PAWSH_E2E_MODE: "shared" })).toThrow(/disposable/);
-    expect(() => createPlaywrightQaEnvironment({ ...base, DOCUMENT_SCANNER_ADAPTER: "http" })).toThrow(/deterministic/);
   });
 
   it("writes atomic state without secrets", async () => {
@@ -37,7 +35,6 @@ describe("disposable QA environment and resumable state", () => {
     const env = createPlaywrightQaEnvironment({ CUSTOM_TEST_VALUE: "preserved" });
     expect(env.NODE_ENV).toBe("test");
     expect(env.PAWSH_E2E_MODE).toBe("disposable");
-    expect(env.DOCUMENT_SCANNER_ADAPTER).toBe("deterministic");
     expect(env.DOCUMENT_STORAGE_ADAPTER).toBe("memory");
     expect(env.APP_ORIGIN).toBe("http://127.0.0.1:3000");
     expect(env.DATABASE_URL).toMatch(/127\.0\.0\.1:55432\/pawsh/);

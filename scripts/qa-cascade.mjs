@@ -20,7 +20,7 @@ function stageDefinitions(mode) {
   const base = [
     { name: "environment", timeoutClass: "environment", run: runEnvironment },
     { name: "static", timeoutClass: "static", run: runStatic },
-    { name: "critical", timeoutClass: "critical", command: "test -- tests/domain/playwright-lifecycle.test.mjs" },
+    { name: "critical", timeoutClass: "critical", command: "vitest-run tests/domain/playwright-lifecycle.test.mjs" },
     { name: "database", timeoutClass: "database", run: runDatabase },
     { name: "startup", timeoutClass: "startup", command: "compatibility:startup" },
     { name: "preflight", timeoutClass: "preflight", run: (env, timeoutMs, stageRunner) => runPreflights(mode, env, timeoutMs, stageRunner) },
@@ -30,7 +30,7 @@ function stageDefinitions(mode) {
     // than changing the global Playwright concurrency contract.
     { name: "smoke", timeoutClass: "smoke", command: "test:smoke -- --workers=1" }
   ];
-  if (mode !== "quick") base.push({ name: "targeted", timeoutClass: "targeted", command: "test -- tests/domain/playwright-lifecycle.test.mjs tests/database/rabies-compliance.test.ts" });
+  if (mode !== "quick") base.push({ name: "targeted", timeoutClass: "targeted", command: "vitest-run tests/domain/playwright-lifecycle.test.mjs tests/database/rabies-compliance.test.ts" });
   if (mode === "standard" || mode === "full" || mode === "release-candidate") base.push({ name: "backend", timeoutClass: "backend", command: "test" });
   if (mode === "full" || mode === "release-candidate") {
     base.push({ name: "chromium", timeoutClass: "chromium", command: "test:e2e -- --project=chromium" });
@@ -85,6 +85,7 @@ export function parseQaTimeouts(env = process.env) {
 function commandFor(stage) {
   if (!stage.command) return null;
   const [script, ...args] = stage.command.split(" ");
+  if (script === "vitest-run") return { command: process.execPath, args: ["node_modules/vitest/vitest.mjs", "run", ...args] };
   if (script === "test" && args.length) return process.platform === "win32"
     ? { command: process.env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", `npm run test -- ${args.join(" ")}`] }
     : { command: "npm", args: ["run", "test", "--", ...args] };

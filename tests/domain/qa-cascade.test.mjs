@@ -75,4 +75,24 @@ describe("cascading QA orchestrator", () => {
   it("rejects unknown modes conservatively", async () => {
     await expect(runQaCascade({ mode: "unknown", env })).rejects.toThrow("Unknown QA mode");
   });
+
+  it("uses one validated child environment and one lifecycle server owner for every QA mode", async () => {
+    const parent = { NODE_ENV: "development" };
+    for (const mode of ["quick", "standard", "full", "release-candidate"]) {
+      const observed = [];
+      const report = await runQaCascade({ mode, env: parent, persistState: false, stageRunner: async (stage, _timeout, childEnv) => {
+        observed.push({ stage: stage.name, env: childEnv });
+        return { status: "passed" };
+      } });
+      expect(report.status).toBe("passed");
+      expect(observed.length).toBeGreaterThan(0);
+      for (const entry of observed) {
+        expect(entry.env.NODE_ENV).toBe("test");
+        expect(entry.env.PAWSH_E2E_MODE).toBe("disposable");
+        expect(entry.env.DOCUMENT_SCANNER_ADAPTER).toBe("deterministic");
+        expect(entry.env.DOCUMENT_STORAGE_ADAPTER).toBe("memory");
+        expect(entry.env.PAWSH_E2E_BASE_URL).toBeUndefined();
+      }
+    }
+  });
 });

@@ -28,13 +28,16 @@ measure: ten local workers reproducibly starved navigation against the single
 disposable Pawsh server/database, while the same 11-test Chromium smoke set
 passes with one worker. The global Playwright worker configuration is unchanged.
 
-All repository-owned mutable browser stages receive an explicit disposable
-environment: `NODE_ENV=test`, `PAWSH_E2E_MODE=disposable`, loopback
-`DATABASE_URL`, memory document storage, deterministic scanning, a local
-`APP_ORIGIN`, and a validation-only session secret. The Playwright fixture guard
-remains unchanged and still rejects direct mutable runs without disposable mode.
-The child environment is assembled centrally and never mutates the parent
-process.
+All repository-owned QA stages receive an explicit disposable child environment:
+`NODE_ENV=test`, `PAWSH_E2E_MODE=disposable`, the documented loopback PostgreSQL
+target when no database override is supplied, memory document storage,
+deterministic scanning, a local `APP_ORIGIN`, and a validation-only session
+secret. Ordinary developers therefore run `npm run qa:quick` without exporting
+internal QA variables first. Explicit remote database, production-origin,
+managed-scanner, filesystem-storage, or external-server overrides are rejected.
+The Playwright fixture guard remains unchanged and still rejects direct mutable
+runs without disposable mode. The child environment is assembled centrally and
+never mutates the parent process.
 
 The orchestrator records a small atomic state file at `.pawsh-qa/last-run.json`.
 It contains only the SHA, mode, stage outcome, cleanup status, safe environment
@@ -44,7 +47,7 @@ same-SHA unresolved failure prevents an accidental direct `qa:full` run. Use
 start a fresh full run. Release-candidate mode always performs its complete
 cascade.
 
-The environment stage requires a loopback `DATABASE_URL`, a supported installed
+The environment stage requires a reachable loopback `DATABASE_URL`, a supported installed
 Node runtime, and no production target. Node 22 is reported as unavailable when
 it is not installed; the cascade does not use an unbounded temporary `npx`
 runtime download. Full mode treats Firefox as required. A Firefox launch

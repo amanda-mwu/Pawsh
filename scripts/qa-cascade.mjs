@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import process from "node:process";
 import { terminateOwnedProcessTree, createBoundedOutputTail, redactDiagnosticText } from "./playwright-lifecycle.mjs";
-import { createPlaywrightQaEnvironment, currentQaIdentity, loadQaState, QA_STATE_PATH, writeQaState } from "./qa-environment.mjs";
+import { createPlaywrightQaEnvironment, currentQaIdentity, loadQaState, QA_ORCHESTRATOR_VERSION, QA_STATE_PATH, writeQaState } from "./qa-environment.mjs";
 
 export const QA_MODES = new Set(["quick", "standard", "full", "release-candidate"]);
 const DEFAULT_STAGE_TIMEOUTS = Object.freeze({
@@ -151,17 +151,17 @@ export async function runQaCascade({ mode = "quick", env = process.env, stageRun
     result = { status: "passed", ...result, name: stage.name, startedAt, completedAt: Date.now(), durationMs: result.durationMs ?? Date.now() - startedAt, timeoutMs: timeouts[stage.timeoutClass] };
     results.push(result);
     if (result.status !== "passed") blocker = result;
-    if (persistState) await writeQaState({ sha: identity.sha, branch: identity.branch, mode, startedAt: results[0]?.startedAt ?? Date.now(), completedAt: result.status === "passed" && index === stages.length - 1 ? Date.now() : undefined, overallStatus: result.status === "passed" && index === stages.length - 1 ? "passed" : "failed", lastCompletedStage: result.status === "passed" ? stage.name : results[index - 1]?.name, firstFailedStage: result.status === "passed" ? undefined : stage.name, failureClassification: result.classification, cleanupStatus: result.cleanupStatus ?? "complete", environmentFingerprint: identity.fingerprint, orchestratorVersion: "1" }, statePath);
+    if (persistState) await writeQaState({ sha: identity.sha, branch: identity.branch, mode, startedAt: results[0]?.startedAt ?? Date.now(), completedAt: result.status === "passed" && index === stages.length - 1 ? Date.now() : undefined, overallStatus: result.status === "passed" && index === stages.length - 1 ? "passed" : "failed", lastCompletedStage: result.status === "passed" ? stage.name : results[index - 1]?.name, firstFailedStage: result.status === "passed" ? undefined : stage.name, failureClassification: result.classification, cleanupStatus: result.cleanupStatus ?? "complete", environmentFingerprint: identity.fingerprint, orchestratorVersion: QA_ORCHESTRATOR_VERSION }, statePath);
   }
   const report = { mode, status: blocker ? "failed" : "passed", blocker, results };
-  if (persistState) await writeQaState({ sha: identity.sha, branch: identity.branch, mode, startedAt: results[0]?.startedAt ?? Date.now(), completedAt: Date.now(), overallStatus: report.status, lastCompletedStage: results.at(-1)?.name, firstFailedStage: blocker?.name, failureClassification: blocker?.classification, cleanupStatus: results.every((item) => item.cleanupStatus !== "incomplete") ? "complete" : "incomplete", environmentFingerprint: identity.fingerprint, orchestratorVersion: "1" }, statePath);
+  if (persistState) await writeQaState({ sha: identity.sha, branch: identity.branch, mode, startedAt: results[0]?.startedAt ?? Date.now(), completedAt: Date.now(), overallStatus: report.status, lastCompletedStage: results.at(-1)?.name, firstFailedStage: blocker?.name, failureClassification: blocker?.classification, cleanupStatus: results.every((item) => item.cleanupStatus !== "incomplete") ? "complete" : "incomplete", environmentFingerprint: identity.fingerprint, orchestratorVersion: QA_ORCHESTRATOR_VERSION }, statePath);
   return report;
 }
 
 export async function runQaResume({ env = process.env, stageRunner = runStageProcess, statePath = QA_STATE_PATH } = {}) {
+  const qaEnv = createPlaywrightQaEnvironment(env);
   const state = await loadQaState(statePath);
   if (!state) throw new Error("No valid QA state is available for resume");
-  const qaEnv = createPlaywrightQaEnvironment(env);
   const identity = currentQaIdentity(qaEnv);
   if (state.sha !== identity.sha) throw new Error("QA resume requires an exact SHA match");
   if (state.environmentFingerprint !== identity.fingerprint) throw new Error("QA resume requires a compatible environment fingerprint");

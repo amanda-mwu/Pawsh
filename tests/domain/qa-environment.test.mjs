@@ -30,7 +30,40 @@ describe("disposable QA environment and resumable state", () => {
     await writeQaState({ sha: "abc", environmentFingerprint: environmentFingerprint(createPlaywrightQaEnvironment(base)), overallStatus: "failed", mode: "standard", firstFailedStage: "smoke", cleanupStatus: "complete", secret: "must-not-be-written" }, path);
     const raw = await readFile(path, "utf8");
     expect(raw).not.toContain("must-not-be-written");
-    expect((await loadQaState(path)).schemaVersion).toBe(1);
+    expect((await loadQaState(path)).schemaVersion).toBe(2);
+  });
+
+  it("constructs safe defaults from a normal developer shell", () => {
+    const env = createPlaywrightQaEnvironment({ CUSTOM_TEST_VALUE: "preserved" });
+    expect(env.NODE_ENV).toBe("test");
+    expect(env.PAWSH_E2E_MODE).toBe("disposable");
+    expect(env.DOCUMENT_SCANNER_ADAPTER).toBe("deterministic");
+    expect(env.DOCUMENT_STORAGE_ADAPTER).toBe("memory");
+    expect(env.APP_ORIGIN).toBe("http://127.0.0.1:3000");
+    expect(env.DATABASE_URL).toMatch(/127\.0\.0\.1:55432\/pawsh/);
+    expect(env.SESSION_SECRET).toHaveLength(45);
+  });
+
+  it("normalizes a development parent without mutating it", () => {
+    const parent = { NODE_ENV: "development" };
+    const env = createPlaywrightQaEnvironment(parent);
+    expect(env.NODE_ENV).toBe("test");
+    expect(parent.NODE_ENV).toBe("development");
+  });
+
+  it("rejects an explicitly unsafe production runtime override", () => {
+    expect(() => createPlaywrightQaEnvironment({ ...base, NODE_ENV: "production" })).toThrow(/Unsafe QA NODE_ENV/);
+    expect(() => createPlaywrightQaEnvironment({ ...base, APP_ORIGIN: "https://pawsh.example.com" })).toThrow(/APP_ORIGIN/);
+    expect(() => createPlaywrightQaEnvironment({ ...base, PAWSH_E2E_BASE_URL: "http://127.0.0.1:3000" })).toThrow(/owns its Pawsh server/);
+  });
+
+  it("fingerprints only safe compatibility classes", () => {
+    const env = createPlaywrightQaEnvironment(base);
+    const fingerprint = environmentFingerprint(env);
+    expect(fingerprint).not.toContain("pawsh-local-only");
+    expect(fingerprint).not.toContain("postgres");
+    expect(fingerprint).not.toContain(env.SESSION_SECRET);
+    expect(environmentFingerprint({ ...env, DATABASE_URL: "postgres://other:secret@127.0.0.1:55432/another" })).toBe(fingerprint);
   });
 
   it("resumes only a compatible same-SHA failed stage", async () => {

@@ -15,7 +15,11 @@ function evaluate({ executable, fullMatrix, results }) {
       EXECUTABLE: String(executable),
       FULL_MATRIX: String(fullMatrix),
       TRUSTED_REASONS: "test",
-      JOB_RESULTS: JSON.stringify(results)
+      JOB_RESULTS: JSON.stringify(results),
+      // GitHub Actions normally sets this, which routes evaluator output to
+      // the step summary instead of stdout. This subprocess contract test
+      // intentionally asserts the fallback stdout representation.
+      GITHUB_STEP_SUMMARY: ""
     }
   });
 }

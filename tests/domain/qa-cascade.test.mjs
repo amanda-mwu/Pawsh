@@ -45,6 +45,12 @@ describe("cascading QA orchestrator", () => {
     expect(formatQaReport(report)).toContain("QA mode: quick");
   });
 
+  it("uses narrow single-worker isolation only for the local smoke stage", async () => {
+    const commands = [];
+    await runQaCascade({ env, stageRunner: async (stage) => { commands.push(stage.command); return { status: "passed" }; }, persistState: false });
+    expect(commands.at(-1)).toBe("test:smoke -- --workers=1");
+  });
+
   it("includes expansion and release stages in full mode", async () => {
     const report = await runQaCascade({ mode: "full", env, stageRunner: passRunner, persistState: false });
     expect(report.status).toBe("passed");

@@ -24,7 +24,11 @@ function stageDefinitions(mode) {
     { name: "database", timeoutClass: "database", run: runDatabase },
     { name: "startup", timeoutClass: "startup", command: "compatibility:startup" },
     { name: "preflight", timeoutClass: "preflight", run: (env, timeoutMs, stageRunner) => runPreflights(mode, env, timeoutMs, stageRunner) },
-    { name: "smoke", timeoutClass: "smoke", command: "test:smoke" }
+    // The local smoke set creates many tenants and browser contexts against a
+    // single disposable server/database. Ten workers caused reproducible
+    // navigation starvation; keep this narrow isolation local to smoke rather
+    // than changing the global Playwright concurrency contract.
+    { name: "smoke", timeoutClass: "smoke", command: "test:smoke -- --workers=1" }
   ];
   if (mode !== "quick") base.push({ name: "targeted", timeoutClass: "targeted", command: "test -- tests/domain/playwright-lifecycle.test.mjs tests/database/rabies-compliance.test.ts" });
   if (mode === "standard" || mode === "full" || mode === "release-candidate") base.push({ name: "backend", timeoutClass: "backend", command: "test" });
@@ -55,7 +59,11 @@ async function runDatabase(env, timeoutMs, stageRunner) {
 
 async function runPreflights(mode, env, timeoutMs, stageRunner) {
   const browsers = mode === "full" || mode === "release-candidate" ? ["chromium", "firefox", "webkit"] : ["chromium"];
-  return runSeries(browsers.map((browser) => ({ name: `browser-preflight:${browser}`, command: `qa:browser-preflight ${browser}` })), timeoutMs, env, stageRunner);
+  for (const browser of browsers) {
+    const result = await stageRunner({ name: `browser-preflight:${browser}`, command: `qa:browser-preflight ${browser}` }, timeoutMs, env);
+    if (result.status !== "passed") return { ...result, browser };
+  }
+  return { status: "passed" };
 }
 
 async function runEnvironment(env = process.env) {
@@ -82,9 +90,12 @@ function commandFor(stage) {
     : { command: "npm", args: ["run", "test", "--", ...args] };
   if (script === "qa:browser-preflight") return { command: process.execPath, args: ["scripts/browser-preflight.mjs", args[0]] };
   if (script === "test:cross-browser") return npmInvocation("test:cross-browser");
-  if (args.length) return process.platform === "win32"
-    ? { command: process.env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", `npm run ${script} -- ${args.join(" ")}`] }
-    : { command: "npm", args: ["run", script, "--", ...args] };
+  if (args.length) {
+    const forwarded = args[0] === "--" ? args.slice(1) : args;
+    return process.platform === "win32"
+      ? { command: process.env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", `npm run ${script} -- ${forwarded.join(" ")}`] }
+      : { command: "npm", args: ["run", script, "--", ...forwarded] };
+  }
   return npmInvocation(script);
 }
 

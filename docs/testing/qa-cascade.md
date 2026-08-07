@@ -23,6 +23,11 @@ stages reuse the Playwright lifecycle guard; external servers and databases are
 never terminated by the cascade. `PAWSH_QA_STAGE_TIMEOUT_MS` can set a bounded
 test/local diagnostic timeout for every command (1 second to 1 hour).
 
+The local smoke stage uses one worker only. This is a narrow resource-isolation
+measure: ten local workers reproducibly starved navigation against the single
+disposable Pawsh server/database, while the same 11-test Chromium smoke set
+passes with one worker. The global Playwright worker configuration is unchanged.
+
 All repository-owned mutable browser stages receive an explicit disposable
 environment: `NODE_ENV=test`, `PAWSH_E2E_MODE=disposable`, loopback
 `DATABASE_URL`, memory document storage, deterministic scanning, a local

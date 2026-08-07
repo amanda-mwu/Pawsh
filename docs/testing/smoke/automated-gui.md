@@ -53,6 +53,23 @@ owned and terminated deterministically on Windows as well as Unix. For direct
 `npx playwright test` debugging, start the server separately and set
 `PAWSH_E2E_BASE_URL` to its origin.
 
+The wrapper has bounded lifecycle protection. Its default deadline is selected
+by invocation profile (smoke 5 minutes, targeted projects 10 minutes, and the
+full browser matrix 15 minutes). `PAWSH_PLAYWRIGHT_WRAPPER_TIMEOUT_MS` may
+override a profile for local diagnostics, within the validated 1-second to
+1-hour range. The deadline covers server startup, readiness, Playwright, and
+cleanup; it is separate from Playwright's browser launch/test timeouts.
+
+The wrapper forwards Playwright output live while retaining only bounded,
+redacted tails for timeout diagnostics. It owns only processes it spawned. On
+Windows it terminates the owned process tree with `taskkill /T /F`; on Unix it
+uses a dedicated process group with bounded graceful and forceful termination.
+An external `PAWSH_E2E_BASE_URL` server is never terminated and its port is not
+reported as wrapper-owned. A successful or failed Playwright result is returned
+before the wrapper deadline when possible; a hung invocation exits nonzero with
+a watchdog diagnostic and port-release status. Forced machine or runner
+termination can still prevent cleanup.
+
 CI runs static and backend/runtime validation on Node 22 and Node 24. It runs a
 light Chromium smoke on Node 22, while Node 24 runs the full Chromium suite, each
 browser compatibility subset, three responsive device profiles, and

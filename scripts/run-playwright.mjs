@@ -1,40 +1,21 @@
-/* global URL, setTimeout */
-import { spawn } from "node:child_process";
+/* global console */
 import process from "node:process";
-import { waitForHealth } from "./health-readiness.mjs";
+import { runPlaywrightInvocation } from "./playwright-lifecycle.mjs";
 
-const configuredBaseURL = process.env.PAWSH_E2E_BASE_URL;
-const baseURL = configuredBaseURL ?? "http://127.0.0.1:3000";
-const environment = {
-  ...process.env,
-  APP_ORIGIN: process.env.APP_ORIGIN ?? new URL(baseURL).origin,
-  PAWSH_E2E_BASE_URL: baseURL,
-};
-
-function run(command, args) {
-  return spawn(command, args, { env: environment, stdio: "inherit" });
+const result = await runPlaywrightInvocation({ args: process.argv.slice(2) });
+if (result.kind === "watchdog_timeout") {
+  console.error(`[ERROR] Playwright wrapper timeout: ${result.error}`);
+  console.error(`[ERROR] Profile: ${result.profile}; deadline: ${result.timeoutMs} ms; elapsed: ${result.elapsedMs} ms`);
+  console.error(`[ERROR] Endpoint: ${result.endpoint}; server PID: ${result.roots?.server ?? "none"}; Playwright PID: ${result.roots?.playwright ?? "none"}`);
+  console.error(`[ERROR] Cleanup: ${JSON.stringify(result.cleanup)}`);
+  const serverTail = result.output?.server;
+  const playwrightTail = result.output?.playwright;
+  if (serverTail?.stderr || serverTail?.stdout) console.error(`[ERROR] Server output tail:\n${serverTail.stderr || serverTail.stdout}`);
+  if (playwrightTail?.stderr || playwrightTail?.stdout) console.error(`[ERROR] Playwright output tail:\n${playwrightTail.stderr || playwrightTail.stdout}`);
 }
-
-async function stop(child) {
-  if (!child || child.exitCode !== null) return;
-  child.kill();
-  await Promise.race([
-    new Promise((resolve) => child.once("exit", resolve)),
-    new Promise((resolve) => setTimeout(resolve, 5_000)),
-  ]);
-  if (child.exitCode === null) child.kill("SIGKILL");
-}
-
-let server;
-try {
-  if (!configuredBaseURL) {
-    server = run(process.execPath, ["--import", "./scripts/load-env.mjs", "--import", "tsx", "src/server.ts"]);
-    await waitForHealth(`${baseURL}/health`, server);
-  }
-  const playwright = run(process.execPath, ["node_modules/@playwright/test/cli.js", "test", ...process.argv.slice(2)]);
-  process.exitCode = await new Promise((resolve) =>
-    playwright.once("exit", (code) => resolve(code ?? 1))
-  );
-} finally {
-  await stop(server);
-}
+if (result.error && result.kind !== "watchdog_timeout") console.error(`[ERROR] ${result.error}`);
+if (result.cleanup?.status !== "complete") console.error(`[ERROR] Process cleanup incomplete: ${JSON.stringify(result.cleanup)}`);
+const finalExitCode = result.cleanup?.status === "complete" ? result.exitCode : 126;
+// Cleanup has already settled above; exit explicitly so inherited pipe handles
+// from a misbehaving browser cannot keep the thin CLI alive indefinitely.
+process.exit(finalExitCode);

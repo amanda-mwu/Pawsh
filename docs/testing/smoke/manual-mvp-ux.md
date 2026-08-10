@@ -73,3 +73,14 @@ documentation readiness.
 - Attach a PDF and confirm the attachment does not modify expiration or compliance state.
 - Create and edit a pet using partial, keyboard-only, touch, Mixed Breed, Unknown, and Other selections.
 - Save and reload a selected breed; retain an existing non-catalog breed without alteration.
+
+# Services tier pricing and tenant breed catalog
+
+- Confirm Services is a primary navigation destination and there is no second service editor in Salon setup.
+- As an owner, review and edit the Bath + Brush and Groom + Style six-tier pricing matrices; verify an ordinary staff member can use but cannot mutate pricing.
+- Book a 45 lb Boxer for Bath + Brush and verify Smooth Single, 41–60 lb, and $75 are shown before saving.
+- Book a 45 lb Goldendoodle for Groom + Style and verify Extra Floof, 41–60 lb, and $145 are shown before saving.
+- Use an unknown breed and verify Standard pricing; remove weight and verify pricing remains unresolved with the explicit weight-required message.
+- Change pet or service before finalization and verify the preview recalculates; edit current pricing after checkout and verify the historical invoice and receipt do not change.
+- In Salon setup → Breed list, add, rename, reclassify, deactivate, and reactivate a breed; verify inactive breeds disappear from new autocomplete choices while historical pet values remain visible.
+- Exercise breed autocomplete with keyboard and touch at mobile width, including Mixed Breed, Unknown, Other, and an existing non-catalog value.

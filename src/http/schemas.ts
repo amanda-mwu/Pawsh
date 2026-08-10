@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { passwordSchema } from "../security/passwords.js";
 import { rabiesVerificationMethods, rabiesVerificationStatuses } from "../domain/rabies.js";
+import {pricingClasses,weightTiers} from "../domain/pricing.js";
 
 export const idParams = z.object({ id: z.string().uuid() });
 
@@ -133,8 +134,22 @@ export const serviceSchema = z.object({
   name: z.string().trim().min(1).max(120),
   description: z.string().max(1000).nullish(),
   baseDurationMinutes: z.number().int().positive().max(1440),
-  basePriceMinor: z.number().int().nonnegative().max(100_000_000)
+  basePriceMinor: z.number().int().nonnegative().max(100_000_000),
+  category:z.enum(["GENERAL","DOG_BASE","DOG_ADDON","A_LA_CARTE","CAT"]).default("GENERAL"),
+  pricingMode:z.enum(["FIXED","TIERED","WEIGHT_TIER","SERVICE_TYPE_FIXED","QUOTE_REQUIRED","RANGE"]).default("FIXED"),
+  rangeMaxMinor:z.number().int().nonnegative().max(100_000_000).nullish(),
+  priceConfirmationRequired:z.boolean().default(false),
+  active:z.boolean().default(true)
 });
+
+export const servicePricingSchema=z.object({prices:z.array(z.object({
+  pricingClass:z.enum(pricingClasses),weightTierCode:z.enum(weightTiers.map(tier=>tier.code) as ["TIER_1","TIER_2","TIER_3","TIER_4","TIER_5","TIER_6"]),
+  priceMinor:z.number().int().nonnegative().max(100_000_000)
+})).min(1).max(18)}).strict();
+
+export const breedCatalogCreateSchema=z.object({name:z.string().trim().min(1).max(100),defaultPricingClass:z.enum(pricingClasses).default("STANDARD")}).strict();
+export const breedCatalogUpdateSchema=z.object({name:z.string().trim().min(1).max(100).optional(),defaultPricingClass:z.enum(pricingClasses).optional(),active:z.boolean().optional()}).strict().refine(value=>Object.keys(value).length>0,{message:"At least one change is required"});
+export const priceResolutionSchema=z.object({petId:z.string().uuid(),serviceIds:z.array(z.string().uuid()).min(1).max(30)}).strict();
 
 export const employeeSchema = z.object({
   displayName: z.string().trim().min(1).max(120),

@@ -108,7 +108,7 @@ async function refresh() {
   Object.assign(state, { customers, pets, employees, services, appointments, members, reports, dogBreeds });
   $("#today").textContent = new Intl.DateTimeFormat([], {timeZone:schedulingZone(),weekday:"long",month:"short",day:"numeric"}).format(new Date());
   applyPermissions();
-  renderDashboard(dashboard); renderCustomersEnhanced(); renderSetupEnhanced(); renderAppointments(); renderReports();
+  renderDashboard(dashboard); renderCustomersEnhanced(); renderSetupEnhanced(); renderServices(); renderAppointments(); renderReports();
 }
 
 function schedulingZone(){return state.me?.business?.timezone||"UTC";}
@@ -294,7 +294,6 @@ function renderCustomers() {
 }
 function renderSetup() {
   $("#employee-list").innerHTML = state.employees.length ? state.employees.map((e) => `<div><strong>${escape(e.displayName)}</strong><small>${e.active ? "Active" : "Inactive"}</small></div>`).join("") : `<p class="empty">No team members yet.</p>`;
-  $("#service-list").innerHTML = state.services.length ? state.services.map((s) => `<div><span><strong>${escape(s.name)}</strong><small>${s.baseDurationMinutes} min</small></span><strong>${money(s.basePriceMinor)}</strong></div>`).join("") : `<p class="empty">No services yet.</p>`;
   $("#member-list").innerHTML = state.members.length ? state.members.map((member) => `<div><span><strong>${escape(member.email)}</strong><small>${member.isOwner ? "Owner" : `${member.permissions.length} permissions`}</small></span>${member.isOwner ? "" : `<span><button class="text-button edit-member" data-id="${member.id}">Access</button> <button class="text-button remove-member" data-id="${member.id}">Remove</button></span>`}</div>`).join("") : `<p class="empty">Only you have workspace access.</p>`;
   $$(".edit-member").forEach((button)=>button.addEventListener("click",()=>editMember(button.dataset.id)));
   $$(".remove-member").forEach((button)=>button.addEventListener("click",()=>removeMember(button.dataset.id)));
@@ -315,11 +314,20 @@ function renderCustomersEnhanced() {
 function renderSetupEnhanced() {
   renderSetup();
   $("#employee-list").innerHTML = state.employees.length ? state.employees.map((employee) => `<div><span><strong>${escape(employee.displayName)}</strong><small>${employee.active ? "Active" : "Inactive"}</small></span>${employee.active?`<span><button type="button" class="text-button edit-employee" data-id="${employee.id}">Edit</button> <button type="button" class="text-button deactivate-employee" data-id="${employee.id}">Deactivate</button></span>`:""}</div>`).join("") : `<p class="empty">No team members yet.</p>`;
-  $("#service-list").innerHTML = state.services.length ? state.services.map((service) => `<div><span><strong>${escape(service.name)}</strong><small>${service.baseDurationMinutes} min / ${money(service.basePriceMinor)}</small></span>${service.active?`<span><button type="button" class="text-button edit-service" data-id="${service.id}">Edit</button> <button type="button" class="text-button deactivate-service" data-id="${service.id}">Deactivate</button></span>`:"<small>Inactive</small>"}</div>`).join("") : `<p class="empty">No services yet.</p>`;
   $$(".edit-employee").forEach((button)=>button.addEventListener("click",()=>editEmployee(button.dataset.id)));
   $$(".deactivate-employee").forEach((button)=>button.addEventListener("click",()=>deactivate("employees",button.dataset.id)));
-  $$(".edit-service").forEach((button)=>button.addEventListener("click",()=>editService(button.dataset.id)));
-  $$(".deactivate-service").forEach((button)=>button.addEventListener("click",()=>deactivate("services",button.dataset.id)));
+  const breedList=$("#breed-admin-list");if(breedList)breedList.innerHTML=state.dogBreeds.map(breed=>`<div><span><strong>${escape(breed.name)}</strong><small>${escape(breed.defaultPricingClass.replaceAll("_"," "))} · ${breed.active?"Active":"Inactive"}</small></span><span><button type="button" class="text-button edit-breed" data-id="${breed.id}">Edit</button> <button type="button" class="text-button toggle-breed" data-id="${breed.id}" data-active="${breed.active}">${breed.active?"Deactivate":"Reactivate"}</button></span></div>`).join("");
+  $$(".edit-breed").forEach(button=>button.addEventListener("click",()=>editBreed(button.dataset.id)));
+  $$(".toggle-breed").forEach(button=>button.addEventListener("click",()=>toggleBreed(button.dataset.id,button.dataset.active!=="true")));
+}
+function pricingMatrix(service){
+  if(service.pricingMode!=="TIERED")return "";
+  const classes=[...new Set(service.priceTiers.map(price=>price.pricingClass))];const tiers=[["TIER_1","1–20"],["TIER_2","21–40"],["TIER_3","41–60"],["TIER_4","61–80"],["TIER_5","81–100"],["TIER_6","100+"]];
+  return `<div class="pricing-scroll"><table class="pricing-matrix"><caption>${escape(service.name)} pricing tiers</caption><thead><tr><th scope="col">Pricing class</th>${tiers.map(([,label])=>`<th scope="col">${label} lb</th>`).join("")}</tr></thead><tbody>${classes.map(pricingClass=>`<tr><th scope="row">${escape(pricingClass.replaceAll("_"," "))}</th>${tiers.map(([code])=>`<td>${money(service.priceTiers.find(price=>price.pricingClass===pricingClass&&price.weightTierCode===code)?.priceMinor??0)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
+function renderServices(){
+  const target=$("#service-list");if(!target)return;target.innerHTML=state.services.map(service=>`<article class="panel service-card"><div class="panel-head"><div><p class="eyebrow">${escape(service.category.replaceAll("_"," "))}</p><h3>${escape(service.name)}</h3><p>${service.baseDurationMinutes} min · ${escape(service.pricingMode.replaceAll("_"," "))}${service.pricingMode==="FIXED"?` · ${money(service.basePriceMinor)}`:service.pricingMode==="RANGE"?` · ${money(service.basePriceMinor)}–${money(service.rangeMaxMinor)}`:""}</p></div>${allowed("services.manage")?`<span><button type="button" class="text-button edit-service" data-id="${service.id}">Edit</button>${service.active?` <button type="button" class="text-button deactivate-service" data-id="${service.id}">Deactivate</button>`:""}</span>`:""}</div>${pricingMatrix(service)}${service.active?"":`<p class="fine">Inactive</p>`}</article>`).join("")||`<p class="empty">No services configured.</p>`;
+  $$(".edit-service").forEach(button=>button.addEventListener("click",()=>editService(button.dataset.id)));$$(".deactivate-service").forEach(button=>button.addEventListener("click",()=>deactivate("services",button.dataset.id)));
 }
 function renderReports() {
   if (!state.reports) return;
@@ -374,8 +382,12 @@ function editEmployee(id) {
 }
 function editService(id) {
   const service=state.services.find(item=>item.id===id);
-  openModal("Edit service",field("name","Service name","text",`required value="${escape(service.name)}"`)+field("baseDurationMinutes","Duration (minutes)","number",`required min="1" value="${service.baseDurationMinutes}"`)+field("basePrice","Price ($)","number",`required min="0" step=".01" value="${Number(service.basePriceMinor)/100}`)+field("description","Description","text",`value="${escape(service.description||"")}"`,true),form=>{const values=Object.fromEntries(form);return api(`/api/services/${id}`,{method:"PUT",body:JSON.stringify({name:values.name,description:values.description||null,baseDurationMinutes:Number(values.baseDurationMinutes),basePriceMinor:Math.round(Number(values.basePrice)*100)})});});
+  const tierFields=service.pricingMode==="TIERED"?`<fieldset class="wide"><legend>Pricing matrix</legend><div class="pricing-scroll"><table class="pricing-matrix"><thead><tr><th scope="col">Class</th>${["1–20","21–40","41–60","61–80","81–100","100+"].map(label=>`<th scope="col">${label}</th>`).join("")}</tr></thead><tbody>${[...new Set(service.priceTiers.map(price=>price.pricingClass))].map(pricingClass=>`<tr><th scope="row">${escape(pricingClass.replaceAll("_"," "))}</th>${[1,2,3,4,5,6].map(index=>{const price=service.priceTiers.find(item=>item.pricingClass===pricingClass&&item.weightTierCode===`TIER_${index}`);return `<td><label><span class="sr-only">${escape(pricingClass)} ${index} price</span><input name="tier:${pricingClass}:TIER_${index}" type="number" min="0" step=".01" value="${Number(price?.priceMinor??0)/100}"></label></td>`;}).join("")}</tr>`).join("")}</tbody></table></div></fieldset>`:"";
+  openModal("Edit service",field("name","Service name","text",`required value="${escape(service.name)}"`)+field("baseDurationMinutes","Duration (minutes)","number",`required min="1" value="${service.baseDurationMinutes}"`)+field("basePrice","Base/fixed price ($)","number",`required min="0" step=".01" value="${Number(service.basePriceMinor)/100}`)+field("description","Description","text",`value="${escape(service.description||"")}"`,true)+`<label><input name="active" type="checkbox" ${service.active?"checked":""}> Active</label>`+tierFields,async form=>{const values=Object.fromEntries(form);await api(`/api/services/${id}`,{method:"PUT",body:JSON.stringify({name:values.name,description:values.description||null,baseDurationMinutes:Number(values.baseDurationMinutes),basePriceMinor:Math.round(Number(values.basePrice)*100),category:service.category,pricingMode:service.pricingMode,rangeMaxMinor:service.rangeMaxMinor,priceConfirmationRequired:service.priceConfirmationRequired,active:form.has("active")})});const prices=[...form.entries()].filter(([name])=>name.startsWith("tier:")).map(([name,value])=>{const [,pricingClass,weightTierCode]=name.split(":");return {pricingClass,weightTierCode,priceMinor:Math.round(Number(value)*100)};});if(prices.length)await api(`/api/services/${id}/pricing`,{method:"PUT",body:JSON.stringify({prices})});});
 }
+function breedClassField(value="STANDARD"){return select("defaultPricingClass","Default pricing class",[["SMOOTH_SINGLE","Smooth Single"],["STANDARD","Standard"],["EXTRA_FLOOF","Extra Floof"]],true,value);}
+function editBreed(id){const breed=state.dogBreeds.find(item=>item.id===id);openModal("Edit breed",field("name","Breed","text",`required value="${escape(breed.name)}"`,true)+breedClassField(breed.defaultPricingClass),async form=>{await api(`/api/dog-breeds/${id}`,{method:"PATCH",body:JSON.stringify({name:form.get("name"),defaultPricingClass:form.get("defaultPricingClass")})});state.dogBreeds=[];});}
+async function toggleBreed(id,active){await api(`/api/dog-breeds/${id}`,{method:"PATCH",body:JSON.stringify({active})});state.dogBreeds=[];await refresh();toast(active?"Breed reactivated":"Breed deactivated");}
 async function deactivate(type,id) {
   if(!confirm(`Deactivate this ${type==="services"?"service":"team member"}?`))return;
   try{await api(`/api/${type}/${id}`,{method:"DELETE"});toast("Deactivated");await refresh();}catch(error){toast(error.message);}
@@ -480,7 +492,7 @@ function editPet(id) {
         breed:form.get("breed")||null,
         dateOfBirth:form.get("dateOfBirth")||null,
         approximateAge:form.get("approximateAge")||null,
-        weightOunces:form.get("weightOunces")===""?null:Number(form.get("weightOunces")),
+        weightOunces:form.get("weightPounds")===""?null:Math.round(Number(form.get("weightPounds"))*16),
         sex:form.get("sex")||null,
         coatNotes:form.get("coatNotes")||null,
         groomingPreferences:form.get("groomingPreferences")||null,
@@ -506,7 +518,7 @@ function petProfileFields(pet){
     breedField(pet.breed||"")+
     field("dateOfBirth","Date of birth","date",`value="${pet.dateOfBirth?String(pet.dateOfBirth).slice(0,10):""}"`)+
     field("approximateAge","Approximate age","text",`value="${escape(pet.approximateAge||"")}"`)+
-    field("weightOunces","Weight (ounces)","number",`min="0" value="${pet.weightOunces??""}"`)+
+    field("weightPounds","Weight (lb)","number",`min="0.0625" step="0.0625" value="${pet.weightOunces===null||pet.weightOunces===undefined?"":Number(pet.weightOunces)/16}"`)+
     field("sex","Sex","text",`value="${escape(pet.sex||"")}"`)+
     field("coatNotes","Coat notes","text",`value="${escape(pet.coatNotes||"")}"`,true)+
     field("groomingPreferences","Grooming preferences","text",`value="${escape(pet.groomingPreferences||"")}"`,true)+
@@ -566,7 +578,7 @@ function setupBreedAutocomplete() {
   const normalized=value=>String(value).trim().toLowerCase().replace(/[\s\-_]+/g," ").replace(/[^a-z0-9 ]/g,"");
   const close=()=>{list.hidden=true;input.setAttribute("aria-expanded","false");input.setAttribute("aria-activedescendant","");active=-1;};
   const selectBreed=index=>{const breed=matches[index];if(!breed)return;input.value=breed.name;close();input.dispatchEvent(new globalThis.Event("change",{bubbles:true}));};
-  const render=()=>{const query=normalized(input.value);matches=query?state.dogBreeds.filter(item=>item.search.includes(query)).sort((a,b)=>Number(!a.search.startsWith(query))-Number(!b.search.startsWith(query))||a.name.localeCompare(b.name)).slice(0,12):[];active=matches.length?0:-1;list.innerHTML=matches.length?matches.map((item,index)=>`<button type="button" id="breed-option-${index}" role="option" aria-selected="${index===active}" data-index="${index}">${escape(item.name)}</button>`).join(""):`<span class="breed-no-results" role="option" aria-disabled="true">No matching breeds. You may keep the existing value or choose Other.</span>`;list.hidden=false;input.setAttribute("aria-expanded","true");input.setAttribute("aria-activedescendant",active>=0?`breed-option-${active}`:"");};
+  const render=()=>{const query=normalized(input.value);matches=query?state.dogBreeds.filter(item=>item.active&&item.search.includes(query)).sort((a,b)=>Number(!a.search.startsWith(query))-Number(!b.search.startsWith(query))||a.name.localeCompare(b.name)).slice(0,12):[];active=matches.length?0:-1;list.innerHTML=matches.length?matches.map((item,index)=>`<button type="button" id="breed-option-${index}" role="option" aria-selected="${index===active}" data-index="${index}">${escape(item.name)}</button>`).join(""):`<span class="breed-no-results" role="option" aria-disabled="true">No matching breeds. You may keep the existing value or choose Other.</span>`;list.hidden=false;input.setAttribute("aria-expanded","true");input.setAttribute("aria-activedescendant",active>=0?`breed-option-${active}`:"");};
   const move=direction=>{if(!matches.length)return;active=(active+direction+matches.length)%matches.length;list.querySelectorAll('[role="option"]').forEach((option,index)=>option.setAttribute("aria-selected",String(index===active)));input.setAttribute("aria-activedescendant",`breed-option-${active}`);list.querySelector(`#breed-option-${active}`)?.scrollIntoView({block:"nearest"});};
   input.addEventListener("input",render);input.addEventListener("focus",()=>{if(input.value)render();});input.addEventListener("keydown",event=>{if(event.key==="ArrowDown"||event.key==="ArrowUp"){event.preventDefault();if(list.hidden)render();else move(event.key==="ArrowDown"?1:-1);}else if(event.key==="Enter"&&!list.hidden&&active>=0){event.preventDefault();selectBreed(active);}else if(event.key==="Escape"){event.preventDefault();close();}});list.addEventListener("pointerdown",event=>{const option=event.target.closest("[data-index]");if(option){event.preventDefault();selectBreed(Number(option.dataset.index));}});input.addEventListener("blur",()=>setTimeout(close,100));
 }
@@ -648,11 +660,12 @@ const actions = {
     field("firstName","First name","text","required")+field("lastName","Last name","text","required")+field("email","Email","email")+field("phone","Phone","tel")+field("notes","Notes","text","",true),
     (form) => api("/api/customers",{method:"POST",body:JSON.stringify(Object.fromEntries(form))})),
   "new-pet": () => { openModal("New pet",
-    select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]),true)+field("name","Pet name","text","required")+breedField()+field("species","Species","text",'value="dog"')+field("groomingPreferences","Grooming preferences","text","",true)+(allowed("pets.care.edit")?field("behaviorNotes","Behavior notes","text","",true)+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true):""),
-    (form) => api("/api/pets",{method:"POST",body:JSON.stringify(Object.fromEntries(form))})); setupBreedAutocomplete(); },
+    select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]),true)+field("name","Pet name","text","required")+breedField()+field("weightPounds","Weight (lb)","number",'min="0.0625" step="0.0625"')+field("species","Species","text",'value="dog"')+field("groomingPreferences","Grooming preferences","text","",true)+(allowed("pets.care.edit")?field("behaviorNotes","Behavior notes","text","",true)+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true):""),
+    (form) => {const values=Object.fromEntries(form);values.weightOunces=values.weightPounds===""?null:Math.round(Number(values.weightPounds)*16);delete values.weightPounds;return api("/api/pets",{method:"POST",body:JSON.stringify(values)});}); setupBreedAutocomplete(); },
   "new-service": () => openModal("New service",
-    field("name","Service name","text","required")+field("baseDurationMinutes","Duration (minutes)","number",'required min="1"')+field("basePrice","Price ($)","number",'required min="0" step=".01"')+field("description","Description","text","",true),
-    (form) => { const o=Object.fromEntries(form); o.baseDurationMinutes=Number(o.baseDurationMinutes); o.basePriceMinor=Math.round(Number(o.basePrice)*100); delete o.basePrice; return api("/api/services",{method:"POST",body:JSON.stringify(o)}); }),
+    field("name","Service name","text","required")+field("baseDurationMinutes","Duration (minutes)","number",'required min="1"')+field("basePrice","Fixed price ($)","number",'required min="0" step=".01"')+select("category","Category",[["GENERAL","General"],["DOG_ADDON","Dog add-on"],["A_LA_CARTE","À la carte"],["CAT","Cat"]],true,"GENERAL")+field("description","Description","text","",true),
+    (form) => { const o=Object.fromEntries(form); o.baseDurationMinutes=Number(o.baseDurationMinutes); o.basePriceMinor=Math.round(Number(o.basePrice)*100);o.pricingMode="FIXED";o.active=true;delete o.basePrice; return api("/api/services",{method:"POST",body:JSON.stringify(o)}); }),
+  "new-breed":()=>openModal("Add breed",field("name","Breed","text","required",true)+breedClassField(),async form=>{await api("/api/dog-breeds",{method:"POST",body:JSON.stringify({name:form.get("name"),defaultPricingClass:form.get("defaultPricingClass")})});state.dogBreeds=[];}),
   "new-employee": () => openModal("New team member",
     field("displayName","Display name","text","required",true)+serviceCheckboxes(),
     (form) => api("/api/employees",{method:"POST",body:JSON.stringify({displayName:form.get("displayName"),serviceIds:form.getAll("serviceIds")})})),
@@ -699,11 +712,14 @@ const actions = {
       select("employeeId","Groomer",state.employees.filter(e=>e.active).map(e=>[e.id,e.displayName]))+
       serviceCheckboxes()+
       field("startAt","Start time","datetime-local","required",true)+disambiguationField()+
+      `<div class="wide pricing-preview" role="status" aria-live="polite" data-testid="booking-price-status">Choose a pet and service to calculate pricing.</div>`+
       `<p class="wide" role="status" aria-live="polite" data-testid="booking-rabies-status">Choose a pet and appointment time to evaluate rabies information.</p>`+
       field("notes","Appointment notes","text","",true),
       (form) => { const o=Object.fromEntries(form); return schedulingMutation("/api/appointments",{locationId:state.me.business.locationId,customerId:o.customerId,petId:o.petId,employeeId:o.employeeId,serviceIds:form.getAll("serviceIds"),localStart:o.startAt,disambiguation:o.disambiguation||undefined,expectedLocationVersion:state.me.business.locationVersion,notes:o.notes||null},"Booking"); });
     const customerSelect=$('[name="customerId"]');const petSelect=$('[name="petId"]');
     const startInput=$('[name="startAt"]');const rabiesStatus=$('[data-testid="booking-rabies-status"]');
+    const priceStatus=$('[data-testid="booking-price-status"]');let priceSequence=0;
+    const updatePricePreview=async()=>{const sequence=++priceSequence;const serviceIds=$$('input[name="serviceIds"]:checked').map(input=>input.value);if(!petSelect.value||!serviceIds.length){priceStatus.textContent="Choose a pet and service to calculate pricing.";return;}priceStatus.textContent="Calculating authoritative price…";try{const prices=await api("/api/pricing/resolve",{method:"POST",body:JSON.stringify({petId:petSelect.value,serviceIds})});if(sequence!==priceSequence)return;priceStatus.innerHTML=prices.map(price=>price.status==="resolved"?`<p><strong>${escape(price.name)}</strong><br>${escape(price.pricingClass.replaceAll("_"," "))}${price.weightTierLabel?` · ${escape(price.weightTierLabel)}`:""}<br><strong>${money(price.priceMinor)}</strong></p>`:`<p><strong>${escape(price.name)}</strong><br>${price.status==="weight_required"?"Weight required to determine pricing.":price.status==="quote_required"?"Quote required.":"Admin price confirmation required."}</p>`).join("");}catch(error){if(sequence===priceSequence)priceStatus.textContent=error.message;}};
     const updateRabiesPreview=()=>{
       const pet=state.pets.find(item=>item.id===petSelect.value),appointmentDate=String(startInput.value||"").slice(0,10);
       if(!pet||!appointmentDate){rabiesStatus.textContent="Choose a pet and appointment time to evaluate rabies information.";return;}
@@ -716,9 +732,9 @@ const actions = {
     customerSelect.addEventListener("change",()=>{
       const pets=state.pets.filter(pet=>pet.customerId===customerSelect.value);
       petSelect.innerHTML=`<option value="">Choose…</option>${pets.map(pet=>`<option value="${pet.id}">${escape(pet.name)}</option>`).join("")}`;
-      updateRabiesPreview();
+      updateRabiesPreview();updatePricePreview();
     });
-    petSelect.addEventListener("change",updateRabiesPreview);startInput.addEventListener("change",updateRabiesPreview);
+    petSelect.addEventListener("change",()=>{updateRabiesPreview();updatePricePreview();});startInput.addEventListener("change",updateRabiesPreview);$$('input[name="serviceIds"]').forEach(input=>input.addEventListener("change",updatePricePreview));
   }),
   "blocked-time": () => openModal("Block team time",
     select("employeeId","Team member",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]))+
@@ -770,7 +786,7 @@ $$("nav [data-view]").forEach((button) => button.addEventListener("click", () =>
 $$("[data-view-target]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.viewTarget)));
 async function showView(view) {
   const target=$(`#${view}`);if(!target||$(`[data-view="${view}"]`)?.hidden)return;
-  $$(".view").forEach(v=>v.hidden=v.id!==view); $$("nav button").forEach(b=>b.classList.toggle("active",b.dataset.view===view)); $("#page-title").textContent={dashboard:"Good morning",calendar:"Your calendar",customers:"Client care",setup:"Salon setup",reports:"Business reports"}[view];
+  $$(".view").forEach(v=>v.hidden=v.id!==view); $$("nav button").forEach(b=>b.classList.toggle("active",b.dataset.view===view)); $("#page-title").textContent={dashboard:"Good morning",calendar:"Your calendar",customers:"Client care",services:"Services & Pricing",setup:"Salon setup",reports:"Business reports"}[view];
   try{
     state.me=await api("/api/me");applyPermissions();
     if($(`[data-view="${view}"]`)?.hidden){

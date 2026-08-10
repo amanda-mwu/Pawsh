@@ -18,7 +18,8 @@ import {
   transitionSchema, businessSettingsSchema, workingHoursSchema, blockedTimeSchema,
   operationalUpdateSchema, voidPaymentSchema, appointmentMoveSchema, appointmentServicesSchema,
   passwordResetRequestSchema, passwordResetConfirmSchema, invitationSchema,
-  invitationAcceptSchema, ownershipTransferSchema, petProfileUpdateSchema, petCareUpdateSchema
+  invitationAcceptSchema, ownershipTransferSchema, petProfileUpdateSchema, petCareUpdateSchema,
+  servicePricingSchema,breedCatalogCreateSchema,breedCatalogUpdateSchema,priceResolutionSchema
 } from "./schemas.js";
 import { sealSecret } from "../security/secrets.js";
 import { hashPassword, validateNewPassword, verifyPassword } from "../security/passwords.js";
@@ -30,7 +31,9 @@ import {
   suppliedPetCareFields,
   type PetCareRecord
 } from "../domain/pet-care.js";
-import { catalogBreedName, dogBreeds } from "../domain/pets/dog-breeds.js";
+import { catalogBreedName, normalizeBreedSearch } from "../domain/pets/dog-breeds.js";
+import {provisionBusinessCatalog} from "../domain/catalog-seed.js";
+import {resolveServicePrices} from "../domain/service-pricing.js";
 
 type Transaction = postgres.TransactionSql;
 
@@ -539,6 +542,7 @@ export function registerRoutes(
         values (${business.id}, ${input.businessName}, ${timezone})
         returning id
       `;
+      await provisionBusinessCatalog(tx,business.id);
       const token = issueToken();
       await tx`
         insert into sessions (user_id, token_hash, expires_at)
@@ -911,7 +915,10 @@ export function registerRoutes(
 
   app.get("/api/services", { preHandler: authenticate }, async (request) => {
     const context = auth(request);
-    return db`select * from services where business_id = ${context.businessId} order by active desc, name`;
+    const canManage=context.isOwner||context.permissions.includes("services.manage");
+    const services=await db<Record<string,unknown>[]>`select * from services where business_id = ${context.businessId} and (${canManage} or active) order by active desc, category, name`;
+    const tiers=await db<{serviceId:string;pricingClass:string;weightTierCode:string;priceMinor:number}[]>`select service_id,pricing_class,weight_tier_code,price_minor from service_price_tiers where business_id=${context.businessId} and active order by pricing_class,weight_tier_code`;
+    return services.map(service=>({...service,priceTiers:tiers.filter(tier=>tier.serviceId===service.id)}));
   });
 
   app.post("/api/services", {
@@ -922,9 +929,9 @@ export function registerRoutes(
     const service = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
       const [created] = await tx<{ id: string }[]>`
-        insert into services (business_id,name,description,base_duration_minutes,base_price_minor)
+        insert into services (business_id,name,description,base_duration_minutes,base_price_minor,category,pricing_mode,range_max_minor,price_confirmation_required,active)
         values (${context.businessId},${input.name},${input.description ?? null},
-          ${input.baseDurationMinutes},${input.basePriceMinor}) returning *
+          ${input.baseDurationMinutes},${input.basePriceMinor},${input.category},${input.pricingMode},${input.rangeMaxMinor??null},${input.priceConfirmationRequired},${input.active}) returning *
       `;
       if (!created) throw new Error("Service creation failed");
       await record(tx, {
@@ -945,11 +952,21 @@ export function registerRoutes(
     const [service] = await db`
       update services set name=${input.name},description=${input.description ?? null},
         base_duration_minutes=${input.baseDurationMinutes},base_price_minor=${input.basePriceMinor},
+        category=${input.category},pricing_mode=${input.pricingMode},range_max_minor=${input.rangeMaxMinor??null},
+        price_confirmation_required=${input.priceConfirmationRequired},active=${input.active},
         updated_at=now()
       where business_id=${context.businessId} and id=${id} returning *
     `;
     if (!service) return reply.code(404).send({ error: "Service not found" });
     return service;
+  });
+
+  app.put("/api/services/:id/pricing",{preHandler:[authenticate,requirePermission("services.manage")]},async(request,reply)=>{
+    const context=auth(request);const {id}=idParams.parse(request.params);const input=body(servicePricingSchema,request.body);
+    const result=await db.begin(async tx=>{await setTenant(tx,context.businessId);const [service]=await tx<{id:string}[]>`select id from services where business_id=${context.businessId} and id=${id} for update`;if(!service)return false;
+      for(const price of input.prices)await tx`insert into service_price_tiers(business_id,service_id,pricing_class,weight_tier_code,price_minor) values (${context.businessId},${id},${price.pricingClass},${price.weightTierCode},${price.priceMinor}) on conflict(service_id,pricing_class,weight_tier_code) do update set price_minor=excluded.price_minor,active=true,updated_at=now()`;
+      await record(tx,{businessId:context.businessId,actorId:context.userId,action:"service.pricing.update",resourceType:"service",resourceId:id,after:{cells:input.prices.length}});return true;});
+    if(!result)return reply.code(404).send({error:"Service not found"});return {updated:true};
   });
 
   app.delete("/api/services/:id", {
@@ -1261,7 +1278,27 @@ export function registerRoutes(
 
   app.get("/api/dog-breeds", {
     preHandler: [authenticate, requirePermission("pets.view")]
-  }, async () => dogBreeds);
+  }, async (request) => {
+    const context=auth(request);
+    const canManage=context.isOwner||context.permissions.includes("services.manage");
+    return db`select id,breed_key,name,normalized_name as search,default_pricing_class,active from business_breeds where business_id=${context.businessId} and (${canManage} or active) order by active desc,name`;
+  });
+
+  app.post("/api/dog-breeds",{preHandler:[authenticate,requirePermission("services.manage")]},async(request,reply)=>{
+    const context=auth(request);const input=body(breedCatalogCreateSchema,request.body);const normalized=normalizeBreedSearch(input.name);
+    const [created]=await db`insert into business_breeds(business_id,breed_key,name,normalized_name,default_pricing_class) values (${context.businessId},${`custom-${randomUUID()}`},${input.name},${normalized},${input.defaultPricingClass}) on conflict(business_id,normalized_name) do nothing returning *`;
+    if(!created)return reply.code(409).send({error:"A breed with that normalized name already exists"});return reply.code(201).send(created);
+  });
+
+  app.patch("/api/dog-breeds/:id",{preHandler:[authenticate,requirePermission("services.manage")]},async(request,reply)=>{
+    const context=auth(request);const {id}=idParams.parse(request.params);const input=body(breedCatalogUpdateSchema,request.body);
+    const [updated]=await db`update business_breeds set name=coalesce(${input.name??null},name),normalized_name=coalesce(${input.name?normalizeBreedSearch(input.name):null},normalized_name),default_pricing_class=coalesce(${input.defaultPricingClass??null},default_pricing_class),active=coalesce(${input.active??null},active),updated_at=now() where business_id=${context.businessId} and id=${id} returning *`;
+    if(!updated)return reply.code(404).send({error:"Breed not found"});return updated;
+  });
+
+  app.post("/api/pricing/resolve",{preHandler:[authenticate,requirePermission("appointments.create")]},async(request)=>{
+    const context=auth(request);const input=body(priceResolutionSchema,request.body);return resolveServicePrices(db,{businessId:context.businessId,...input});
+  });
 
   app.post("/api/pets", {
     preHandler: [authenticate, requirePermission("pets.edit")]
@@ -1834,17 +1871,19 @@ export function registerRoutes(
       if (location.version !== input.expectedLocationVersion) throw new SchedulingRequestError(409,"STALE_LOCATION_SETTINGS","Location settings changed. Refresh and try again.");
       const resolved=resolveWallTime(input.localStart,location.timezone,input.disambiguation);
       await schedulingHooks.afterLocationLock?.({operation:"create",businessId:context.businessId,timezone:location.timezone,version:location.version});
-      const catalog = await tx<{ id: string; name: string; baseDurationMinutes: number; basePriceMinor: number }[]>`
-        select service.id,service.name,service.base_duration_minutes,service.base_price_minor
-        from services service
+      const eligible = await tx<{ id: string }[]>`
+        select service.id from services service
         join employee_services eligibility on eligibility.service_id=service.id
           and eligibility.employee_id=${input.employeeId}
         join employees employee on employee.id=eligibility.employee_id and employee.active
         where service.business_id=${context.businessId} and service.id in ${tx(input.serviceIds)}
           and service.active
       `;
-      if (catalog.length !== new Set(input.serviceIds).size) throw new Error("One or more services are unavailable");
-      const totalMinutes = catalog.reduce((sum, service) => sum + service.baseDurationMinutes, 0);
+      if (eligible.length !== new Set(input.serviceIds).size) throw new Error("One or more services are unavailable");
+      const catalog=await resolveServicePrices(tx,{businessId:context.businessId,petId:input.petId,serviceIds:input.serviceIds});
+      const unresolved=catalog.find(service=>service.status!=="resolved");
+      if(unresolved)throw new Error(unresolved.status==="weight_required"?"Weight required to determine pricing.":unresolved.status==="quote_required"?`${unresolved.name} requires a quote before booking.`:`${unresolved.name} price requires admin confirmation.`);
+      const totalMinutes = catalog.reduce((sum, service) => sum + service.durationMinutes, 0);
       const startAt = resolved.instant;
       const endAt = new Date(startAt.getTime() + totalMinutes * 60_000);
       if (localDateForInstant(endAt,location.timezone) !== input.localStart.slice(0,10)) {
@@ -1927,10 +1966,10 @@ export function registerRoutes(
         await tx`
           insert into appointment_services
             (business_id, appointment_id, service_id, service_name_snapshot,
-             duration_minutes_snapshot, price_minor_snapshot)
+             duration_minutes_snapshot, price_minor_snapshot,pricing_class_snapshot,weight_tier_snapshot,resolution_source_snapshot)
           values
-            (${context.businessId}, ${appointment.id}, ${service.id}, ${service.name},
-             ${service.baseDurationMinutes}, ${service.basePriceMinor})
+            (${context.businessId}, ${appointment.id}, ${service.serviceId}, ${service.name},
+             ${service.durationMinutes}, ${service.priceMinor!},${service.pricingClass},${service.weightTierCode},${service.resolutionSource})
         `;
       }
       await record(tx, {
@@ -2257,8 +2296,8 @@ export function registerRoutes(
     const input = body(appointmentServicesSchema, request.body);
     const result = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [appointment] = await tx<{ startAt: Date; status: string; employeeId: string; version: number; schedulingTimezone:string }[]>`
-        select start_at,status,employee_id,version,scheduling_timezone from appointments
+      const [appointment] = await tx<{ startAt: Date; status: string; employeeId: string;petId:string; version: number; schedulingTimezone:string }[]>`
+        select start_at,status,employee_id,pet_id,version,scheduling_timezone from appointments
         where business_id=${context.businessId} and id=${id} for update
       `;
       if (!appointment) return null;
@@ -2273,25 +2312,27 @@ export function registerRoutes(
         select id from invoices where business_id=${context.businessId} and appointment_id=${id} and status<>'void'
       `;
       if (invoice.length) throw new Error("Services cannot change after checkout begins");
-      const catalog = await tx<{ id: string; name: string; baseDurationMinutes: number; basePriceMinor: number }[]>`
-        select service.id,service.name,service.base_duration_minutes,service.base_price_minor
-        from services service
+      const eligible = await tx<{id:string}[]>`
+        select service.id from services service
         join employee_services eligibility on eligibility.service_id=service.id
           and eligibility.employee_id=${appointment.employeeId}
         where service.business_id=${context.businessId} and service.id in ${tx(input.serviceIds)}
           and service.active
       `;
-      if (catalog.length !== new Set(input.serviceIds).size) throw new Error("One or more services are unavailable");
+      if (eligible.length !== new Set(input.serviceIds).size) throw new Error("One or more services are unavailable");
+      const catalog=await resolveServicePrices(tx,{businessId:context.businessId,petId:appointment.petId,serviceIds:input.serviceIds});
+      const unresolved=catalog.find(service=>service.status!=="resolved");
+      if(unresolved)throw new Error(unresolved.status==="weight_required"?"Weight required to determine pricing.":`${unresolved.name} price is unresolved.`);
       await tx`delete from appointment_services where business_id=${context.businessId} and appointment_id=${id}`;
       for (const service of catalog) {
         await tx`
           insert into appointment_services
-            (business_id,appointment_id,service_id,service_name_snapshot,duration_minutes_snapshot,price_minor_snapshot)
-          values (${context.businessId},${id},${service.id},${service.name},
-            ${service.baseDurationMinutes},${service.basePriceMinor})
+            (business_id,appointment_id,service_id,service_name_snapshot,duration_minutes_snapshot,price_minor_snapshot,pricing_class_snapshot,weight_tier_snapshot,resolution_source_snapshot)
+          values (${context.businessId},${id},${service.serviceId},${service.name},
+            ${service.durationMinutes},${service.priceMinor!},${service.pricingClass},${service.weightTierCode},${service.resolutionSource})
         `;
       }
-      const minutes = catalog.reduce((sum, service) => sum + service.baseDurationMinutes, 0);
+      const minutes = catalog.reduce((sum, service) => sum + service.durationMinutes, 0);
       const endAt = new Date(appointment.startAt.getTime() + minutes * 60_000);
       if (localDateForInstant(endAt,appointment.schedulingTimezone) !== localDateForInstant(appointment.startAt,appointment.schedulingTimezone)) {
         throw new Error("Appointments may not cross local midnight during the controlled pilot");

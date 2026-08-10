@@ -1,0 +1,12 @@
+.service-catalog { display: grid; gap: 16px; }
+.service-card { overflow: hidden; }
+.pricing-scroll { overflow-x: auto; }
+.pricing-matrix { width: 100%; min-width: 620px; border-collapse: collapse; }
+.pricing-matrix caption { margin-bottom: 8px; text-align: left; font-weight: 700; }
+.pricing-matrix th, .pricing-matrix td { padding: 9px; border: 1px solid var(--line); text-align: center; }
+.pricing-matrix th { background: var(--mint); }
+.pricing-matrix input { width: 100%; min-width: 82px; padding: 8px; }
+.pricing-matrix label { margin: 0; }
+.pricing-preview { padding: 12px; border-radius: 10px; background: var(--mint); }
+.pricing-preview p { margin: 0 0 8px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }

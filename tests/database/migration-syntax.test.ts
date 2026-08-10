@@ -48,5 +48,9 @@ describe("database migrations", () => {
     expect(malwareProtection).toContain("create policy tenant_isolation on pet_document_scan_attempts");
     const attachmentMvp = await readFile("migrations/0011_rabies_attachment_mvp.sql", "utf8");
     expect(attachmentMvp).toContain("old.state='pending' and new.state not in ('pending','current','pending_scan')");
+    const pricingCatalog = await readFile("migrations/0012_service_pricing_and_breed_catalog.sql", "utf8");
+    expect(pricingCatalog).toContain("create table service_price_tiers");
+    expect(pricingCatalog).toContain("create table business_breeds");
+    expect(pricingCatalog).toContain("pricing_class_snapshot");
   });
 });

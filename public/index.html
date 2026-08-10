@@ -7,6 +7,7 @@
   <meta name="referrer" content="no-referrer">
   <title>Pawsh — Salon operations, beautifully organized</title>
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/pricing.css">
 </head>
 <body>
   <div id="auth-view" class="auth-shell">
@@ -44,6 +45,7 @@
         <button type="button" data-testid="nav-dashboard" data-view="dashboard" class="active">Overview</button>
         <button type="button" data-testid="nav-calendar" data-view="calendar" data-permission="calendar.view">Calendar</button>
         <button type="button" data-testid="nav-customers" data-view="customers" data-any-permission="customers.view,pets.view">Customers &amp; pets</button>
+        <button type="button" data-testid="nav-services" data-view="services">Services</button>
         <button type="button" data-testid="nav-setup" data-view="setup" data-any-permission="services.manage,team.manage,settings.manage">Salon setup</button>
         <button type="button" data-testid="nav-reports" data-view="reports" data-permission="reports.view">Reports</button>
       </nav>
@@ -86,12 +88,17 @@
         <div id="customer-grid" class="card-grid"></div>
       </section>
 
+      <section id="services" data-testid="services-view" class="view" hidden>
+        <div class="split-head"><div><p class="eyebrow">Catalog</p><h3>Services &amp; Pricing</h3><p>Configure bookable services, prices, durations, add-ons, and availability.</p></div><button data-permission="services.manage" type="button" class="primary compact" data-action="new-service">+ Service</button></div>
+        <div id="service-list" class="service-catalog"></div>
+      </section>
+
       <section id="setup" data-testid="setup-view" class="view" hidden>
         <div class="split-head"><div><p class="eyebrow">Foundation</p><h3>Salon setup</h3></div><div><button data-permission="settings.manage" type="button" class="secondary compact" data-action="business-hours">Business hours</button><button data-testid="business-settings" data-permission="settings.manage" type="button" class="secondary compact" data-action="business-settings">Business settings</button></div></div>
         <div class="content-grid">
           <article class="panel" data-permission="team.manage"><div class="panel-head"><h3>Team</h3><button type="button" class="text-button" data-action="new-employee">+ Add</button></div><div id="employee-list" class="simple-list"></div></article>
-          <article class="panel" data-permission="services.manage"><div class="panel-head"><h3>Services</h3><button type="button" class="text-button" data-action="new-service">+ Add</button></div><div id="service-list" class="simple-list"></div></article>
           <article class="panel" data-permission="team.manage"><div class="panel-head"><h3>Workspace access</h3><button type="button" class="text-button" data-action="invite-member">+ Invite</button></div><div id="member-list" class="simple-list"></div></article>
+          <article class="panel" data-permission="services.manage"><div class="panel-head"><div><h3>Breed list</h3><p>Manage breeds used for pet profiles and default service pricing.</p></div><button type="button" class="text-button" data-action="new-breed">+ Add</button></div><div id="breed-admin-list" class="simple-list"></div></article>
         </div>
       </section>
 

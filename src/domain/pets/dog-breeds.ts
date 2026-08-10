@@ -50,7 +50,10 @@ const names = [
   "Toy Fox Terrier","Treeing Walker Coonhound","Vizsla","Weimaraner","Welsh Springer Spaniel",
   "Welsh Terrier","West Highland White Terrier","Whippet","Wire Fox Terrier","Wirehaired Pointing Griffon",
   "Wirehaired Vizsla","Xoloitzcuintli","Yorkshire Terrier","Cockapoo","Goldendoodle","Labradoodle",
-  "Maltipoo","Pomsky","Schnoodle","Mixed Breed","Unknown","Other"
+  "Maltipoo","Pomsky","Schnoodle","Aussiedoodle","Bernedoodle","Bichonpoo","Cavapoo",
+  "French Water Dog","Irish Doodle","Irish Water Dog","Lagotto","Newfoundland Dog","Newfypoo",
+  "Pomapoo","Sheep Dog","Sheepadoodle","Spanish Water Dog","Wheaten Terrier","Whoodle",
+  "Mixed Breed","Unknown","Other"
 ] as const;
 
 export const dogBreeds: readonly DogBreed[] = names.map((name) => ({

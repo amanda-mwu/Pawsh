@@ -2,6 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import postgres from "postgres";
 import { loadConfig } from "../src/config.js";
+import { provisionBusinessCatalog } from "../src/domain/catalog-seed.js";
 
 const config = loadConfig();
 const sql = postgres(config.DATABASE_URL, { max: 1 });
@@ -29,6 +30,11 @@ try {
     `;
     console.log(`Applied ${version}`);
   }
+  const businesses=await sql<{id:string}[]>`select id from businesses`;
+  for(const business of businesses)await sql.begin(async(tx)=>{
+    await tx`select set_config('app.business_id',${business.id},true)`;
+    await provisionBusinessCatalog(tx,business.id);
+  });
 } finally {
   await sql.end();
 }

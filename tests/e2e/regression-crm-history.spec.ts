@@ -21,7 +21,10 @@ test("@regression-crm-history creates a customer and pet and persists their rela
   await page.locator('[data-action="new-pet"]').click();
   await page.getByTestId("field-customerId").selectOption({ label: `D3 Persist ${token}` });
   await page.getByTestId("field-name").fill(`Pet ${token}`);
-  await page.getByTestId("field-breed").fill("Pilot Terrier");
+  await page.getByTestId("field-breed").fill("gold");
+  await expect(page.getByRole("option", { name: "Golden Retriever" })).toBeVisible();
+  await page.getByTestId("field-breed").press("Enter");
+  await expect(page.getByTestId("field-breed")).toHaveValue("Golden Retriever");
   await page.getByTestId("modal-submit").click();
   await expect(page.getByTestId("modal")).toBeHidden();
 
@@ -29,6 +32,14 @@ test("@regression-crm-history creates a customer and pet and persists their rela
   await page.getByTestId("nav-customers").click();
   const card = page.getByTestId("customer-card").filter({ hasText: `D3 Persist ${token}` });
   await expect(card).toContainText(`Pet ${token}`);
+  await card.getByRole("button",{name:"Profile"}).click();
+  await expect(page.getByTestId("field-breed")).toHaveValue("Golden Retriever");
+  await page.getByTestId("field-breed").fill("Historic Village Dog");
+  await page.getByTestId("field-breed").press("Escape");
+  await page.getByTestId("modal-submit").click();
+  await expect(page.getByTestId("modal")).toBeHidden();
+  await card.getByRole("button",{name:"Profile"}).click();
+  await expect(page.getByTestId("field-breed")).toHaveValue("Historic Village Dog");
 });
 
 test("@regression-crm-history protects Pet Care edits and reconciles a stale care form", async ({ page, request, tenant }) => {

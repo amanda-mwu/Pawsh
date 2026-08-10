@@ -2,28 +2,27 @@
 
 ## Contract
 
-Structured Pet Care data is the operational source for appointment-date rabies
+The structured rabies expiration date is the operational source for appointment-date rabies
 evaluation. Authorized staff may enter it without a document. A supporting PDF
 is optional, never establishes verification automatically, and remains
 available as supporting evidence after bounded PDF validation; an attachment
-never verifies rabies status. Structured staff verification remains authoritative.
+never changes rabies eligibility. Historical verification fields remain audit metadata and are
+not authoritative for MVP eligibility.
 
-The record includes vaccination and expiration dates, veterinarian/clinic,
-certificate reference, bounded notes, verification status and method,
-verification time, and authoritative verifying membership. Verification states
-are `not_provided`, `unverified`, and `staff_verified`; expiration is derived,
-not stored as a stale verification state. Staff verification requires an
-expiration and method. The server binds it to the current membership. Existing
-expiration-only records migrate to unverified; missing records to not provided.
+The MVP workflow accepts an expiration date and an optional supporting PDF.
+Vaccination date, veterinarian/clinic, certificate reference, notes, verification
+status/method/time, and verifying membership remain only as backward-compatible
+historical columns. Normal expiration-only updates preserve that metadata and do
+not require or synthesize verification values.
 
 ## Appointment evaluation
 
-Authoritative inputs are verification, expiration, appointment
-`scheduled_local_start`, and location timezone. The appointment start date is
-used and expiration is inclusive. Results are `valid_for_appointment`,
-`expires_before_appointment`, `expired`, `unverified`, and `not_provided`. They
-are derived on reads and reconciliation. Cross-midnight appointments remain
-unsupported under existing pilot policy.
+Authoritative inputs are expiration and appointment `scheduled_local_start` in
+the business timezone. No expiration is `not_provided`; expiration before the
+appointment date is `expires_before_appointment`; otherwise it is
+`valid_for_appointment`. Expiration is inclusive. Profile display separately
+derives `current`, `expired`, or `not_provided` against the business-local date.
+Cross-midnight appointments remain unsupported under existing pilot policy.
 
 ## Notifications and resolution
 

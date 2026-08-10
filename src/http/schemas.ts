@@ -93,15 +93,6 @@ function validateRabiesDates(value: {
       && value.vaccinationExpiresOn < value.rabiesVaccinationDate) {
     context.addIssue({code:"custom",path:["vaccinationExpiresOn"],message:"Expiration cannot precede vaccination"});
   }
-  if (value.rabiesVerificationStatus === "staff_verified" && !value.vaccinationExpiresOn) {
-    context.addIssue({code:"custom",path:["vaccinationExpiresOn"],message:"Expiration is required for verification"});
-  }
-  if (value.rabiesVerificationStatus === "staff_verified" && !value.rabiesVerificationMethod) {
-    context.addIssue({code:"custom",path:["rabiesVerificationMethod"],message:"Verification method is required"});
-  }
-  if (value.rabiesVerificationStatus !== "staff_verified" && value.rabiesVerificationMethod) {
-    context.addIssue({code:"custom",path:["rabiesVerificationMethod"],message:"Method is only valid for staff verification"});
-  }
 }
 
 export const petSchema = petBaseSchema.superRefine(validateRabiesDates);

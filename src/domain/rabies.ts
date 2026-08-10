@@ -8,18 +8,23 @@ export type RabiesAppointmentStatus =
   | "valid_for_appointment"
   | "expires_before_appointment"
   | "expired"
-  | "unverified"
   | "not_provided";
 
+export type RabiesProfileStatus = "current" | "expired" | "not_provided";
+
+export function evaluateRabiesProfile(expirationDate: string | null, currentBusinessDate: string): RabiesProfileStatus {
+  if (!expirationDate) return "not_provided";
+  return expirationDate < currentBusinessDate ? "expired" : "current";
+}
+
 export function evaluateRabiesForAppointment(input: {
-  verificationStatus: RabiesVerificationStatus;
+  verificationStatus?: RabiesVerificationStatus;
   expirationDate: string | null;
   appointmentLocalDate: string;
   currentBusinessDate: string;
 }): RabiesAppointmentStatus {
-  if (!input.expirationDate || input.verificationStatus === "not_provided") return "not_provided";
-  if (input.verificationStatus !== "staff_verified") return "unverified";
-  if (input.expirationDate < input.currentBusinessDate) return "expired";
+  // Legacy verification metadata is retained for audit/history but is not authoritative for MVP eligibility.
+  if (!input.expirationDate) return "not_provided";
   return input.expirationDate < input.appointmentLocalDate
     ? "expires_before_appointment"
     : "valid_for_appointment";

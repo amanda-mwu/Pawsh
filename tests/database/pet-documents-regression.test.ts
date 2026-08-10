@@ -99,14 +99,13 @@ describeDatabase("D3.2 rabies vaccination documents", () => {
     expect(storage.objects.size).toBe(1);
 
     const replacementMetadata = metadata({
-      expectedCurrentDocumentId: firstDocument.id, expectedCurrentDocumentVersion: 1,
-      expiration: { intent: "set", value: "2036-04-12" }, expectedPetVersion: 1
+      expectedCurrentDocumentId: firstDocument.id, expectedCurrentDocumentVersion: 1
     });
     const replacementBody = multipart(replacementMetadata, pdf, "replacement;\".pdf");
     const replacement = await app.inject({ method: "POST", url: `/api/pets/${petId}/documents/rabies`,
       headers: { cookie: ownerCookie, ...replacementBody.headers }, payload: replacementBody.payload });
     expect(replacement.statusCode).toBe(200);
-    expect(replacement.json().expiresOn).toBe("2036-04-12");
+    expect(replacement.json().expiresOn).toBeNull();
 
     const list = await app.inject({ method: "GET", url: `/api/pets/${petId}/documents`, headers: { cookie: ownerCookie } });
     expect(list.statusCode).toBe(200);
@@ -124,17 +123,14 @@ describeDatabase("D3.2 rabies vaccination documents", () => {
     const [pet] = await db<{ version: number; vaccinationExpiresOn: string | Date }[]>`
       select version,vaccination_expires_on from pets where id=${petId}
     `;
-    expect(pet?.version).toBe(2);
-    const vaccinationDate = pet?.vaccinationExpiresOn;
-    expect(vaccinationDate instanceof Date
-      ? vaccinationDate.toISOString().slice(0,10)
-      : String(vaccinationDate).slice(0,10)).toBe("2036-04-12");
+    expect(pet?.version).toBe(1);
+    expect(pet?.vaccinationExpiresOn).toBeNull();
     const [events] = await db<{ documents: number; care: number }[]>`
       select count(*) filter (where action in ('pet.document.uploaded','pet.document.replaced'))::int as documents,
         count(*) filter (where action='pet.care.update')::int as care
       from audit_events where business_id=${businessId} and resource_id in (${firstDocument.id},${replacement.json().id},${petId})
     `;
-    expect(events).toEqual({ documents: 2, care: 1 });
+    expect(events).toEqual({ documents: 2, care: 0 });
     await expect(db`update pet_documents set sha256=${"0".repeat(64)} where id=${firstDocument.id}`)
       .rejects.toThrow(/superseded pet documents are immutable/);
   });

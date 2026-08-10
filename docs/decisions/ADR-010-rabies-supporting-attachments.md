@@ -2,9 +2,10 @@
 
 Status: Accepted for MVP; supersedes the runtime portions of ADR-005.
 
-Structured rabies data, explicit staff verification, and appointment-date
-evaluation remain the compliance authority. An uploaded file is optional
-supporting evidence and never verifies rabies status or changes verification.
+The structured rabies expiration date and appointment-date evaluation remain
+the compliance authority. Historical staff-verification metadata is retained
+for audit compatibility but is not an MVP eligibility condition. An uploaded
+file is optional supporting evidence and never changes expiration or compliance.
 
 MVP uploads are authenticated, tenant- and permission-authorized, limited to
 PDF, bounded to 10 MiB, checked for PDF signature/EOF sanity, assigned an

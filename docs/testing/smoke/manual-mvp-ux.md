@@ -65,3 +65,11 @@ consistency, and trust.
 Manual UX becomes **Valid** only after a human records execution evidence.
 Physical-device and staging results must never be inferred from emulation or
 documentation readiness.
+# Rabies expiration and breed autocomplete
+
+- Enter only a rabies expiration date, save, reload, and verify persistence.
+- Create appointments before, on, and after expiration; verify only the after-expiration appointment warns.
+- Verify customer and staff notices, renew beyond the appointment, and verify the warning resolves.
+- Attach a PDF and confirm the attachment does not modify expiration or compliance state.
+- Create and edit a pet using partial, keyboard-only, touch, Mixed Breed, Unknown, and Other selections.
+- Save and reload a selected breed; retain an existing non-catalog breed without alteration.

@@ -26,8 +26,7 @@ export async function reconcileRabiesNotifications(
   }[]>`
     select a.id,a.customer_id,a.pet_id,a.employee_id,a.scheduled_local_start::date::text as local_date,
       p.vaccination_expires_on::text as expiration_date,
-      (p.rabies_verification_status='staff_verified'
-        and p.vaccination_expires_on >= (now() at time zone l.timezone)::date
+      (p.vaccination_expires_on is not null
         and p.vaccination_expires_on < a.scheduled_local_start::date) as requires_notification,
       c.email,c.email_allowed
     from appointments a
@@ -256,7 +255,6 @@ export async function deliverNotifications(
     petName: string | null;
     customerName: string | null;
     expirationDate: string | null;
-    verificationStatus: string | null;
     businessPhone: string | null;
     businessEmail: string | null;
     customerNotificationStatus: string | null;
@@ -283,8 +281,6 @@ export async function deliverNotifications(
         join customers customer on customer.id=appointment.customer_id where appointment.id=intent.appointment_id) as customer_name,
       (select pet.vaccination_expires_on::text from appointments appointment
         join pets pet on pet.id=appointment.pet_id where appointment.id=intent.appointment_id) as expiration_date,
-      (select pet.rabies_verification_status from appointments appointment
-        join pets pet on pet.id=appointment.pet_id where appointment.id=intent.appointment_id) as verification_status,
       (select business.phone from businesses business where business.id=intent.business_id) as business_phone,
       (select business.email from businesses business where business.id=intent.business_id) as business_email,
       (select customer_intent.status from notification_intents customer_intent
@@ -307,7 +303,7 @@ export async function deliverNotifications(
       const generated=intent.notificationType===RABIES_CUSTOMER
         ? `Your pet ${intent.petName??"pet"} is scheduled for ${when??"an upcoming appointment"}. The rabies vaccination information we have expires on ${expiration}, so it will not be current for the appointment. Please provide updated rabies information before the visit or contact ${intent.businessName??"the business"} at ${contact}.`
         : intent.notificationType===RABIES_STAFF
-          ? `Rabies information for ${intent.petName??"the pet"} (${intent.customerName??"customer"}) expires on ${expiration}, before the appointment scheduled for ${when??"an upcoming date"}. Current verification status: ${intent.verificationStatus??"unknown"}. Updated rabies information is required. Customer notification status: ${intent.customerNotificationStatus??"unknown"}.`
+          ? `${intent.petName??"The pet"}'s rabies vaccination expires on ${expiration}, before the appointment scheduled for ${when??"an upcoming date"}. Updated rabies information is required. Customer notification status: ${intent.customerNotificationStatus??"unknown"}.`
           : `${intent.businessName ?? "Your salon"}: ${intent.petName ?? "Your pet"} has an appointment update${when ? ` for ${when}` : ""}.`;
       const body = intent.encryptedBody ? decryptBody?.(intent.encryptedBody) : generated;
       if (!body) throw new Error("Notification body cannot be decrypted");

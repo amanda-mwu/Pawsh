@@ -30,6 +30,7 @@ import {
   suppliedPetCareFields,
   type PetCareRecord
 } from "../domain/pet-care.js";
+import { catalogBreedName, dogBreeds } from "../domain/pets/dog-breeds.js";
 
 type Transaction = postgres.TransactionSql;
 
@@ -57,13 +58,8 @@ const documentUploadMetadataSchema = z.object({
   uploadRequestId: z.string().uuid(),
   expectedCurrentDocumentId: z.string().uuid().nullable(),
   expectedCurrentDocumentVersion: z.number().int().positive().optional(),
-  expectedPetVersion: z.number().int().positive().optional(),
   documentDate: z.string().date().nullish(),
-  expiration: z.discriminatedUnion("intent", [
-    z.object({ intent: z.literal("preserve") }),
-    z.object({ intent: z.literal("clear") }),
-    z.object({ intent: z.literal("set"), value: z.string().date() })
-  ]),
+  expiration: z.object({ intent: z.literal("preserve") }),
   claimedDigest: z.string().regex(/^[0-9a-f]{64}$/).optional()
 }).superRefine((value, context) => {
   if (value.expectedCurrentDocumentId && !value.expectedCurrentDocumentVersion) {
@@ -71,9 +67,6 @@ const documentUploadMetadataSchema = z.object({
   }
   if (!value.expectedCurrentDocumentId && value.expectedCurrentDocumentVersion !== undefined) {
     context.addIssue({ code: "custom", path: ["expectedCurrentDocumentVersion"], message: "Version is invalid without a current document" });
-  }
-  if (value.expiration.intent !== "preserve" && value.expectedPetVersion === undefined) {
-    context.addIssue({ code: "custom", path: ["expectedPetVersion"], message: "Pet version is required for expiration changes" });
   }
 });
 
@@ -84,7 +77,6 @@ function documentRequestFingerprint(input: DocumentUploadMetadata): string {
     documentType: "rabies_vaccination",
     expectedCurrentDocumentId: input.expectedCurrentDocumentId,
     expectedCurrentDocumentVersion: input.expectedCurrentDocumentVersion ?? null,
-    expectedPetVersion: input.expectedPetVersion ?? null,
     documentDate: input.documentDate ?? null,
     expiration: input.expiration,
     claimedDigest: input.claimedDigest ?? null
@@ -1245,6 +1237,10 @@ export function registerRoutes(
     const query = request.query as { q?: string; customerId?: string };
     const rows = await db`
       select p.*, concat_ws(' ', c.first_name, c.last_name) as customer_name,
+        (select upcoming.scheduled_local_start from appointments upcoming
+          where upcoming.business_id=p.business_id and upcoming.pet_id=p.id
+            and upcoming.status='scheduled' and upcoming.start_at>now()
+          order by upcoming.start_at,upcoming.id limit 1) as next_appointment_local_start,
         coalesce(verifier_employee.display_name,verifier_user.email) as rabies_verified_by_name
       from pets p
       join customers c on c.id=p.customer_id and c.business_id=p.business_id
@@ -1262,6 +1258,10 @@ export function registerRoutes(
     if (mayViewPetCare(context)) return rows;
     return rows.map((pet) => redactPetCare(pet));
   });
+
+  app.get("/api/dog-breeds", {
+    preHandler: [authenticate, requirePermission("pets.view")]
+  }, async () => dogBreeds);
 
   app.post("/api/pets", {
     preHandler: [authenticate, requirePermission("pets.edit")]
@@ -1289,7 +1289,7 @@ export function registerRoutes(
            rabies_verified_by_membership_id,photo_permission, created_by, updated_by)
         values
           (${context.businessId}, ${input.customerId}, ${input.name}, ${input.species},
-           ${input.breed ?? null}, ${input.dateOfBirth ?? null}, ${input.approximateAge ?? null},
+           ${input.breed ? catalogBreedName(input.breed) ?? input.breed : null}, ${input.dateOfBirth ?? null}, ${input.approximateAge ?? null},
            ${input.weightOunces ?? null}, ${input.sex ?? null}, ${input.coatNotes ?? null},
            ${input.groomingPreferences ?? null}, ${input.behaviorNotes ?? null},
            ${input.medicalNotes ?? null}, ${input.safetyAlerts ?? null},
@@ -1341,7 +1341,7 @@ export function registerRoutes(
       if (!customer?.available) return { kind: "invalidCustomer" } as const;
       const [pet] = await tx`
         update pets set customer_id=${input.customerId},name=${input.name},species=${input.species},
-          breed=${input.breed ?? null},date_of_birth=${input.dateOfBirth ?? null},
+          breed=${input.breed ? catalogBreedName(input.breed) ?? input.breed : null},date_of_birth=${input.dateOfBirth ?? null},
           approximate_age=${input.approximateAge ?? null},weight_ounces=${input.weightOunces ?? null},
           sex=${input.sex ?? null},coat_notes=${input.coatNotes ?? null},
           grooming_preferences=${input.groomingPreferences ?? null},
@@ -1414,22 +1414,10 @@ export function registerRoutes(
         if (supplied.has(field)) after[field] = input[field];
       }
       const changedFields = changedPetCareFields(before, after);
-      const expiration=supplied.has("vaccinationExpiresOn") ? input.vaccinationExpiresOn ?? null : before.vaccinationExpiresOn;
-      const requestedStatus=supplied.has("rabiesVerificationStatus")
-        ? input.rabiesVerificationStatus ?? "not_provided" : before.rabiesVerificationStatus;
-      const verificationStatus=requestedStatus === "staff_verified"
-        ? "staff_verified" : expiration ? "unverified" : "not_provided";
-      const method=verificationStatus === "staff_verified"
-        ? (supplied.has("rabiesVerificationMethod") ? input.rabiesVerificationMethod ?? null : before.rabiesVerificationMethod)
-        : null;
-      if(verificationStatus === "staff_verified" && !method) {
-        throw new Error("Verification method is required for staff verification");
-      }
-      const verifiedAt=verificationStatus === "staff_verified"
-        ? supplied.has("rabiesVerificationDate") && input.rabiesVerificationDate
-          ? new Date(`${input.rabiesVerificationDate}T12:00:00.000Z`)
-          : new Date()
-        : null;
+      // Verification columns are historical metadata. Expiration-only edits must preserve them.
+      const verificationStatus=before.rabiesVerificationStatus;
+      const method=before.rabiesVerificationMethod;
+      const verifiedAt=before.rabiesVerificationDate;
       const [pet] = await tx`
         update pets set
           safety_alerts=${supplied.has("safetyAlerts") ? input.safetyAlerts ?? null : before.safetyAlerts},
@@ -1446,7 +1434,7 @@ export function registerRoutes(
           rabies_verification_status=${verificationStatus},
           rabies_verification_method=${method},
           rabies_verified_at=${verifiedAt},
-          rabies_verified_by_membership_id=${verificationStatus === "staff_verified" ? context.membershipId : null},
+          rabies_verified_by_membership_id=${before.rabiesVerifiedByMembershipId},
           version=version+1,updated_by=${context.userId},updated_at=now()
         where business_id=${context.businessId} and id=${id} and version=${input.version}
         returning *
@@ -1578,8 +1566,8 @@ export function registerRoutes(
          expiration_intent,expiration_value,document_date)
       values (${context.businessId},${petId},${operation},${metadata.uploadRequestId},${fingerprint},'in_progress',
         ${context.userId},${context.membershipId},${metadata.expectedCurrentDocumentId},
-        ${metadata.expectedCurrentDocumentVersion ?? null},${metadata.expectedPetVersion ?? null},
-        ${metadata.expiration.intent},${metadata.expiration.intent === 'set' ? metadata.expiration.value : null},
+        ${metadata.expectedCurrentDocumentVersion ?? null},${null},
+        'preserve',${null},
         ${metadata.documentDate ?? null})
       on conflict (business_id,pet_id,operation,upload_request_id) do nothing
       returning id
@@ -1658,7 +1646,7 @@ export function registerRoutes(
       values (${documentId},${context.businessId},${petId},'rabies_vaccination','pending',
         ${filename.original},${filename.download},${storageKey},'application/pdf',
         ${metadata.documentDate ?? null},
-        ${metadata.expiration.intent === "set" ? metadata.expiration.value : null},${context.userId},${createdRequest.id})
+        ${null},${context.userId},${createdRequest.id})
     `;
     let uploaded = false;
     try {
@@ -1679,15 +1667,9 @@ export function registerRoutes(
         const [pet] = await tx<{version:number;vaccinationExpiresOn:string|null}[]>`select version,vaccination_expires_on from pets where business_id=${context.businessId} and id=${requestRow.petId} for update`;
         const [current] = await tx<{id:string;documentVersion:number}[]>`select id,document_version from pet_documents where business_id=${context.businessId} and pet_id=${requestRow.petId} and document_type='rabies_vaccination' and state='current' for update`;
         if ((requestRow.expectedCurrentDocumentId === null && current) || (requestRow.expectedCurrentDocumentId && (!current || current.id !== requestRow.expectedCurrentDocumentId || current.documentVersion !== requestRow.expectedCurrentDocumentVersion))) throw new Error("DOCUMENT_STALE");
-        if (requestRow.expirationIntent !== 'preserve' && (!pet || pet.version !== requestRow.expectedPetVersion)) throw new Error("PET_STALE");
         if (current) await tx`update pet_documents set state='superseded',updated_at=now() where id=${current.id}`;
-        const expiration: string | null = requestRow.expirationIntent === 'set' ? (requestRow.expirationValue ?? null) : requestRow.expirationIntent === 'clear' ? null : (pet?.vaccinationExpiresOn ?? null);
+        const expiration: string | null = pet?.vaccinationExpiresOn ?? null;
         await tx`update pet_documents set state='current',expires_on=${expiration},updated_at=now() where id=${documentId} and state='pending'`;
-        const careChanged = Boolean(pet && requestRow.expirationIntent !== 'preserve' && expiration !== pet.vaccinationExpiresOn);
-        if (careChanged) {
-          await tx`update pets set vaccination_expires_on=${expiration},version=version+1,updated_by=${context.userId},updated_at=now() where business_id=${context.businessId} and id=${requestRow.petId}`;
-          await tx`insert into audit_events(business_id,actor_id,action,resource_type,resource_id,correlation_id,after_data) values (${context.businessId},${context.userId},'pet.care.update','pet',${requestRow.petId},${randomUUID()},${tx.json({changedFields:['vaccinationExpiresOn']})})`;
-        }
         await documentHooks?.beforeDocumentAudit?.({ businessId: context.businessId, petId: requestRow.petId, documentId });
         await tx`update pet_document_requests set state='completed',result_document_id=${documentId},result_code='COMPLETED',completed_at=now(),updated_at=now() where id=${createdRequest.id}`;
         await tx`insert into audit_events(business_id,actor_id,action,resource_type,resource_id,correlation_id,after_data) values (${context.businessId},${context.userId},${current ? 'pet.document.replaced' : 'pet.document.uploaded'},'pet_document',${documentId},${randomUUID()},${tx.json({petId:requestRow.petId,documentType:'rabies_vaccination',supportingAttachment:true})})`;
@@ -1777,9 +1759,7 @@ export function registerRoutes(
         p.behavior_notes, p.medical_notes, p.grooming_preferences, p.coat_notes,
         p.vaccination_expires_on,p.rabies_verification_status,p.rabies_verification_method,
         case
-          when p.vaccination_expires_on is null or p.rabies_verification_status='not_provided' then 'not_provided'
-          when p.rabies_verification_status<>'staff_verified' then 'unverified'
-          when p.vaccination_expires_on < (now() at time zone l.timezone)::date then 'expired'
+          when p.vaccination_expires_on is null then 'not_provided'
           when p.vaccination_expires_on < a.scheduled_local_start::date then 'expires_before_appointment'
           else 'valid_for_appointment'
         end as rabies_appointment_status,

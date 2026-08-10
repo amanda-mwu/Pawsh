@@ -2,7 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const inviteToken = new URLSearchParams(location.search).get("invite");
 const resetToken = new URLSearchParams(location.search).get("reset");
-const state = { me: null, customers: [], pets: [], employees: [], services: [], appointments: [], members: [], reports: null, login: false };
+const state = { me: null, customers: [], pets: [], dogBreeds: [], employees: [], services: [], appointments: [], members: [], reports: null, login: false };
 const pendingActions = new Set();
 let customerSearchSequence = 0;
 
@@ -101,10 +101,11 @@ async function refresh() {
     api("/api/employees"), api("/api/services"),
     safe("appointments.view") ? api(`/api/appointments?localDate=${businessDate()}&days=8`) : [],
     safe("team.manage") ? api("/api/members") : [],
-    safe("reports.view") ? api("/api/reports") : null
+    safe("reports.view") ? api("/api/reports") : null,
+    safe("pets.view") && !state.dogBreeds.length ? api("/api/dog-breeds") : state.dogBreeds
   ];
-  const [dashboard, customers, pets, employees, services, appointments, members, reports] = await Promise.all(requests);
-  Object.assign(state, { customers, pets, employees, services, appointments, members, reports });
+  const [dashboard, customers, pets, employees, services, appointments, members, reports, dogBreeds] = await Promise.all(requests);
+  Object.assign(state, { customers, pets, employees, services, appointments, members, reports, dogBreeds });
   $("#today").textContent = new Intl.DateTimeFormat([], {timeZone:schedulingZone(),weekday:"long",month:"short",day:"numeric"}).format(new Date());
   applyPermissions();
   renderDashboard(dashboard); renderCustomersEnhanced(); renderSetupEnhanced(); renderAppointments(); renderReports();
@@ -423,7 +424,6 @@ async function showArchivedCareRecords(){
 
 async function showPetDocuments(petId,historicalOnly=false){
   try{
-    const pet=state.pets.find(item=>item.id===petId);
     const data=await api(`/api/pets/${petId}/documents`);
     const current=data.current;
     const activeRequest=null;
@@ -431,17 +431,15 @@ async function showPetDocuments(petId,historicalOnly=false){
     const expired=current?.expiresOn&&new Date(`${current.expiresOn}T23:59:59`)<new Date();
     const currentView=current?`<section class="wide document-current" data-testid="rabies-current"><p><strong>${escape(current.filename)}</strong></p><p>${current.expiresOn?`${expired?"Rabies vaccination expired — ":"Expires "}${new Date(`${current.expiresOn}T00:00:00`).toLocaleDateString()}`:"Expiration date not recorded"}</p><button type="button" class="text-button download-pet-document" data-id="${current.id}">Download</button></section>`:`<p class="wide empty">No rabies vaccination record uploaded</p>`;
     const activityView="";
-    const upload=!activeRequest&&!historicalOnly&&allowed("pets.edit")&&allowed("pets.care.edit")?`<fieldset class="wide"><legend>${current?"Replace":"Upload"} Rabies Vaccination Record</legend><label>PDF<input data-testid="field-rabiesPdf" name="rabiesPdf" type="file" accept="application/pdf" required></label><label>Document date<input name="documentDate" type="date"></label><label>Vaccination expiration<input name="expiration" type="date" value="${pet?.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):current?.expiresOn||""}"></label></fieldset>`:"";
+    const upload=!activeRequest&&!historicalOnly&&allowed("pets.edit")&&allowed("pets.care.edit")?`<fieldset class="wide"><legend>${current?"Replace":"Upload"} Supporting Rabies Document</legend><label>PDF<input data-testid="field-rabiesPdf" name="rabiesPdf" type="file" accept="application/pdf" required></label><label>Document date<input name="documentDate" type="date"></label><p>Optional supporting evidence only. Uploading does not change rabies expiration or compliance.</p></fieldset>`:"";
     openModal("Rabies Vaccination Record",currentView+activityView+upload+(previous?`<details class="wide"><summary>Previous records</summary><div class="history-list" data-testid="previous-rabies-records">${previous}</div></details>`:""),async(form)=>{
       if(!form.get("rabiesPdf"))return;
       const requestId=globalThis.crypto.randomUUID();
       const operation=current?"replace":"upload";
-      const expiration=form.get("expiration");
       const metadata={uploadRequestId:requestId,expectedCurrentDocumentId:current?.id||null,
         ...(current?{expectedCurrentDocumentVersion:current.version}:{}),
         documentDate:form.get("documentDate")||null,
-        expiration:expiration?{intent:"set",value:expiration}:{intent:"preserve"},
-        ...(expiration?{expectedPetVersion:pet?.version}: {})};
+        expiration:{intent:"preserve"}};
       const uploadForm=new FormData();uploadForm.append("metadata",JSON.stringify(metadata));uploadForm.append("file",form.get("rabiesPdf"));
       try{
         const result=await api(`/api/pets/${petId}/documents/rabies`,{method:"POST",body:uploadForm});
@@ -494,16 +492,18 @@ function editPet(id) {
         await refresh();
         pet=state.pets.find(item=>item.id===id);
         $("#modal-fields").innerHTML=petProfileFields(pet);
+        setupBreedAutocomplete();
       }
       throw error;
     }
   });
+  setupBreedAutocomplete();
 }
 
 function petProfileFields(pet){
   return field("name","Pet name","text",`required value="${escape(pet.name)}"`)+
     field("species","Species","text",`required value="${escape(pet.species)}"`)+
-    field("breed","Breed","text",`value="${escape(pet.breed||"")}"`)+
+    breedField(pet.breed||"")+
     field("dateOfBirth","Date of birth","date",`value="${pet.dateOfBirth?String(pet.dateOfBirth).slice(0,10):""}"`)+
     field("approximateAge","Approximate age","text",`value="${escape(pet.approximateAge||"")}"`)+
     field("weightOunces","Weight (ounces)","number",`min="0" value="${pet.weightOunces??""}"`)+
@@ -514,21 +514,21 @@ function petProfileFields(pet){
 }
 
 function petCareFields(pet){
+  const expiration=pet.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):null;
+  const nextDate=pet.nextAppointmentLocalStart?String(pet.nextAppointmentLocalStart).slice(0,10):null;
+  const display=date=>new Date(`${date}T12:00:00Z`).toLocaleDateString("en-US");
+  const warning=!expiration?"Rabies expiration date not provided."
+    :expiration<businessDate()?`Rabies vaccination expired on ${display(expiration)}.`
+    :nextDate&&expiration<nextDate?`Rabies expires ${display(expiration)} and will not be current for the appointment on ${display(nextDate)}.`
+    :`Rabies vaccination is current${nextDate?" for the next appointment":""}.`;
   return field("safetyAlerts","Safety alerts","text",`value="${escape(pet.safetyAlerts||"")}"`,true)+
     field("behaviorNotes","Behavior notes","text",`value="${escape(pet.behaviorNotes||"")}"`,true)+
     field("medicalNotes","Medical notes","text",`value="${escape(pet.medicalNotes||"")}"`,true)+
     field("emergencyContact","Emergency contact","text",`value="${escape(pet.emergencyContact||"")}"`,true)+
     `<fieldset class="wide"><legend>Rabies Information</legend>`+
-    field("rabiesVaccinationDate","Vaccination date (optional)","date",`value="${pet.rabiesVaccinationDate?String(pet.rabiesVaccinationDate).slice(0,10):""}"`)+
     field("vaccinationExpiresOn","Expiration date","date",`value="${pet.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):""}"`)+
-    field("veterinarian","Veterinarian or clinic (optional)","text",`maxlength="500" value="${escape(pet.veterinarian||"")}"`)+
-    field("rabiesCertificateReference","Certificate or vaccine reference (optional)","text",`maxlength="200" value="${escape(pet.rabiesCertificateReference||"")}"`)+
-    select("rabiesVerificationStatus","Verification status",[["not_provided","Not provided"],["unverified","Unverified"],["staff_verified","Staff verified"]],true,pet.rabiesVerificationStatus||"not_provided")+
-    select("rabiesVerificationMethod","Verification method",[["document_review","Document review"],["veterinarian_confirmation","Veterinarian confirmation"],["verbal_confirmation","Verbal confirmation"],["customer_provided","Customer provided"],["other","Other"]],true,pet.rabiesVerificationMethod||"",false)+
-    field("rabiesVerificationDate","Verification date (defaults to today)","date",`value="${pet.rabiesVerificationDate?String(pet.rabiesVerificationDate).slice(0,10):""}"`)+
-    field("vaccinationNotes","Rabies notes","text",`maxlength="2000" value="${escape(pet.vaccinationNotes||"")}"`,true)+
-    `${pet.rabiesVerifiedByName?`<p class="wide"><strong>Verified by:</strong> ${escape(pet.rabiesVerifiedByName)}</p>`:""}`+
-    `<p class="wide">Supporting PDF evidence is optional and never establishes staff verification automatically.</p></fieldset>`;
+    `<p class="wide rabies-profile-status" role="status" data-testid="rabies-profile-status">${escape(warning)}</p>`+
+    `<p class="wide">Supporting rabies document (optional). Uploading evidence does not change the expiration date or compliance state.</p></fieldset>`;
 }
 
 function editPetCare(id){
@@ -540,14 +540,7 @@ function editPetCare(id){
         behaviorNotes:form.get("behaviorNotes")||null,
         medicalNotes:form.get("medicalNotes")||null,
         emergencyContact:form.get("emergencyContact")||null,
-        veterinarian:form.get("veterinarian")||null,
-        vaccinationNotes:form.get("vaccinationNotes")||null,
         vaccinationExpiresOn:form.get("vaccinationExpiresOn")||null,
-        rabiesVaccinationDate:form.get("rabiesVaccinationDate")||null,
-        rabiesCertificateReference:form.get("rabiesCertificateReference")||null,
-        rabiesVerificationStatus:form.get("rabiesVerificationStatus"),
-        rabiesVerificationMethod:form.get("rabiesVerificationStatus")==="staff_verified"?(form.get("rabiesVerificationMethod")||null):null,
-        rabiesVerificationDate:form.get("rabiesVerificationStatus")==="staff_verified"?(form.get("rabiesVerificationDate")||null):null,
         version:pet.version
       })});
     }catch(error){
@@ -563,6 +556,19 @@ function editPetCare(id){
 
 function field(name, label, type = "text", extra = "", wide = false) {
   return `<label class="${wide ? "wide" : ""}">${label}<input data-testid="field-${name}" name="${name}" type="${type}" ${extra}></label>`;
+}
+function breedField(value="") {
+  return `<label class="breed-combobox">Breed<input data-testid="field-breed" name="breed" type="text" value="${escape(value)}" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="breed-options" aria-activedescendant=""><span class="breed-options" id="breed-options" role="listbox" hidden></span></label>`;
+}
+function setupBreedAutocomplete() {
+  const input=$('[name="breed"]'),list=$("#breed-options");if(!input||!list)return;
+  let matches=[],active=-1;
+  const normalized=value=>String(value).trim().toLowerCase().replace(/[\s\-_]+/g," ").replace(/[^a-z0-9 ]/g,"");
+  const close=()=>{list.hidden=true;input.setAttribute("aria-expanded","false");input.setAttribute("aria-activedescendant","");active=-1;};
+  const selectBreed=index=>{const breed=matches[index];if(!breed)return;input.value=breed.name;close();input.dispatchEvent(new globalThis.Event("change",{bubbles:true}));};
+  const render=()=>{const query=normalized(input.value);matches=query?state.dogBreeds.filter(item=>item.search.includes(query)).sort((a,b)=>Number(!a.search.startsWith(query))-Number(!b.search.startsWith(query))||a.name.localeCompare(b.name)).slice(0,12):[];active=matches.length?0:-1;list.innerHTML=matches.length?matches.map((item,index)=>`<button type="button" id="breed-option-${index}" role="option" aria-selected="${index===active}" data-index="${index}">${escape(item.name)}</button>`).join(""):`<span class="breed-no-results" role="option" aria-disabled="true">No matching breeds. You may keep the existing value or choose Other.</span>`;list.hidden=false;input.setAttribute("aria-expanded","true");input.setAttribute("aria-activedescendant",active>=0?`breed-option-${active}`:"");};
+  const move=direction=>{if(!matches.length)return;active=(active+direction+matches.length)%matches.length;list.querySelectorAll('[role="option"]').forEach((option,index)=>option.setAttribute("aria-selected",String(index===active)));input.setAttribute("aria-activedescendant",`breed-option-${active}`);list.querySelector(`#breed-option-${active}`)?.scrollIntoView({block:"nearest"});};
+  input.addEventListener("input",render);input.addEventListener("focus",()=>{if(input.value)render();});input.addEventListener("keydown",event=>{if(event.key==="ArrowDown"||event.key==="ArrowUp"){event.preventDefault();if(list.hidden)render();else move(event.key==="ArrowDown"?1:-1);}else if(event.key==="Enter"&&!list.hidden&&active>=0){event.preventDefault();selectBreed(active);}else if(event.key==="Escape"){event.preventDefault();close();}});list.addEventListener("pointerdown",event=>{const option=event.target.closest("[data-index]");if(option){event.preventDefault();selectBreed(Number(option.dataset.index));}});input.addEventListener("blur",()=>setTimeout(close,100));
 }
 function select(name, label, options, wide = false, selectedValue = "", required = true) {
   return `<label class="${wide ? "wide" : ""}">${label}<select data-testid="field-${name}" name="${name}" ${required?"required":""}><option value="">Choose…</option>${options.map(([v,l]) => `<option value="${v}" ${String(v)===String(selectedValue)?"selected":""}>${escape(l)}</option>`).join("")}</select></label>`;
@@ -641,9 +647,9 @@ const actions = {
   "new-customer": () => openModal("New customer",
     field("firstName","First name","text","required")+field("lastName","Last name","text","required")+field("email","Email","email")+field("phone","Phone","tel")+field("notes","Notes","text","",true),
     (form) => api("/api/customers",{method:"POST",body:JSON.stringify(Object.fromEntries(form))})),
-  "new-pet": () => openModal("New pet",
-    select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]),true)+field("name","Pet name","text","required")+field("breed","Breed")+field("species","Species","text",'value="dog"')+field("groomingPreferences","Grooming preferences","text","",true)+(allowed("pets.care.edit")?field("behaviorNotes","Behavior notes","text","",true)+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true):""),
-    (form) => api("/api/pets",{method:"POST",body:JSON.stringify(Object.fromEntries(form))})),
+  "new-pet": () => { openModal("New pet",
+    select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]),true)+field("name","Pet name","text","required")+breedField()+field("species","Species","text",'value="dog"')+field("groomingPreferences","Grooming preferences","text","",true)+(allowed("pets.care.edit")?field("behaviorNotes","Behavior notes","text","",true)+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true):""),
+    (form) => api("/api/pets",{method:"POST",body:JSON.stringify(Object.fromEntries(form))})); setupBreedAutocomplete(); },
   "new-service": () => openModal("New service",
     field("name","Service name","text","required")+field("baseDurationMinutes","Duration (minutes)","number",'required min="1"')+field("basePrice","Price ($)","number",'required min="0" step=".01"')+field("description","Description","text","",true),
     (form) => { const o=Object.fromEntries(form); o.baseDurationMinutes=Number(o.baseDurationMinutes); o.basePriceMinor=Math.round(Number(o.basePrice)*100); delete o.basePrice; return api("/api/services",{method:"POST",body:JSON.stringify(o)}); }),
@@ -702,9 +708,7 @@ const actions = {
       const pet=state.pets.find(item=>item.id===petSelect.value),appointmentDate=String(startInput.value||"").slice(0,10);
       if(!pet||!appointmentDate){rabiesStatus.textContent="Choose a pet and appointment time to evaluate rabies information.";return;}
       const expiration=pet.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):null;
-      const status=!expiration||pet.rabiesVerificationStatus==="not_provided"?"Not provided"
-        :pet.rabiesVerificationStatus!=="staff_verified"?"Unverified"
-        :expiration<businessDate()?"Expired"
+      const status=!expiration?"Not provided"
         :expiration<appointmentDate?"Expires before appointment — updated rabies information is required"
         :"Valid for appointment";
       rabiesStatus.textContent=`Rabies: ${status}${expiration?`. Expiration ${expiration}. Appointment ${appointmentDate}.`:""}`;

@@ -30,22 +30,17 @@ describeDatabase("rabies appointment compliance",()=>{
   });
   afterAll(async()=>{await app.close();await db.end();});
 
-  it("records independently verified structured data with audit and no document",async()=>{
+  it("records expiration-only data with audit and no document",async()=>{
     const [pet]=await db<{version:number}[]>`select version from pets where id=${petId}`;
     const response=await app.inject({method:"PUT",url:`/api/pets/${petId}/care`,headers:{cookie:ownerCookie},payload:{
-      vaccinationExpiresOn:"2032-08-10",rabiesVaccinationDate:"2031-08-10",veterinarian:"Pilot Veterinary Clinic",
-      rabiesCertificateReference:"CERT-2031",rabiesVerificationStatus:"staff_verified",
-      rabiesVerificationMethod:"veterinarian_confirmation",rabiesVerificationDate:"2032-08-01",
-      vaccinationNotes:"Confirmed by clinic",version:pet!.version}});
+      vaccinationExpiresOn:"2032-08-10",version:pet!.version}});
     expect(response.statusCode).toBe(200);
     expect(String(response.json().vaccinationExpiresOn).slice(0,10)).toBe("2032-08-10");
-    expect(response.json()).toMatchObject({rabiesVerificationStatus:"staff_verified",
-      rabiesVerificationMethod:"veterinarian_confirmation",rabiesCertificateReference:"CERT-2031"});
     const [proof]=await db<{audits:number;documents:number;verifiedBy:string|null}[]>`
       select (select count(*)::int from audit_events where business_id=${businessId} and resource_id=${petId} and action='pet.care.update') audits,
         (select count(*)::int from pet_documents where business_id=${businessId} and pet_id=${petId}) documents,
         (select rabies_verified_by_membership_id from pets where business_id=${businessId} and id=${petId}) verified_by`;
-    expect(proof).toMatchObject({audits:1,documents:0});expect(proof!.verifiedBy).toBeTruthy();
+    expect(proof).toMatchObject({audits:1,documents:0,verifiedBy:null});
     const [event]=await db<{count:number}[]>`select count(*)::int count from outbox_events
       where business_id=${businessId} and resource_id=${petId} and event_type='RabiesComplianceUpdated'`;
     expect(event!.count).toBe(1);
@@ -84,7 +79,7 @@ describeDatabase("rabies appointment compliance",()=>{
   it("resolves pending warnings when renewed data becomes valid",async()=>{
     await db`update notification_intents set status='pending',provider_message_id=null where appointment_id=${appointmentId} and notification_type like 'rabies_%'`;
     const [pet]=await db<{version:number}[]>`select version from pets where id=${petId}`;
-    const update=await app.inject({method:"PUT",url:`/api/pets/${petId}/care`,headers:{cookie:ownerCookie},payload:{vaccinationExpiresOn:"2033-08-10",rabiesVerificationStatus:"staff_verified",rabiesVerificationMethod:"document_review",version:pet!.version}});
+    const update=await app.inject({method:"PUT",url:`/api/pets/${petId}/care`,headers:{cookie:ownerCookie},payload:{vaccinationExpiresOn:"2033-08-10",version:pet!.version}});
     expect(update.statusCode).toBe(200);
     const [count]=await db<{active:number}[]>`select count(*)::int active from notification_intents where appointment_id=${appointmentId} and notification_type like 'rabies_%' and status in ('pending','failed','suppressed')`;
     expect(count!.active).toBe(0);

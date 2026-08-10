@@ -6,15 +6,15 @@ function addDays(dateOnly:string,days:number):string {
   return date.toISOString().slice(0,10);
 }
 
-test("@regression-lifecycle enters rabies data manually and warns for the appointment date",async({page,tenant})=>{
+test("@regression-lifecycle enters only rabies expiration and warns for the appointment date",async({page,tenant})=>{
   const expiration=addDays(tenant.anchor,-1);
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-customers").click();
   await page.locator(`[data-pet-id="${tenant.petId}"]`).getByRole("button",{name:"Care"}).click();
   await expect(page.getByRole("group",{name:"Rabies Information"})).toBeVisible();
   await page.getByTestId("field-vaccinationExpiresOn").fill(expiration);
-  await page.getByTestId("field-rabiesVerificationStatus").selectOption("staff_verified");
-  await page.getByTestId("field-rabiesVerificationMethod").selectOption("veterinarian_confirmation");
+  await expect(page.getByTestId("field-rabiesVerificationStatus")).toHaveCount(0);
+  await expect(page.getByTestId("field-rabiesVerificationMethod")).toHaveCount(0);
   await page.getByTestId("modal-submit").click();
   await expect(page.getByTestId("modal")).toBeHidden();
 

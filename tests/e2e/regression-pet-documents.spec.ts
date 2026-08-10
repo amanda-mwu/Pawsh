@@ -7,24 +7,29 @@ test("@regression-pet-documents uploads, downloads, and replaces a rabies record
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-customers").click();
   const card = page.getByTestId("customer-card").filter({ hasText: "Charlie" });
+  await card.getByRole("button", { name: "Care" }).click();
+  await page.getByTestId("field-vaccinationExpiresOn").fill("2036-08-17");
+  await page.getByTestId("modal-submit").click();
+  await expect(page.getByTestId("modal")).toBeHidden();
   await card.getByRole("button", { name: "Documents" }).click();
   await page.getByTestId("field-rabiesPdf").setInputFiles(fixture);
-  await page.locator('input[name="expiration"]').fill("2036-08-17");
+  await expect(page.locator('input[name="expiration"]')).toHaveCount(0);
   await page.getByTestId("modal-submit").click();
   await expect(page.getByTestId("modal")).toBeHidden();
 
   await card.getByRole("button", { name: "Documents" }).click();
   await expect(page.getByTestId("rabies-current")).toContainText("rabies-vaccination.pdf");
+  await expect(page.getByTestId("rabies-current")).toContainText("8/17/2036");
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "Download" }).first().click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe("rabies-vaccination.pdf");
 
   await page.getByTestId("field-rabiesPdf").setInputFiles(fixture);
-  await page.locator('input[name="expiration"]').fill("2037-08-17");
   await page.getByTestId("modal-submit").click();
   await expect(page.getByTestId("modal")).toBeHidden();
   await card.getByRole("button", { name: "Documents" }).click();
+  await expect(page.getByTestId("rabies-current")).toContainText("8/17/2036");
   await expect(page.getByText("Previous records")).toBeVisible();
 });
 

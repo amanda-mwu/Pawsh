@@ -76,16 +76,18 @@
       </section>
 
       <section id="calendar" data-testid="calendar" class="view" hidden>
-        <div class="panel">
-          <div class="panel-head"><div><p class="eyebrow">Seven-day view</p><h3>Upcoming appointments</h3></div><div><button data-permission="appointments.edit" type="button" class="secondary compact" data-action="blocked-time">Block time</button><button data-testid="calendar-add-appointment" data-permission="appointments.create" type="button" class="primary compact" data-action="new-appointment">+ Add booking</button></div></div>
-          <div id="calendar-list" data-testid="calendar-list" class="appointment-list empty">Your week is clear.</div>
+        <div class="calendar-toolbar"><div><button type="button" class="secondary compact" id="calendar-today">Today</button><button type="button" class="secondary compact" id="calendar-prev-week" aria-label="Previous week">←</button><button type="button" class="secondary compact" id="calendar-next-week" aria-label="Next week">→</button><strong id="calendar-range"></strong></div><div><label class="inline-control">Employee<select id="calendar-employee-filter"><option value="">All employees</option></select></label><button data-permission="appointments.edit" type="button" class="secondary compact" data-action="blocked-time">Block time</button><button data-testid="calendar-add-appointment" data-permission="appointments.create" type="button" class="primary compact" data-action="new-appointment">+ Add booking</button></div></div>
+        <div class="calendar-workspace">
+          <section class="month-sidebar" aria-label="Month navigator"><div class="month-head"><button type="button" id="month-prev" aria-label="Previous month">←</button><strong id="month-label"></strong><button type="button" id="month-next" aria-label="Next month">→</button></div><div class="month-weekdays" aria-hidden="true"><span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span></div><div id="month-grid" class="month-grid"></div></section>
+          <div class="week-scroll"><section id="calendar-list" data-testid="calendar-list" class="week-grid" aria-label="Weekly appointment schedule"></section></div>
         </div>
       </section>
 
       <section id="customers" data-testid="customers-view" class="view" hidden>
         <div class="split-head"><div><p class="eyebrow">Relationships</p><h3>Customers &amp; pets</h3></div><div><button data-permission="pets.care.view" type="button" class="secondary compact" id="archived-care-records">Archived records</button><button data-permission="pets.edit" type="button" class="secondary compact" data-action="new-pet">+ Pet</button><button data-testid="new-customer" data-permission="customers.edit" type="button" class="primary compact" data-action="new-customer">+ Customer</button></div></div>
-        <label class="search"><span>Search</span><input data-testid="customer-search" id="customer-search" type="search" placeholder="Name, phone, or email"></label>
-        <div id="customer-grid" class="card-grid"></div>
+        <div class="directory-controls"><label class="search"><span>Search</span><input data-testid="customer-search" id="customer-search" type="search" placeholder="Customer, pet, phone, email, or breed"></label><label>Status<select id="customer-status"><option value="active">Active</option><option value="inactive">Inactive</option><option value="all">All</option></select></label><label>Appointments<select id="customer-upcoming"><option value="any">Any</option><option value="yes">Upcoming</option><option value="no">None upcoming</option></select></label><label>Sort<select id="customer-sort"><option value="name">Customer name</option><option value="lastVisit">Last visit</option><option value="nextAppointment">Next appointment</option></select></label></div>
+        <div class="directory-table-wrap"><table class="directory-table"><thead><tr><th scope="col">Customer</th><th scope="col">Phone</th><th scope="col">Email</th><th scope="col">Last visit</th><th scope="col">Next appointment</th><th scope="col">Status</th></tr></thead><tbody id="customer-grid"></tbody></table></div>
+        <div class="directory-pagination"><button type="button" class="secondary compact" id="customer-prev">Previous</button><span id="customer-page-status" role="status"></span><button type="button" class="secondary compact" id="customer-next">Next</button></div>
       </section>
 
       <section id="services" data-testid="services-view" class="view" hidden>

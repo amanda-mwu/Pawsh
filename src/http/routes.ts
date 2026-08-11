@@ -42,6 +42,17 @@ const calendarQuerySchema=z.object({
   days:z.coerce.number().int().min(1).max(31).optional(),
   mode:z.enum(["start","overlap"]).optional()
 }).strict();
+const customerDirectoryQuerySchema=z.object({
+  q:z.string().trim().max(200).optional(),
+  search:z.string().trim().max(200).optional(),
+  page:z.coerce.number().int().min(1).max(100_000).default(1),
+  pageSize:z.coerce.number().int().min(10).max(50).default(25),
+  status:z.enum(["active","inactive","all"]).default("active"),
+  upcoming:z.enum(["any","yes","no"]).default("any"),
+  sort:z.enum(["name","lastVisit","nextAppointment"]).default("name"),
+  direction:z.enum(["asc","desc"]).default("asc"),
+  paged:z.coerce.boolean().default(false)
+}).strict();
 const reportRangeSchema=z.object({
   localDate:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   days:z.coerce.number().int().min(1).max(366).optional()
@@ -1125,20 +1136,61 @@ export function registerRoutes(
     return { saved: true };
   });
 
+  app.get("/api/business/working-hours", {
+    preHandler: [authenticate, requirePermission("calendar.view")]
+  }, async (request) => {
+    const context=auth(request);
+    return db`select weekday,start_time,end_time from business_hours
+      where business_id=${context.businessId} order by weekday,start_time`;
+  });
+
   app.get("/api/customers", {
     preHandler: [authenticate, requirePermission("customers.view")]
   }, async (request) => {
     const context = auth(request);
-    const query = request.query as { q?: string };
-    const search = query.q?.trim() ?? "";
-    return db`
+    const query=body(customerDirectoryQuerySchema,request.query);
+    const search=query.q??query.search??"";
+    const normalizedSearchPhone=normalizePhone(search)??search;
+    if(!query.paged)return db`
       select * from customers
-      where business_id = ${context.businessId} and archived_at is null
-        and (${search} = '' or concat_ws(' ', first_name, last_name) ilike ${`%${search}%`}
-          or normalized_phone like ${`%${normalizePhone(search) ?? search}%`}
+      where business_id=${context.businessId} and archived_at is null
+        and (${search}='' or concat_ws(' ',first_name,last_name) ilike ${`%${search}%`}
+          or normalized_phone like ${`%${normalizedSearchPhone}%`}
           or normalized_email ilike ${`%${search.toLowerCase()}%`})
-      order by last_name, first_name, id limit 100
-    `;
+      order by last_name,first_name,id limit 100`;
+    const offset=(query.page-1)*query.pageSize;
+    const statusCondition=query.status==="all"?db`true`:query.status==="active"?db`customer.archived_at is null`:db`customer.archived_at is not null`;
+    const upcomingCondition=query.upcoming==="any"?db`true`:query.upcoming==="yes"?db`summary.next_appointment is not null`:db`summary.next_appointment is null`;
+    const searchCondition=db`(${search}='' or concat_ws(' ',customer.first_name,customer.last_name) ilike ${`%${search}%`}
+      or customer.normalized_phone like ${`%${normalizedSearchPhone}%`}
+      or customer.normalized_email ilike ${`%${search.toLowerCase()}%`}
+      or exists(select 1 from pets search_pet where search_pet.business_id=customer.business_id
+        and search_pet.customer_id=customer.id and search_pet.archived_at is null
+        and (search_pet.name ilike ${`%${search}%`} or search_pet.breed ilike ${`%${search}%`})))`;
+    const order=query.sort==="lastVisit"
+      ? query.direction==="desc"?db`summary.last_visit desc nulls last,customer.id`:db`summary.last_visit asc nulls last,customer.id`
+      : query.sort==="nextAppointment"
+        ? query.direction==="desc"?db`summary.next_appointment desc nulls last,customer.id`:db`summary.next_appointment asc nulls last,customer.id`
+        : query.direction==="desc"?db`customer.last_name desc,customer.first_name desc,customer.id`:db`customer.last_name,customer.first_name,customer.id`;
+    const base=db`
+      from customers customer
+      left join lateral (
+        select
+          max(appointment.start_at) filter(where appointment.start_at<now() and appointment.status='completed') last_visit,
+          min(appointment.start_at) filter(where appointment.start_at>=now() and appointment.status='scheduled') next_appointment
+        from appointments appointment where appointment.business_id=customer.business_id and appointment.customer_id=customer.id
+      ) summary on true
+      where customer.business_id=${context.businessId} and ${statusCondition} and ${searchCondition} and ${upcomingCondition}`;
+    const [rows,totalRows]=await Promise.all([
+      db`select customer.id,customer.first_name,customer.last_name,customer.phone,customer.email,
+        customer.archived_at,summary.last_visit,summary.next_appointment,
+        coalesce((select json_agg(json_build_object('id',pet.id,'name',pet.name,'breed',pet.breed,'safetyAlerts',pet.safety_alerts)
+          order by pet.name,pet.id) from pets pet where pet.business_id=customer.business_id
+          and pet.customer_id=customer.id and pet.archived_at is null),'[]') pets
+        ${base} order by ${order} limit ${query.pageSize} offset ${offset}`,
+      db<{count:number}[]>`select count(*)::int count ${base}`
+    ]);
+    return {items:rows,total:totalRows[0]?.count??0,page:query.page,pageSize:query.pageSize};
   });
 
   app.post("/api/customers", {

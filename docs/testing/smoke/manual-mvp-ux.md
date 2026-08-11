@@ -84,3 +84,13 @@ documentation readiness.
 - Change pet or service before finalization and verify the preview recalculates; edit current pricing after checkout and verify the historical invoice and receipt do not change.
 - In Salon setup → Breed list, add, rename, reclassify, deactivate, and reactivate a breed; verify inactive breeds disappear from new autocomplete choices while historical pet values remain visible.
 - Exercise breed autocomplete with keyboard and touch at mobile width, including Mixed Breed, Unknown, Other, and an existing non-catalog value.
+
+# Operational directory and weekly calendar
+
+- Open Services directly from primary navigation, edit an existing duration and tier cell, and confirm booking still resolves the server price and existing snapshots remain unchanged.
+- With the 500-customer scale fixture, search by customer, pet, phone, email, and breed; page forward/back; sort by customer, last visit, and next appointment; and filter active/upcoming records.
+- Open a customer row and confirm contact details, compact pets, rabies/safety information, and on-demand history remain distinct and usable.
+- Verify the customer table remains dense on desktop and collapses secondary columns into a row-to-detail workflow on phone and tablet widths.
+- In Calendar, use Today, previous/next week, previous/next month, and a month date; confirm the month selection and complete seven-day schedule remain synchronized.
+- Verify configured business hours, empty slots, closed periods, sticky headers/time labels, duration-scaled appointments, overlaps, lifecycle controls, and employee filtering.
+- Click an empty slot and confirm the booking form receives the exact local date/time; open and move an existing appointment using the existing workflow.

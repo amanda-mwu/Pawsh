@@ -2,7 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const inviteToken = new URLSearchParams(location.search).get("invite");
 const resetToken = new URLSearchParams(location.search).get("reset");
-const state = { me: null, customers: [], pets: [], dogBreeds: [], employees: [], services: [], appointments: [], members: [], reports: null, login: false };
+const state = { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:25}, pets: [], dogBreeds: [], employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointmentDates:[],employeeId:"",bookingPreset:null,opened:false}, members: [], reports: null, login: false };
 const pendingActions = new Set();
 let customerSearchSequence = 0;
 
@@ -96,16 +96,18 @@ async function refresh() {
   const safe = (permission) => owner || allowed.has(permission);
   const requests = [
     safe("reports.view") ? api("/api/dashboard") : {},
-    safe("customers.view") ? api("/api/customers") : [],
-    safe("pets.view") ? api("/api/pets") : [],
+    safe("customers.view") ? api("/api/customers?paged=true&page=1&pageSize=25") : {items:[],total:0,page:1,pageSize:25},
+    state.pets,
     api("/api/employees"), api("/api/services"),
     safe("appointments.view") ? api(`/api/appointments?localDate=${businessDate()}&days=8`) : [],
     safe("team.manage") ? api("/api/members") : [],
     safe("reports.view") ? api("/api/reports") : null,
     safe("pets.view") && !state.dogBreeds.length ? api("/api/dog-breeds") : state.dogBreeds
   ];
-  const [dashboard, customers, pets, employees, services, appointments, members, reports, dogBreeds] = await Promise.all(requests);
-  Object.assign(state, { customers, pets, employees, services, appointments, members, reports, dogBreeds });
+  const [dashboard, customerDirectory, pets, employees, services, appointments, members, reports, dogBreeds] = await Promise.all(requests);
+  Object.assign(state, { customerDirectory,customers:customerDirectory.items||[], pets, employees, services, appointments, members, reports, dogBreeds });
+  $("#calendar-employee-filter").innerHTML=`<option value="">All employees</option>${employees.filter(employee=>employee.active).map(employee=>`<option value="${employee.id}" ${employee.id===state.calendar.employeeId?"selected":""}>${escape(employee.displayName)}</option>`).join("")}`;
+  if(!state.calendar.selectedDate){state.calendar.selectedDate=state.appointments[0]?appointmentLocalValue(state.appointments[0]).slice(0,10):businessDate();state.calendar.weekStart=weekStart(state.calendar.selectedDate);state.calendar.month=state.calendar.selectedDate.slice(0,7);}
   $("#today").textContent = new Intl.DateTimeFormat([], {timeZone:schedulingZone(),weekday:"long",month:"short",day:"numeric"}).format(new Date());
   applyPermissions();
   renderDashboard(dashboard); renderCustomersEnhanced(); renderSetupEnhanced(); renderServices(); renderAppointments(); renderReports();
@@ -120,6 +122,10 @@ function wallValue(value=new Date()){
   return `${v("year")}-${v("month")}-${v("day")}T${v("hour")==="24"?"00":v("hour")}:${v("minute")}`;
 }
 function businessDate(value=new Date()){return wallValue(value).slice(0,10);}
+function dateAt(value){return new Date(`${value}T12:00:00Z`);}
+function dateShift(value,days){const date=dateAt(value);date.setUTCDate(date.getUTCDate()+days);return date.toISOString().slice(0,10);}
+function weekStart(value){const date=dateAt(value);return dateShift(value,-date.getUTCDay());}
+function appointmentLocalValue(item){const parts=new Intl.DateTimeFormat("en-CA",{timeZone:item.schedulingTimezone||schedulingZone(),hourCycle:"h23",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}).formatToParts(new Date(item.startAt)),value=type=>parts.find(part=>part.type===type).value;return `${value("year")}-${value("month")}-${value("day")}T${value("hour")==="24"?"00":value("hour")}:${value("minute")}`;}
 function schedulingTime(item){
   return new Intl.DateTimeFormat([], {timeZone:item.schedulingTimezone||schedulingZone(),hour:"numeric",minute:"2-digit"}).format(new Date(item.startAt));
 }
@@ -167,10 +173,9 @@ function appointmentHtml(item) {
   return `<article class="appointment" data-testid="appointment" data-appointment-id="${item.id}"><time>${time}</time><div><span class="pet">${escape(item.petName)}</span><small>${escape(customer)} · ${escape(item.employeeName)}</small>${conflictOverride}${safetyContext(item)}</div><div class="appointment-actions"><span class="badge ${item.status}">${item.status.replace("_"," ")}</span>${action}</div></article>`;
 }
 function renderAppointments() {
-  const html = state.appointments.length ? state.appointments.map(appointmentHtml).join("") : "No appointments scheduled.";
-  $("#calendar-list").innerHTML = html; $("#calendar-list").classList.toggle("empty", !state.appointments.length);
+  renderWeekCalendar();
   const today = businessDate();
-  const todays = state.appointments.filter((item) => String(item.scheduledLocalStart).slice(0,10) === today);
+  const todays = state.appointments.filter((item) => appointmentLocalValue(item).slice(0,10) === today);
   $("#today-list").innerHTML = todays.length ? todays.map(appointmentHtml).join("") : "No appointments today.";
   $$(".appointment-action").forEach((button) => button.addEventListener("click", () => advanceAppointment(button.dataset.id, button.dataset.status, button)));
   state.appointments.filter(item=>item.status==="scheduled" && (allowed("appointments.edit") || allowed("appointments.cancel"))).forEach(item=>{
@@ -187,13 +192,46 @@ function renderAppointments() {
   $$(".move-action").forEach(button=>button.addEventListener("click",()=>moveAppointment(button.dataset.id)));
   $$(".service-action").forEach(button=>button.addEventListener("click",()=>adjustServices(button.dataset.id)));
 }
+function calendarHours(){
+  const values=state.businessHours.flatMap(period=>[String(period.startTime).slice(0,5),String(period.endTime).slice(0,5)]).map(value=>Number(value.slice(0,2))*60+Number(value.slice(3,5)));
+  return values.length?[Math.floor(Math.min(...values)/30)*30,Math.ceil(Math.max(...values)/30)*30]:[8*60,19*60];
+}
+function timeLabel(minutes){const hour=Math.floor(minutes/60),minute=minutes%60;return new Intl.DateTimeFormat([],{hour:"numeric",minute:"2-digit"}).format(new Date(2020,0,1,hour,minute));}
+function renderWeekCalendar(){
+  const target=$("#calendar-list");if(!target||!state.calendar.weekStart)return;
+  const days=Array.from({length:7},(_,index)=>dateShift(state.calendar.weekStart,index));const [start,end]=calendarHours();const slots=(end-start)/30;
+  const header=`<div class="week-corner" style="grid-column:1;grid-row:1"></div>${days.map((day,index)=>`<button type="button" class="week-day-head ${day===state.calendar.selectedDate?"selected":""}" data-calendar-date="${day}" style="grid-column:${index+2};grid-row:1"><strong>${new Intl.DateTimeFormat([],{weekday:"short"}).format(dateAt(day))}</strong><br>${new Intl.DateTimeFormat([],{month:"short",day:"numeric"}).format(dateAt(day))}</button>`).join("")}`;
+  let cells="";
+  for(let slot=0;slot<slots;slot++){const minutes=start+slot*30;cells+=`<div class="week-time" style="grid-column:1;grid-row:${slot+2}">${timeLabel(minutes)}</div>`;for(let dayIndex=0;dayIndex<7;dayIndex++){const day=days[dayIndex];const periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(day).getUTCDay());const open=!periods.length&&!state.businessHours.length||periods.some(period=>{const from=Number(String(period.startTime).slice(0,2))*60+Number(String(period.startTime).slice(3,5));const to=Number(String(period.endTime).slice(0,2))*60+Number(String(period.endTime).slice(3,5));return minutes>=from&&minutes<to;});cells+=`<button type="button" aria-label="Book ${day} at ${timeLabel(minutes)}" class="week-slot ${open?"":"closed"}" ${open?`data-slot="${day}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}"`:"disabled"} style="grid-column:${dayIndex+2};grid-row:${slot+2}"></button>`;}}
+  const visible=state.appointments.filter(item=>!state.calendar.employeeId||item.employeeId===state.calendar.employeeId);const placed=[];
+  const appointments=visible.map(item=>{const local=appointmentLocalValue(item),day=local.slice(0,10),dayIndex=days.indexOf(day);if(dayIndex<0)return "";const minutes=Number(local.slice(11,13))*60+Number(local.slice(14,16));const duration=Math.max(30,Math.round((new Date(item.endAt)-new Date(item.startAt))/60000));const row=Math.floor((minutes-start)/30)+2;if(row<2||row>slots+1)return "";const overlap=placed.some(other=>other.day===day&&minutes<other.end&&minutes+duration>other.start);placed.push({day,start:minutes,end:minutes+duration});const actionDefinition={scheduled:["Check in","operations.check_in"],checked_in:["Start service","operations.perform_service"],in_service:["Complete","operations.complete"],completed:["Checkout","checkout.perform"]}[item.status];const action=actionDefinition&&allowed(actionDefinition[1])?`<button data-testid="appointment-${item.status}" class="text-button appointment-action" data-id="${item.id}" data-status="${item.status}">${actionDefinition[0]} →</button>`:"";return `<article class="week-appointment status-${escape(item.status)} ${overlap?"overlap":""}" data-appointment-id="${item.id}" style="grid-column:${dayIndex+2};grid-row:${row}/span ${Math.max(1,Math.ceil(duration/30))}"><button type="button" class="calendar-open" data-calendar-appointment="${item.id}"><time>${schedulingTime(item)}</time><strong>${escape(item.petName)} · ${escape(item.firstName)} ${escape(item.lastName)}</strong><span>${escape(item.services.map(service=>service.name).join(", "))}</span><span>${escape(item.employeeName)}</span>${item.conflictOverridden?`<small class="conflict-override" data-testid="conflict-override">Intentional overlap</small>`:""}</button>${safetyContext(item)}<div class="appointment-actions"><span class="badge ${item.status}">${item.status.replace("_"," ")}</span>${action}</div></article>`;}).join("");
+  target.innerHTML=header+cells+appointments;
+  $("#calendar-range").textContent=`${new Intl.DateTimeFormat([],{month:"short",day:"numeric"}).format(dateAt(days[0]))} – ${new Intl.DateTimeFormat([],{month:"short",day:"numeric",year:"numeric"}).format(dateAt(days[6]))}`;
+  renderMonthNavigator();
+  $$('[data-calendar-date]').forEach(button=>button.addEventListener("click",()=>selectCalendarDate(button.dataset.calendarDate)));
+  $$('[data-slot]').forEach(button=>button.addEventListener("click",()=>{state.calendar.bookingPreset=button.dataset.slot;actions["new-appointment"]();}));
+  $$('[data-calendar-appointment]').forEach(button=>button.addEventListener("click",()=>openCalendarAppointment(button.dataset.calendarAppointment)));
+}
+function renderMonthNavigator(){
+  if(!state.calendar.month)return;const first=`${state.calendar.month}-01`,start=dateShift(first,-dateAt(first).getUTCDay());const appointmentDates=new Set(state.calendar.monthAppointmentDates);
+  $("#month-label").textContent=new Intl.DateTimeFormat([],{month:"long",year:"numeric"}).format(dateAt(first));
+  $("#month-grid").innerHTML=Array.from({length:42},(_,index)=>{const day=dateShift(start,index);return `<button type="button" data-month-date="${day}" class="${day.slice(0,7)===state.calendar.month?"":"outside"} ${day===businessDate()?"today":""} ${day===state.calendar.selectedDate?"selected":""} ${appointmentDates.has(day)?"has-appointment":""}" aria-label="${new Intl.DateTimeFormat([],{dateStyle:"full"}).format(dateAt(day))}">${Number(day.slice(8,10))}</button>`;}).join("");
+  $$('[data-month-date]').forEach(button=>button.addEventListener("click",()=>selectCalendarDate(button.dataset.monthDate)));
+}
+async function loadCalendarWeek(start=state.calendar.weekStart){
+  state.calendar.weekStart=start;const requests=[api(`/api/appointments?localDate=${start}&days=7`),state.businessHours.length?state.businessHours:api("/api/business/working-hours")];if(!state.calendar.monthAppointmentDates.length)requests.push(loadCalendarMonth(state.calendar.month,false));const [appointments,hours]=await Promise.all(requests);state.appointments=appointments;state.businessHours=hours;renderAppointments();
+}
+async function openCalendarView(){await loadCalendarWeek();if(!state.calendar.opened&&!state.appointments.length){const upcoming=await api(`/api/appointments?localDate=${businessDate()}&days=31`);if(upcoming.length){const date=appointmentLocalValue(upcoming[0]).slice(0,10);state.calendar.opened=true;return selectCalendarDate(date);}}state.calendar.opened=true;}
+async function loadCalendarMonth(month=state.calendar.month,render=true){const first=`${month}-01`,date=dateAt(first);date.setUTCMonth(date.getUTCMonth()+1);const days=Math.round((date-dateAt(first))/86_400_000);const appointments=await api(`/api/appointments?localDate=${first}&days=${days}`);state.calendar.monthAppointmentDates=[...new Set(appointments.map(item=>appointmentLocalValue(item).slice(0,10)))];if(render)renderMonthNavigator();}
+async function selectCalendarDate(date){const changedMonth=state.calendar.month!==date.slice(0,7);state.calendar.selectedDate=date;state.calendar.weekStart=weekStart(date);state.calendar.month=date.slice(0,7);if(changedMonth)await loadCalendarMonth(state.calendar.month,false);await loadCalendarWeek();}
+function openCalendarAppointment(id){const item=state.appointments.find(appointment=>appointment.id===id);if(!item)return;openModal(`${item.petName} appointment`,`<div class="wide"><p><strong>${escape(item.firstName)} ${escape(item.lastName)}</strong> · ${escape(item.employeeName)}</p><p>${escape(item.services.map(service=>service.name).join(", "))}</p><p>${new Intl.DateTimeFormat([],{dateStyle:"full",timeStyle:"short",timeZone:item.schedulingTimezone||schedulingZone()}).format(new Date(item.startAt))}</p>${safetyContext(item)}${item.status==="scheduled"&&allowed("appointments.edit")?`<button type="button" class="secondary calendar-move-detail">Move appointment</button>`:""}</div>`,async()=>{});$(".calendar-move-detail")?.addEventListener("click",()=>{$("#modal").close();moveAppointment(id);});}
 function adjustServices(id) {
   const appointment=state.appointments.find(item=>item.id===id);
   openModal("Adjust appointment services",safetyContext(appointment)+serviceCheckboxes(appointment.services.map(service=>service.serviceId)),form=>api(`/api/appointments/${id}/services`,{method:"PUT",body:JSON.stringify({serviceIds:form.getAll("serviceIds"),version:appointment.version})}));
 }
 function moveAppointment(id) {
   const appointment=state.appointments.find(item=>item.id===id);
-  const local=String(appointment.scheduledLocalStart).slice(0,16);
+  const local=appointmentLocalValue(appointment);
   openModal("Move appointment",select("employeeId","Groomer",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]))+field("startAt","Start time","datetime-local",`required value="${local}"`)+disambiguationField(appointment.scheduledDisambiguation||""),form=>schedulingMutation(`/api/appointments/${id}/schedule`,{employeeId:form.get("employeeId"),localStart:form.get("startAt"),disambiguation:form.get("disambiguation")||undefined,expectedLocationVersion:state.me.business.locationVersion,version:appointment.version},"Reschedule"));
 }
 async function terminalAppointment(id,status) {
@@ -286,12 +324,6 @@ async function voidPayment(paymentId,invoiceId) {
     }catch(error){toast(error.message);}
   });
 }
-function renderCustomers() {
-  $("#customer-grid").innerHTML = state.customers.length ? state.customers.map((customer) => {
-    const pets = state.pets.filter((pet) => pet.customerId === customer.id);
-    return `<article class="customer-card"><p class="eyebrow">${pets.length} pet${pets.length === 1 ? "" : "s"}</p><h3>${escape(customer.firstName)} ${escape(customer.lastName)}</h3><p>${escape(customer.email || customer.phone || "No contact added")}</p><p>${pets.map((pet) => escape(pet.name)).join(" · ") || "Add their first pet"}</p></article>`;
-  }).join("") : `<p class="empty">Create your first customer to begin building salon history.</p>`;
-}
 function renderSetup() {
   $("#employee-list").innerHTML = state.employees.length ? state.employees.map((e) => `<div><strong>${escape(e.displayName)}</strong><small>${e.active ? "Active" : "Inactive"}</small></div>`).join("") : `<p class="empty">No team members yet.</p>`;
   $("#member-list").innerHTML = state.members.length ? state.members.map((member) => `<div><span><strong>${escape(member.email)}</strong><small>${member.isOwner ? "Owner" : `${member.permissions.length} permissions`}</small></span>${member.isOwner ? "" : `<span><button class="text-button edit-member" data-id="${member.id}">Access</button> <button class="text-button remove-member" data-id="${member.id}">Remove</button></span>`}</div>`).join("") : `<p class="empty">Only you have workspace access.</p>`;
@@ -299,18 +331,16 @@ function renderSetup() {
   $$(".remove-member").forEach((button)=>button.addEventListener("click",()=>removeMember(button.dataset.id)));
 }
 function renderCustomersEnhanced() {
-  renderCustomers();
-  $("#customer-grid").innerHTML = state.customers.length ? state.customers.map((customer) => {
-    const pets = state.pets.filter((pet) => pet.customerId === customer.id);
-    return `<article class="customer-card" data-testid="customer-card" data-customer-id="${customer.id}"><p class="eyebrow">${pets.length} pet${pets.length === 1 ? "" : "s"}</p><h3>${escape(customer.firstName)} ${escape(customer.lastName)}</h3><p>${escape(customer.email || customer.phone || "No contact added")}</p><div class="pet-links">${pets.map((pet) => `<span data-pet-id="${pet.id}"><strong>${escape(pet.name)}${pet.safetyAlerts?" !":""}</strong>${allowed("pets.edit")?` <button type="button" class="text-button edit-pet" data-id="${pet.id}">Profile</button>`:""}${allowed("pets.care.view")&&allowed("pets.care.edit")?` <button type="button" class="text-button edit-pet-care" data-id="${pet.id}">Care</button>`:""}${allowed("pets.care.view")?` <button type="button" class="text-button pet-documents" data-id="${pet.id}">Documents</button>`:""}</span>`).join("") || "Add their first pet"}</div><div class="card-actions"><button type="button" class="text-button customer-history" data-id="${customer.id}">History</button>${allowed("customers.edit")?`<button type="button" class="text-button edit-customer" data-id="${customer.id}">Edit</button><button type="button" class="text-button archive-customer" data-id="${customer.id}">Archive</button>`:""}</div></article>`;
-  }).join("") : `<p class="empty">Create your first customer to begin building salon history.</p>`;
-  $$(".edit-customer").forEach((button)=>button.addEventListener("click",()=>editCustomer(button.dataset.id)));
-  $$(".archive-customer").forEach((button)=>button.addEventListener("click",()=>archiveCustomer(button.dataset.id)));
-  $$(".edit-pet").forEach((button)=>button.addEventListener("click",()=>editPet(button.dataset.id)));
-  $$(".edit-pet-care").forEach((button)=>button.addEventListener("click",()=>editPetCare(button.dataset.id)));
-  $$(".pet-documents").forEach((button)=>button.addEventListener("click",()=>showPetDocuments(button.dataset.id)));
-  $$(".customer-history").forEach((button)=>button.addEventListener("click",()=>showCustomerHistory(button.dataset.id)));
+  const directory=state.customerDirectory,formatDate=value=>value?new Intl.DateTimeFormat([],{dateStyle:"medium",timeZone:schedulingZone()}).format(new Date(value)):"—";
+  $("#customer-grid").innerHTML=directory.items.length?directory.items.map(customer=>{const pets=customer.pets||[],shown=pets.slice(0,3),extra=pets.length-shown.length;return `<tr class="directory-row customer-card" tabindex="0" data-testid="customer-card" data-customer-id="${customer.id}" aria-label="Open ${escape(customer.firstName)} ${escape(customer.lastName)}"><td><div class="directory-customer"><button type="button" class="text-button customer-detail" data-id="${customer.id}"><strong>${escape(customer.firstName)} ${escape(customer.lastName)}</strong></button><span class="pet-summary">${shown.map(pet=>`<span data-pet-id="${pet.id}">${escape(pet.name)}${pet.breed?` · ${escape(pet.breed)}`:""}${pet.safetyAlerts?" !":""} <span class="pet-row-actions">${allowed("pets.edit")?`<button type="button" class="text-button row-pet-action" data-customer-id="${customer.id}" data-id="${pet.id}" data-action-name="profile">Profile</button>`:""}${allowed("pets.care.view")&&allowed("pets.care.edit")?`<button type="button" class="text-button row-pet-action" data-customer-id="${customer.id}" data-id="${pet.id}" data-action-name="care">Care</button>`:""}${allowed("pets.care.view")?`<button type="button" class="text-button row-pet-action" data-customer-id="${customer.id}" data-id="${pet.id}" data-action-name="documents">Documents</button>`:""}</span></span>`).join("; ")||"No active pets"}${extra>0?` · +${extra} more`:""}</span></div></td><td>${escape(customer.phone||"—")}</td><td>${escape(customer.email||"—")}</td><td>${formatDate(customer.lastVisit)}</td><td>${formatDate(customer.nextAppointment)}</td><td><span class="status-dot ${customer.archivedAt?"inactive":""}">${customer.archivedAt?"Inactive":"Active"}</span></td></tr>`;}).join(""):`<tr><td colspan="6" class="empty">No customers match these filters.</td></tr>`;
+  directory.items.forEach(customer=>document.querySelector(`[data-customer-id="${customer.id}"] .directory-customer`)?.insertAdjacentHTML("beforeend",`<button type="button" class="text-button customer-history" data-id="${customer.id}">History</button>`));
+  const pages=Math.max(1,Math.ceil(directory.total/directory.pageSize));$("#customer-page-status").textContent=`Page ${directory.page} of ${pages} · ${directory.total} customers`;$("#customer-prev").disabled=directory.page<=1;$("#customer-next").disabled=directory.page>=pages;
+  $$(".customer-detail").forEach(button=>button.addEventListener("click",()=>showCustomerDetail(button.dataset.id)));$$(".customer-history").forEach(button=>button.addEventListener("click",()=>showCustomerHistory(button.dataset.id)));
+  $$(".directory-row").forEach(row=>{row.addEventListener("click",event=>{if(!event.target.closest("button,a,input,select"))showCustomerDetail(row.dataset.customerId);});row.addEventListener("keydown",event=>{if(event.target===row&&(event.key==="Enter"||event.key===" ")){event.preventDefault();showCustomerDetail(row.dataset.customerId);}});});
+  $$(".row-pet-action").forEach(button=>button.addEventListener("click",async()=>{const data=await api(`/api/customers/${button.dataset.customerId}/history`);state.pets=[...state.pets.filter(pet=>pet.customerId!==button.dataset.customerId),...data.pets];if(button.dataset.actionName==="profile")editPet(button.dataset.id);else if(button.dataset.actionName==="care")editPetCare(button.dataset.id);else showPetDocuments(button.dataset.id);}));
 }
+async function loadCustomerDirectory(page=1){const params=new URLSearchParams({paged:"true",page:String(page),pageSize:"25",q:$("#customer-search").value,status:$("#customer-status").value,upcoming:$("#customer-upcoming").value,sort:$("#customer-sort").value});const result=await api(`/api/customers?${params}`);state.customerDirectory=result;state.customers=result.items;renderCustomersEnhanced();}
+async function showCustomerDetail(id){try{const data=await api(`/api/customers/${id}/history`);state.pets=[...state.pets.filter(pet=>pet.customerId!==id),...data.pets];if(!state.customers.some(customer=>customer.id===id))state.customers.push(data.customer);const pets=data.pets.map(pet=>`<div class="customer-pet-row"><span><strong>${escape(pet.name)}</strong><small>${escape(pet.breed||"Breed not provided")} · ${pet.weightOunces?`${Number(pet.weightOunces)/16} lb`:"Weight not provided"}</small><small>${pet.vaccinationExpiresOn?`Rabies expires ${String(pet.vaccinationExpiresOn).slice(0,10)}`:"Rabies expiration not provided"}${pet.safetyAlerts?` · Safety: ${escape(pet.safetyAlerts)}`:""}</small></span><span>${allowed("pets.edit")?`<button type="button" class="text-button detail-edit-pet" data-id="${pet.id}">Profile</button>`:""}${allowed("pets.care.view")?`<button type="button" class="text-button detail-care" data-id="${pet.id}">Care & history</button>`:""}</span></div>`).join("")||"<p>No pets yet.</p>";openModal(`${data.customer.firstName} ${data.customer.lastName}`,`<div class="wide customer-detail"><p><strong>${escape(data.customer.phone||"No phone")}</strong> · ${escape(data.customer.email||"No email")}</p><div class="customer-detail-actions">${allowed("customers.edit")?`<button type="button" class="text-button detail-edit-customer">Edit customer</button><button type="button" class="text-button detail-archive-customer">Archive</button>`:""}<button type="button" class="text-button detail-history">Full history</button></div><h4>Pets</h4>${pets}</div>`,async()=>{});const next=callback=>{$("#modal").close();setTimeout(callback,50);};$(".detail-edit-customer")?.addEventListener("click",()=>next(()=>editCustomer(id)));$(".detail-archive-customer")?.addEventListener("click",()=>next(()=>archiveCustomer(id)));$(".detail-history")?.addEventListener("click",()=>next(()=>showCustomerHistory(id)));$$(".detail-edit-pet").forEach(button=>button.addEventListener("click",()=>next(()=>editPet(button.dataset.id))));$$(".detail-care").forEach(button=>button.addEventListener("click",()=>next(()=>editPetCare(button.dataset.id))));}catch(error){toast(error.message);}}
 function renderSetupEnhanced() {
   renderSetup();
   $("#employee-list").innerHTML = state.employees.length ? state.employees.map((employee) => `<div><span><strong>${escape(employee.displayName)}</strong><small>${employee.active ? "Active" : "Inactive"}</small></span>${employee.active?`<span><button type="button" class="text-button edit-employee" data-id="${employee.id}">Edit</button> <button type="button" class="text-button deactivate-employee" data-id="${employee.id}">Deactivate</button></span>`:""}</div>`).join("") : `<p class="empty">No team members yet.</p>`;
@@ -501,7 +531,8 @@ function editPet(id) {
       })});
     }catch(error){
       if(error.status===409){
-        await refresh();
+        const latestPets=await api(`/api/pets?customerId=${pet.customerId}`,{cache:"no-store"});
+        state.pets=[...state.pets.filter(item=>item.customerId!==pet.customerId),...latestPets];
         pet=state.pets.find(item=>item.id===id);
         $("#modal-fields").innerHTML=petProfileFields(pet);
         setupBreedAutocomplete();
@@ -557,7 +588,8 @@ function editPetCare(id){
       })});
     }catch(error){
       if(error.status===409){
-        await refresh();
+        const latest=await api(`/api/customers/${pet.customerId}/history`,{cache:"no-store"});
+        state.pets=[...state.pets.filter(item=>item.customerId!==pet.customerId),...latest.pets];
         pet=state.pets.find(item=>item.id===id);
         $("#modal-fields").innerHTML=petCareFields(pet);
       }
@@ -711,12 +743,13 @@ const actions = {
       select("petId","Pet",[])+
       select("employeeId","Groomer",state.employees.filter(e=>e.active).map(e=>[e.id,e.displayName]))+
       serviceCheckboxes()+
-      field("startAt","Start time","datetime-local","required",true)+disambiguationField()+
+      field("startAt","Start time","datetime-local",`required value="${state.calendar.bookingPreset||""}"`,true)+disambiguationField()+
       `<div class="wide pricing-preview" role="status" aria-live="polite" data-testid="booking-price-status">Choose a pet and service to calculate pricing.</div>`+
       `<p class="wide" role="status" aria-live="polite" data-testid="booking-rabies-status">Choose a pet and appointment time to evaluate rabies information.</p>`+
       field("notes","Appointment notes","text","",true),
-      (form) => { const o=Object.fromEntries(form); return schedulingMutation("/api/appointments",{locationId:state.me.business.locationId,customerId:o.customerId,petId:o.petId,employeeId:o.employeeId,serviceIds:form.getAll("serviceIds"),localStart:o.startAt,disambiguation:o.disambiguation||undefined,expectedLocationVersion:state.me.business.locationVersion,notes:o.notes||null},"Booking"); });
+      async (form) => { const o=Object.fromEntries(form); await schedulingMutation("/api/appointments",{locationId:state.me.business.locationId,customerId:o.customerId,petId:o.petId,employeeId:o.employeeId,serviceIds:form.getAll("serviceIds"),localStart:o.startAt,disambiguation:o.disambiguation||undefined,expectedLocationVersion:state.me.business.locationVersion,notes:o.notes||null},"Booking");return ()=>selectCalendarDate(String(o.startAt).slice(0,10)); });
     const customerSelect=$('[name="customerId"]');const petSelect=$('[name="petId"]');
+    state.calendar.bookingPreset=null;
     const startInput=$('[name="startAt"]');const rabiesStatus=$('[data-testid="booking-rabies-status"]');
     const priceStatus=$('[data-testid="booking-price-status"]');let priceSequence=0;
     const updatePricePreview=async()=>{const sequence=++priceSequence;const serviceIds=$$('input[name="serviceIds"]:checked').map(input=>input.value);if(!petSelect.value||!serviceIds.length){priceStatus.textContent="Choose a pet and service to calculate pricing.";return;}priceStatus.textContent="Calculating authoritative price…";try{const prices=await api("/api/pricing/resolve",{method:"POST",body:JSON.stringify({petId:petSelect.value,serviceIds})});if(sequence!==priceSequence)return;priceStatus.innerHTML=prices.map(price=>price.status==="resolved"?`<p><strong>${escape(price.name)}</strong><br>${escape(price.pricingClass.replaceAll("_"," "))}${price.weightTierLabel?` · ${escape(price.weightTierLabel)}`:""}<br><strong>${money(price.priceMinor)}</strong></p>`:`<p><strong>${escape(price.name)}</strong><br>${price.status==="weight_required"?"Weight required to determine pricing.":price.status==="quote_required"?"Quote required.":"Admin price confirmation required."}</p>`).join("");}catch(error){if(sequence===priceSequence)priceStatus.textContent=error.message;}};
@@ -789,6 +822,8 @@ async function showView(view) {
   $$(".view").forEach(v=>v.hidden=v.id!==view); $$("nav button").forEach(b=>b.classList.toggle("active",b.dataset.view===view)); $("#page-title").textContent={dashboard:"Good morning",calendar:"Your calendar",customers:"Client care",services:"Services & Pricing",setup:"Salon setup",reports:"Business reports"}[view];
   try{
     state.me=await api("/api/me");applyPermissions();
+    if(view==="calendar")await openCalendarView();
+    if(view==="customers")await loadCustomerDirectory(state.customerDirectory.page||1);
     if($(`[data-view="${view}"]`)?.hidden){
       $$(".view").forEach(v=>v.hidden=v.id!=="dashboard");
       $("#page-title").textContent="Good morning";
@@ -799,10 +834,17 @@ $$(".close").forEach((button)=>button.addEventListener("click",()=>$("#modal").c
 $("#archived-care-records")?.addEventListener("click",showArchivedCareRecords);
 $("#customer-search").addEventListener("input", async (event)=>{
   const sequence=++customerSearchSequence;
-  const customers=await api(`/api/customers?q=${encodeURIComponent(event.target.value)}`);
+  await new Promise(resolve=>setTimeout(resolve,180));if(sequence!==customerSearchSequence)return;
+  const params=new URLSearchParams({paged:"true",page:"1",pageSize:"25",q:event.target.value,status:$("#customer-status").value,upcoming:$("#customer-upcoming").value,sort:$("#customer-sort").value});
+  const customers=await api(`/api/customers?${params}`);
   if(sequence!==customerSearchSequence)return;
-  state.customers=customers;renderCustomersEnhanced();
+  state.customerDirectory=customers;state.customers=customers.items;renderCustomersEnhanced();
 });
+[$("#customer-status"),$("#customer-upcoming"),$("#customer-sort")].forEach(control=>control.addEventListener("change",()=>loadCustomerDirectory(1)));
+$("#customer-prev").addEventListener("click",()=>loadCustomerDirectory(state.customerDirectory.page-1));$("#customer-next").addEventListener("click",()=>loadCustomerDirectory(state.customerDirectory.page+1));
+$("#calendar-today").addEventListener("click",()=>selectCalendarDate(businessDate()));$("#calendar-prev-week").addEventListener("click",()=>selectCalendarDate(dateShift(state.calendar.weekStart,-7)));$("#calendar-next-week").addEventListener("click",()=>selectCalendarDate(dateShift(state.calendar.weekStart,7)));
+$("#month-prev").addEventListener("click",async()=>{const first=dateAt(`${state.calendar.month}-01`);first.setUTCMonth(first.getUTCMonth()-1);state.calendar.month=first.toISOString().slice(0,7);await loadCalendarMonth();});$("#month-next").addEventListener("click",async()=>{const first=dateAt(`${state.calendar.month}-01`);first.setUTCMonth(first.getUTCMonth()+1);state.calendar.month=first.toISOString().slice(0,7);await loadCalendarMonth();});
+$("#calendar-employee-filter").addEventListener("change",event=>{state.calendar.employeeId=event.target.value;renderWeekCalendar();});
 document.addEventListener("visibilitychange",async()=>{if(document.visibilityState==="visible"&&state.me){try{state.me=await api("/api/me");applyPermissions();await refresh();}catch{await bootstrap();}}});
 if (inviteToken || resetToken) {
   state.login=true;

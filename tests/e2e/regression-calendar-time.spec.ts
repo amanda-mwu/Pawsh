@@ -12,7 +12,7 @@ test("@regression-calendar-time keeps Los Angeles scheduling intent in a New Yor
   const page=await context.newPage();
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
-  await expect(page.getByTestId("calendar-list").getByText("9:00 AM")).toBeVisible();
+  await expect(page.getByTestId("calendar-list").locator(".week-time",{hasText:"9:00 AM"})).toBeVisible();
   await context.close();
 });
 
@@ -30,4 +30,12 @@ test("@regression-calendar-time rejects nonexistent time and preserves both repe
   expect(earlier.status()).toBe(201);
   expect(later.status()).toBe(201);
   expect(new Date((await later.json()).startAt).getTime()-new Date((await earlier.json()).startAt).getTime()).toBe(3_600_000);
+});
+
+test("@regression-calendar-time synchronizes week navigation and preselects an empty slot",async({page,tenant})=>{
+  await login(page,tenant.ownerEmail);await page.getByTestId("nav-calendar").click();
+  await expect(page.locator("#month-grid")).toBeVisible();await expect(page.locator(".week-day-head")).toHaveCount(7);
+  const initial=await page.locator("#calendar-range").textContent();await page.locator("#calendar-next-week").click();await expect(page.locator("#calendar-range")).not.toHaveText(initial??"");
+  const nextRange=await page.locator("#calendar-range").textContent();await page.locator("#calendar-today").click();await expect(page.locator("#calendar-range")).not.toHaveText(nextRange??"");
+  const slot=page.locator('.week-slot:not(.closed)').first();const preset=await slot.getAttribute("data-slot");await slot.click();await expect(page.getByTestId("field-startAt")).toHaveValue(preset??"");await page.getByRole("button",{name:"Cancel"}).click();
 });

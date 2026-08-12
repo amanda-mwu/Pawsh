@@ -64,8 +64,8 @@ listener address, and elapsed startup time. A delayed database connection emits
 `Still waiting for PostgreSQL` without terminating startup. `GET /health`
 remains the authoritative database-backed readiness probe.
 
-Run `npm run dev:browser` to start the development server. The helper opens the
-system default browser exactly once only after its newly spawned Pawsh child
+Run `npm run dev` for normal local development. The helper opens the system
+default browser exactly once only after its newly spawned `dev:server` child
 emits its first `[READY]` event and a subsequent `/health` request completes
 with HTTP 200. The deadline is 60 seconds. A stale Pawsh listener cannot satisfy
 the child lifecycle condition; child exit, configuration failure, port conflict,
@@ -77,8 +77,14 @@ ordering itself is unchanged. Use `NODE_ENV=test` only for automated tests; it
 intentionally suppresses normal runtime logs and selects deterministic test
 behavior.
 
+Run `npm run dev:server` when only the attached watch-mode Fastify server is
+wanted, including CI diagnostics, IDE launch configurations, remote development,
+and other headless workflows. It never invokes the browser helper. The legacy
+`npm run dev:browser` command remains available and has the same effective
+behavior as `npm run dev`.
+
 The helper is supported on Windows, macOS, and Linux. Windows starts the fixed
-`npm run dev` command through `ComSpec` (falling back to `cmd.exe`) because
+`npm run dev:server` command through `ComSpec` (falling back to `cmd.exe`) because
 direct `.cmd` spawning is not portable across supported Node releases. The
 server child is never detached. A process-spawn failure exits immediately with
 a safe platform/category diagnostic, without polling readiness or opening a
@@ -86,7 +92,7 @@ browser. An interactive Ctrl+C is forwarded to stop the development process
 tree; the browser does not open after shutdown begins.
 
 Immediately before Pawsh invokes the system default HTTP handler it prints
-`[DEV-BROWSER] Opening default browser`. If a browser appears without that line,
+`[DEV] Opening <APP_ORIGIN>`. If a browser appears without that line,
 the launch came from another local process rather than the current Pawsh helper.
 A default-browser launch error is reported separately while the healthy
 development server remains available until Ctrl+C.

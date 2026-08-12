@@ -47,6 +47,7 @@ if (server) {
       appOrigin,
       waitForHealth,
       launchBrowser: openDefaultBrowser,
+      isShuttingDown: () => stopping,
       timeoutMs: readinessTimeoutMs
     });
     process.exitCode = await waitForChildExit(server);

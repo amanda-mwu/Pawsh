@@ -1,7 +1,7 @@
 import process from "node:process";
 import { URL } from "node:url";
 
-export function developmentChildCommand(platform, environment, script = "dev") {
+export function developmentChildCommand(platform, environment, script = "dev:server") {
   if (!/^[a-z0-9:_-]+$/i.test(script)) throw new Error("Invalid repository npm script name");
   const common = {
     env: environment,
@@ -21,7 +21,7 @@ export function developmentChildCommand(platform, environment, script = "dev") {
 export async function spawnDevelopmentChild({
   platform = process.platform,
   environment = process.env,
-  script = "dev",
+  script = "dev:server",
   spawnImplementation
 }) {
   const launch = developmentChildCommand(platform, environment, script);
@@ -72,6 +72,9 @@ export function terminateDevelopmentChild(child, platform, signal, spawnImplemen
     windowsHide: true
   });
   killer.once("error", () => child.kill(signal));
+  killer.once("exit", (code) => {
+    if (code !== 0 && child.exitCode === null && child.signalCode === null) child.kill(signal);
+  });
 }
 
 function spawnFailure(error, platform) {
@@ -125,21 +128,26 @@ export async function waitAndLaunchBrowser({
   appOrigin,
   waitForHealth,
   launchBrowser,
-  announceBrowserLaunch = () => process.stdout.write("[DEV-BROWSER] Opening default browser\n"),
+  isShuttingDown = () => false,
+  announceBrowserLaunch = (origin) => process.stdout.write(`[DEV] Opening ${origin}\n`),
   timeoutMs = 60_000
 }) {
   const healthUrl = `${new URL(appOrigin).origin}/health`;
   await waitForHealth(healthUrl, child, {
     timeoutMs,
     readiness: () => Boolean(tracker.state.firstReady),
-    failure: () => tracker.state.latestError
+    failure: () => isShuttingDown() ? "Development shutdown began before browser launch" : tracker.state.latestError
   });
+  if (isShuttingDown()) {
+    throw Object.assign(new Error("Development shutdown began before browser launch"), { kind: "shutdown" });
+  }
   if (child.exitCode !== null || child.signalCode !== null) {
     throw Object.assign(new Error("Pawsh exited after readiness and before browser launch"), { kind: "child_exit" });
   }
-  announceBrowserLaunch();
+  const origin = new URL(appOrigin).origin;
+  announceBrowserLaunch(origin);
   try {
-    await launchBrowser(new URL(appOrigin).origin);
+    await launchBrowser(origin);
   } catch (error) {
     throw Object.assign(new Error("Default browser launch failed", { cause: error }), { kind: "browser_launch_failure" });
   }

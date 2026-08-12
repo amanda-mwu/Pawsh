@@ -14,19 +14,19 @@ the recommended local runtime and is pinned by `.node-version` and `.nvmrc`.
 3. Run `npm install`.
 4. Run `npm run db:health`, `npm run db:migrate`, and `npm run db:verify`.
 5. Run `npm run dev`.
-6. Open `http://127.0.0.1:3000`.
+6. Pawsh opens `APP_ORIGIN` in the system default browser after it is ready.
 
 `npm run dev` is the interactive development runtime and should use
 `NODE_ENV=development`. It reports configuration, PostgreSQL readiness, service
 registration, the bound listener, `APP_ORIGIN`, startup duration, and graceful
-shutdown. `npm run dev:browser` starts the same development server, observes
-that specific child's first `[READY]` lifecycle event, and opens the system
-default browser only after a subsequent `GET /health` completes with HTTP 200.
-Its 60-second readiness deadline prevents a stale process on the same port from
-causing an early browser launch; child exit, configuration failure, or timeout
-is reported without opening a browser. `NODE_ENV=test` remains reserved for
-deterministic automation and intentionally suppresses normal application
-logging.
+shutdown. It observes its exact `dev:server` child's first `[READY]` lifecycle
+event and opens the system default browser only after a subsequent `GET /health`
+completes with HTTP 200. Its 60-second readiness deadline prevents a stale
+process on the same port from causing an early browser launch; child exit,
+configuration failure, or timeout is reported without opening a browser.
+Use `npm run dev:server` for server-only CI, debugging, IDE, remote, or headless
+workflows. `npm run dev:browser` remains an alias-equivalent compatibility
+command. `NODE_ENV=test` remains reserved for deterministic automation.
 
 If startup does not reach `[READY]`, the final `[BOOT]` component identifies the
 unfinished Fastify plugin, storage/scanner construction, route registration, or

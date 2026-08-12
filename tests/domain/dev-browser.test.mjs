@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { readFile } from "node:fs/promises";
+import { URL } from "node:url";
 import {
   createLifecycleTracker,
   developmentChildCommand,
@@ -21,7 +23,7 @@ describe("dev browser readiness correlation", () => {
     const launch = developmentChildCommand("win32", environment);
     expect(launch).toEqual({
       command: environment.ComSpec,
-      args: ["/d", "/s", "/c", "npm run dev"],
+      args: ["/d", "/s", "/c", "npm run dev:server"],
       options: {
         env: environment,
         stdio: ["inherit", "pipe", "pipe"],
@@ -36,7 +38,7 @@ describe("dev browser readiness correlation", () => {
     for (const platform of ["darwin", "linux"]) {
       expect(developmentChildCommand(platform, { EXAMPLE: "preserved" })).toEqual({
         command: "npm",
-        args: ["run", "dev"],
+        args: ["run", "dev:server"],
         options: {
           env: { EXAMPLE: "preserved" },
           stdio: ["inherit", "pipe", "pipe"],
@@ -44,6 +46,15 @@ describe("dev browser readiness correlation", () => {
         }
       });
     }
+  });
+
+  it("maps dev and dev:browser to orchestration while dev:server remains server-only", async () => {
+    const manifest = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
+    expect(manifest.scripts["dev:server"]).toBe("node --import ./scripts/load-env.mjs --import tsx --watch src/server.ts");
+    expect(manifest.scripts.dev).toBe("node --import ./scripts/load-env.mjs --import tsx scripts/dev-browser.mjs");
+    expect(manifest.scripts["dev:browser"]).toBe(manifest.scripts.dev);
+    expect(manifest.scripts.dev).not.toContain("npm run dev");
+    expect(developmentChildCommand("win32", { ComSpec: "cmd.exe" }).args.at(-1)).toBe("npm run dev:server");
   });
 
   it("reports synchronous EINVAL safely and does not begin readiness", async () => {
@@ -85,13 +96,15 @@ describe("dev browser readiness correlation", () => {
     const child = new EventEmitter();
     child.stdout = null;
     child.stderr = null;
+    const spawnImplementation = vi.fn(() => child);
     const pending = spawnDevelopmentChild({
       platform: "linux",
       environment: {},
-      spawnImplementation: () => child
+      spawnImplementation
     });
     child.emit("spawn");
     await expect(pending).resolves.toBe(child);
+    expect(spawnImplementation).toHaveBeenCalledWith("npm", ["run", "dev:server"], expect.any(Object));
   });
 
   it("terminates the full Windows child tree without detaching a helper", () => {
@@ -105,6 +118,14 @@ describe("dev browser readiness correlation", () => {
       { stdio: "ignore", windowsHide: true }
     );
     expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it("falls back to terminating the Windows wrapper when taskkill fails", () => {
+    const child = { exitCode: null, signalCode: null, pid: 321, kill: vi.fn() };
+    const killer = new EventEmitter();
+    terminateDevelopmentChild(child, "win32", "SIGTERM", () => killer);
+    killer.emit("exit", 1);
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
   });
 
   it("forwards signals directly on POSIX", () => {
@@ -152,10 +173,10 @@ describe("dev browser readiness correlation", () => {
     await waitAndLaunchBrowser({
       child: runningChild(), tracker, appOrigin: "http://127.0.0.1:3000",
       waitForHealth: async () => order.push("health"),
-      announceBrowserLaunch: () => order.push("[DEV-BROWSER] Opening default browser"),
+      announceBrowserLaunch: (origin) => order.push(`[DEV] Opening ${origin}`),
       launchBrowser: async () => order.push("launch")
     });
-    expect(order).toEqual(["health", "[DEV-BROWSER] Opening default browser", "launch"]);
+    expect(order).toEqual(["health", "[DEV] Opening http://127.0.0.1:3000", "launch"]);
   });
 
   it("classifies browser launch failure separately from child startup", async () => {
@@ -262,6 +283,20 @@ describe("dev browser readiness correlation", () => {
       child, tracker, appOrigin: "http://127.0.0.1:3000",
       waitForHealth, launchBrowser: launch
     })).rejects.toMatchObject({ kind: "child_exit" });
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it("does not launch when shutdown begins after health succeeds", async () => {
+    const tracker = createLifecycleTracker();
+    tracker.ingest("stdout", "[READY] Pawsh listening\n");
+    const launch = vi.fn();
+    let stopping = false;
+    await expect(waitAndLaunchBrowser({
+      child: runningChild(), tracker, appOrigin: "http://127.0.0.1:3000",
+      waitForHealth: async () => { stopping = true; },
+      isShuttingDown: () => stopping,
+      launchBrowser: launch
+    })).rejects.toMatchObject({ kind: "shutdown" });
     expect(launch).not.toHaveBeenCalled();
   });
 });

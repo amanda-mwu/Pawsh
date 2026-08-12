@@ -9,7 +9,8 @@
   },
   "packageManager": "npm@11.6.0",
   "scripts": {
-    "dev": "node --import ./scripts/load-env.mjs --import tsx --watch src/server.ts",
+    "dev:server": "node --import ./scripts/load-env.mjs --import tsx --watch src/server.ts",
+    "dev": "node --import ./scripts/load-env.mjs --import tsx scripts/dev-browser.mjs",
     "dev:browser": "node --import ./scripts/load-env.mjs --import tsx scripts/dev-browser.mjs",
     "build": "tsc -p tsconfig.build.json",
     "start": "node --import ./scripts/load-env.mjs dist/server.js",

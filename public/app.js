@@ -2,7 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const inviteToken = new URLSearchParams(location.search).get("invite");
 const resetToken = new URLSearchParams(location.search).get("reset");
-const state = { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:25}, pets: [], dogBreeds: [], employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointmentDates:[],employeeId:"",bookingPreset:null,opened:false}, members: [], reports: null, login: false };
+const state = { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:25}, pets: [], dogBreeds: [], breedCatalog:{query:"",showInactive:false,sortDirection:1,editingId:null}, employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointmentDates:[],employeeId:"",bookingPreset:null,opened:false}, members: [], reports: null, login: false };
 const pendingActions = new Set();
 let customerSearchSequence = 0;
 
@@ -53,12 +53,14 @@ function toast(message) {
 function escape(value = "") {
   const el = document.createElement("span"); el.textContent = value; return el.innerHTML;
 }
+function normalizeBreedFilter(value){return String(value).trim().toLowerCase().replace(/[\s\-_]+/g," ").replace(/[^a-z0-9 ]/g,"");}
 function allowed(permission) {
   return Boolean(state.me?.isOwner || state.me?.permissions?.includes(permission));
 }
 function applyPermissions() {
   $$("[data-permission]").forEach((element) => {
-    element.hidden = !allowed(element.dataset.permission);
+    const permitted=allowed(element.dataset.permission);
+    if(!permitted||!element.classList.contains("view"))element.hidden=!permitted;
   });
   $$("[data-any-permission]").forEach((element) => {
     element.hidden = !element.dataset.anyPermission.split(",").some(allowed);
@@ -87,6 +89,7 @@ async function bootstrap() {
     applyPermissions();
     await refresh();
     $("#auth-view").hidden = true; $("#app-view").hidden = false;
+    activateView(viewForPath(location.pathname),{history:"replace"});
   } catch { $("#auth-view").hidden = false; $("#app-view").hidden = true; }
 }
 
@@ -346,9 +349,6 @@ function renderSetupEnhanced() {
   $("#employee-list").innerHTML = state.employees.length ? state.employees.map((employee) => `<div><span><strong>${escape(employee.displayName)}</strong><small>${employee.active ? "Active" : "Inactive"}</small></span>${employee.active?`<span><button type="button" class="text-button edit-employee" data-id="${employee.id}">Edit</button> <button type="button" class="text-button deactivate-employee" data-id="${employee.id}">Deactivate</button></span>`:""}</div>`).join("") : `<p class="empty">No team members yet.</p>`;
   $$(".edit-employee").forEach((button)=>button.addEventListener("click",()=>editEmployee(button.dataset.id)));
   $$(".deactivate-employee").forEach((button)=>button.addEventListener("click",()=>deactivate("employees",button.dataset.id)));
-  const breedList=$("#breed-admin-list");if(breedList)breedList.innerHTML=state.dogBreeds.map(breed=>`<div><span><strong>${escape(breed.name)}</strong><small>${escape(breed.defaultPricingClass.replaceAll("_"," "))} · ${breed.active?"Active":"Inactive"}</small></span><span><button type="button" class="text-button edit-breed" data-id="${breed.id}">Edit</button> <button type="button" class="text-button toggle-breed" data-id="${breed.id}" data-active="${breed.active}">${breed.active?"Deactivate":"Reactivate"}</button></span></div>`).join("");
-  $$(".edit-breed").forEach(button=>button.addEventListener("click",()=>editBreed(button.dataset.id)));
-  $$(".toggle-breed").forEach(button=>button.addEventListener("click",()=>toggleBreed(button.dataset.id,button.dataset.active!=="true")));
 }
 function pricingMatrix(service){
   if(service.pricingMode!=="TIERED")return "";
@@ -415,9 +415,26 @@ function editService(id) {
   const tierFields=service.pricingMode==="TIERED"?`<fieldset class="wide"><legend>Pricing matrix</legend><div class="pricing-scroll"><table class="pricing-matrix"><thead><tr><th scope="col">Class</th>${["1–20","21–40","41–60","61–80","81–100","100+"].map(label=>`<th scope="col">${label}</th>`).join("")}</tr></thead><tbody>${[...new Set(service.priceTiers.map(price=>price.pricingClass))].map(pricingClass=>`<tr><th scope="row">${escape(pricingClass.replaceAll("_"," "))}</th>${[1,2,3,4,5,6].map(index=>{const price=service.priceTiers.find(item=>item.pricingClass===pricingClass&&item.weightTierCode===`TIER_${index}`);return `<td><label><span class="sr-only">${escape(pricingClass)} ${index} price</span><input name="tier:${pricingClass}:TIER_${index}" type="number" min="0" step=".01" value="${Number(price?.priceMinor??0)/100}"></label></td>`;}).join("")}</tr>`).join("")}</tbody></table></div></fieldset>`:"";
   openModal("Edit service",field("name","Service name","text",`required value="${escape(service.name)}"`)+field("baseDurationMinutes","Duration (minutes)","number",`required min="1" value="${service.baseDurationMinutes}"`)+field("basePrice","Base/fixed price ($)","number",`required min="0" step=".01" value="${Number(service.basePriceMinor)/100}`)+field("description","Description","text",`value="${escape(service.description||"")}"`,true)+`<label><input name="active" type="checkbox" ${service.active?"checked":""}> Active</label>`+tierFields,async form=>{const values=Object.fromEntries(form);await api(`/api/services/${id}`,{method:"PUT",body:JSON.stringify({name:values.name,description:values.description||null,baseDurationMinutes:Number(values.baseDurationMinutes),basePriceMinor:Math.round(Number(values.basePrice)*100),category:service.category,pricingMode:service.pricingMode,rangeMaxMinor:service.rangeMaxMinor,priceConfirmationRequired:service.priceConfirmationRequired,active:form.has("active")})});const prices=[...form.entries()].filter(([name])=>name.startsWith("tier:")).map(([name,value])=>{const [,pricingClass,weightTierCode]=name.split(":");return {pricingClass,weightTierCode,priceMinor:Math.round(Number(value)*100)};});if(prices.length)await api(`/api/services/${id}/pricing`,{method:"PUT",body:JSON.stringify({prices})});});
 }
-function breedClassField(value="STANDARD"){return select("defaultPricingClass","Default pricing class",[["SMOOTH_SINGLE","Smooth Single"],["STANDARD","Standard"],["EXTRA_FLOOF","Extra Floof"]],true,value);}
-function editBreed(id){const breed=state.dogBreeds.find(item=>item.id===id);openModal("Edit breed",field("name","Breed","text",`required value="${escape(breed.name)}"`,true)+breedClassField(breed.defaultPricingClass),async form=>{await api(`/api/dog-breeds/${id}`,{method:"PATCH",body:JSON.stringify({name:form.get("name"),defaultPricingClass:form.get("defaultPricingClass")})});state.dogBreeds=[];});}
-async function toggleBreed(id,active){await api(`/api/dog-breeds/${id}`,{method:"PATCH",body:JSON.stringify({active})});state.dogBreeds=[];await refresh();toast(active?"Breed reactivated":"Breed deactivated");}
+const breedClasses=[["SMOOTH_SINGLE","Smooth Single"],["STANDARD","Standard"],["EXTRA_FLOOF","Extra Floof"]];
+function breedClassLabel(value){return breedClasses.find(([key])=>key===value)?.[1]??value.replaceAll("_"," ");}
+function breedClassOptions(value){return breedClasses.map(([key,label])=>`<option value="${key}" ${key===value?"selected":""}>${label}</option>`).join("");}
+function renderBreedCatalog(){
+  const body=$("#breed-catalog-body");if(!body)return;
+  const query=normalizeBreedFilter(state.breedCatalog.query);const breeds=state.dogBreeds.filter(breed=>(state.breedCatalog.showInactive||breed.active)&&(!query||breed.search.includes(query))).sort((a,b)=>state.breedCatalog.sortDirection*a.name.localeCompare(b.name));
+  body.innerHTML=breeds.length?breeds.map(breed=>{
+    if(state.breedCatalog.editingId===breed.id)return `<tr data-breed-id="${breed.id}"><td><label><span class="sr-only">Breed name</span><input class="breed-edit-name" value="${escape(breed.name)}" maxlength="100" aria-describedby="breed-error-${breed.id}"></label><small class="mobile-only">${escape(breedClassLabel(breed.defaultPricingClass))} · ${breed.active?"Active":"Inactive"}</small></td><td><label><span class="sr-only">Pricing class</span><select class="breed-edit-class">${breedClassOptions(breed.defaultPricingClass)}</select></label></td><td><span class="breed-status ${breed.active?"":"inactive"}">${breed.active?"Active":"Inactive"}</span></td><td><div class="breed-edit-actions"><button type="button" class="breed-save" aria-label="Save ${escape(breed.name)}">✓</button><button type="button" class="breed-cancel" aria-label="Cancel editing ${escape(breed.name)}">×</button></div></td></tr><tr id="breed-error-${breed.id}" class="breed-row-error" role="alert" aria-live="assertive" hidden><td colspan="4"></td></tr>`;
+    return `<tr data-breed-id="${breed.id}"><td><strong>${escape(breed.name)}</strong><small class="mobile-only">${escape(breedClassLabel(breed.defaultPricingClass))} · ${breed.active?"Active":"Inactive"}</small></td><td>${escape(breedClassLabel(breed.defaultPricingClass))}</td><td><span class="breed-status ${breed.active?"":"inactive"}">${breed.active?"Active":"Inactive"}</span></td><td><details class="row-menu"><summary aria-label="Actions for ${escape(breed.name)}">⋯</summary><div class="row-menu-items"><button type="button" class="breed-edit">Edit</button><button type="button" class="breed-toggle">${breed.active?"Deactivate":"Reactivate"}</button></div></details></td></tr>`;
+  }).join(""):`<tr><td colspan="4" class="empty">No breeds match this view.</td></tr>`;
+  $("#breed-catalog-status").textContent=`${breeds.length} breed${breeds.length===1?"":"s"} shown`;
+  $$("#breed-catalog-body .breed-edit").forEach(button=>button.addEventListener("click",()=>{state.breedCatalog.editingId=button.closest("tr").dataset.breedId;renderBreedCatalog();$(".breed-edit-name")?.focus();}));
+  $$("#breed-catalog-body .breed-cancel").forEach(button=>button.addEventListener("click",()=>{state.breedCatalog.editingId=null;renderBreedCatalog();}));
+  $$("#breed-catalog-body .breed-save").forEach(button=>button.addEventListener("click",()=>saveBreedRow(button.closest("tr"))));
+  $$("#breed-catalog-body .breed-toggle").forEach(button=>button.addEventListener("click",async()=>{const id=button.closest("tr").dataset.breedId,breed=state.dogBreeds.find(item=>item.id===id);await toggleBreed(id,!breed.active);}));
+  $$("#breed-catalog-body input,#breed-catalog-body select").forEach(control=>control.addEventListener("keydown",event=>{if(event.key==="Escape"){state.breedCatalog.editingId=null;renderBreedCatalog();}else if(event.key==="Enter"){event.preventDefault();saveBreedRow(control.closest("tr"));}}));
+}
+async function reloadBreeds(){state.dogBreeds=await api("/api/dog-breeds");renderBreedCatalog();}
+async function saveBreedRow(row){const errorRow=row.nextElementSibling;try{await api(`/api/dog-breeds/${row.dataset.breedId}`,{method:"PATCH",body:JSON.stringify({name:row.querySelector(".breed-edit-name").value,defaultPricingClass:row.querySelector(".breed-edit-class").value})});state.breedCatalog.editingId=null;await reloadBreeds();toast("Breed updated");}catch(error){errorRow.hidden=false;errorRow.firstElementChild.textContent=error.message;row.querySelector(".breed-edit-name").setAttribute("aria-invalid","true");}}
+async function toggleBreed(id,active){await api(`/api/dog-breeds/${id}`,{method:"PATCH",body:JSON.stringify({active})});await reloadBreeds();toast(active?"Breed reactivated":"Breed deactivated");}
 async function deactivate(type,id) {
   if(!confirm(`Deactivate this ${type==="services"?"service":"team member"}?`))return;
   try{await api(`/api/${type}/${id}`,{method:"DELETE"});toast("Deactivated");await refresh();}catch(error){toast(error.message);}
@@ -697,7 +714,6 @@ const actions = {
   "new-service": () => openModal("New service",
     field("name","Service name","text","required")+field("baseDurationMinutes","Duration (minutes)","number",'required min="1"')+field("basePrice","Fixed price ($)","number",'required min="0" step=".01"')+select("category","Category",[["GENERAL","General"],["DOG_ADDON","Dog add-on"],["A_LA_CARTE","À la carte"],["CAT","Cat"]],true,"GENERAL")+field("description","Description","text","",true),
     (form) => { const o=Object.fromEntries(form); o.baseDurationMinutes=Number(o.baseDurationMinutes); o.basePriceMinor=Math.round(Number(o.basePrice)*100);o.pricingMode="FIXED";o.active=true;delete o.basePrice; return api("/api/services",{method:"POST",body:JSON.stringify(o)}); }),
-  "new-breed":()=>openModal("Add breed",field("name","Breed","text","required",true)+breedClassField(),async form=>{await api("/api/dog-breeds",{method:"POST",body:JSON.stringify({name:form.get("name"),defaultPricingClass:form.get("defaultPricingClass")})});state.dogBreeds=[];}),
   "new-employee": () => openModal("New team member",
     field("displayName","Display name","text","required",true)+serviceCheckboxes(),
     (form) => api("/api/employees",{method:"POST",body:JSON.stringify({displayName:form.get("displayName"),serviceIds:form.getAll("serviceIds")})})),
@@ -815,20 +831,33 @@ $("#logout").addEventListener("click", async () => {
   }
 });
 $$("[data-action]").forEach((button) => button.addEventListener("click", () => actions[button.dataset.action]?.()));
+const viewPaths={dashboard:"/",calendar:"/",customers:"/",services:"/",setup:"/","breed-catalog":"/salon/breeds",reports:"/"};
+function viewForPath(path){return path==="/salon/breeds"||path==="/reports/breeds"||path==="/overview/breeds"?"breed-catalog":"dashboard";}
+function closeSetupMenus(){$$(".setup-menu[open]").forEach(menu=>menu.open=false);}
 $$("nav [data-view]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.view)));
 $$("[data-view-target]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.viewTarget)));
-async function showView(view) {
-  const target=$(`#${view}`);if(!target||$(`[data-view="${view}"]`)?.hidden)return;
-  $$(".view").forEach(v=>v.hidden=v.id!==view); $$("nav button").forEach(b=>b.classList.toggle("active",b.dataset.view===view)); $("#page-title").textContent={dashboard:"Good morning",calendar:"Your calendar",customers:"Client care",services:"Services & Pricing",setup:"Salon setup",reports:"Business reports"}[view];
+$$("[data-view-link]").forEach(link=>link.addEventListener("click",event=>{event.preventDefault();closeSetupMenus();showView(link.dataset.viewLink);}));
+$$(".setup-menu").forEach(menu=>{const summary=menu.querySelector("summary");menu.addEventListener("toggle",()=>summary.setAttribute("aria-expanded",String(menu.open)));menu.addEventListener("keydown",event=>{if(event.key==="Escape"&&menu.open){event.preventDefault();menu.open=false;summary.focus();}});});
+document.addEventListener("click",event=>$$(".setup-menu[open]").forEach(menu=>{if(!menu.contains(event.target))menu.open=false;}));
+globalThis.addEventListener("popstate",()=>showView(viewForPath(location.pathname),{history:"none"}));
+async function showView(view,{history="push"}={}) {
+  if(!activateView(view,{history}))return;
   try{
     state.me=await api("/api/me");applyPermissions();
     if(view==="calendar")await openCalendarView();
     if(view==="customers")await loadCustomerDirectory(state.customerDirectory.page||1);
+    if(view==="breed-catalog")renderBreedCatalog();
     if($(`[data-view="${view}"]`)?.hidden){
-      $$(".view").forEach(v=>v.hidden=v.id!=="dashboard");
-      $("#page-title").textContent="Good morning";
+      activateView("dashboard",{history:"replace"});
     }
   }catch{return bootstrap();}
+}
+function activateView(view,{history="push"}={}) {
+  const target=$(`#${view}`);if(!target||$(`[data-view="${view}"]`)?.hidden)return;
+  const canonicalPath=viewPaths[view];if(canonicalPath&&history!=="none"&&(location.pathname!==canonicalPath||view==="breed-catalog")){globalThis.history[history==="replace"?"replaceState":"pushState"]({view},"",canonicalPath);}
+  $$(".view").forEach(v=>v.hidden=v.id!==view); $$("nav button").forEach(b=>{const active=b.dataset.view===view||view==="breed-catalog"&&b.dataset.view==="setup";b.classList.toggle("active",active);if(active)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current");}); $("#page-kicker").textContent=view==="breed-catalog"?"Salon setup":"Daily operations"; $("#page-title").textContent={dashboard:"Good morning",calendar:"Your calendar",customers:"Client care",services:"Services & Pricing",setup:"Salon setup","breed-catalog":"Salon setup",reports:"Business reports"}[view];
+  if(view==="breed-catalog")renderBreedCatalog();
+  return true;
 }
 $$(".close").forEach((button)=>button.addEventListener("click",()=>$("#modal").close()));
 $("#archived-care-records")?.addEventListener("click",showArchivedCareRecords);
@@ -842,6 +871,10 @@ $("#customer-search").addEventListener("input", async (event)=>{
 });
 [$("#customer-status"),$("#customer-upcoming"),$("#customer-sort")].forEach(control=>control.addEventListener("change",()=>loadCustomerDirectory(1)));
 $("#customer-prev").addEventListener("click",()=>loadCustomerDirectory(state.customerDirectory.page-1));$("#customer-next").addEventListener("click",()=>loadCustomerDirectory(state.customerDirectory.page+1));
+$("#breed-search")?.addEventListener("input",event=>{state.breedCatalog.query=event.target.value;renderBreedCatalog();});
+$("#breed-show-inactive")?.addEventListener("change",event=>{state.breedCatalog.showInactive=event.target.checked;renderBreedCatalog();});
+$("#breed-sort-name")?.addEventListener("click",()=>{state.breedCatalog.sortDirection*=-1;$("#breed-sort-name span").textContent=state.breedCatalog.sortDirection===1?"A–Z":"Z–A";renderBreedCatalog();});
+$("#breed-add-form")?.addEventListener("submit",async event=>{event.preventDefault();const form=event.currentTarget,errorBox=$("#breed-add-error");errorBox.textContent="";form.elements.name.removeAttribute("aria-invalid");try{const values=Object.fromEntries(new FormData(form));await api("/api/dog-breeds",{method:"POST",body:JSON.stringify(values)});form.reset();await reloadBreeds();toast("Breed added");}catch(error){errorBox.textContent=error.message;if(error.status===409&&error.data?.existing&&!error.data.existing.active){const button=document.createElement("button");button.type="button";button.className="text-button";button.textContent=`Reactivate ${error.data.existing.name}`;button.addEventListener("click",()=>toggleBreed(error.data.existing.id,true));errorBox.append(" ",button);}form.elements.name.setAttribute("aria-invalid","true");}});
 $("#calendar-today").addEventListener("click",()=>selectCalendarDate(businessDate()));$("#calendar-prev-week").addEventListener("click",()=>selectCalendarDate(dateShift(state.calendar.weekStart,-7)));$("#calendar-next-week").addEventListener("click",()=>selectCalendarDate(dateShift(state.calendar.weekStart,7)));
 $("#month-prev").addEventListener("click",async()=>{const first=dateAt(`${state.calendar.month}-01`);first.setUTCMonth(first.getUTCMonth()-1);state.calendar.month=first.toISOString().slice(0,7);await loadCalendarMonth();});$("#month-next").addEventListener("click",async()=>{const first=dateAt(`${state.calendar.month}-01`);first.setUTCMonth(first.getUTCMonth()+1);state.calendar.month=first.toISOString().slice(0,7);await loadCalendarMonth();});
 $("#calendar-employee-filter").addEventListener("change",event=>{state.calendar.employeeId=event.target.value;renderWeekCalendar();});

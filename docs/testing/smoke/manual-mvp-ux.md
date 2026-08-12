@@ -82,7 +82,9 @@ documentation readiness.
 - Book a 45 lb Goldendoodle for Groom + Style and verify Extra Floof, 41–60 lb, and $145 are shown before saving.
 - Use an unknown breed and verify Standard pricing; remove weight and verify pricing remains unresolved with the explicit weight-required message.
 - Change pet or service before finalization and verify the preview recalculates; edit current pricing after checkout and verify the historical invoice and receipt do not change.
-- In Salon setup → Breed list, add, rename, reclassify, deactivate, and reactivate a breed; verify inactive breeds disappear from new autocomplete choices while historical pet values remain visible.
+- In Salon setup, open Business settings and select Breed catalog. Confirm `/salon/breeds` loads with Salon setup as the only active primary navigation item, including after refresh.
+- Confirm Reports and Overview contain no Breed Catalog entry, and `/reports/breeds` redirects to `/salon/breeds` without displaying the Reports shell.
+- In Breed Catalog, add, rename, reclassify, deactivate, and reactivate a breed; verify inactive breeds disappear from new autocomplete choices while historical pet values remain visible.
 - Exercise breed autocomplete with keyboard and touch at mobile width, including Mixed Breed, Unknown, Other, and an existing non-catalog value.
 
 # Operational directory and weekly calendar

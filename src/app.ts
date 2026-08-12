@@ -58,6 +58,9 @@ export async function createApp(
   if (options.serveStatic !== false) {
     await runStartupOperation(startup, "static files", "Plugin registration", () =>
       app.register(staticFiles, { root: resolve("public"), prefix: "/" }));
+    app.get("/salon/breeds", async (_request, reply) => reply.sendFile("index.html"));
+    app.get("/reports/breeds", async (_request, reply) => reply.redirect("/salon/breeds", 308));
+    app.get("/overview/breeds", async (_request, reply) => reply.redirect("/salon/breeds", 308));
   }
   startup?.log("Plugins registered");
   app.addHook("onRequest", async (request, reply) => {

@@ -1339,13 +1339,18 @@ export function registerRoutes(
   app.post("/api/dog-breeds",{preHandler:[authenticate,requirePermission("services.manage")]},async(request,reply)=>{
     const context=auth(request);const input=body(breedCatalogCreateSchema,request.body);const normalized=normalizeBreedSearch(input.name);
     const [created]=await db`insert into business_breeds(business_id,breed_key,name,normalized_name,default_pricing_class) values (${context.businessId},${`custom-${randomUUID()}`},${input.name},${normalized},${input.defaultPricingClass}) on conflict(business_id,normalized_name) do nothing returning *`;
-    if(!created)return reply.code(409).send({error:"A breed with that normalized name already exists"});return reply.code(201).send(created);
+    if(!created){const [existing]=await db`select id,name,active from business_breeds where business_id=${context.businessId} and normalized_name=${normalized}`;return reply.code(409).send({code:"BREED_DUPLICATE",error:`Breed already exists: ${existing?.name??input.name}`,existing});}return reply.code(201).send(created);
   });
 
   app.patch("/api/dog-breeds/:id",{preHandler:[authenticate,requirePermission("services.manage")]},async(request,reply)=>{
     const context=auth(request);const {id}=idParams.parse(request.params);const input=body(breedCatalogUpdateSchema,request.body);
-    const [updated]=await db`update business_breeds set name=coalesce(${input.name??null},name),normalized_name=coalesce(${input.name?normalizeBreedSearch(input.name):null},normalized_name),default_pricing_class=coalesce(${input.defaultPricingClass??null},default_pricing_class),active=coalesce(${input.active??null},active),updated_at=now() where business_id=${context.businessId} and id=${id} returning *`;
-    if(!updated)return reply.code(404).send({error:"Breed not found"});return updated;
+    try{
+      const [updated]=await db`update business_breeds set name=coalesce(${input.name??null},name),normalized_name=coalesce(${input.name?normalizeBreedSearch(input.name):null},normalized_name),default_pricing_class=coalesce(${input.defaultPricingClass??null},default_pricing_class),active=coalesce(${input.active??null},active),updated_at=now() where business_id=${context.businessId} and id=${id} returning *`;
+      if(!updated)return reply.code(404).send({error:"Breed not found"});return updated;
+    }catch(error){
+      if(error&&typeof error==="object"&&"code" in error&&error.code==="23505"&&input.name){const normalized=normalizeBreedSearch(input.name);const [existing]=await db`select id,name,active from business_breeds where business_id=${context.businessId} and normalized_name=${normalized}`;return reply.code(409).send({code:"BREED_DUPLICATE",error:`Breed already exists: ${existing?.name??input.name}`,existing});}
+      throw error;
+    }
   });
 
   app.post("/api/pricing/resolve",{preHandler:[authenticate,requirePermission("appointments.create")]},async(request)=>{

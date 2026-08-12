@@ -61,6 +61,7 @@ describe("dev browser readiness correlation", () => {
     }
     const message = formatDevelopmentChildSpawnFailure(failure);
     expect(message).toContain("invalid_spawn_configuration");
+    expect(message).toContain("OS error code: EINVAL");
     expect(message).not.toContain("raw secret");
     expect(message).not.toContain("not-reported");
     expect(health).not.toHaveBeenCalled();
@@ -142,6 +143,29 @@ describe("dev browser readiness correlation", () => {
     expect(fetches).toBe(1);
     expect(launch).toHaveBeenCalledOnce();
     expect(launch).toHaveBeenCalledWith("http://127.0.0.1:3000");
+  });
+
+  it("announces Pawsh browser provenance exactly once immediately before launch", async () => {
+    const tracker = createLifecycleTracker();
+    tracker.ingest("stdout", "[READY] Pawsh listening\n");
+    const order = [];
+    await waitAndLaunchBrowser({
+      child: runningChild(), tracker, appOrigin: "http://127.0.0.1:3000",
+      waitForHealth: async () => order.push("health"),
+      announceBrowserLaunch: () => order.push("[DEV-BROWSER] Opening default browser"),
+      launchBrowser: async () => order.push("launch")
+    });
+    expect(order).toEqual(["health", "[DEV-BROWSER] Opening default browser", "launch"]);
+  });
+
+  it("classifies browser launch failure separately from child startup", async () => {
+    const tracker = createLifecycleTracker();
+    tracker.ingest("stdout", "[READY] Pawsh listening\n");
+    await expect(waitAndLaunchBrowser({
+      child: runningChild(), tracker, appOrigin: "http://127.0.0.1:3000",
+      waitForHealth: async () => {}, announceBrowserLaunch: () => {},
+      launchBrowser: async () => { throw Object.assign(new Error("launcher detail"), { code: "EINVAL" }); }
+    })).rejects.toMatchObject({ kind: "browser_launch_failure", message: "Default browser launch failed" });
   });
 
   it("does not query a stale health responder or launch without child READY", async () => {

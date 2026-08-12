@@ -51,10 +51,13 @@ export function formatDevelopmentChildSpawnFailure(error) {
     ? error.category : "process_spawn_failed";
   const platform = error && typeof error === "object" && "platform" in error
     ? error.platform : process.platform;
+  const osCode = error && typeof error === "object" && "osCode" in error
+    ? error.osCode : undefined;
   return [
     "[ERROR] Failed to start Pawsh development process",
     `Platform: ${platform}`,
-    `Error category: ${category}`
+    `Error category: ${category}`,
+    ...(osCode ? [`OS error code: ${osCode}`] : [])
   ].join("\n");
 }
 
@@ -75,7 +78,7 @@ function spawnFailure(error, platform) {
   const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
   const category = code === "EINVAL" ? "invalid_spawn_configuration" : "process_spawn_failed";
   return Object.assign(new Error("Pawsh development child could not be spawned"), {
-    kind: "spawn_failure", category, platform, cause: error
+    kind: "spawn_failure", category, platform, osCode: code, cause: error
   });
 }
 
@@ -122,6 +125,7 @@ export async function waitAndLaunchBrowser({
   appOrigin,
   waitForHealth,
   launchBrowser,
+  announceBrowserLaunch = () => process.stdout.write("[DEV-BROWSER] Opening default browser\n"),
   timeoutMs = 60_000
 }) {
   const healthUrl = `${new URL(appOrigin).origin}/health`;
@@ -133,12 +137,18 @@ export async function waitAndLaunchBrowser({
   if (child.exitCode !== null || child.signalCode !== null) {
     throw Object.assign(new Error("Pawsh exited after readiness and before browser launch"), { kind: "child_exit" });
   }
-  await launchBrowser(new URL(appOrigin).origin);
+  announceBrowserLaunch();
+  try {
+    await launchBrowser(new URL(appOrigin).origin);
+  } catch (error) {
+    throw Object.assign(new Error("Default browser launch failed", { cause: error }), { kind: "browser_launch_failure" });
+  }
 }
 
 export function formatBrowserReadinessFailure(error, tracker, child, timeoutMs) {
   const kind = error && typeof error === "object" && "kind" in error ? error.kind : "startup_failure";
-  const category = kind === "timeout" ? "Timed out waiting for Pawsh readiness" : "Startup failed";
+  const category = kind === "timeout" ? "Timed out waiting for Pawsh readiness"
+    : kind === "browser_launch_failure" ? "Default browser launch failed" : "Startup failed";
   const exit = child.exitCode !== null ? `exitCode=${child.exitCode}`
     : child.signalCode !== null ? `signal=${child.signalCode}` : "childRunning=true";
   return [

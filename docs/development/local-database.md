@@ -85,6 +85,12 @@ a safe platform/category diagnostic, without polling readiness or opening a
 browser. An interactive Ctrl+C is forwarded to stop the development process
 tree; the browser does not open after shutdown begins.
 
+Immediately before Pawsh invokes the system default HTTP handler it prints
+`[DEV-BROWSER] Opening default browser`. If a browser appears without that line,
+the launch came from another local process rather than the current Pawsh helper.
+A default-browser launch error is reported separately while the healthy
+development server remains available until Ctrl+C.
+
 Automated startup validation asserts graceful SIGTERM lifecycle output on
 POSIX runners. Windows CI verifies startup and port release because terminating
 a detached child process cannot faithfully synthesize an interactive console

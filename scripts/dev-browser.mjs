@@ -53,7 +53,7 @@ if (server) {
   } catch (error) {
     if (!stopping) process.stderr.write(`${formatBrowserReadinessFailure(error, tracker, server, readinessTimeoutMs)}\n`);
     const kind = error && typeof error === "object" && "kind" in error ? error.kind : "startup_failure";
-    if (kind !== "timeout") stop("SIGTERM");
+    if (kind !== "browser_launch_failure") stop("SIGTERM");
     process.exitCode = await waitForChildExit(server);
   } finally {
     process.removeListener("SIGINT", onSigint);

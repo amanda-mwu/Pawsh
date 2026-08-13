@@ -24,7 +24,16 @@ export const passwordResetRequestSchema = z.object({
 export const passwordResetConfirmSchema = z.object({
   token: z.string().min(20).max(200),
   password: passwordSchema
-});
+}).strict();
+
+export const ownProfileUpdateSchema = z.object({
+  displayName: z.string().trim().min(1).max(120)
+}).strict();
+
+export const passwordChangeSchema = z.object({
+  currentPassword: z.string().min(1).max(1024),
+  newPassword: passwordSchema
+}).strict();
 
 export const invitationSchema = z.object({
   email: z.string().email().max(320),

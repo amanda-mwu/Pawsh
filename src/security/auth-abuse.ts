@@ -45,8 +45,8 @@ export class AuthAbuseProtector {
     this.increment(`${scope}:network:${network}`, now);
   }
 
-  success(account: string): void {
-    this.entries.delete(`login:account:${account}`);
+  success(account: string, scope = "login"): void {
+    this.entries.delete(`${scope}:account:${account}`);
   }
 
   event(type: SecurityEvent["type"], account: string, network: string): void {

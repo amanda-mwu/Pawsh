@@ -17,6 +17,7 @@ test("@cross-browser auth lifecycle preserves and revokes the browser session",a
   await page.reload();
   await expect(page.getByTestId("dashboard")).toBeVisible();
 
+  await page.getByTestId("account-trigger").click();
   await page.getByTestId("logout").click();
   await expect(page.getByTestId("auth-form")).toBeVisible();
   const loggedOutStatus=await page.evaluate(async()=>{

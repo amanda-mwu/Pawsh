@@ -59,6 +59,7 @@ export async function createApp(
     await runStartupOperation(startup, "static files", "Plugin registration", () =>
       app.register(staticFiles, { root: resolve("public"), prefix: "/" }));
     app.get("/salon/breeds", async (_request, reply) => reply.sendFile("index.html"));
+    app.get("/account", async (_request, reply) => reply.sendFile("index.html"));
     app.get("/reports/breeds", async (_request, reply) => reply.redirect("/salon/breeds", 308));
     app.get("/overview/breeds", async (_request, reply) => reply.redirect("/salon/breeds", 308));
   }

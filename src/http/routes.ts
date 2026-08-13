@@ -19,7 +19,8 @@ import {
   operationalUpdateSchema, voidPaymentSchema, appointmentMoveSchema, appointmentServicesSchema,
   passwordResetRequestSchema, passwordResetConfirmSchema, invitationSchema,
   invitationAcceptSchema, ownershipTransferSchema, petProfileUpdateSchema, petCareUpdateSchema,
-  servicePricingSchema,breedCatalogCreateSchema,breedCatalogUpdateSchema,priceResolutionSchema
+  servicePricingSchema,breedCatalogCreateSchema,breedCatalogUpdateSchema,priceResolutionSchema,
+  ownProfileUpdateSchema,passwordChangeSchema
 } from "./schemas.js";
 import { sealSecret } from "../security/secrets.js";
 import { hashPassword, validateNewPassword, verifyPassword } from "../security/passwords.js";
@@ -533,8 +534,8 @@ export function registerRoutes(
     const passwordHash = await hashPassword(input.password);
     const result = await db.begin(async (tx) => {
       const [user] = await tx<{ id: string }[]>`
-        insert into users (email, normalized_email, password_hash)
-        values (${input.email.trim()}, ${email}, ${passwordHash})
+        insert into users (email, normalized_email, password_hash, display_name)
+        values (${input.email.trim()}, ${email}, ${passwordHash}, ${input.email.split("@",1)[0] ?? "Pawsh user"})
         returning id
       `;
       if (!user) throw new Error("User creation failed");
@@ -695,8 +696,8 @@ export function registerRoutes(
         await validateNewPassword(input.password, { email:invitation.normalizedEmail });
         const passwordHash = await hashPassword(input.password);
         [user] = await tx<{ id: string; passwordHash: string }[]>`
-          insert into users(email,normalized_email,password_hash)
-          values (${invitation.email},${invitation.normalizedEmail},${passwordHash})
+          insert into users(email,normalized_email,password_hash,display_name)
+          values (${invitation.email},${invitation.normalizedEmail},${passwordHash},${invitation.email.split("@",1)[0] ?? "Pawsh user"})
           returning id,password_hash
         `;
       } else {
@@ -733,12 +734,73 @@ export function registerRoutes(
 
   app.get("/api/me", { preHandler: authenticate }, async (request) => {
     const context = auth(request);
+    const [account] = await db<{ email: string; displayName: string }[]>`
+      select email,display_name from users where id=${context.userId}
+    `;
     const [business] = await db`
       select b.*, l.id as location_id, l.name as location_name, l.timezone, l.version as location_version
       from businesses b join locations l on l.business_id = b.id and l.active
       where b.id = ${context.businessId}
     `;
-    return { ...context, business };
+    return { ...context, account, business };
+  });
+
+  app.patch("/api/me", { preHandler: authenticate }, async (request) => {
+    const context = auth(request);
+    const input = body(ownProfileUpdateSchema, request.body);
+    const [account] = await db.begin(async (tx) => {
+      const [before] = await tx<{ displayName: string }[]>`
+        select display_name from users where id=${context.userId} for update
+      `;
+      const rows = await tx<{ email: string; displayName: string }[]>`
+        update users set display_name=${input.displayName},updated_at=now()
+        where id=${context.userId}
+        returning email,display_name
+      `;
+      await setTenant(tx, context.businessId);
+      await record(tx, {
+        businessId:context.businessId,actorId:context.userId,action:"account.profile.update",
+        resourceType:"user",resourceId:context.userId,
+        before:{ displayName:before?.displayName },after:{ displayName:input.displayName }
+      });
+      return rows;
+    });
+    return { account };
+  });
+
+  app.post("/api/me/password", { preHandler: authenticate }, async (request, reply) => {
+    const context = auth(request);
+    const input = body(passwordChangeSchema, request.body);
+    const [account] = await db<{ email: string; passwordHash: string }[]>`
+      select email,password_hash from users where id=${context.userId}
+    `;
+    const retryAfter=abuse.retryAfter(account?.email??context.userId,request.ip,"password-change");
+    if(retryAfter>0){
+      abuse.event("auth.throttled",account?.email??context.userId,request.ip);
+      return reply.header("retry-after",Math.max(1,Math.ceil(retryAfter/1000))).code(429)
+        .send({error:"Too many attempts; try again later"});
+    }
+    if (!account || !(await verifyPassword(account.passwordHash,input.currentPassword))) {
+      abuse.failure(account?.email??context.userId,request.ip,"password-change");
+      return reply.code(400).send({ error:"Current password is incorrect" });
+    }
+    abuse.success(account.email,"password-change");
+    await validateNewPassword(input.newPassword,{ email:account.email });
+    const passwordHash = await hashPassword(input.newPassword);
+    const currentTokenHash = tokenHash(request.cookies.pawsh_session ?? "");
+    await db.begin(async (tx) => {
+      await tx`update users set password_hash=${passwordHash},updated_at=now() where id=${context.userId}`;
+      await tx`
+        update sessions set revoked_at=now()
+        where user_id=${context.userId} and revoked_at is null and token_hash<>${currentTokenHash}
+      `;
+      await setTenant(tx,context.businessId);
+      await record(tx,{
+        businessId:context.businessId,actorId:context.userId,action:"account.password.change",
+        resourceType:"user",resourceId:context.userId
+      });
+    });
+    return { changed:true };
   });
 
   app.get("/api/permissions", { preHandler: authenticate }, async () => ({

@@ -66,6 +66,18 @@ function applyPermissions() {
     element.hidden = !element.dataset.anyPermission.split(",").some(allowed);
   });
 }
+function accountAccessLabel(){return state.me?.isOwner?"Owner":"Workspace member";}
+function renderAccountIdentity(){
+  if(!state.me?.account)return;
+  const name=state.me.account.displayName||state.me.account.email;
+  $("#account-name").textContent=name;
+  $("#account-role").textContent=`${accountAccessLabel()} · ${state.me.business.name}`;
+  $("#account-avatar").textContent=Array.from(name.trim())[0]?.toUpperCase()||"P";
+  $("#profile-form").elements.displayName.value=state.me.account.displayName;
+  $("#profile-form").elements.email.value=state.me.account.email;
+  $("#profile-workspace").textContent=state.me.business.name;
+  $("#profile-role").textContent=accountAccessLabel();
+}
 async function runOnce(key, operation) {
   if (pendingActions.has(key)) return;
   pendingActions.add(key);
@@ -85,7 +97,8 @@ async function financialMutation(path,operation,payload) {
 async function bootstrap() {
   try {
     state.me = await api("/api/me");
-    $("#salon-name").textContent = state.me.business.name;
+    $("#salon-name")?.replaceChildren(state.me.business.name);
+    renderAccountIdentity();
     applyPermissions();
     await refresh();
     $("#auth-view").hidden = true; $("#app-view").hidden = false;
@@ -741,7 +754,7 @@ const actions = {
         taxRateBasisPoints:Math.round(Number(values.taxRate)*100),
         reminderLeadMinutes:Math.round(Number(values.reminderHours)*60),locationVersion:state.me.business.locationVersion
       })});
-      state.me=await api("/api/me");$("#salon-name").textContent=state.me.business.name;
+      state.me=await api("/api/me");renderAccountIdentity();
     }),
   "business-hours": () => openModal("Business hours",
     `<fieldset class="wide hours-grid"><legend>Weekly schedule</legend>${["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"].map((day,index)=>`<div><label><input type="checkbox" name="day${index}" ${index>0&&index<6?"checked":""}> ${day}</label><input type="time" name="start${index}" value="09:00"><input type="time" name="end${index}" value="17:00"></div>`).join("")}</fieldset>`,
@@ -827,15 +840,27 @@ $("#logout").addEventListener("click", async () => {
     if(error.message!=="Authentication required")throw error;
   }
   finally {
+    closeAccountMenu();
     settleUnauthenticated();
   }
 });
-$$("[data-action]").forEach((button) => button.addEventListener("click", () => actions[button.dataset.action]?.()));
-const viewPaths={dashboard:"/",calendar:"/",customers:"/",services:"/",setup:"/","breed-catalog":"/salon/breeds",reports:"/"};
-function viewForPath(path){return path==="/salon/breeds"||path==="/reports/breeds"||path==="/overview/breeds"?"breed-catalog":"dashboard";}
+const accountTrigger=$("#account-trigger"),accountMenu=$("#account-menu");
+function closeAccountMenu({restoreFocus=false}={}){accountMenu.hidden=true;accountTrigger.setAttribute("aria-expanded","false");if(restoreFocus)accountTrigger.focus();}
+function openAccountMenu(){accountMenu.hidden=false;accountTrigger.setAttribute("aria-expanded","true");}
+accountTrigger.addEventListener("click",()=>accountMenu.hidden?openAccountMenu():closeAccountMenu());
+accountTrigger.addEventListener("keydown",event=>{if(["ArrowDown","ArrowUp"].includes(event.key)){event.preventDefault();openAccountMenu();const items=[...accountMenu.querySelectorAll("[role=menuitem]")];items[event.key==="ArrowDown"?0:items.length-1]?.focus();}});
+accountMenu.addEventListener("keydown",event=>{const items=[...accountMenu.querySelectorAll("[role=menuitem]")],index=items.indexOf(document.activeElement);if(event.key==="Escape"){event.preventDefault();closeAccountMenu({restoreFocus:true});}else if(["ArrowDown","ArrowUp","Home","End"].includes(event.key)){event.preventDefault();const next=event.key==="Home"?0:event.key==="End"?items.length-1:(index+(event.key==="ArrowDown"?1:-1)+items.length)%items.length;items[next]?.focus();}});
+document.addEventListener("click",event=>{if(!accountMenu.hidden&&!$(".account-control").contains(event.target))closeAccountMenu();});
+document.addEventListener("keydown",event=>{if(event.key==="Escape"&&!accountMenu.hidden){event.preventDefault();closeAccountMenu({restoreFocus:true});}});
+$("#profile-form").addEventListener("submit",async event=>{event.preventDefault();const form=event.currentTarget,error=$("#profile-error"),button=form.querySelector("button[type=submit]");error.textContent="";button.disabled=true;try{await api("/api/me",{method:"PATCH",body:JSON.stringify({displayName:new FormData(form).get("displayName")})});state.me=await api("/api/me");renderAccountIdentity();toast("Profile updated");}catch(problem){error.textContent=problem.message;}finally{button.disabled=false;}});
+$("#profile-cancel").addEventListener("click",()=>{renderAccountIdentity();$("#profile-error").textContent="";});
+$("#password-form").addEventListener("submit",async event=>{event.preventDefault();const form=event.currentTarget,values=Object.fromEntries(new FormData(form)),error=$("#password-error"),button=form.querySelector("button[type=submit]");error.textContent="";if(values.newPassword!==values.confirmPassword){error.textContent="New passwords do not match";form.elements.confirmPassword.focus();return;}button.disabled=true;try{await api("/api/me/password",{method:"POST",body:JSON.stringify({currentPassword:values.currentPassword,newPassword:values.newPassword})});form.reset();toast("Password changed; other sessions signed out");}catch(problem){error.textContent=problem.message;}finally{button.disabled=false;}});
+$$('[data-action]').forEach((button) => button.addEventListener("click", () => actions[button.dataset.action]?.()));
+const viewPaths={dashboard:"/",calendar:"/",customers:"/",services:"/",setup:"/","breed-catalog":"/salon/breeds",reports:"/","profile-account":"/account"};
+function viewForPath(path){if(path==="/account")return "profile-account";return path==="/salon/breeds"||path==="/reports/breeds"||path==="/overview/breeds"?"breed-catalog":"dashboard";}
 function closeSetupMenus(){$$(".setup-menu[open]").forEach(menu=>menu.open=false);}
 $$("nav [data-view]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.view)));
-$$("[data-view-target]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.viewTarget)));
+$$("[data-view-target]").forEach((button) => button.addEventListener("click", () => {closeAccountMenu();showView(button.dataset.viewTarget);}));
 $$("[data-view-link]").forEach(link=>link.addEventListener("click",event=>{event.preventDefault();closeSetupMenus();showView(link.dataset.viewLink);}));
 $$(".setup-menu").forEach(menu=>{const summary=menu.querySelector("summary");menu.addEventListener("toggle",()=>summary.setAttribute("aria-expanded",String(menu.open)));menu.addEventListener("keydown",event=>{if(event.key==="Escape"&&menu.open){event.preventDefault();menu.open=false;summary.focus();}});});
 document.addEventListener("click",event=>$$(".setup-menu[open]").forEach(menu=>{if(!menu.contains(event.target))menu.open=false;}));
@@ -847,6 +872,7 @@ async function showView(view,{history="push"}={}) {
     if(view==="calendar")await openCalendarView();
     if(view==="customers")await loadCustomerDirectory(state.customerDirectory.page||1);
     if(view==="breed-catalog")renderBreedCatalog();
+    if(view==="profile-account")renderAccountIdentity();
     if($(`[data-view="${view}"]`)?.hidden){
       activateView("dashboard",{history:"replace"});
     }
@@ -855,7 +881,7 @@ async function showView(view,{history="push"}={}) {
 function activateView(view,{history="push"}={}) {
   const target=$(`#${view}`);if(!target||$(`[data-view="${view}"]`)?.hidden)return;
   const canonicalPath=viewPaths[view];if(canonicalPath&&history!=="none"&&(location.pathname!==canonicalPath||view==="breed-catalog")){globalThis.history[history==="replace"?"replaceState":"pushState"]({view},"",canonicalPath);}
-  $$(".view").forEach(v=>v.hidden=v.id!==view); $$("nav button").forEach(b=>{const active=b.dataset.view===view||view==="breed-catalog"&&b.dataset.view==="setup";b.classList.toggle("active",active);if(active)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current");}); $("#page-kicker").textContent=view==="breed-catalog"?"Salon setup":"Daily operations"; $("#page-title").textContent={dashboard:"Good morning",calendar:"Your calendar",customers:"Client care",services:"Services & Pricing",setup:"Salon setup","breed-catalog":"Salon setup",reports:"Business reports"}[view];
+  $$(".view").forEach(v=>v.hidden=v.id!==view); $$("nav button").forEach(b=>{const active=b.dataset.view===view||view==="breed-catalog"&&b.dataset.view==="setup";b.classList.toggle("active",active);if(active)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current");}); $("#page-kicker").textContent=view==="breed-catalog"?"Salon setup":view==="profile-account"?"Your account":"Daily operations"; $("#page-title").textContent={dashboard:"Good morning",calendar:"Your calendar",customers:"Client care",services:"Services & Pricing",setup:"Salon setup","breed-catalog":"Salon setup",reports:"Business reports","profile-account":"Profile & Account"}[view];
   if(view==="breed-catalog")renderBreedCatalog();
   return true;
 }

@@ -19,6 +19,8 @@ test("@responsive auth navigation reload and logout remain coherent",async({page
   await page.reload();
   await expectAuthenticatedSurface(page);
   expect(await page.evaluate(async()=>(await fetch("/api/me",{credentials:"include"})).status)).toBe(200);
+  await expectCriticalTarget(page.getByTestId("account-trigger"));
+  await page.getByTestId("account-trigger").click();
   await expectCriticalTarget(page.getByTestId("logout"));
   await page.getByTestId("logout").click();
   await expectUnauthenticatedSurface(page);

@@ -12,6 +12,7 @@ test("@smoke auth session lifecycle is usable and safe",async({page,tenant})=>{
   await expect(page.getByTestId("dashboard")).toBeVisible();
   await page.reload();
   await expect(page.getByTestId("dashboard")).toBeVisible();
+  await page.getByTestId("account-trigger").click();
   await page.getByTestId("logout").click();
   await expect(page.getByTestId("auth-form")).toBeVisible();
   const deniedStatus=await page.evaluate(async()=>{
@@ -38,9 +39,40 @@ test("@smoke business configuration persists through the GUI",async({page,tenant
   await page.getByTestId("field-taxRate").fill("8.25");
   await page.locator('input[name="reminderHours"]').fill("24");
   await page.getByTestId("modal-submit").click();
-  await expect(page.locator("#salon-name")).toHaveText(`QA Salon ${tenant.runId}`);
+  await expect(page.locator("#account-role")).toContainText(`QA Salon ${tenant.runId}`);
   await page.reload();
-  await expect(page.locator("#salon-name")).toHaveText(`QA Salon ${tenant.runId}`);
+  await expect(page.locator("#account-role")).toContainText(`QA Salon ${tenant.runId}`);
+});
+
+test("@smoke account menu and personal profile remain separate from business settings",async({page,tenant})=>{
+  await login(page,tenant.ownerEmail);
+  const trigger=page.getByTestId("account-trigger");
+  await expect(trigger).toHaveAttribute("aria-expanded","false");
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  await expect(trigger).toHaveAttribute("aria-expanded","true");
+  await page.keyboard.press("Escape");
+  await expect(trigger).toHaveAttribute("aria-expanded","false");
+  await expect(trigger).toBeFocused();
+  await trigger.click();
+  await page.getByTestId("profile-account-link").click();
+  await expect(page).toHaveURL(/\/account$/);
+  await expect(page.getByTestId("profile-account-view")).toBeVisible();
+  await expect(page.getByTestId("profile-email")).toHaveValue(tenant.ownerEmail);
+  await expect(page.getByTestId("profile-email")).toHaveAttribute("readonly","");
+  await expect(page.locator("#profile-workspace")).toContainText("PW Smoke");
+  await expect(page.locator("#profile-role")).toHaveText("Owner");
+  await expect(page.getByTestId("profile-account-view").getByText("Business hours")).toHaveCount(0);
+  const displayName=`Callie ${tenant.runId.slice(-8)}`;
+  await page.getByTestId("profile-display-name").fill(displayName);
+  await page.getByRole("button",{name:"Save profile"}).click();
+  await expect(trigger).toContainText(displayName);
+  await page.reload();
+  await expect(page.getByTestId("profile-account-view")).toBeVisible();
+  await expect(page.getByTestId("profile-display-name")).toHaveValue(displayName);
+  await trigger.click();
+  await page.getByTestId("logout").click();
+  await expect(page.getByTestId("auth-form")).toBeVisible();
 });
 
 test("@smoke breed catalog is compact, searchable, editable, and duplicate-safe",async({page,tenant})=>{

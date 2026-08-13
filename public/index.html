@@ -50,8 +50,18 @@
         <button type="button" data-testid="nav-reports" data-view="reports" data-permission="reports.view">Reports</button>
       </nav>
       <div class="aside-foot">
-        <div class="salon-chip"><span class="avatar">P</span><span><strong id="salon-name">Pawsh</strong><small>Owner workspace</small></span></div>
-        <button id="logout" data-testid="logout" type="button" class="text-button">Sign out</button>
+        <div class="account-control">
+          <button id="account-trigger" data-testid="account-trigger" type="button" aria-haspopup="menu" aria-expanded="false">
+            <span class="avatar" id="account-avatar" aria-hidden="true">P</span>
+            <span class="account-summary"><strong id="account-name">Pawsh user</strong><small id="account-role">Workspace member</small></span>
+            <span class="account-chevron" aria-hidden="true">&#8963;</span>
+          </button>
+          <div id="account-menu" class="account-menu" role="menu" hidden>
+            <button data-testid="profile-account-link" type="button" role="menuitem" data-view-target="profile-account">Profile &amp; account</button>
+            <hr>
+            <button id="logout" data-testid="logout" type="button" role="menuitem">Sign out</button>
+          </div>
+        </div>
       </div>
     </aside>
     <main>
@@ -118,6 +128,35 @@
           <article class="panel"><h3>Revenue</h3><div id="revenue-report" class="simple-list"></div></article>
           <article class="panel"><h3>Appointments by groomer</h3><div id="employee-report" class="simple-list"></div></article>
           <article class="panel"><h3>Services performed</h3><div id="service-report" class="simple-list"></div></article>
+        </div>
+      </section>
+
+      <section id="profile-account" data-testid="profile-account-view" class="view" hidden>
+        <div class="split-head"><div><p class="eyebrow">Personal settings</p><h3>Profile &amp; Account</h3><p>Manage your personal identity and sign-in security.</p></div></div>
+        <div class="profile-layout">
+          <section class="profile-section" aria-labelledby="personal-heading">
+            <div><h3 id="personal-heading">Personal information</h3><p>Your login email is read-only.</p></div>
+            <form id="profile-form" class="profile-form">
+              <label>Display name<input data-testid="profile-display-name" name="displayName" type="text" required maxlength="120" autocomplete="name"></label>
+              <label>Email<input data-testid="profile-email" name="email" type="email" readonly aria-readonly="true"></label>
+              <p id="profile-error" class="error" role="alert"></p>
+              <div class="profile-actions"><button class="primary compact" type="submit">Save profile</button><button id="profile-cancel" class="secondary compact" type="button">Cancel</button></div>
+            </form>
+          </section>
+          <section class="profile-section" aria-labelledby="workspace-heading">
+            <div><h3 id="workspace-heading">Workspace access</h3><p>Your role is managed through workspace access.</p></div>
+            <dl class="account-facts"><div><dt>Workspace</dt><dd id="profile-workspace"></dd></div><div><dt>Access</dt><dd id="profile-role"></dd></div></dl>
+          </section>
+          <section class="profile-section" aria-labelledby="security-heading">
+            <div><h3 id="security-heading">Security</h3><p>Changing your password signs out your other Pawsh sessions.</p></div>
+            <form id="password-form" class="profile-form">
+              <label>Current password<input data-testid="current-password" name="currentPassword" type="password" required maxlength="256" autocomplete="current-password"></label>
+              <label>New password<input data-testid="new-password" name="newPassword" type="password" required minlength="8" maxlength="256" autocomplete="new-password"></label>
+              <label>Confirm new password<input data-testid="confirm-password" name="confirmPassword" type="password" required minlength="8" maxlength="256" autocomplete="new-password"></label>
+              <p id="password-error" class="error" role="alert"></p>
+              <div class="profile-actions"><button class="primary compact" type="submit">Change password</button></div>
+            </form>
+          </section>
         </div>
       </section>
     </main>

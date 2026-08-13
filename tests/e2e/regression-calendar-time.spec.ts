@@ -49,7 +49,7 @@ test("@cross-browser @regression-calendar-time exposes on-demand appointment act
   await expect(card.getByTestId("rabies-appointment-status")).toHaveText("Rabies needed");
   await expect(card.locator(".appointment-card-footer > [data-testid=\"rabies-appointment-status\"]")).toHaveCount(1);
   await expect(card.getByRole("menuitem",{name:"Check in"})).toBeHidden();
-  const trigger=card.getByRole("button",{name:/Appointment actions for/});await trigger.press("Enter");
+  const trigger=card.getByRole("button",{name:/Appointment actions for/}).filter({visible:true});await expect(trigger).toBeVisible();await trigger.click();
   await expect(trigger).toHaveAttribute("aria-expanded","true");
   await expect(card.getByRole("menuitem",{name:"Check in"})).toBeVisible();
   await expect(card.getByRole("menuitem",{name:"View / Edit"})).toBeVisible();

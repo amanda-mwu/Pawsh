@@ -4,6 +4,7 @@ test("@smoke responsive operational shell remains usable at critical viewports",
   for(const viewport of [{width:390,height:844},{width:412,height:915},{width:768,height:1024},{width:1366,height:768}]){
     await page.setViewportSize(viewport);
     if(!await page.getByTestId("dashboard").isVisible())await login(page,tenant.ownerEmail);
+    if(await page.locator("#mobile-nav-toggle").isVisible())await page.locator("#mobile-nav-toggle").click();
     await page.getByTestId("nav-calendar").click();
     await expect(page.getByTestId("calendar")).toBeVisible();
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth)).toBeTruthy();

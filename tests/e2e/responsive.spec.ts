@@ -1,4 +1,5 @@
 import { createAppointment, test, expect, login } from "./fixtures/tenant.js";
+import type { Page } from "@playwright/test";
 import {
   expectAuthenticatedSurface,
   expectCriticalTarget,
@@ -6,10 +7,12 @@ import {
   expectNoDocumentOverflow,
   expectUnauthenticatedSurface,
 } from "./helpers/responsive.js";
+async function openNavigation(page:Page){if(await page.locator("#mobile-nav-toggle").isVisible()&&await page.getByTestId("nav-calendar").isHidden())await page.locator("#mobile-nav-toggle").click();}
 
 test("@responsive auth navigation reload and logout remain coherent",async({page,tenant},testInfo)=>{
   await login(page,tenant.ownerEmail);
   await expectAuthenticatedSurface(page);
+  await openNavigation(page);
   expect(await page.evaluate(async()=>(await fetch("/api/me",{credentials:"include"})).status)).toBe(200);
   await expectCriticalTarget(page.getByTestId("nav-customers"));
   await page.getByTestId("nav-customers").click();
@@ -32,6 +35,7 @@ test("@responsive customer and pet creation remains customer scoped",async({page
   const customerName=`Responsive ${suffix}`;
   const petName=`Scout ${suffix.slice(-5)}`;
   await login(page,tenant.ownerEmail);
+  await openNavigation(page);
   await page.getByTestId("nav-customers").click();
   await expectNoDocumentOverflow(page,testInfo);
 
@@ -55,7 +59,7 @@ test("@responsive customer and pet creation remains customer scoped",async({page
   await page.getByTestId("modal-submit").click();
   await expect(customer).toContainText(petName);
 
-  await page.getByTestId("nav-calendar").click();
+  await openNavigation(page);await page.getByTestId("nav-calendar").click();
   await page.getByTestId("calendar-add-appointment").click();
   await page.getByTestId("field-customerId").selectOption(customerId!);
   await expect(page.getByTestId("field-petId").locator("option",{hasText:petName})).toHaveCount(1);
@@ -64,6 +68,7 @@ test("@responsive customer and pet creation remains customer scoped",async({page
 
 test("@responsive calendar booking remains usable and persistent",async({page,tenant},testInfo)=>{
   await login(page,tenant.ownerEmail);
+  await openNavigation(page);
   await page.getByTestId("nav-calendar").click();
   await expectNoDocumentOverflow(page,testInfo);
   await expectCriticalTarget(page.getByTestId("calendar-add-appointment"));
@@ -79,6 +84,7 @@ test("@responsive calendar booking remains usable and persistent",async({page,te
 
   await page.reload();
   await expectAuthenticatedSurface(page);
+  await openNavigation(page);
   await page.getByTestId("nav-calendar").click();
   await expect(page.getByTestId("calendar-list")).toContainText("Charlie");
   await expectNoDocumentOverflow(page,testInfo);
@@ -87,6 +93,7 @@ test("@responsive calendar booking remains usable and persistent",async({page,te
 test("@responsive groomer day view remains contained and touch accessible",async({page,request,tenant},testInfo)=>{
   await createAppointment(request,tenant,{localStart:`${tenant.anchor}T09:00`});
   await login(page,tenant.ownerEmail);
+  await openNavigation(page);
   await page.getByTestId("nav-calendar").click();
   await expectCriticalTarget(page.locator("#calendar-day-view"));
   await page.locator("#calendar-day-view").click();
@@ -97,6 +104,7 @@ test("@responsive groomer day view remains contained and touch accessible",async
 
 test("@responsive navigation forms dialogs and calendar controls remain reachable",async({page,tenant},testInfo)=>{
   await login(page,tenant.ownerEmail);
+  await openNavigation(page);
   await expectNoDocumentOverflow(page,testInfo);
   for(const testId of ["nav-dashboard","nav-calendar","nav-customers"]) {
     await expectCriticalTarget(page.getByTestId(testId));
@@ -109,7 +117,7 @@ test("@responsive navigation forms dialogs and calendar controls remain reachabl
   await page.getByTestId("modal").getByRole("button",{name:"Close"}).click();
   await expect(page.getByTestId("modal")).toBeHidden();
 
-  await page.getByTestId("nav-calendar").click();
+  await openNavigation(page);await page.getByTestId("nav-calendar").click();
   await page.getByTestId("calendar-add-appointment").click();
   await expectDialogControlsReachable(page);
   await expect(page.getByTestId("field-startAt")).toBeVisible();

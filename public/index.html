@@ -42,19 +42,22 @@
   <div id="app-view" class="app-shell" hidden>
     <aside>
       <a class="brand" href="/">pawsh<span>.</span></a>
-      <nav aria-label="Main navigation">
-        <button type="button" data-testid="nav-dashboard" data-view="dashboard" class="active">Overview</button>
-        <button type="button" data-testid="nav-calendar" data-view="calendar" data-permission="calendar.view">Calendar</button>
-        <button type="button" data-testid="nav-customers" data-view="customers" data-any-permission="customers.view,pets.view">Customers &amp; pets</button>
-        <button type="button" data-testid="nav-services" data-view="services">Services</button>
-        <button type="button" data-testid="nav-setup" data-view="setup" data-any-permission="services.manage,team.manage,settings.manage">Salon</button>
-        <button type="button" data-testid="nav-reports" data-view="reports" data-permission="reports.view">Reports</button>
+      <button type="button" id="mobile-nav-toggle" class="mobile-nav-toggle" aria-label="Open navigation" aria-expanded="false" aria-controls="primary-navigation">☰</button>
+      <nav id="primary-navigation" class="primary-nav" aria-label="Main navigation">
+        <button type="button" data-testid="nav-dashboard" data-view="dashboard" class="active" aria-label="Dashboard"><span class="nav-icon" aria-hidden="true">⌂</span><span>Dashboard</span></button>
+        <button type="button" data-testid="nav-calendar" data-view="calendar" data-permission="calendar.view" aria-label="Calendar"><span class="nav-icon" aria-hidden="true">▦</span><span>Calendar</span></button>
+        <button type="button" data-testid="nav-customers" data-view="customers" data-any-permission="customers.view,pets.view" aria-label="Clients"><span class="nav-icon" aria-hidden="true">♙</span><span>Clients</span></button>
+        <button type="button" data-testid="nav-messages" data-view="messages" aria-label="Messages"><span class="nav-icon" aria-hidden="true">◇</span><span>Messages</span></button>
+        <button type="button" data-testid="nav-reminders" data-view="reminders" aria-label="Reminders"><span class="nav-icon" aria-hidden="true">♢</span><span>Reminders</span></button>
+        <button type="button" data-testid="nav-sales" data-view="sales-expense" data-permission="payments.view" aria-label="Sales and Expense"><span class="nav-icon" aria-hidden="true">$</span><span>Sales &amp; Expense</span></button>
+        <button type="button" data-testid="nav-product" data-view="product" aria-label="Product"><span class="nav-icon" aria-hidden="true">□</span><span>Product</span></button>
+        <button type="button" data-testid="nav-reports" data-view="reports" data-permission="reports.view" aria-label="Report"><span class="nav-icon" aria-hidden="true">⌁</span><span>Report</span></button>
+        <button type="button" data-testid="nav-settings" data-view="admin-settings" data-permission="settings.manage" aria-label="Settings"><span class="nav-icon" aria-hidden="true">⚙</span><span>Settings</span></button>
+        <span class="nav-divider" aria-hidden="true"></span>
+        <button type="button" data-testid="nav-services" data-view="services" aria-label="Services"><span class="nav-icon" aria-hidden="true">✂</span><span>Services</span></button>
+        <button type="button" data-testid="nav-setup" data-view="setup" data-any-permission="services.manage,team.manage,settings.manage" aria-label="Salon"><span class="nav-icon" aria-hidden="true">⌂</span><span>Salon</span></button>
       </nav>
       <div class="aside-foot">
-        <details class="setup-menu settings-control" data-permission="settings.manage">
-          <summary data-testid="settings-trigger" aria-label="Settings" aria-expanded="false"><span aria-hidden="true">⚙</span> Settings</summary>
-          <nav class="setup-menu-items" aria-label="Administrative settings"><button type="button" data-action="business-settings">Business settings</button><button type="button" data-view-target="admin-settings">Workspace access</button></nav>
-        </details>
         <div class="account-control">
           <button id="account-trigger" data-testid="account-trigger" type="button" aria-haspopup="menu" aria-expanded="false">
             <span class="avatar" id="account-avatar" aria-hidden="true">P</span>
@@ -91,12 +94,17 @@
       </section>
 
       <section id="calendar" data-testid="calendar" class="view" hidden>
-        <div class="calendar-toolbar"><div><div class="calendar-view-toggle" role="group" aria-label="Calendar view"><button type="button" id="calendar-week-view" aria-pressed="true">Week</button><button type="button" id="calendar-day-view" aria-pressed="false">Day</button></div><button type="button" class="secondary compact" id="calendar-today">Today</button><button type="button" class="secondary compact" id="calendar-prev-week" aria-label="Previous period">←</button><button type="button" class="secondary compact" id="calendar-next-week" aria-label="Next period">→</button><strong id="calendar-range"></strong></div><div><label class="inline-control">Groomer<select id="calendar-employee-filter"><option value="">All groomers</option></select></label><button data-permission="appointments.edit" type="button" class="secondary compact" data-action="blocked-time">Block time</button><button data-testid="calendar-add-appointment" data-permission="appointments.create" type="button" class="primary compact" data-action="new-appointment">+ Add booking</button></div></div>
+        <div class="calendar-toolbar"><div><div class="calendar-view-toggle" role="group" aria-label="Calendar view"><button type="button" id="calendar-month-view" aria-pressed="false">Month</button><button type="button" id="calendar-week-view" aria-pressed="true">Week</button><button type="button" id="calendar-day-view" aria-pressed="false">Day</button></div><details id="groomer-filter" class="groomer-filter"><summary id="groomer-filter-trigger" aria-label="Filter calendar by groomer" aria-expanded="false">All groomers <span aria-hidden="true">▾</span></summary><div class="groomer-filter-popover"><div class="groomer-filter-bulk"><button type="button" id="groomer-select-all">Select All</button><button type="button" id="groomer-deselect-all">Deselect All</button></div><fieldset id="groomer-filter-options"><legend class="sr-only">Groomers to display</legend></fieldset><button type="button" class="primary compact" id="groomer-filter-apply">Apply</button></div></details><button type="button" class="secondary compact" id="calendar-today">Today</button><button type="button" class="secondary compact" id="calendar-prev-week" aria-label="Previous period">←</button><button type="button" class="secondary compact" id="calendar-next-week" aria-label="Next period">→</button><strong id="calendar-range"></strong></div><div><button data-permission="appointments.edit" type="button" class="secondary compact" data-action="blocked-time">Block time</button><button data-testid="calendar-add-appointment" data-permission="appointments.create" type="button" class="primary compact" data-action="new-appointment">+ Add booking</button></div></div>
         <div class="calendar-workspace">
           <section class="month-sidebar" aria-label="Month navigator"><div class="month-head"><button type="button" id="month-prev" aria-label="Previous month">←</button><strong id="month-label"></strong><button type="button" id="month-next" aria-label="Next month">→</button></div><div class="month-weekdays" aria-hidden="true"><span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span></div><div id="month-grid" class="month-grid"></div></section>
           <div class="week-scroll"><section id="calendar-list" data-testid="calendar-list" class="week-grid" aria-label="Weekly appointment schedule"></section></div>
         </div>
       </section>
+
+      <section id="messages" class="view placeholder-view" hidden><p class="eyebrow">Communication</p><h3>Messages</h3><p>Messaging is coming soon. No messaging backend is enabled.</p></section>
+      <section id="reminders" class="view placeholder-view" hidden><p class="eyebrow">Follow-up</p><h3>Reminders</h3><p>Customer reminder delivery remains automated. An operator reminder inbox is coming later.</p></section>
+      <section id="sales-expense" class="view placeholder-view" data-permission="payments.view" hidden><p class="eyebrow">Finance</p><h3>Sales &amp; Expense</h3><p>Sales remain available through checkout and reports. Expense tracking is not yet available.</p></section>
+      <section id="product" class="view placeholder-view" hidden><p class="eyebrow">Catalog</p><h3>Product</h3><p>Product and inventory management is coming soon. Services remain in their dedicated workspace.</p></section>
 
       <section id="customers" data-testid="customers-view" class="view" hidden>
         <div class="split-head"><div><p class="eyebrow">Relationships</p><h3>Customers &amp; pets</h3></div><div><button data-permission="pets.care.view" type="button" class="secondary compact" id="archived-care-records">Archived records</button><button data-permission="pets.edit" type="button" class="secondary compact" data-action="new-pet">+ Pet</button><button data-testid="new-customer" data-permission="customers.edit" type="button" class="primary compact" data-action="new-customer">+ Customer</button></div></div>

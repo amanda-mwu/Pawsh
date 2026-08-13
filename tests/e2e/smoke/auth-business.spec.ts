@@ -29,8 +29,7 @@ test("@smoke auth session lifecycle is usable and safe",async({page,tenant})=>{
 
 test("@smoke business configuration persists through the GUI",async({page,tenant})=>{
   await login(page,tenant.ownerEmail);
-  await page.getByTestId("settings-trigger").click();
-  await page.getByRole("button",{name:"Workspace access"}).click();
+  await page.getByTestId("nav-settings").click();
   await expect(page.getByTestId("admin-settings-view")).toBeVisible();
   await page.getByTestId("business-settings").click();
   await page.getByTestId("field-name").fill(`QA Salon ${tenant.runId}`);
@@ -160,12 +159,20 @@ test("@responsive Breed Catalog preserves compact Salon context without horizont
 test("@smoke Settings owns administration while Profile and Services remain separate",async({page,tenant})=>{
   await login(page,tenant.ownerEmail);
   await expect(page.getByTestId("nav-services")).toBeVisible();
-  await expect(page.getByTestId("nav-setup")).toHaveText("Salon");
-  const settings=page.getByTestId("settings-trigger");await expect(settings).toHaveAccessibleName("Settings");await settings.click();
-  await page.getByRole("button",{name:"Workspace access"}).click();
+  await expect(page.getByTestId("nav-setup")).toContainText("Salon");
+  const settings=page.getByTestId("nav-settings");await expect(settings).toHaveAccessibleName("Settings");await settings.click();
   await expect(page.getByTestId("admin-settings-view")).toBeVisible();
   await expect(page.getByRole("heading",{name:"Workspace access"})).toBeVisible();
   await page.getByTestId("account-trigger").click();await page.getByTestId("profile-account-link").click();
   await expect(page.getByTestId("profile-account-view")).toBeVisible();
   await expect(page.getByTestId("admin-settings-view")).toBeHidden();
+});
+
+test("@smoke primary navigation exposes requested destinations without orphaning Services or Salon",async({page,tenant})=>{
+  await login(page,tenant.ownerEmail);
+  const destinations:[string,string][]=[["nav-dashboard","Dashboard"],["nav-calendar","Calendar"],["nav-customers","Clients"],["nav-messages","Messages"],["nav-reminders","Reminders"],["nav-sales","Sales and Expense"],["nav-product","Product"],["nav-reports","Report"],["nav-settings","Settings"]];
+  for(const [testId,name] of destinations)await expect(page.getByTestId(testId)).toHaveAccessibleName(name);
+  await page.getByTestId("nav-messages").click();await expect(page.locator("#messages").getByRole("heading",{name:"Messages"})).toBeVisible();
+  await page.getByTestId("nav-product").click();await expect(page.locator("#product").getByRole("heading",{name:"Product"})).toBeVisible();
+  await expect(page.getByTestId("nav-services")).toBeVisible();await expect(page.getByTestId("nav-setup")).toBeVisible();
 });

@@ -21,8 +21,9 @@ async function openBooking(page: Page, tenant: TenantFixture, hour: number): Pro
 }
 
 async function openCardAction(card:Locator,name:"Move"|"Cancel appointment"):Promise<void>{
-  await card.getByRole("button",{name:/Appointment actions for/}).click();
-  await card.getByRole("menuitem",{name,exact:true}).click();
+  await card.page().waitForLoadState("networkidle");
+  await card.getByRole("button",{name:/Appointment actions for/}).filter({visible:true}).click();
+  await card.page().getByRole("menuitem",{name,exact:true}).filter({visible:true}).click();
 }
 
 test("@regression-booking creates a booking and preserves it after reload", async ({ page, tenant }) => {

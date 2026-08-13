@@ -44,6 +44,7 @@ test("@cross-browser @regression-calendar-time exposes on-demand appointment act
   const appointment=await createAppointment(request,tenant,{localStart:`${tenant.anchor}T09:00`});
   const laterAppointment=await createAppointment(request,tenant,{localStart:`${tenant.anchor}T11:00`});
   await login(page,tenant.ownerEmail);await page.getByTestId("nav-calendar").click();
+  await page.waitForLoadState("networkidle");
   const card=page.locator(`.week-appointment[data-appointment-id="${appointment.id}"]`);
   await expect(card.getByTestId("rabies-appointment-status")).toHaveText("Rabies needed");
   await expect(card.locator(".appointment-card-footer > [data-testid=\"rabies-appointment-status\"]")).toHaveCount(1);
@@ -62,6 +63,18 @@ test("@cross-browser @regression-calendar-time exposes on-demand appointment act
   await page.locator("#calendar-range").click();await expect(trigger).toHaveAttribute("aria-expanded","false");
   await card.locator(".calendar-open").click();
   const dialog=page.getByTestId("modal");await expect(dialog.getByRole("button",{name:"Close"})).toHaveCount(2);await expect(dialog.getByTestId("modal-submit")).toBeHidden();
+});
+
+test("@cross-browser @regression-calendar-time month view and applied groomer filter share calendar state",async({page,request,tenant})=>{
+  const employeeResponse=await request.post("/api/employees",{data:{displayName:"Filter Groomer",serviceIds:[tenant.serviceId]}});expect(employeeResponse.status()).toBe(201);const second=await employeeResponse.json() as {id:string};
+  await login(page,tenant.ownerEmail);await page.getByTestId("nav-calendar").click();await page.waitForLoadState("networkidle");
+  await page.locator("#groomer-filter-trigger").click();await expect(page.locator("#groomer-filter")).toHaveAttribute("open","");
+  await page.locator("#groomer-deselect-all").click();await page.locator(`#groomer-filter-options input[value="${second.id}"]`).check();await page.locator("#groomer-filter-apply").click();
+  await expect(page.locator("#groomer-filter-trigger")).toContainText("1 groomer");
+  await page.reload();await page.getByTestId("nav-calendar").click();await expect(page.locator("#groomer-filter-trigger")).toContainText("1 groomer");
+  await page.locator("#calendar-day-view").click();await expect(page.locator(".day-groomer")).toHaveCount(1);await expect(page.locator(".day-groomer")).toContainText("Filter Groomer");
+  await page.locator("#calendar-month-view").click();await expect(page.locator(".calendar-month-day")).toHaveCount(42);await expect(page.locator(".calendar-month-weekday")).toHaveCount(7);
+  await page.locator("#groomer-filter-trigger").click();await page.locator("#groomer-deselect-all").click();await page.locator("#groomer-filter-apply").click();await page.locator("#calendar-day-view").click();await expect(page.locator(".calendar-empty-groomers")).toContainText("No groomers selected");
 });
 
 test("@cross-browser @regression-calendar-time renders groomer day lanes and preserves slot click intent near an appointment",async({page,request,tenant})=>{

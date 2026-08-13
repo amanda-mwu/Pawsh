@@ -45,6 +45,7 @@ export function authentication(db: Database) {
       where s.token_hash = ${tokenHash(token)}
         and s.revoked_at is null and s.expires_at > now()
         and u.disabled_at is null and m.status = 'active' and b.status = 'active'
+        and (s.business_id is null or m.business_id=s.business_id)
         and (${typeof requestedBusiness === "string" ? requestedBusiness : null}::uuid is null
           or m.business_id = ${typeof requestedBusiness === "string" ? requestedBusiness : null}::uuid)
       order by m.created_at

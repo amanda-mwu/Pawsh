@@ -35,6 +35,7 @@
       </form>
       <button id="toggle-auth" type="button" class="text-button">Already have an account? Sign in</button>
       <button id="forgot-password" type="button" class="text-button">Forgot password?</button>
+      <div class="auth-access-request"><span>Need access to an existing workspace?</span><button id="request-access" type="button" class="text-button">Request access</button></div>
     </section>
   </div>
 
@@ -109,7 +110,7 @@
         <div class="split-head"><div><p class="eyebrow">Foundation</p><h3>Salon setup</h3></div><details class="setup-menu"><summary aria-label="Business settings menu" aria-expanded="false">Business settings <span aria-hidden="true">▾</span></summary><nav class="setup-menu-items" aria-label="Salon setup settings"><button data-permission="settings.manage" type="button" data-action="business-hours">Business hours</button><button data-testid="business-settings" data-permission="settings.manage" type="button" data-action="business-settings">Business settings</button><a href="/salon/breeds" data-view-link="breed-catalog">Breed catalog</a></nav></details></div>
         <div class="content-grid">
           <article class="panel" data-permission="team.manage"><div class="panel-head"><h3>Team</h3><button type="button" class="text-button" data-action="new-employee">+ Add</button></div><div id="employee-list" class="simple-list"></div></article>
-          <article class="panel" data-permission="team.manage"><div class="panel-head"><h3>Workspace access</h3><button type="button" class="text-button" data-action="invite-member">+ Invite</button></div><div id="member-list" class="simple-list"></div></article>
+          <article class="panel" data-permission="team.manage"><div class="panel-head"><h3>Workspace access</h3><button type="button" class="text-button" data-action="invite-member">+ Invite</button></div><div id="member-list" class="simple-list"></div><div class="access-request-section"><h4>Pending access requests</h4><div id="access-request-list" class="simple-list"></div></div></article>
           <article class="panel" data-permission="services.manage"><h3>Business settings</h3><p>Manage salon details and operating preferences.</p><div class="settings-list"><button class="settings-row" type="button" data-action="business-settings"><span><strong>Open settings</strong><small>Salon identity, timezone, currency, tax, and reminders</small></span><span aria-hidden="true">Open →</span></button></div></article>
         </div>
       </section>
@@ -146,6 +147,7 @@
           <section class="profile-section" aria-labelledby="workspace-heading">
             <div><h3 id="workspace-heading">Workspace access</h3><p>Your role is managed through workspace access.</p></div>
             <dl class="account-facts"><div><dt>Workspace</dt><dd id="profile-workspace"></dd></div><div><dt>Access</dt><dd id="profile-role"></dd></div></dl>
+            <label id="workspace-switcher" hidden>Switch workspace<select id="profile-workspace-select" aria-label="Switch workspace"></select></label>
           </section>
           <section class="profile-section" aria-labelledby="security-heading">
             <div><h3 id="security-heading">Security</h3><p>Changing your password signs out your other Pawsh sessions.</p></div>

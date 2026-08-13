@@ -2,7 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const inviteToken = new URLSearchParams(location.search).get("invite");
 const resetToken = new URLSearchParams(location.search).get("reset");
-const state = { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:25}, pets: [], dogBreeds: [], breedCatalog:{query:"",showInactive:false,sortDirection:1,editingId:null}, employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointmentDates:[],employeeId:"",bookingPreset:null,opened:false}, members: [], reports: null, login: false };
+const state = { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:25}, pets: [], dogBreeds: [], breedCatalog:{query:"",showInactive:false,sortDirection:1,editingId:null}, employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointmentDates:[],employeeId:"",bookingPreset:null,opened:false}, members: [], accessRequests:[], workspaces:[], reports: null, login: false };
 const pendingActions = new Set();
 let customerSearchSequence = 0;
 
@@ -77,6 +77,9 @@ function renderAccountIdentity(){
   $("#profile-form").elements.email.value=state.me.account.email;
   $("#profile-workspace").textContent=state.me.business.name;
   $("#profile-role").textContent=accountAccessLabel();
+  const switcher=$("#workspace-switcher"),workspaceSelect=$("#profile-workspace-select");
+  switcher.hidden=state.workspaces.length<2;
+  workspaceSelect.innerHTML=state.workspaces.map(workspace=>`<option value="${workspace.id}" ${workspace.current?"selected":""}>${escape(workspace.name)}</option>`).join("");
 }
 async function runOnce(key, operation) {
   if (pendingActions.has(key)) return;
@@ -118,10 +121,13 @@ async function refresh() {
     safe("appointments.view") ? api(`/api/appointments?localDate=${businessDate()}&days=8`) : [],
     safe("team.manage") ? api("/api/members") : [],
     safe("reports.view") ? api("/api/reports") : null,
-    safe("pets.view") && !state.dogBreeds.length ? api("/api/dog-breeds") : state.dogBreeds
+    safe("pets.view") && !state.dogBreeds.length ? api("/api/dog-breeds") : state.dogBreeds,
+    safe("team.manage") ? api("/api/workspace-access-requests") : [],
+    api("/api/workspaces")
   ];
-  const [dashboard, customerDirectory, pets, employees, services, appointments, members, reports, dogBreeds] = await Promise.all(requests);
-  Object.assign(state, { customerDirectory,customers:customerDirectory.items||[], pets, employees, services, appointments, members, reports, dogBreeds });
+  const [dashboard, customerDirectory, pets, employees, services, appointments, members, reports, dogBreeds, accessRequests, workspaces] = await Promise.all(requests);
+  Object.assign(state, { customerDirectory,customers:customerDirectory.items||[], pets, employees, services, appointments, members, reports, dogBreeds, accessRequests, workspaces });
+  renderAccountIdentity();
   $("#calendar-employee-filter").innerHTML=`<option value="">All employees</option>${employees.filter(employee=>employee.active).map(employee=>`<option value="${employee.id}" ${employee.id===state.calendar.employeeId?"selected":""}>${escape(employee.displayName)}</option>`).join("")}`;
   if(!state.calendar.selectedDate){state.calendar.selectedDate=state.appointments[0]?appointmentLocalValue(state.appointments[0]).slice(0,10):businessDate();state.calendar.weekStart=weekStart(state.calendar.selectedDate);state.calendar.month=state.calendar.selectedDate.slice(0,7);}
   $("#today").textContent = new Intl.DateTimeFormat([], {timeZone:schedulingZone(),weekday:"long",month:"short",day:"numeric"}).format(new Date());
@@ -243,7 +249,7 @@ async function selectCalendarDate(date){const changedMonth=state.calendar.month!
 function openCalendarAppointment(id){const item=state.appointments.find(appointment=>appointment.id===id);if(!item)return;openModal(`${item.petName} appointment`,`<div class="wide"><p><strong>${escape(item.firstName)} ${escape(item.lastName)}</strong> · ${escape(item.employeeName)}</p><p>${escape(item.services.map(service=>service.name).join(", "))}</p><p>${new Intl.DateTimeFormat([],{dateStyle:"full",timeStyle:"short",timeZone:item.schedulingTimezone||schedulingZone()}).format(new Date(item.startAt))}</p>${safetyContext(item)}${item.status==="scheduled"&&allowed("appointments.edit")?`<button type="button" class="secondary calendar-move-detail">Move appointment</button>`:""}</div>`,async()=>{});$(".calendar-move-detail")?.addEventListener("click",()=>{$("#modal").close();moveAppointment(id);});}
 function adjustServices(id) {
   const appointment=state.appointments.find(item=>item.id===id);
-  openModal("Adjust appointment services",safetyContext(appointment)+serviceCheckboxes(appointment.services.map(service=>service.serviceId)),form=>api(`/api/appointments/${id}/services`,{method:"PUT",body:JSON.stringify({serviceIds:form.getAll("serviceIds"),version:appointment.version})}));
+  openModal("Adjust appointment services",safetyContext(appointment)+bookingServiceCheckboxes(appointment.employeeId,appointment.services.map(service=>service.serviceId)),form=>api(`/api/appointments/${id}/services`,{method:"PUT",body:JSON.stringify({serviceIds:form.getAll("serviceIds"),version:appointment.version})}));
 }
 function moveAppointment(id) {
   const appointment=state.appointments.find(item=>item.id===id);
@@ -345,6 +351,14 @@ function renderSetup() {
   $("#member-list").innerHTML = state.members.length ? state.members.map((member) => `<div><span><strong>${escape(member.email)}</strong><small>${member.isOwner ? "Owner" : `${member.permissions.length} permissions`}</small></span>${member.isOwner ? "" : `<span><button class="text-button edit-member" data-id="${member.id}">Access</button> <button class="text-button remove-member" data-id="${member.id}">Remove</button></span>`}</div>`).join("") : `<p class="empty">Only you have workspace access.</p>`;
   $$(".edit-member").forEach((button)=>button.addEventListener("click",()=>editMember(button.dataset.id)));
   $$(".remove-member").forEach((button)=>button.addEventListener("click",()=>removeMember(button.dataset.id)));
+  const requests=state.accessRequests.filter(request=>request.status==="pending");
+  $("#access-request-list").innerHTML=requests.length?requests.map(request=>`<div><span><strong>${escape(request.requesterName)}</strong><small>${escape(request.requesterEmail)} Â· ${new Date(request.createdAt).toLocaleDateString()}</small></span><span><button type="button" class="text-button approve-access-request" data-id="${request.id}">Approve</button> <button type="button" class="text-button reject-access-request" data-id="${request.id}">Reject</button></span></div>`).join(""):`<p class="empty">No pending requests.</p>`;
+  $$(".approve-access-request").forEach(button=>button.addEventListener("click",()=>reviewAccessRequest(button.dataset.id,"approve")));
+  $$(".reject-access-request").forEach(button=>button.addEventListener("click",()=>reviewAccessRequest(button.dataset.id,"reject")));
+}
+async function reviewAccessRequest(id,decision){
+  if(!confirm(`${decision==="approve"?"Approve":"Reject"} this workspace access request?`))return;
+  try{const result=await api(`/api/workspace-access-requests/${id}/${decision}`,{method:"POST"});let copied=false;if(result.acceptancePath&&navigator.clipboard){try{await navigator.clipboard.writeText(`${location.origin}${result.acceptancePath}`);copied=true;}catch{copied=false;}}toast(result.acceptancePath?(copied?"Approved; secure setup link copied":"Approved; the requester invitation was queued"):"Access request updated");await refresh();}catch(error){toast(error.message);}
 }
 function renderCustomersEnhanced() {
   const directory=state.customerDirectory,formatDate=value=>value?new Intl.DateTimeFormat([],{dateStyle:"medium",timeZone:schedulingZone()}).format(new Date(value)):"—";
@@ -412,6 +426,10 @@ async function removeMember(id) {
 }
 function serviceCheckboxes(selected=[]) {
   return `<fieldset class="wide permission-grid"><legend>Eligible services</legend>${state.services.filter(service=>service.active).map(service=>`<label><input type="checkbox" name="serviceIds" value="${service.id}" ${selected.includes(service.id)?"checked":""}> ${escape(service.name)}</label>`).join("")||"<p>Add a service first.</p>"}</fieldset>`;
+}
+function bookingServiceCheckboxes(employeeId,selected=[]) {
+  const employee=state.employees.find(item=>item.id===employeeId),eligible=new Set(employee?.serviceIds||[]);
+  return `<fieldset id="appointment-service-options" class="wide permission-grid"><legend>Services</legend>${state.services.filter(service=>service.active).map(service=>{const available=Boolean(employee?.active&&eligible.has(service.id));return `<label class="${available?"":"service-unavailable"}"><input type="checkbox" name="serviceIds" value="${service.id}" ${selected.includes(service.id)&&available?"checked":""} ${available?"":"disabled"}> ${escape(service.name)}${available?"":` <small>Not assigned to ${escape(employee?.displayName||"the selected groomer")}</small>`}</label>`;}).join("")||"<p>Add a service first.</p>"}</fieldset>`;
 }
 function weeklyHoursFields() {
   return `<fieldset class="wide hours-grid"><legend>Working hours</legend>${["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"].map((day,index)=>`<div><label><input type="checkbox" name="day${index}" ${index>0&&index<6?"checked":""}> ${day}</label><input type="time" name="start${index}" value="09:00"><input type="time" name="end${index}" value="17:00"></div>`).join("")}</fieldset>`;
@@ -655,7 +673,7 @@ function openModal(title, fields, submit) {
     button.disabled=true;button.textContent="Saving…";form.setAttribute("aria-busy","true");
     try {
       const afterClose=await submit(new FormData(form));
-      await refresh(); $("#modal").close(); toast(`${title} saved`);
+      if(state.me)await refresh(); $("#modal").close(); toast(`${title} saved`);
       if(typeof afterClose==="function")afterClose();
     }
     catch (error) {
@@ -771,13 +789,13 @@ const actions = {
       select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]))+
       select("petId","Pet",[])+
       select("employeeId","Groomer",state.employees.filter(e=>e.active).map(e=>[e.id,e.displayName]))+
-      serviceCheckboxes()+
+      bookingServiceCheckboxes(state.employees.find(employee=>employee.active)?.id)+
       field("startAt","Start time","datetime-local",`required value="${state.calendar.bookingPreset||""}"`,true)+disambiguationField()+
       `<div class="wide pricing-preview" role="status" aria-live="polite" data-testid="booking-price-status">Choose a pet and service to calculate pricing.</div>`+
       `<p class="wide" role="status" aria-live="polite" data-testid="booking-rabies-status">Choose a pet and appointment time to evaluate rabies information.</p>`+
       field("notes","Appointment notes","text","",true),
       async (form) => { const o=Object.fromEntries(form); await schedulingMutation("/api/appointments",{locationId:state.me.business.locationId,customerId:o.customerId,petId:o.petId,employeeId:o.employeeId,serviceIds:form.getAll("serviceIds"),localStart:o.startAt,disambiguation:o.disambiguation||undefined,expectedLocationVersion:state.me.business.locationVersion,notes:o.notes||null},"Booking");return ()=>selectCalendarDate(String(o.startAt).slice(0,10)); });
-    const customerSelect=$('[name="customerId"]');const petSelect=$('[name="petId"]');
+    const customerSelect=$('[name="customerId"]');const petSelect=$('[name="petId"]');const employeeSelect=$('[name="employeeId"]');
     state.calendar.bookingPreset=null;
     const startInput=$('[name="startAt"]');const rabiesStatus=$('[data-testid="booking-rabies-status"]');
     const priceStatus=$('[data-testid="booking-price-status"]');let priceSequence=0;
@@ -796,7 +814,9 @@ const actions = {
       petSelect.innerHTML=`<option value="">Choose…</option>${pets.map(pet=>`<option value="${pet.id}">${escape(pet.name)}</option>`).join("")}`;
       updateRabiesPreview();updatePricePreview();
     });
-    petSelect.addEventListener("change",()=>{updateRabiesPreview();updatePricePreview();});startInput.addEventListener("change",updateRabiesPreview);$$('input[name="serviceIds"]').forEach(input=>input.addEventListener("change",updatePricePreview));
+    const bindServicePreview=()=>$$('input[name="serviceIds"]').forEach(input=>input.addEventListener("change",updatePricePreview));
+    employeeSelect.addEventListener("change",()=>{$("#appointment-service-options").outerHTML=bookingServiceCheckboxes(employeeSelect.value);bindServicePreview();updatePricePreview();});
+    petSelect.addEventListener("change",()=>{updateRabiesPreview();updatePricePreview();});startInput.addEventListener("change",updateRabiesPreview);bindServicePreview();
   }),
   "blocked-time": () => openModal("Block team time",
     select("employeeId","Team member",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]))+
@@ -831,6 +851,12 @@ $("#forgot-password").addEventListener("click",()=>{
     toast("If the account exists, a reset email is on its way");
   });
 });
+$("#request-access").addEventListener("click",()=>{
+  openModal("Request workspace access",field("requesterName","Your name","text","required maxlength=120")+field("requesterEmail","Email address","email","required maxlength=320")+field("workspaceName","Workspace / salon name","text","required maxlength=120")+field("workspaceAdminEmail","Workspace administrator email","email","required maxlength=320")+field("message","Optional message","text","maxlength=1000",true),async form=>{
+    await api("/api/workspace-access-requests",{method:"POST",body:JSON.stringify(Object.fromEntries(form))});
+    return ()=>toast("Your request was submitted for administrator review");
+  });
+});
 $("#logout").addEventListener("click", async () => {
   try { await api("/api/auth/logout",{method:"POST"}); }
   catch(error) {
@@ -854,6 +880,7 @@ document.addEventListener("click",event=>{if(!accountMenu.hidden&&!$(".account-c
 document.addEventListener("keydown",event=>{if(event.key==="Escape"&&!accountMenu.hidden){event.preventDefault();closeAccountMenu({restoreFocus:true});}});
 $("#profile-form").addEventListener("submit",async event=>{event.preventDefault();const form=event.currentTarget,error=$("#profile-error"),button=form.querySelector("button[type=submit]");error.textContent="";button.disabled=true;try{await api("/api/me",{method:"PATCH",body:JSON.stringify({displayName:new FormData(form).get("displayName")})});state.me=await api("/api/me");renderAccountIdentity();toast("Profile updated");}catch(problem){error.textContent=problem.message;}finally{button.disabled=false;}});
 $("#profile-cancel").addEventListener("click",()=>{renderAccountIdentity();$("#profile-error").textContent="";});
+$("#profile-workspace-select").addEventListener("change",async event=>{try{await api("/api/workspaces/select",{method:"POST",body:JSON.stringify({businessId:event.target.value})});location.reload();}catch(error){toast(error.message);renderAccountIdentity();}});
 $("#password-form").addEventListener("submit",async event=>{event.preventDefault();const form=event.currentTarget,values=Object.fromEntries(new FormData(form)),error=$("#password-error"),button=form.querySelector("button[type=submit]");error.textContent="";if(values.newPassword!==values.confirmPassword){error.textContent="New passwords do not match";form.elements.confirmPassword.focus();return;}button.disabled=true;try{await api("/api/me/password",{method:"POST",body:JSON.stringify({currentPassword:values.currentPassword,newPassword:values.newPassword})});form.reset();toast("Password changed; other sessions signed out");}catch(problem){error.textContent=problem.message;}finally{button.disabled=false;}});
 $$('[data-action]').forEach((button) => button.addEventListener("click", () => actions[button.dataset.action]?.()));
 const viewPaths={dashboard:"/",calendar:"/",customers:"/",services:"/",setup:"/","breed-catalog":"/salon/breeds",reports:"/","profile-account":"/account"};

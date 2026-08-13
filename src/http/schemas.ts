@@ -57,6 +57,16 @@ export const ownershipTransferSchema = z.object({
   membershipId: z.string().uuid()
 });
 
+export const workspaceAccessRequestSchema=z.object({
+  requesterName:z.string().trim().min(1).max(120),
+  requesterEmail:z.string().email().max(320),
+  workspaceName:z.string().trim().min(2).max(120),
+  workspaceAdminEmail:z.string().email().max(320),
+  message:z.string().trim().max(1000).nullish()
+}).strict();
+
+export const workspaceSelectionSchema=z.object({businessId:z.string().uuid()}).strict();
+
 export const customerSchema = z.object({
   firstName: z.string().trim().min(1).max(80),
   lastName: z.string().trim().min(1).max(80),

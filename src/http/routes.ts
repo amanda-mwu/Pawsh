@@ -20,7 +20,7 @@ import {
   passwordResetRequestSchema, passwordResetConfirmSchema, invitationSchema,
   invitationAcceptSchema, ownershipTransferSchema, petProfileUpdateSchema, petCareUpdateSchema,
   servicePricingSchema,breedCatalogCreateSchema,breedCatalogUpdateSchema,priceResolutionSchema,
-  ownProfileUpdateSchema,passwordChangeSchema
+  ownProfileUpdateSchema,passwordChangeSchema,workspaceAccessRequestSchema,workspaceSelectionSchema
 } from "./schemas.js";
 import { sealSecret } from "../security/secrets.js";
 import { hashPassword, validateNewPassword, verifyPassword } from "../security/passwords.js";
@@ -451,11 +451,35 @@ async function permitConflictOverride(
   `;
 }
 
+async function ensureEmployeeServicesAvailable(
+  tx:Transaction,
+  input:{businessId:string;employeeId:string;serviceIds:readonly string[]}
+):Promise<void>{
+  const [employee]=await tx<{displayName:string;active:boolean}[]>`
+    select display_name,active from employees
+    where business_id=${input.businessId} and id=${input.employeeId}
+  `;
+  if(!employee?.active)throw new Error("Selected employee is unavailable");
+  const services=await tx<{id:string;name:string;active:boolean;eligible:boolean}[]>`
+    select service.id,service.name,service.active,
+      exists(select 1 from employee_services eligibility
+        where eligibility.business_id=${input.businessId} and eligibility.employee_id=${input.employeeId}
+          and eligibility.service_id=service.id) as eligible
+    from services service where service.business_id=${input.businessId}
+      and service.id in ${tx(input.serviceIds as string[])}
+  `;
+  if(services.length!==new Set(input.serviceIds).size)throw new Error("One or more selected services are unavailable");
+  const inactive=services.find(service=>!service.active);
+  if(inactive)throw new Error(`${inactive.name} is inactive and cannot be booked.`);
+  const ineligible=services.find(service=>!service.eligible);
+  if(ineligible)throw new Error(`${ineligible.name} is not assigned to ${employee.displayName}.`);
+}
+
 async function record(
   tx: Transaction,
   input: {
     businessId: string;
-    actorId: string;
+    actorId?: string | undefined;
     action: string;
     resourceType: string;
     resourceId?: string | undefined;
@@ -470,7 +494,7 @@ async function record(
     insert into audit_events
       (business_id, actor_id, action, resource_type, resource_id, correlation_id, before_data, after_data, reason)
     values
-      (${input.businessId}, ${input.actorId}, ${input.action}, ${input.resourceType},
+      (${input.businessId}, ${input.actorId ?? null}, ${input.action}, ${input.resourceType},
        ${input.resourceId ?? null}, ${correlationId}, ${input.before ? tx.json(input.before as any) : null},
        ${input.after ? tx.json(input.after as any) : null}, ${input.reason ?? null})
   `;
@@ -479,7 +503,7 @@ async function record(
       insert into outbox_events
         (business_id, event_type, actor_id, resource_id, correlation_id, payload)
       values
-        (${input.businessId}, ${input.eventType}, ${input.actorId}, ${input.resourceId ?? null},
+        (${input.businessId}, ${input.eventType}, ${input.actorId ?? null}, ${input.resourceId ?? null},
          ${correlationId}, ${tx.json((input.after ?? {}) as any)})
     `;
     if ([
@@ -490,7 +514,7 @@ async function record(
       await tx`
         insert into product_analytics_events
           (business_id,user_id,event_name,resource_id,properties)
-        values (${input.businessId},${input.actorId},${input.eventType},${input.resourceId ?? null},
+        values (${input.businessId},${input.actorId ?? null},${input.eventType},${input.resourceId ?? null},
           ${tx.json((input.after ?? {}) as any)})
       `;
     }
@@ -557,8 +581,8 @@ export function registerRoutes(
       await provisionBusinessCatalog(tx,business.id);
       const token = issueToken();
       await tx`
-        insert into sessions (user_id, token_hash, expires_at)
-        values (${user.id}, ${tokenHash(token)}, now() + interval '14 days')
+        insert into sessions (user_id, business_id, token_hash, expires_at)
+        values (${user.id}, ${business.id}, ${tokenHash(token)}, now() + interval '14 days')
       `;
       await record(tx, {
         businessId: business.id, actorId: user.id, action: "business.create",
@@ -594,10 +618,15 @@ export function registerRoutes(
     }
     abuse.success(email);
     abuse.event("login.succeeded", email, request.ip);
+    const [membership]=await db<{businessId:string}[]>`
+      select business_id from business_memberships
+      where user_id=${user.id} and status='active' order by created_at limit 1
+    `;
+    if(!membership)return reply.code(401).send({error:"Workspace access is unavailable"});
     const token = issueToken();
     await db`
-      insert into sessions (user_id, token_hash, expires_at)
-      values (${user.id}, ${tokenHash(token)}, now() + interval '14 days')
+      insert into sessions (user_id, business_id, token_hash, expires_at)
+      values (${user.id}, ${membership.businessId}, ${tokenHash(token)}, now() + interval '14 days')
     `;
     return reply.setCookie("pawsh_session", token, sessionCookie(config)).send({ ok: true });
   });
@@ -606,6 +635,60 @@ export function registerRoutes(
     const token = request.cookies.pawsh_session;
     if (token) await db`update sessions set revoked_at = now() where token_hash = ${tokenHash(token)}`;
     return reply.clearCookie("pawsh_session", { path: "/" }).code(204).send();
+  });
+
+  app.post("/api/workspace-access-requests", async (request, reply) => {
+    const input=body(workspaceAccessRequestSchema,request.body);
+    const normalizedEmail=normalizeEmail(input.requesterEmail);
+    const throttleKey=`${normalizedEmail}:${input.workspaceName.toLocaleLowerCase("en-US")}`;
+    const retryAfter=abuse.retryAfter(throttleKey,request.ip,"workspace-access");
+    const generic={accepted:true,message:"If the request can be processed, the workspace administrator will be notified."};
+    if(retryAfter>0)return reply.header("retry-after",Math.max(1,Math.ceil(retryAfter/1000))).code(202).send(generic);
+    abuse.failure(throttleKey,request.ip,"workspace-access");
+    abuse.event("workspace_access.requested",normalizedEmail,request.ip);
+    const [business]=await db<{id:string;name:string}[]>`
+      select distinct business.id,business.name from businesses business
+      join business_memberships membership on membership.business_id=business.id
+        and membership.is_owner and membership.status='active'
+      join users owner_account on owner_account.id=membership.user_id and owner_account.disabled_at is null
+      where business.status='active'
+        and lower(btrim(business.name))=lower(btrim(${input.workspaceName}))
+        and (owner_account.normalized_email=${normalizeEmail(input.workspaceAdminEmail)}
+          or lower(btrim(coalesce(business.email,'')))=${normalizeEmail(input.workspaceAdminEmail)})
+      limit 1
+    `;
+    if(!business)return reply.code(202).send(generic);
+    await db.begin(async tx=>{
+      await setTenant(tx,business.id);
+      const [member]=await tx`
+        select membership.id from business_memberships membership
+        join users account on account.id=membership.user_id
+        where membership.business_id=${business.id} and account.normalized_email=${normalizedEmail}
+          and membership.status='active'
+      `;
+      if(member)return;
+      const [created]=await tx<{id:string}[]>`
+        insert into workspace_access_requests
+          (business_id,requester_name,requester_email,normalized_email,message)
+        values (${business.id},${input.requesterName},${input.requesterEmail.trim()},${normalizedEmail},${input.message??null})
+        on conflict (business_id,normalized_email) where status='pending' do nothing returning id
+      `;
+      if(!created)return;
+      await record(tx,{businessId:business.id,action:"workspace_access.request",resourceType:"workspace_access_request",resourceId:created.id,after:{requesterEmail:normalizedEmail},eventType:"WorkspaceAccessRequested"});
+      const reviewers=await tx<{email:string}[]>`
+        select distinct account.email from business_memberships membership
+        join users account on account.id=membership.user_id and account.disabled_at is null
+        where membership.business_id=${business.id} and membership.status='active'
+          and (membership.is_owner or 'team.manage'=any(membership.permissions))
+      `;
+      const reviewBody=`${input.requesterName} (${input.requesterEmail.trim()}) requested access to ${business.name}.${input.message?` Message: ${input.message}`:""} Sign in to Pawsh and open Salon setup to review the request.`;
+      for(const reviewer of reviewers)await tx`
+        insert into notification_intents
+          (business_id,notification_type,scheduled_occurrence,channel,destination,encrypted_body)
+        values (${business.id},'workspace_access_request',now(),'email',${reviewer.email},${sealSecret(reviewBody,config.SESSION_SECRET)})
+      `;
+    });
+    return reply.code(202).send(generic);
   });
 
   app.post("/api/auth/password-reset/request", async (request, reply) => {
@@ -718,8 +801,8 @@ export function registerRoutes(
       await tx`update membership_invitations set accepted_at=now() where id=${invitation.id}`;
       const token = issueToken();
       await tx`
-        insert into sessions(user_id,token_hash,expires_at)
-        values (${user.id},${tokenHash(token)},now()+interval '14 days')
+        insert into sessions(user_id,business_id,token_hash,expires_at)
+        values (${user.id},${invitation.businessId},${tokenHash(token)},now()+interval '14 days')
       `;
       await setTenant(tx, invitation.businessId);
       await record(tx, {
@@ -743,6 +826,29 @@ export function registerRoutes(
       where b.id = ${context.businessId}
     `;
     return { ...context, account, business };
+  });
+
+  app.get("/api/workspaces",{preHandler:authenticate},async request=>{
+    const context=auth(request);
+    return db`
+      select business.id,business.name,membership.is_owner,membership.permissions,
+        (business.id=${context.businessId}) as current
+      from business_memberships membership join businesses business on business.id=membership.business_id
+      where membership.user_id=${context.userId} and membership.status='active' and business.status='active'
+      order by current desc,business.name
+    `;
+  });
+
+  app.post("/api/workspaces/select",{preHandler:authenticate},async(request,reply)=>{
+    const context=auth(request);const input=body(workspaceSelectionSchema,request.body);
+    const [membership]=await db<{id:string}[]>`
+      select id from business_memberships where user_id=${context.userId}
+        and business_id=${input.businessId} and status='active'
+    `;
+    if(!membership)return reply.code(404).send({error:"Workspace access is unavailable"});
+    await db`update sessions set business_id=${input.businessId}
+      where token_hash=${tokenHash(request.cookies.pawsh_session??"")} and user_id=${context.userId}`;
+    return {selected:true};
   });
 
   app.patch("/api/me", { preHandler: authenticate }, async (request) => {
@@ -852,6 +958,100 @@ export function registerRoutes(
       where m.business_id = ${context.businessId}
       order by m.is_owner desc, u.email
     `;
+  });
+
+  app.get("/api/workspace-access-requests",{
+    preHandler:[authenticate,requirePermission("team.manage")]
+  },async request=>{
+    const context=auth(request);
+    return db`
+      select id,requester_name,requester_email,message,status,created_at,reviewed_at
+      from workspace_access_requests where business_id=${context.businessId}
+      order by (status='pending') desc,created_at desc limit 100
+    `;
+  });
+
+  app.post("/api/workspace-access-requests/:id/approve",{
+    preHandler:[authenticate,requirePermission("team.manage")]
+  },async(request,reply)=>{
+    const context=auth(request);const {id}=idParams.parse(request.params);
+    const invitationToken=issueToken();
+    const result=await db.begin(async tx=>{
+      await setTenant(tx,context.businessId);
+      const [accessRequest]=await tx<{id:string;requesterName:string;requesterEmail:string;normalizedEmail:string;status:string}[]>`
+        select id,requester_name,requester_email,normalized_email,status
+        from workspace_access_requests where business_id=${context.businessId} and id=${id} for update
+      `;
+      if(!accessRequest||accessRequest.status!=="pending")return null;
+      const [user]=await tx<{id:string}[]>`select id from users where normalized_email=${accessRequest.normalizedEmail} and disabled_at is null`;
+      let membershipId:string|null=null,invitationId:string|null=null,acceptancePath:string|null=null;
+      if(user){
+        const [existing]=await tx<{id:string;isOwner:boolean;status:string}[]>`
+          select id,is_owner,status from business_memberships where business_id=${context.businessId} and user_id=${user.id}
+        `;
+        if(existing){
+          membershipId=existing.id;
+          await tx`update business_memberships set status='active',
+              permissions=case when is_owner then permissions else ${permissionPresets.groomer as unknown as string[]} end,
+              updated_at=now()
+            where business_id=${context.businessId} and id=${existing.id}`;
+        }else{
+          const [created]=await tx<{id:string}[]>`
+            insert into business_memberships(business_id,user_id,permissions,status)
+            values (${context.businessId},${user.id},${permissionPresets.groomer as unknown as string[]},'active') returning id
+          `;
+          membershipId=created?.id??null;
+        }
+      }else{
+        const [invitation]=await tx<{id:string}[]>`
+          insert into membership_invitations
+            (business_id,email,normalized_email,token_hash,permissions,invited_by,expires_at)
+          values (${context.businessId},${accessRequest.requesterEmail},${accessRequest.normalizedEmail},${tokenHash(invitationToken)},
+            ${permissionPresets.groomer as unknown as string[]},${context.userId},now()+interval '7 days')
+          on conflict (business_id,normalized_email) do update set email=excluded.email,
+            token_hash=excluded.token_hash,permissions=excluded.permissions,invited_by=excluded.invited_by,
+            expires_at=excluded.expires_at,accepted_at=null,revoked_at=null,created_at=now()
+          returning id
+        `;
+        invitationId=invitation?.id??null;
+        acceptancePath=`/?invite=${encodeURIComponent(invitationToken)}`;
+      }
+      await tx`
+        update workspace_access_requests set status='approved',reviewed_at=now(),reviewed_by=${context.userId},
+          membership_id=${membershipId},invitation_id=${invitationId},updated_at=now()
+        where business_id=${context.businessId} and id=${id}
+      `;
+      const [business]=await tx<{name:string}[]>`select name from businesses where id=${context.businessId}`;
+      const message=acceptancePath
+        ? `Your request to join ${business?.name??"the Pawsh workspace"} was approved. Complete account setup at ${config.APP_ORIGIN}${acceptancePath}`
+        : `Your request to join ${business?.name??"the Pawsh workspace"} was approved. Sign in to Pawsh and select the workspace from Profile & Account.`;
+      await tx`insert into notification_intents
+        (business_id,notification_type,scheduled_occurrence,channel,destination,encrypted_body)
+        values (${context.businessId},'workspace_access_approved',now(),'email',${accessRequest.requesterEmail},${sealSecret(message,config.SESSION_SECRET)})`;
+      await record(tx,{businessId:context.businessId,actorId:context.userId,action:"workspace_access.approve",resourceType:"workspace_access_request",resourceId:id,after:{membershipId,invitationId},eventType:"WorkspaceAccessApproved"});
+      return {approved:true,membershipCreated:Boolean(membershipId),invitationCreated:Boolean(invitationId),acceptancePath};
+    });
+    if(!result)return reply.code(404).send({error:"Pending access request not found"});
+    return result;
+  });
+
+  app.post("/api/workspace-access-requests/:id/reject",{
+    preHandler:[authenticate,requirePermission("team.manage")]
+  },async(request,reply)=>{
+    const context=auth(request);const {id}=idParams.parse(request.params);
+    const result=await db.begin(async tx=>{
+      await setTenant(tx,context.businessId);
+      const [rejected]=await tx<{id:string;requesterEmail:string}[]>`
+        update workspace_access_requests set status='rejected',reviewed_at=now(),reviewed_by=${context.userId},updated_at=now()
+        where business_id=${context.businessId} and id=${id} and status='pending'
+        returning id,requester_email
+      `;
+      if(!rejected)return false;
+      await record(tx,{businessId:context.businessId,actorId:context.userId,action:"workspace_access.reject",resourceType:"workspace_access_request",resourceId:id,eventType:"WorkspaceAccessRejected"});
+      return true;
+    });
+    if(!result)return reply.code(404).send({error:"Pending access request not found"});
+    return {rejected:true};
   });
 
   app.post("/api/members/invitations", {
@@ -1990,15 +2190,7 @@ export function registerRoutes(
       if (location.version !== input.expectedLocationVersion) throw new SchedulingRequestError(409,"STALE_LOCATION_SETTINGS","Location settings changed. Refresh and try again.");
       const resolved=resolveWallTime(input.localStart,location.timezone,input.disambiguation);
       await schedulingHooks.afterLocationLock?.({operation:"create",businessId:context.businessId,timezone:location.timezone,version:location.version});
-      const eligible = await tx<{ id: string }[]>`
-        select service.id from services service
-        join employee_services eligibility on eligibility.service_id=service.id
-          and eligibility.employee_id=${input.employeeId}
-        join employees employee on employee.id=eligibility.employee_id and employee.active
-        where service.business_id=${context.businessId} and service.id in ${tx(input.serviceIds)}
-          and service.active
-      `;
-      if (eligible.length !== new Set(input.serviceIds).size) throw new Error("One or more services are unavailable");
+      await ensureEmployeeServicesAvailable(tx,{businessId:context.businessId,employeeId:input.employeeId,serviceIds:input.serviceIds});
       const catalog=await resolveServicePrices(tx,{businessId:context.businessId,petId:input.petId,serviceIds:input.serviceIds});
       const unresolved=catalog.find(service=>service.status!=="resolved");
       if(unresolved)throw new Error(unresolved.status==="weight_required"?"Weight required to determine pricing.":unresolved.status==="quote_required"?`${unresolved.name} requires a quote before booking.`:`${unresolved.name} price requires admin confirmation.`);
@@ -2431,14 +2623,7 @@ export function registerRoutes(
         select id from invoices where business_id=${context.businessId} and appointment_id=${id} and status<>'void'
       `;
       if (invoice.length) throw new Error("Services cannot change after checkout begins");
-      const eligible = await tx<{id:string}[]>`
-        select service.id from services service
-        join employee_services eligibility on eligibility.service_id=service.id
-          and eligibility.employee_id=${appointment.employeeId}
-        where service.business_id=${context.businessId} and service.id in ${tx(input.serviceIds)}
-          and service.active
-      `;
-      if (eligible.length !== new Set(input.serviceIds).size) throw new Error("One or more services are unavailable");
+      await ensureEmployeeServicesAvailable(tx,{businessId:context.businessId,employeeId:appointment.employeeId,serviceIds:input.serviceIds});
       const catalog=await resolveServicePrices(tx,{businessId:context.businessId,petId:appointment.petId,serviceIds:input.serviceIds});
       const unresolved=catalog.find(service=>service.status!=="resolved");
       if(unresolved)throw new Error(unresolved.status==="weight_required"?"Weight required to determine pricing.":`${unresolved.name} price is unresolved.`);

@@ -3,7 +3,7 @@ import { createHmac } from "node:crypto";
 type Entry = { attempts:number; windowStartedAt:number; blockedUntil:number };
 
 export interface SecurityEvent {
-  type: "login.failed" | "login.succeeded" | "auth.throttled" | "password_reset.requested";
+  type: "login.failed" | "login.succeeded" | "auth.throttled" | "password_reset.requested" | "workspace_access.requested";
   accountRef: string;
   networkRef: string;
 }

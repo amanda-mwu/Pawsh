@@ -52,5 +52,9 @@ describe("database migrations", () => {
     expect(pricingCatalog).toContain("create table service_price_tiers");
     expect(pricingCatalog).toContain("create table business_breeds");
     expect(pricingCatalog).toContain("pricing_class_snapshot");
+    const workspaceAccess = await readFile("migrations/0014_workspace_access_requests.sql", "utf8");
+    expect(workspaceAccess).toContain("create table workspace_access_requests");
+    expect(workspaceAccess).toContain("one_pending_workspace_access_request");
+    expect(workspaceAccess).toContain("create policy tenant_isolation on workspace_access_requests");
   });
 });

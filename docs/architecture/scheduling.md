@@ -27,6 +27,14 @@ appointment sums the selected duration snapshots. Editing services before
 checkout replaces those snapshots and recomputes the appointment end time.
 Existing service-catalog edits do not retroactively move appointments.
 
+Service catalog availability and employee eligibility are separate. Pricing
+may resolve for any active tenant service, but an appointment may include it
+only when the selected active employee is assigned that service. The booking
+form exposes that assignment before submission, and the API remains
+authoritative with service-specific inactive or unassigned errors. Add-on and
+Ã -la-carte categories do not require a primary service; their eligibility is
+governed by the same active-service and employee-assignment rules.
+
 Appointments persist authoritative UTC instants in `timestamptz`. Scheduling
 mutations accept strict minute-precision `YYYY-MM-DDTHH:mm` wall time; the server
 derives the IANA timezone from the tenant-owned active location and resolves the

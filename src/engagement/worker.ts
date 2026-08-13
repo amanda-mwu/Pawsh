@@ -312,6 +312,8 @@ export async function deliverNotifications(
         idempotencyKey: intent.id,
         to: intent.destination,
         subject: intent.notificationType === "password_reset" ? "Reset your Pawsh password"
+          : intent.notificationType === "workspace_access_request" ? "Pawsh workspace access requested"
+          : intent.notificationType === "workspace_access_approved" ? "Your Pawsh workspace request was approved"
           : intent.notificationType === RABIES_CUSTOMER ? "Updated rabies information needed"
           : intent.notificationType === RABIES_STAFF ? "Rabies information needs attention"
           : intent.notificationType === "appointment_reminder" ? "Upcoming Pawsh appointment"

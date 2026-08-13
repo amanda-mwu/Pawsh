@@ -95,8 +95,8 @@ test("@responsive groomer day view remains contained and touch accessible",async
   await login(page,tenant.ownerEmail);
   await openNavigation(page);
   await page.getByTestId("nav-calendar").click();
-  await expectCriticalTarget(page.locator("#calendar-day-view"));
-  await page.locator("#calendar-day-view").click();
+  await expectCriticalTarget(page.locator("#calendar-view-select"));
+  await page.locator("#calendar-view-select").selectOption("day");
   await expect(page.locator(".day-groomer",{hasText:"Grace Groomer"})).toBeVisible();
   await expectCriticalTarget(page.locator(".day-slot").first());
   await expectNoDocumentOverflow(page,testInfo);

@@ -54,6 +54,9 @@ test("@smoke account menu and personal profile remain separate from business set
   await expect(trigger).toHaveAttribute("aria-expanded","false");
   await expect(trigger).toBeFocused();
   await trigger.click();
+  await expect(page.getByRole("menuitem",{name:"Change password"})).toBeEnabled();
+  await expect(page.getByRole("menuitem",{name:/Switch location/})).toBeDisabled();
+  await expect(page.getByRole("menuitem",{name:/Invite a friend/})).toBeDisabled();
   await page.getByTestId("profile-account-link").click();
   await expect(page).toHaveURL(/\/account$/);
   await expect(page.getByTestId("profile-account-view")).toBeVisible();

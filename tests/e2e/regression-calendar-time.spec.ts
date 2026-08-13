@@ -34,7 +34,7 @@ test("@regression-calendar-time rejects nonexistent time and preserves both repe
 
 test("@regression-calendar-time synchronizes week navigation and preselects an empty slot",async({page,tenant})=>{
   await login(page,tenant.ownerEmail);await page.getByTestId("nav-calendar").click();
-  await expect(page.locator("#month-grid")).toBeVisible();await expect(page.locator(".week-day-head")).toHaveCount(7);
+  await expect(page.locator(".month-sidebar")).toHaveCount(0);await expect(page.locator(".week-day-head")).toHaveCount(7);
   const initial=await page.locator("#calendar-range").textContent();await page.locator("#calendar-next-week").click();await expect(page.locator("#calendar-range")).not.toHaveText(initial??"");
   const nextRange=await page.locator("#calendar-range").textContent();await page.locator("#calendar-today").click();await expect(page.locator("#calendar-range")).not.toHaveText(nextRange??"");
   const slot=page.locator('.week-slot:not(.closed)').first();const preset=await slot.getAttribute("data-slot");await slot.click();await expect(page.getByTestId("field-startAt")).toHaveValue(preset??"");await page.getByRole("button",{name:"Cancel"}).click();
@@ -57,12 +57,15 @@ test("@cross-browser @regression-calendar-time exposes on-demand appointment act
   await expect(card.getByRole("menuitem",{name:"Cancel appointment"})).toBeVisible();
   await expect(card.getByRole("menuitem",{name:"No show"})).toBeVisible();
   await expect(card.locator("select")).toHaveCount(0);
+  await expect(page.locator(".month-sidebar")).toHaveCount(0);
+  await page.locator("#calendar-agenda-mode").click();await expect(page.locator(".calendar-agenda")).toBeVisible();await expect(page.locator("#calendar-view-control")).toBeHidden();
+  await page.locator("#calendar-calendar-mode").click();await expect(page.locator("#calendar-view-control")).toBeVisible();
   const laterTrigger=page.locator(`.week-appointment[data-appointment-id="${laterAppointment.id}"]`).getByRole("button",{name:/Appointment actions for/});await laterTrigger.focus();await laterTrigger.press("Enter");await expect(trigger).toHaveAttribute("aria-expanded","false");await expect(laterTrigger).toHaveAttribute("aria-expanded","true");
   await page.keyboard.press("Escape");await expect(laterTrigger).toHaveAttribute("aria-expanded","false");await expect(laterTrigger).toBeFocused();
   await trigger.click();
   await page.locator("#calendar-range").click();await expect(trigger).toHaveAttribute("aria-expanded","false");
   await card.locator(".calendar-open").click();
-  const dialog=page.getByTestId("modal");await expect(dialog.getByRole("button",{name:"Close"})).toHaveCount(2);await expect(dialog.getByTestId("modal-submit")).toBeHidden();
+  const dialog=page.getByTestId("modal");await expect(dialog.getByText("Customer",{exact:true})).toBeVisible();await expect(dialog.getByText("Pet",{exact:true})).toBeVisible();await expect(dialog.getByText("Appointment",{exact:true})).toBeVisible();await expect(dialog.getByRole("button",{name:"View full customer profile"})).toBeVisible();await expect(dialog.getByRole("button",{name:"Close"})).toHaveCount(2);await expect(dialog.getByTestId("modal-submit")).toBeHidden();
 });
 
 test("@cross-browser @regression-calendar-time month view and applied groomer filter share calendar state",async({page,request,tenant})=>{
@@ -72,9 +75,9 @@ test("@cross-browser @regression-calendar-time month view and applied groomer fi
   await page.locator("#groomer-deselect-all").click();await page.locator(`#groomer-filter-options input[value="${second.id}"]`).check();await page.locator("#groomer-filter-apply").click();
   await expect(page.locator("#groomer-filter-trigger")).toContainText("1 groomer");
   await page.reload();await page.getByTestId("nav-calendar").click();await expect(page.locator("#groomer-filter-trigger")).toContainText("1 groomer");
-  await page.locator("#calendar-day-view").click();await expect(page.locator(".day-groomer")).toHaveCount(1);await expect(page.locator(".day-groomer")).toContainText("Filter Groomer");
-  await page.locator("#calendar-month-view").click();await expect(page.locator(".calendar-month-day")).toHaveCount(42);await expect(page.locator(".calendar-month-weekday")).toHaveCount(7);
-  await page.locator("#groomer-filter-trigger").click();await page.locator("#groomer-deselect-all").click();await page.locator("#groomer-filter-apply").click();await page.locator("#calendar-day-view").click();await expect(page.locator(".calendar-empty-groomers")).toContainText("No groomers selected");
+  await page.locator("#calendar-view-select").selectOption("day");await expect(page.locator(".day-groomer")).toHaveCount(1);await expect(page.locator(".day-groomer")).toContainText("Filter Groomer");
+  await page.locator("#calendar-view-select").selectOption("month");await expect(page.locator(".calendar-month-day")).toHaveCount(42);await expect(page.locator(".calendar-month-weekday")).toHaveCount(7);
+  await page.locator("#groomer-filter-trigger").click();await page.locator("#groomer-deselect-all").click();await page.locator("#groomer-filter-apply").click();await page.locator("#calendar-view-select").selectOption("day");await expect(page.locator(".calendar-empty-groomers")).toContainText("No groomers selected");
 });
 
 test("@cross-browser @regression-calendar-time renders groomer day lanes and preserves slot click intent near an appointment",async({page,request,tenant})=>{
@@ -87,8 +90,8 @@ test("@cross-browser @regression-calendar-time renders groomer day lanes and pre
   const appointmentResponse=await request.post("/api/appointments",{headers:{"Idempotency-Key":crypto.randomUUID()},data:{locationId:tenant.locationId,customerId:tenant.customerId,petId:tenant.petId,employeeIds:[tenant.employeeId,secondEmployee.id],serviceIds:[tenant.serviceId],localStart:`${tenant.anchor}T09:00`,expectedLocationVersion:tenant.locationVersion}});
   expect(appointmentResponse.status()).toBe(201);const appointment=await appointmentResponse.json() as {id:string};
   await login(page,tenant.ownerEmail);await page.getByTestId("nav-calendar").click();
-  await page.locator("#calendar-day-view").click();
-  await expect(page.locator("#calendar-day-view")).toHaveAttribute("aria-pressed","true");
+  await page.locator("#calendar-view-select").selectOption("day");
+  await expect(page.locator("#calendar-view-select")).toHaveValue("day");
   await expect(page.locator(".day-corner")).toHaveText("Time");
   await expect(page.locator(".day-groomer",{hasText:"Grace Groomer"})).toBeVisible();
   await expect(page.locator(".day-groomer",{hasText:"Inactive Groomer"})).toHaveCount(0);

@@ -12,9 +12,10 @@ import { nextMonday } from "../helpers/date.js";
 
 export const password = "correct horse browser smoke";
 export async function appointmentAction(card:Locator,testId:string):Promise<Locator>{
+  await card.page().waitForLoadState("networkidle");
   const trigger=card.getByRole("button",{name:/Appointment actions for/}).filter({visible:true});
   await trigger.click();
-  return trigger.locator("xpath=ancestor::*[@data-appointment-id][1]").getByTestId(testId);
+  return trigger.page().getByTestId(testId).filter({visible:true});
 }
 const ownerPermissions = [
   "calendar.view","appointments.view","appointments.create","appointments.edit","appointments.cancel",

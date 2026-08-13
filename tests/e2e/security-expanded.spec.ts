@@ -1,5 +1,5 @@
 import {
-  test, expect, login, createMember, createTenant, completeAppointment, ownerPermissions, password
+  test, expect, login, createMember, createTenant, completeAppointment, ownerPermissions, password, appointmentAction
 } from "./fixtures/tenant.js";
 import { request as playwrightRequest } from "@playwright/test";
 
@@ -29,7 +29,7 @@ test("@security-desktop stale permission cannot mutate and reconciles capability
   const member=await createMember(request,email,ownerPermissions);
   await login(page,email,password);
   await page.getByTestId("nav-calendar").click();
-  const checkout=page.locator(`[data-appointment-id="${appointment.id}"]`).getByTestId("appointment-completed");
+  const checkout=await appointmentAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"appointment-completed");
   await expect(checkout).toBeVisible();
 
   await request.patch(`/api/members/${member.membershipId}/permissions`,{

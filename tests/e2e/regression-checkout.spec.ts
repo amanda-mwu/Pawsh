@@ -1,4 +1,4 @@
-import { test,expect,login,completeAppointment } from "./fixtures/tenant.js";
+import { test,expect,login,completeAppointment,appointmentAction } from "./fixtures/tenant.js";
 
 const key=()=>crypto.randomUUID();
 
@@ -10,7 +10,7 @@ test("@regression-checkout duplicate UI and incompatible invoice intent reconcil
   expect(invoice.status()).toBe(201);
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
-  await page.locator(`[data-appointment-id="${appointment.id}"]`).getByTestId("appointment-completed").click();
+  await (await appointmentAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"appointment-completed")).click();
   await page.getByTestId("field-tip").fill("1");
   await page.getByTestId("field-method").selectOption("cash");
   const submit=page.getByTestId("modal-submit");
@@ -34,7 +34,7 @@ test("@regression-checkout two-context stale payment refreshes without overpayme
   const invoice=await invoiceResponse.json();
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
-  await page.locator(`[data-appointment-id="${appointment.id}"]`).getByTestId("appointment-completed").click();
+  await (await appointmentAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"appointment-completed")).click();
   await page.getByTestId("field-method").selectOption("cash");
   let release!:()=>void;
   let entered!:()=>void;
@@ -58,7 +58,7 @@ test("@regression-checkout receipt failure preserves committed payment and retri
   const appointment=await completeAppointment(request,tenant);
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
-  await page.locator(`[data-appointment-id="${appointment.id}"]`).getByTestId("appointment-completed").click();
+  await (await appointmentAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"appointment-completed")).click();
   await page.getByTestId("field-method").selectOption("cash");
   await page.route("**/api/invoices/*/receipt",(route)=>route.fulfill({status:429,contentType:"application/json",body:JSON.stringify({error:"temporary"})}));
   await page.getByTestId("modal-submit").click();

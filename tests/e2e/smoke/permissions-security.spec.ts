@@ -1,7 +1,7 @@
 import { request as playwrightRequest } from "@playwright/test";
 import {
   test,expect,login,createMember,completeAppointment,createTenant,
-  ownerPermissions,password
+  ownerPermissions,password,appointmentAction
 } from "../fixtures/tenant.js";
 
 test("@smoke browser security enforces permission changes and protects ownership",async({page,request,tenant})=>{
@@ -23,7 +23,7 @@ test("@smoke browser security enforces permission changes and protects ownership
   await request.patch(`/api/members/${member.membershipId}/permissions`,{data:{permissions:[...initial,"checkout.perform"]}});
   await page.reload();
   await page.getByTestId("nav-calendar").click();
-  await expect(page.locator(`[data-appointment-id="${appointment.id}"]`).getByTestId("appointment-completed")).toBeVisible();
+  await expect(await appointmentAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"appointment-completed")).toBeVisible();
   const ownerRemoval=await request.delete(`/api/members/${tenant.ownerMembershipId}`);
   expect(ownerRemoval.status()).toBe(400);
 });

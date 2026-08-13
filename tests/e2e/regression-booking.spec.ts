@@ -20,9 +20,9 @@ async function openBooking(page: Page, tenant: TenantFixture, hour: number): Pro
   await page.getByTestId("field-startAt").fill(`${tenant.anchor}T${String(hour).padStart(2,"0")}:00`);
 }
 
-async function openCardAction(card:Locator,name:"Move"|"Cancel"):Promise<void>{
-  await card.getByText("Actions",{exact:true}).click();
-  await card.getByRole("button",{name,exact:true}).click();
+async function openCardAction(card:Locator,name:"Move"|"Cancel appointment"):Promise<void>{
+  await card.getByRole("button",{name:/Appointment actions for/}).click();
+  await card.getByRole("menuitem",{name,exact:true}).click();
 }
 
 test("@regression-booking creates a booking and preserves it after reload", async ({ page, tenant }) => {
@@ -211,7 +211,7 @@ test("@regression-booking cancels persistently and releases employee capacity", 
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
   page.once("dialog", (dialog) => dialog.accept());
-  await openCardAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"Cancel");
+  await openCardAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"Cancel appointment");
   await expect(page.locator(`[data-appointment-id="${appointment.id}"]`)).toContainText("cancelled");
   await page.reload();
   await page.getByTestId("nav-calendar").click();

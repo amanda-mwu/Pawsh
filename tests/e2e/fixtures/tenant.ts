@@ -5,11 +5,16 @@ import {
   type APIRequestContext,
   type APIResponse,
   type Page,
+  type Locator,
   type TestInfo,
 } from "@playwright/test";
 import { nextMonday } from "../helpers/date.js";
 
 export const password = "correct horse browser smoke";
+export async function appointmentAction(card:Locator,testId:string):Promise<Locator>{
+  await card.getByRole("button",{name:/Appointment actions for/}).click();
+  return card.getByTestId(testId);
+}
 const ownerPermissions = [
   "calendar.view","appointments.view","appointments.create","appointments.edit","appointments.cancel",
   "appointments.override_conflict",

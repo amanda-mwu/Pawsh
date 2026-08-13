@@ -18,7 +18,7 @@ test("@smoke critical controls expose keyboard focus, labels, status, and safety
   await page.getByTestId("nav-calendar").click();
   const row=page.locator(`[data-appointment-id="${appointment.id}"]`);
   await expect(row.getByRole("note",{name:"Pet safety and care information"})).toContainText("Safety alert:");
-  await expect(row.locator(".badge")).toContainText("scheduled");
+  await expect(row.locator(".appointment-status")).toContainText("scheduled");
   await page.getByTestId("calendar-add-appointment").click();
   await expect(page.getByTestId("field-customerId")).toHaveAccessibleName("Customer");
   await expect(page.getByTestId("modal-submit")).toHaveAccessibleName("Save");

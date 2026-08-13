@@ -1,4 +1,4 @@
-import { test, expect, login, createAppointment, completeAppointment } from "../fixtures/tenant.js";
+import { test, expect, login, createAppointment, completeAppointment, appointmentAction } from "../fixtures/tenant.js";
 
 test("@smoke operations expose safety context and enforce the state machine",async({page,request,tenant})=>{
   const appointment=await createAppointment(request,tenant,{
@@ -9,15 +9,15 @@ test("@smoke operations expose safety context and enforce the state machine",asy
   const row=page.locator(`[data-appointment-id="${appointment.id}"]`);
   await expect(row.getByTestId("safety-context")).toContainText("May snap during nail handling.");
   await expect(row.getByTestId("safety-context")).toContainText("Mild hip stiffness.");
-  await row.getByTestId("appointment-scheduled").click();
+  await (await appointmentAction(row,"appointment-scheduled")).click();
   await expect(page.getByTestId("modal")).toContainText("May snap during nail handling.");
   await page.getByTestId("modal-submit").click();
-  await page.locator(`[data-appointment-id="${appointment.id}"]`).getByTestId("appointment-checked_in").click();
+  await (await appointmentAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"appointment-checked_in")).click();
   await expect(page.getByTestId("modal")).toContainText("Nervous around paws.");
   await page.getByTestId("field-operationalNotes").fill("Used calm paw-handling technique.");
   await page.getByTestId("modal-submit").click();
   page.once("dialog",(dialog)=>dialog.accept());
-  await page.locator(`[data-appointment-id="${appointment.id}"]`).getByTestId("appointment-in_service").click();
+  await (await appointmentAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"appointment-in_service")).click();
   await expect(page.locator(`[data-appointment-id="${appointment.id}"]`)).toContainText("completed");
   const invalid=await page.request.post(`/api/appointments/${appointment.id}/transition`,{data:{status:"checked_in"}});
   expect(invalid.status()).toBe(400);
@@ -27,7 +27,7 @@ test("@smoke @regression-checkout checkout totals persist and manual payment cor
   const appointment=await completeAppointment(request,tenant);
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
-  await page.locator(`[data-appointment-id="${appointment.id}"]`).getByTestId("appointment-completed").click();
+  await (await appointmentAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"appointment-completed")).click();
   await page.getByTestId("field-discount").fill("5");
   await page.getByTestId("field-tip").fill("15");
   await page.getByTestId("field-method").selectOption("cash");

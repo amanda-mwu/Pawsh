@@ -3,7 +3,8 @@ import {
   expect,
   login,
   createAppointment,
-  completeAppointment
+  completeAppointment,
+  appointmentAction
 } from "./fixtures/tenant.js";
 
 async function advance(
@@ -28,20 +29,20 @@ test("@regression-lifecycle completes the primary lifecycle with persisted UI st
   await page.getByTestId("nav-calendar").click();
   let row = page.locator(`[data-appointment-id="${appointment.id}"]`);
 
-  await row.getByTestId("appointment-scheduled").click();
+  await (await appointmentAction(row,"appointment-scheduled")).click();
   await page.getByTestId("modal-submit").click();
   await expect(row).toContainText("checked in");
 
   await page.reload();
   await page.getByTestId("nav-calendar").click();
   row = page.locator(`[data-appointment-id="${appointment.id}"]`);
-  await row.getByTestId("appointment-checked_in").click();
+  await (await appointmentAction(row,"appointment-checked_in")).click();
   await page.getByTestId("field-operationalNotes").fill("D2 lifecycle service notes");
   await page.getByTestId("modal-submit").click();
   await expect(row).toContainText("in service");
 
   page.once("dialog", (dialog) => dialog.accept());
-  await row.getByTestId("appointment-in_service").click();
+  await (await appointmentAction(row,"appointment-in_service")).click();
   await expect(row).toContainText("completed");
   await page.reload();
   await page.getByTestId("nav-calendar").click();
@@ -80,7 +81,7 @@ test("@regression-lifecycle disables duplicate completion and sends one transiti
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
   const row = page.locator(`[data-appointment-id="${appointment.id}"]`);
-  const complete = row.getByTestId("appointment-in_service");
+  const complete = await appointmentAction(row,"appointment-in_service");
 
   let release = () => {};
   const released = new Promise<void>((resolve) => { release = resolve; });
@@ -104,7 +105,7 @@ test("@regression-lifecycle reconciles a stale visible action to authoritative s
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
   let row = page.locator(`[data-appointment-id="${appointment.id}"]`);
-  await row.getByTestId("appointment-scheduled").click();
+  await (await appointmentAction(row,"appointment-scheduled")).click();
   await expect(page.getByTestId("modal")).toBeVisible();
 
   const advanced = await request.post(`/api/appointments/${appointment.id}/transition`, {
@@ -119,9 +120,10 @@ test("@regression-lifecycle reconciles a stale visible action to authoritative s
   await page.getByTestId("modal-submit").click();
   expect((await staleResponse).status()).toBe(409);
   await expect(page.locator("#modal-error")).toContainText("changed");
+  await page.getByTestId("modal").getByLabel("Close").click();
 
   row = page.locator(`[data-appointment-id="${appointment.id}"]`);
   await expect(row).toContainText("checked in");
   await expect(row.getByTestId("appointment-scheduled")).toHaveCount(0);
-  await expect(row.getByTestId("appointment-checked_in")).toBeVisible();
+  await expect(await appointmentAction(row,"appointment-checked_in")).toBeVisible();
 });

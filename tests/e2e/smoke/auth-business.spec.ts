@@ -29,9 +29,9 @@ test("@smoke auth session lifecycle is usable and safe",async({page,tenant})=>{
 
 test("@smoke business configuration persists through the GUI",async({page,tenant})=>{
   await login(page,tenant.ownerEmail);
-  await page.getByTestId("nav-setup").click();
-  await expect(page.getByTestId("setup-view")).toBeVisible();
-  await page.locator("#setup .setup-menu summary").click();
+  await page.getByTestId("settings-trigger").click();
+  await page.getByRole("button",{name:"Workspace access"}).click();
+  await expect(page.getByTestId("admin-settings-view")).toBeVisible();
   await page.getByTestId("business-settings").click();
   await page.getByTestId("field-name").fill(`QA Salon ${tenant.runId}`);
   await page.getByTestId("field-timezone").fill("America/Los_Angeles");

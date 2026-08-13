@@ -63,7 +63,7 @@ describeDatabase("existing workspace access requests",()=>{
     const otherSignup=await app.inject({method:"POST",url:"/api/auth/signup",payload:{email:existingEmail,password:"correct horse existing member",businessName:`Other Salon ${suffix}`}});
     const otherCookie=cookie(otherSignup);await request(existingEmail);
     const pending=(await app.inject({method:"GET",url:"/api/workspace-access-requests",headers:{cookie:ownerCookie}})).json().find((item:{requesterEmail:string})=>item.requesterEmail===existingEmail);
-    expect((await app.inject({method:"POST",url:`/api/workspace-access-requests/${pending.id}/approve`,headers:{cookie:otherCookie}})).statusCode).toBe(403);
+    expect((await app.inject({method:"POST",url:`/api/workspace-access-requests/${pending.id}/approve`,headers:{cookie:otherCookie}})).statusCode).toBe(404);
     expect((await app.inject({method:"POST",url:`/api/workspace-access-requests/${pending.id}/approve`,headers:{cookie:ownerCookie}})).statusCode).toBe(200);
     expect((await app.inject({method:"POST",url:`/api/workspace-access-requests/${pending.id}/approve`,headers:{cookie:ownerCookie}})).statusCode).toBe(404);
     const workspaces=await app.inject({method:"GET",url:"/api/workspaces",headers:{cookie:otherCookie}});

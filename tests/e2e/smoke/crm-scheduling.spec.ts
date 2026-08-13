@@ -31,9 +31,11 @@ test("@smoke scheduling rejects overlap and blocked time but permits adjacency",
   const createAt=async(time:string)=>{
     await page.getByTestId("calendar-add-appointment").click();
     await page.getByTestId("field-customerId").selectOption(tenant.customerId);
+    const defaults=page.waitForResponse(response=>response.url().includes(`/api/pets/${tenant.petId}/booking-defaults`));
     await page.getByTestId("field-petId").selectOption(tenant.petId);
-    await page.locator(`input[name="employeeIds"][value="${tenant.employeeId}"]`).check();
-    await page.getByLabel("Full Groom").check();
+    await defaults;
+    await page.locator(`input[name="employeeIds"][value="${tenant.employeeId}"]`).setChecked(true);
+    await page.getByLabel("Full Groom").setChecked(true);
     await page.getByTestId("field-startAt").fill(`${tenant.anchor}T${time}`);
     await page.getByTestId("modal-submit").click();
   };

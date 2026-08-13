@@ -20,11 +20,13 @@ export async function reconcileRabiesNotifications(
   input: {businessId:string;appointmentId?:string;petId?:string}
 ): Promise<number> {
   const appointments=await db<{
-    id:string;customerId:string;petId:string;employeeId:string;localDate:string|Date;
+    id:string;customerId:string;petId:string;employeeIds:string[];localDate:string|Date;
     expirationDate:string|Date|null;requiresNotification:boolean;
     email:string|null;emailAllowed:boolean;
   }[]>`
-    select a.id,a.customer_id,a.pet_id,a.employee_id,a.scheduled_local_start::date::text as local_date,
+    select a.id,a.customer_id,a.pet_id,
+      array(select employee_id from appointment_employees where appointment_id=a.id order by employee_id) as employee_ids,
+      a.scheduled_local_start::date::text as local_date,
       p.vaccination_expires_on::text as expiration_date,
       (p.vaccination_expires_on is not null
         and p.vaccination_expires_on < a.scheduled_local_start::date) as requires_notification,
@@ -76,7 +78,7 @@ export async function reconcileRabiesNotifications(
     created+=customerRows.length;
 
     const recipients=[...new Map(availableStaff
-      .filter((recipient)=>recipient.defaultRecipient || recipient.employeeId===appointment.employeeId)
+      .filter((recipient)=>recipient.defaultRecipient || (recipient.employeeId!==null&&appointment.employeeIds.includes(recipient.employeeId)))
       .map((recipient)=>[recipient.membershipId,recipient])).values()].slice(0,25);
     for(const recipient of recipients) {
       const staffKey=materialKey([input.businessId,appointment.id,recipient.membershipId,

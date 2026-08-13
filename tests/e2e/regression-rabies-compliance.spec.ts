@@ -22,7 +22,7 @@ test("@regression-lifecycle enters only rabies expiration and warns for the appo
   await page.getByTestId("calendar-add-appointment").click();
   await page.getByTestId("field-customerId").selectOption(tenant.customerId);
   await page.getByTestId("field-petId").selectOption(tenant.petId);
-  await page.getByTestId("field-employeeId").selectOption(tenant.employeeId);
+  await page.locator(`input[name="employeeIds"][value="${tenant.employeeId}"]`).check();
   await page.getByLabel("Full Groom").check();
   await page.getByTestId("field-startAt").fill(`${tenant.anchor}T09:00`);
   await expect(page.getByTestId("booking-rabies-status")).toContainText("Expires before appointment");

@@ -9,6 +9,9 @@ business and operation, are never derived from scheduling data, and are not
 written to application logs.
 
 Create requires `appointments.create`; reschedule requires `appointments.edit`.
+A version-2 canonical payload sorts the groomer ID set for hashing while retaining
+the submitted first groomer as the compatibility primary assignment. Version-1
+replay rows remain valid historical records.
 A replay additionally requires current `appointments.view`. A replay whose
 committed result applied conflict override requires current
 `appointments.override_conflict`; an availability-override result requires
@@ -66,4 +69,3 @@ owner defined by GOV-001 owns post-pilot review; the named human remains pending
 while GOV-001 is open. A provisional diagnostic envelope of one business, 100
 creates and 50 reschedules daily for 90 days yields 13,500 rows; actual
 qualification awaits approval. Cleanup/archive/tombstone design is post-pilot.
-

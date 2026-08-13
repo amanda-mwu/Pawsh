@@ -70,7 +70,7 @@ test("@responsive calendar booking remains usable and persistent",async({page,te
   await page.getByTestId("calendar-add-appointment").click();
   await page.getByTestId("field-customerId").selectOption(tenant.customerId);
   await page.getByTestId("field-petId").selectOption(tenant.petId);
-  await page.getByTestId("field-employeeId").selectOption(tenant.employeeId);
+  await page.locator(`input[name="employeeIds"][value="${tenant.employeeId}"]`).check();
   await page.getByLabel("Full Groom").check();
   await page.getByTestId("field-startAt").fill(`${tenant.anchor}T09:00`);
   await page.getByTestId("modal-submit").scrollIntoViewIfNeeded();

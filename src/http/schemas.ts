@@ -180,7 +180,8 @@ export const appointmentSchema = z.object({
   locationId: z.string().uuid(),
   customerId: z.string().uuid(),
   petId: z.string().uuid(),
-  employeeId: z.string().uuid(),
+  employeeId: z.string().uuid().optional(),
+  employeeIds: z.array(z.string().uuid()).min(1).max(20).optional(),
   localStart: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/),
   disambiguation: z.enum(["earlier", "later"]).optional(),
   expectedLocationVersion: z.number().int().positive(),
@@ -190,6 +191,9 @@ export const appointmentSchema = z.object({
   overrideConflict: z.boolean().default(false),
   overrideReason: z.string().trim().min(3).max(500).nullish()
 }).superRefine((value, context) => {
+  if (!(value.employeeIds?.length || value.employeeId)) context.addIssue({code:"custom",path:["employeeIds"],message:"At least one groomer is required"});
+  const groomers=value.employeeIds??(value.employeeId?[value.employeeId]:[]);
+  if(new Set(groomers).size!==groomers.length)context.addIssue({code:"custom",path:["employeeIds"],message:"A groomer can be assigned only once"});
   if (value.availabilityOverride && !value.overrideReason) {
     context.addIssue({ code: "custom", path: ["overrideReason"], message: "Override reason is required" });
   }
@@ -252,7 +256,8 @@ export const operationalUpdateSchema = z.object({
 });
 
 export const appointmentMoveSchema = z.object({
-  employeeId: z.string().uuid(),
+  employeeId: z.string().uuid().optional(),
+  employeeIds: z.array(z.string().uuid()).min(1).max(20).optional(),
   localStart: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/),
   disambiguation: z.enum(["earlier", "later"]).optional(),
   expectedLocationVersion: z.number().int().positive(),
@@ -261,6 +266,9 @@ export const appointmentMoveSchema = z.object({
   overrideConflict: z.boolean().default(false),
   overrideReason: z.string().trim().min(3).max(500).nullish()
 }).superRefine((value, context) => {
+  if (!(value.employeeIds?.length || value.employeeId)) context.addIssue({code:"custom",path:["employeeIds"],message:"At least one groomer is required"});
+  const groomers=value.employeeIds??(value.employeeId?[value.employeeId]:[]);
+  if(new Set(groomers).size!==groomers.length)context.addIssue({code:"custom",path:["employeeIds"],message:"A groomer can be assigned only once"});
   if (value.availabilityOverride && !value.overrideReason) {
     context.addIssue({ code: "custom", path: ["overrideReason"], message: "Override reason is required" });
   }

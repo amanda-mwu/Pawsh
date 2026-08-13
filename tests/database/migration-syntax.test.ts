@@ -56,5 +56,11 @@ describe("database migrations", () => {
     expect(workspaceAccess).toContain("create table workspace_access_requests");
     expect(workspaceAccess).toContain("one_pending_workspace_access_request");
     expect(workspaceAccess).toContain("create policy tenant_isolation on workspace_access_requests");
+    const multiGroomer = await readFile("migrations/0015_multi_groomer_booking.sql", "utf8");
+    expect(multiGroomer).toContain("create table appointment_employees");
+    expect(multiGroomer).toContain("appointment_employee_conflict_guard");
+    expect(multiGroomer).toContain("one_active_normalized_service_name");
+    expect(multiGroomer).toContain("'Ear Cleaning'");
+    expect(multiGroomer).toContain("'Ear Plucking'");
   });
 });

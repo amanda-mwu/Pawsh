@@ -177,7 +177,7 @@ export interface FinancialHooks {
 
 type FinancialOperation = "checkout.create-invoice" | "payment.record" | "payment.void";
 type SchedulingOperation = "appointment.create" | "appointment.reschedule";
-type SchedulingCanonicalVersion = "appointment.create:v1" | "appointment.reschedule:v1";
+type SchedulingCanonicalVersion = "appointment.create:v2" | "appointment.reschedule:v2";
 type SchedulingResultVersion = "appointment.create.result:v1" | "appointment.reschedule.result:v1";
 
 class FinancialRequestError extends Error {
@@ -413,15 +413,16 @@ async function findSchedulingConflicts(
   }
 ): Promise<SchedulingConflict[]> {
   return tx<SchedulingConflict[]>`
-    select id as appointment_id,start_at as starts_at,end_at as ends_at
-    from appointments
-    where business_id=${input.businessId}
-      and employee_id=${input.employeeId}
-      and status in ('scheduled','checked_in','in_service')
-      and id<>coalesce(${input.excludeAppointmentId ?? null}::uuid,'00000000-0000-0000-0000-000000000000'::uuid)
-      and tstzrange(start_at,end_at,'[)')
+    select appointment.id as appointment_id,appointment.start_at as starts_at,appointment.end_at as ends_at
+    from appointments appointment join appointment_employees assignment
+      on assignment.business_id=appointment.business_id and assignment.appointment_id=appointment.id
+    where appointment.business_id=${input.businessId}
+      and assignment.employee_id=${input.employeeId}
+      and appointment.status in ('scheduled','checked_in','in_service')
+      and appointment.id<>coalesce(${input.excludeAppointmentId ?? null}::uuid,'00000000-0000-0000-0000-000000000000'::uuid)
+      and tstzrange(appointment.start_at,appointment.end_at,'[)')
           && tstzrange(${input.startAt},${input.endAt},'[)')
-    order by start_at,id
+    order by appointment.start_at,appointment.id
   `;
 }
 
@@ -451,28 +452,49 @@ async function permitConflictOverride(
   `;
 }
 
-async function ensureEmployeeServicesAvailable(
+async function ensureBookingResourcesAvailable(
   tx:Transaction,
-  input:{businessId:string;employeeId:string;serviceIds:readonly string[]}
+  input:{businessId:string;employeeIds:readonly string[];serviceIds:readonly string[]}
 ):Promise<void>{
-  const [employee]=await tx<{displayName:string;active:boolean}[]>`
-    select display_name,active from employees
-    where business_id=${input.businessId} and id=${input.employeeId}
+  const employees=await tx<{id:string;displayName:string;active:boolean}[]>`
+    select id,display_name,active from employees
+    where business_id=${input.businessId} and id in ${tx(input.employeeIds as string[])}
   `;
-  if(!employee?.active)throw new Error("Selected employee is unavailable");
-  const services=await tx<{id:string;name:string;active:boolean;eligible:boolean}[]>`
-    select service.id,service.name,service.active,
-      exists(select 1 from employee_services eligibility
-        where eligibility.business_id=${input.businessId} and eligibility.employee_id=${input.employeeId}
-          and eligibility.service_id=service.id) as eligible
+  if(employees.length!==new Set(input.employeeIds).size)throw new Error("One or more selected groomers are unavailable");
+  const inactiveEmployee=employees.find(employee=>!employee.active);
+  if(inactiveEmployee)throw new Error(`${inactiveEmployee.displayName} is inactive and cannot be booked.`);
+  const services=await tx<{id:string;name:string;active:boolean}[]>`
+    select service.id,service.name,service.active
     from services service where service.business_id=${input.businessId}
       and service.id in ${tx(input.serviceIds as string[])}
   `;
   if(services.length!==new Set(input.serviceIds).size)throw new Error("One or more selected services are unavailable");
   const inactive=services.find(service=>!service.active);
   if(inactive)throw new Error(`${inactive.name} is inactive and cannot be booked.`);
-  const ineligible=services.find(service=>!service.eligible);
-  if(ineligible)throw new Error(`${ineligible.name} is not assigned to ${employee.displayName}.`);
+}
+
+async function groomersAvailable(
+  tx:Transaction,input:{businessId:string;locationId:string;employeeIds:readonly string[];startAt:Date;endAt:Date}
+):Promise<boolean>{
+  const [result]=await tx<{available:boolean}[]>`
+    select bool_and(
+      (not exists(select 1 from employee_working_hours wh where wh.business_id=${input.businessId} and wh.employee_id=employee.id)
+       or exists(select 1 from employee_working_hours wh join locations location on location.id=${input.locationId}
+         where wh.business_id=${input.businessId} and wh.employee_id=employee.id
+           and wh.weekday=extract(dow from (${input.startAt}::timestamptz at time zone location.timezone))
+           and (${input.startAt}::timestamptz at time zone location.timezone)::time>=wh.start_time
+           and (${input.endAt}::timestamptz at time zone location.timezone)::time<=wh.end_time))
+      and not exists(select 1 from blocked_times blocked where blocked.business_id=${input.businessId}
+        and blocked.employee_id=employee.id and tstzrange(blocked.start_at,blocked.end_at,'[)') && tstzrange(${input.startAt},${input.endAt},'[)'))
+    ) and (not exists(select 1 from business_hours where location_id=${input.locationId}) or exists(
+      select 1 from business_hours hours join locations location on location.id=hours.location_id
+      where hours.business_id=${input.businessId} and hours.location_id=${input.locationId}
+        and hours.weekday=extract(dow from (${input.startAt}::timestamptz at time zone location.timezone))
+        and (${input.startAt}::timestamptz at time zone location.timezone)::time>=hours.start_time
+        and (${input.endAt}::timestamptz at time zone location.timezone)::time<=hours.end_time)) as available
+    from employees employee where employee.business_id=${input.businessId} and employee.id in ${tx(input.employeeIds as string[])}
+  `;
+  return Boolean(result?.available);
 }
 
 async function record(
@@ -2124,6 +2146,10 @@ export function registerRoutes(
             and ni.notification_type='rabies_expiration_customer'
           order by ni.created_at desc limit 1),'not_required') as rabies_customer_notification_status,
         e.display_name as employee_name,
+        coalesce((select json_agg(json_build_object('id',staff.id,'displayName',staff.display_name) order by staff.display_name)
+          from appointment_employees assignment join employees staff on staff.id=assignment.employee_id
+          where assignment.business_id=a.business_id and assignment.appointment_id=a.id),
+          json_build_array(json_build_object('id',e.id,'displayName',e.display_name))) as groomers,
         coalesce(json_agg(json_build_object(
           'id', aps.id, 'name', aps.service_name_snapshot, 'durationMinutes',
           aps.duration_minutes_snapshot, 'priceMinor', aps.price_minor_snapshot,
@@ -2146,16 +2172,39 @@ export function registerRoutes(
     return rows.map((appointment) => redactPetCare(appointment));
   });
 
+  app.get("/api/pets/:id/booking-defaults",{preHandler:[authenticate,requirePermission("appointments.create")]},async(request,reply)=>{
+    const context=auth(request);const {id}=idParams.parse(request.params);
+    const [pet]=await db<{id:string}[]>`select id from pets where business_id=${context.businessId} and id=${id} and archived_at is null`;
+    if(!pet)return reply.code(404).send({error:"Pet not found"});
+    const [recent]=await db<{id:string}[]>`
+      select id from appointments where business_id=${context.businessId} and pet_id=${id}
+        and status<>'cancelled' order by start_at desc,id desc limit 1`;
+    if(!recent)return {groomers:[],services:[]};
+    const groomers=await db`
+      select employee.id,employee.display_name from appointment_employees assignment
+      join employees employee on employee.id=assignment.employee_id and employee.business_id=assignment.business_id
+      where assignment.business_id=${context.businessId} and assignment.appointment_id=${recent.id} and employee.active
+      order by employee.display_name`;
+    const services=await db`
+      select service.id,service.name,service.base_duration_minutes,service.base_price_minor
+      from appointment_services history join services service on service.id=history.service_id and service.business_id=history.business_id
+      where history.business_id=${context.businessId} and history.appointment_id=${recent.id} and service.active
+      order by history.id`;
+    return {groomers,services};
+  });
+
   app.post("/api/appointments", {
     preHandler: [authenticate, requirePermission("appointments.create")]
   }, async (request, reply) => {
     const context = auth(request);
     const requestKey=schedulingIdempotencyKey(request);
     const input = body(appointmentSchema, request.body);
-    const canonicalizationVersion="appointment.create:v1" as const;
+    const employeeIds=[...new Set(input.employeeIds??(input.employeeId?[input.employeeId]:[]))];
+    const primaryEmployeeId=employeeIds[0]!;
+    const canonicalizationVersion="appointment.create:v2" as const;
     const normalizedServiceIds=[...new Set(input.serviceIds)].sort();
     const requestHash=schedulingCanonicalHash("appointment.create",canonicalizationVersion,[
-      input.locationId,input.customerId,input.petId,input.employeeId,normalizedServiceIds,input.localStart,
+      input.locationId,input.customerId,input.petId,[...employeeIds].sort(),normalizedServiceIds,input.localStart,
       input.disambiguation??null,input.expectedLocationVersion,input.availabilityOverride,input.overrideConflict,
       input.overrideReason??null,input.notes??null
     ]);
@@ -2190,7 +2239,7 @@ export function registerRoutes(
       if (location.version !== input.expectedLocationVersion) throw new SchedulingRequestError(409,"STALE_LOCATION_SETTINGS","Location settings changed. Refresh and try again.");
       const resolved=resolveWallTime(input.localStart,location.timezone,input.disambiguation);
       await schedulingHooks.afterLocationLock?.({operation:"create",businessId:context.businessId,timezone:location.timezone,version:location.version});
-      await ensureEmployeeServicesAvailable(tx,{businessId:context.businessId,employeeId:input.employeeId,serviceIds:input.serviceIds});
+      await ensureBookingResourcesAvailable(tx,{businessId:context.businessId,employeeIds,serviceIds:input.serviceIds});
       const catalog=await resolveServicePrices(tx,{businessId:context.businessId,petId:input.petId,serviceIds:input.serviceIds});
       const unresolved=catalog.find(service=>service.status!=="resolved");
       if(unresolved)throw new Error(unresolved.status==="weight_required"?"Weight required to determine pricing.":unresolved.status==="quote_required"?`${unresolved.name} requires a quote before booking.`:`${unresolved.name} price requires admin confirmation.`);
@@ -2203,15 +2252,10 @@ export function registerRoutes(
       await schedulingHooks.beforeLock?.({
         operation: "create",
         businessId: context.businessId,
-        employeeIds: [input.employeeId]
+        employeeIds
       });
-      await lockSchedulingResources(tx, context.businessId, [input.employeeId]);
-      const conflicts = await findSchedulingConflicts(tx, {
-        businessId: context.businessId,
-        employeeId: input.employeeId,
-        startAt,
-        endAt
-      });
+      await lockSchedulingResources(tx, context.businessId, employeeIds);
+      const conflicts=(await Promise.all(employeeIds.map(employeeId=>findSchedulingConflicts(tx,{businessId:context.businessId,employeeId,startAt,endAt})))).flat();
       if (conflicts.length && !input.overrideConflict) {
         const canOverride = await hasCurrentPermission(tx, {
           businessId: context.businessId,
@@ -2222,40 +2266,8 @@ export function registerRoutes(
       }
       const overrideApplied = conflicts.length > 0 && input.overrideConflict && overrideAuthorized;
       if (overrideApplied) await permitConflictOverride(tx, appointmentId);
-      const [availability] = await tx<{ withinHours: boolean; blocked: boolean }[]>`
-        select
-          (
-            (
-              not exists (select 1 from employee_working_hours where employee_id=${input.employeeId})
-              or exists (
-                select 1 from employee_working_hours wh
-                join locations l on l.business_id=wh.business_id
-                where wh.business_id=${context.businessId} and wh.employee_id=${input.employeeId}
-                  and l.id=${input.locationId}
-                  and wh.weekday=extract(dow from (${startAt}::timestamptz at time zone l.timezone))
-                  and (${startAt}::timestamptz at time zone l.timezone)::time >= wh.start_time
-                  and (${endAt}::timestamptz at time zone l.timezone)::time <= wh.end_time
-              )
-            )
-            and (
-              not exists (select 1 from business_hours where location_id=${input.locationId})
-              or exists (
-                select 1 from business_hours bh
-                join locations l on l.id=bh.location_id
-                where bh.business_id=${context.businessId} and bh.location_id=${input.locationId}
-                  and bh.weekday=extract(dow from (${startAt}::timestamptz at time zone l.timezone))
-                  and (${startAt}::timestamptz at time zone l.timezone)::time >= bh.start_time
-                  and (${endAt}::timestamptz at time zone l.timezone)::time <= bh.end_time
-              )
-            )
-          ) as within_hours,
-          exists (
-            select 1 from blocked_times bt
-            where bt.business_id=${context.businessId} and bt.employee_id=${input.employeeId}
-              and tstzrange(bt.start_at,bt.end_at,'[)') && tstzrange(${startAt},${endAt},'[)')
-          ) as blocked
-      `;
-      if ((!availability?.withinHours || availability.blocked) && !input.availabilityOverride) {
+      const everyGroomerAvailable=await groomersAvailable(tx,{businessId:context.businessId,locationId:input.locationId,employeeIds,startAt,endAt});
+      if (!everyGroomerAvailable && !input.availabilityOverride) {
         throw new Error("Requested time is outside employee availability; an explicit override is required");
       }
       if (input.availabilityOverride && !context.isOwner && !context.permissions.includes("appointments.edit")) {
@@ -2268,11 +2280,14 @@ export function registerRoutes(
            notes, availability_overridden, conflict_overridden, created_by, updated_by)
         values
           (${appointmentId}, ${context.businessId}, ${input.locationId}, ${input.customerId}, ${input.petId},
-           ${input.employeeId}, ${startAt}, ${endAt}, ${resolved.timeZone},${input.localStart},${resolved.offsetMinutes},${resolved.disambiguation},${input.notes ?? null},
+           ${primaryEmployeeId}, ${startAt}, ${endAt}, ${resolved.timeZone},${input.localStart},${resolved.offsetMinutes},${resolved.disambiguation},${input.notes ?? null},
            ${input.availabilityOverride}, ${overrideApplied}, ${context.userId}, ${context.userId})
         returning *
       `;
       if (!appointment) throw new Error("Appointment creation failed");
+      for(const employeeId of employeeIds)await tx`
+        insert into appointment_employees(business_id,appointment_id,employee_id)
+        values (${context.businessId},${appointment.id},${employeeId})`;
       for (const service of catalog) {
         await tx`
           insert into appointment_services
@@ -2286,7 +2301,7 @@ export function registerRoutes(
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "appointment.create",
         resourceType: "appointment", resourceId: appointment.id,
-        after: { startAt, endAt, employeeId: input.employeeId },
+        after: { startAt, endAt, employeeIds },
         reason: input.overrideReason, eventType: "AppointmentCreated"
       });
       if (overrideApplied) {
@@ -2298,7 +2313,7 @@ export function registerRoutes(
           resourceId: appointment.id,
           after: {
             operation: "create",
-            employeeId: input.employeeId,
+            employeeIds,
             startAt,
             endAt,
             conflictingAppointmentIds: conflicts.map((conflict) => conflict.appointmentId)
@@ -2313,7 +2328,7 @@ export function registerRoutes(
         resultSchemaVersion:"appointment.create.result:v1",appointmentId:appointment.id,
         appointmentVersion:appointment.version,startAt,endAt,schedulingTimezone:resolved.timeZone,
         scheduledLocalStart:input.localStart,disambiguation:resolved.disambiguation,
-        utcOffsetMinutes:resolved.offsetMinutes,employeeId:input.employeeId,locationId:input.locationId,
+        utcOffsetMinutes:resolved.offsetMinutes,employeeId:primaryEmployeeId,locationId:input.locationId,
         conflictDetected:conflicts.length>0,conflictOverrideRequested:input.overrideConflict,
         conflictOverrideAuthorized:overrideAuthorized,conflictOverrideApplied:overrideApplied,
         availabilityOverrideApplied:input.availabilityOverride
@@ -2353,7 +2368,8 @@ export function registerRoutes(
         where business_id=${context.businessId} and id=${id} for update
       `;
       if (!current) return null;
-      await lockSchedulingResources(tx, context.businessId, [current.employeeId]);
+      const assignments=await tx<{employeeId:string}[]>`select employee_id from appointment_employees where business_id=${context.businessId} and appointment_id=${id}`;
+      await lockSchedulingResources(tx, context.businessId, assignments.map(assignment=>assignment.employeeId));
       if (input.version && current.version !== input.version) {
         return { stale: true } as const;
       }
@@ -2396,9 +2412,11 @@ export function registerRoutes(
     const { id } = idParams.parse(request.params);
     const requestKey=schedulingIdempotencyKey(request);
     const input = body(appointmentMoveSchema, request.body);
-    const canonicalizationVersion="appointment.reschedule:v1" as const;
+    const employeeIds=[...new Set(input.employeeIds??(input.employeeId?[input.employeeId]:[]))];
+    const primaryEmployeeId=employeeIds[0]!;
+    const canonicalizationVersion="appointment.reschedule:v2" as const;
     const requestHash=schedulingCanonicalHash("appointment.reschedule",canonicalizationVersion,[
-      id,input.version,input.employeeId,input.localStart,input.disambiguation??null,input.expectedLocationVersion,
+      id,input.version,[...employeeIds].sort(),input.localStart,input.disambiguation??null,input.expectedLocationVersion,
       input.availabilityOverride,input.overrideConflict,input.overrideReason??null
     ]);
     const moved = await db.begin(async (tx) => {
@@ -2425,6 +2443,7 @@ export function registerRoutes(
       `;
       if (!current) throw new SchedulingRequestError(409,"STALE_APPOINTMENT","Appointment changed or no longer exists");
       if (current.status !== "scheduled") throw new Error("Only scheduled appointments can be moved");
+      const currentAssignments=await tx<{employeeId:string}[]>`select employee_id from appointment_employees where business_id=${context.businessId} and appointment_id=${id}`;
       await tx`select pg_advisory_xact_lock_shared(hashtextextended(${'location-settings:' + current.locationId},0))`;
       const [location] = await tx<{ timezone:string; version:number }[]>`
         select timezone,version from locations
@@ -2437,38 +2456,17 @@ export function registerRoutes(
       await schedulingHooks.beforeLock?.({
         operation: "reschedule",
         businessId: context.businessId,
-        employeeIds: [current.employeeId, input.employeeId]
+        employeeIds: [...currentAssignments.map(row=>row.employeeId),...employeeIds]
       });
-      await lockSchedulingResources(tx, context.businessId, [current.employeeId, input.employeeId]);
-      const [assignment] = await tx<{ eligible: boolean }[]>`
-        select
-          exists (
-            select 1 from employees
-            where business_id=${context.businessId} and id=${input.employeeId} and active
-          )
-          and not exists (
-            select 1 from appointment_services booked
-            where booked.business_id=${context.businessId} and booked.appointment_id=${id}
-              and not exists (
-                select 1 from employee_services eligible
-                where eligible.employee_id=${input.employeeId}
-                  and eligible.service_id=booked.service_id
-              )
-          ) as eligible
-      `;
-      if (!assignment?.eligible) throw new Error("The selected employee is not eligible for every booked service");
+      await lockSchedulingResources(tx, context.businessId, [...currentAssignments.map(row=>row.employeeId),...employeeIds]);
+      const bookedServices=await tx<{serviceId:string}[]>`select service_id from appointment_services where business_id=${context.businessId} and appointment_id=${id}`;
+      await ensureBookingResourcesAvailable(tx,{businessId:context.businessId,employeeIds,serviceIds:bookedServices.map(row=>row.serviceId)});
       const startAt = resolved.instant;
       const endAt = new Date(startAt.getTime() + (current.endAt.getTime() - current.startAt.getTime()));
       if (localDateForInstant(endAt,location.timezone) !== input.localStart.slice(0,10)) {
         throw new Error("Appointments may not cross local midnight during the controlled pilot");
       }
-      const conflicts = await findSchedulingConflicts(tx, {
-        businessId: context.businessId,
-        employeeId: input.employeeId,
-        startAt,
-        endAt,
-        excludeAppointmentId: id
-      });
+      const conflicts=(await Promise.all(employeeIds.map(employeeId=>findSchedulingConflicts(tx,{businessId:context.businessId,employeeId,startAt,endAt,excludeAppointmentId:id})))).flat();
       if (conflicts.length && !input.overrideConflict) {
         const canOverride = await hasCurrentPermission(tx, {
           businessId: context.businessId,
@@ -2479,42 +2477,13 @@ export function registerRoutes(
       }
       const overrideApplied = conflicts.length > 0 && input.overrideConflict && overrideAuthorized;
       if (overrideApplied) await permitConflictOverride(tx, id);
-      const [availability] = await tx<{ withinHours: boolean; blocked: boolean }[]>`
-        select
-          (
-            (
-              not exists (select 1 from employee_working_hours where employee_id=${input.employeeId})
-              or exists (
-                select 1 from employee_working_hours wh join locations l on l.business_id=wh.business_id
-                where wh.business_id=${context.businessId} and wh.employee_id=${input.employeeId}
-                  and l.id=${current.locationId}
-                  and wh.weekday=extract(dow from (${startAt}::timestamptz at time zone l.timezone))
-                  and (${startAt}::timestamptz at time zone l.timezone)::time>=wh.start_time
-                  and (${endAt}::timestamptz at time zone l.timezone)::time<=wh.end_time
-              )
-            )
-            and (
-              not exists (select 1 from business_hours where location_id=${current.locationId})
-              or exists (
-                select 1 from business_hours bh join locations l on l.id=bh.location_id
-                where bh.business_id=${context.businessId} and bh.location_id=${current.locationId}
-                  and bh.weekday=extract(dow from (${startAt}::timestamptz at time zone l.timezone))
-                  and (${startAt}::timestamptz at time zone l.timezone)::time>=bh.start_time
-                  and (${endAt}::timestamptz at time zone l.timezone)::time<=bh.end_time
-              )
-            )
-          ) as within_hours,
-          exists (
-            select 1 from blocked_times bt where bt.business_id=${context.businessId}
-              and bt.employee_id=${input.employeeId}
-              and tstzrange(bt.start_at,bt.end_at,'[)') && tstzrange(${startAt},${endAt},'[)')
-          ) as blocked
-      `;
-      if ((!availability?.withinHours || availability.blocked) && !input.availabilityOverride) {
+      const everyGroomerAvailable=await groomersAvailable(tx,{businessId:context.businessId,locationId:current.locationId,employeeIds,startAt,endAt});
+      if (!everyGroomerAvailable && !input.availabilityOverride) {
         throw new Error("Requested time is outside employee availability; an explicit override is required");
       }
+      await tx`delete from appointment_employees where business_id=${context.businessId} and appointment_id=${id}`;
       const [updated] = await tx<{id:string;version:number}[]>`
-        update appointments set employee_id=${input.employeeId},start_at=${startAt},end_at=${endAt},
+        update appointments set employee_id=${primaryEmployeeId},start_at=${startAt},end_at=${endAt},
           scheduling_timezone=${resolved.timeZone},scheduled_local_start=${input.localStart},
           scheduled_utc_offset_minutes=${resolved.offsetMinutes},scheduled_disambiguation=${resolved.disambiguation},
           availability_overridden=${input.availabilityOverride},
@@ -2523,11 +2492,12 @@ export function registerRoutes(
         where business_id=${context.businessId} and id=${id} and version=${input.version}
         returning *
       `;
+      for(const employeeId of employeeIds)await tx`insert into appointment_employees(business_id,appointment_id,employee_id) values (${context.businessId},${id},${employeeId})`;
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "appointment.move",
         resourceType: "appointment", resourceId: id,
         before: { startAt: current.startAt, endAt: current.endAt },
-        after: { startAt, endAt, employeeId: input.employeeId },
+        after: { startAt, endAt, employeeIds },
         reason: input.overrideReason, eventType: "AppointmentUpdated"
       });
       await tx`
@@ -2545,7 +2515,7 @@ export function registerRoutes(
           resourceId: id,
           after: {
             operation: "reschedule",
-            employeeId: input.employeeId,
+            employeeIds,
             startAt,
             endAt,
             conflictingAppointmentIds: conflicts.map((conflict) => conflict.appointmentId)
@@ -2561,7 +2531,7 @@ export function registerRoutes(
         resultSchemaVersion:"appointment.reschedule.result:v1",appointmentId:id,
         appointmentVersion:updated.version,startAt,endAt,schedulingTimezone:resolved.timeZone,
         scheduledLocalStart:input.localStart,disambiguation:resolved.disambiguation,
-        utcOffsetMinutes:resolved.offsetMinutes,employeeId:input.employeeId,locationId:current.locationId,
+        utcOffsetMinutes:resolved.offsetMinutes,employeeId:primaryEmployeeId,locationId:current.locationId,
         conflictDetected:conflicts.length>0,conflictOverrideRequested:input.overrideConflict,
         conflictOverrideAuthorized:overrideAuthorized,conflictOverrideApplied:overrideApplied,
         availabilityOverrideApplied:input.availabilityOverride
@@ -2612,7 +2582,8 @@ export function registerRoutes(
         where business_id=${context.businessId} and id=${id} for update
       `;
       if (!appointment) return null;
-      await lockSchedulingResources(tx, context.businessId, [appointment.employeeId]);
+      const assigned=await tx<{employeeId:string}[]>`select employee_id from appointment_employees where business_id=${context.businessId} and appointment_id=${id}`;
+      await lockSchedulingResources(tx, context.businessId, assigned.map(row=>row.employeeId));
       if (input.version && appointment.version !== input.version) {
         return { stale: true } as const;
       }
@@ -2623,7 +2594,7 @@ export function registerRoutes(
         select id from invoices where business_id=${context.businessId} and appointment_id=${id} and status<>'void'
       `;
       if (invoice.length) throw new Error("Services cannot change after checkout begins");
-      await ensureEmployeeServicesAvailable(tx,{businessId:context.businessId,employeeId:appointment.employeeId,serviceIds:input.serviceIds});
+      await ensureBookingResourcesAvailable(tx,{businessId:context.businessId,employeeIds:assigned.map(row=>row.employeeId),serviceIds:input.serviceIds});
       const catalog=await resolveServicePrices(tx,{businessId:context.businessId,petId:appointment.petId,serviceIds:input.serviceIds});
       const unresolved=catalog.find(service=>service.status!=="resolved");
       if(unresolved)throw new Error(unresolved.status==="weight_required"?"Weight required to determine pricing.":`${unresolved.name} price is unresolved.`);
@@ -2945,7 +2916,9 @@ export function registerRoutes(
       `,
       db`
         select e.id,e.display_name,count(a.id)::integer as appointment_count
-        from employees e left join appointments a on a.employee_id=e.id
+        from employees e left join appointment_employees assignment
+          on assignment.business_id=e.business_id and assignment.employee_id=e.id
+        left join appointments a on a.id=assignment.appointment_id
           and a.start_at>=${from} and a.start_at<${to} and a.status='completed'
         where e.business_id=${context.businessId}
         group by e.id order by appointment_count desc

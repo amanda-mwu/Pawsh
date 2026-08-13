@@ -50,7 +50,7 @@ test("@cross-browser @regression-calendar-time exposes on-demand appointment act
   await expect(card.locator(".appointment-card-footer")).toHaveCount(0);
   await expect(card.locator(".appointment-pet")).toHaveText("Charlie");
   await expect(card.locator(".appointment-breed")).toHaveText("Golden Retriever");
-  await card.locator(".calendar-open").focus();const hover=card.locator(".appointment-hover");await expect(hover).toBeVisible();await expect(hover).toContainText("Grace Customer");await expect(hover).toContainText("Grace Groomer");await expect(hover).toContainText("Full Groom");const hoverBox=await hover.boundingBox();expect(hoverBox).not.toBeNull();expect(hoverBox!.x).toBeGreaterThanOrEqual(0);expect(hoverBox!.x+hoverBox!.width).toBeLessThanOrEqual(await page.evaluate(()=>innerWidth));
+  await card.locator(".calendar-open").focus();const hover=card.locator(".appointment-hover");await expect(hover).toBeVisible();await expect(hover).toContainText("Emma Johnson");await expect(hover).toContainText("Grace Groomer");await expect(hover).toContainText("Full Groom");const hoverBox=await hover.boundingBox();expect(hoverBox).not.toBeNull();expect(hoverBox!.x).toBeGreaterThanOrEqual(0);expect(hoverBox!.x+hoverBox!.width).toBeLessThanOrEqual(await page.evaluate(()=>innerWidth));
   await expect(card.getByRole("menuitem",{name:"Check in"})).toBeHidden();
   const trigger=card.getByRole("button",{name:/Appointment actions for/}).filter({visible:true});await expect(trigger).toBeVisible();await trigger.click();
   await expect(trigger).toHaveAttribute("aria-expanded","true");

@@ -12,7 +12,7 @@ test("@regression-scheduling-replay reconciles a repeated create into one calend
   expect((await replay.json()).id).toBe((await first.json()).id);
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
-  await expect(page.getByTestId("calendar-list").getByText("Charlie")).toHaveCount(1);
+  await expect(page.getByTestId("calendar-list").locator(".appointment-pet",{hasText:"Charlie"})).toHaveCount(1);
 });
 
 test("@regression-scheduling-replay replays a reschedule before stale version checks and rejects changed intent",async({request,tenant})=>{

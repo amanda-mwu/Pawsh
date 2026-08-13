@@ -16,7 +16,7 @@ async function openBooking(page: Page, tenant: TenantFixture, hour: number): Pro
   await page.getByTestId("field-petId").selectOption(tenant.petId);
   await defaults;
   await page.locator(`input[name="employeeIds"][value="${tenant.employeeId}"]`).setChecked(true);
-  await page.getByLabel("Full Groom").setChecked(true);
+  await page.getByRole("checkbox", { name: /Full Groom/ }).setChecked(true);
   await page.getByTestId("field-startAt").fill(`${tenant.anchor}T${String(hour).padStart(2,"0")}:00`);
 }
 
@@ -69,7 +69,7 @@ test("@regression-booking presents normal conflicts and preserves recovery choic
   await page.getByTestId("field-startAt").fill(`${tenant.anchor}T11:00`);
   await page.getByTestId("modal-submit").click();
   await expect(page.getByTestId("modal")).toBeHidden();
-  await expect(page.getByTestId("calendar-list").getByText("Charlie")).toHaveCount(2);
+  await expect(page.getByTestId("calendar-list").locator(".appointment-pet", { hasText: "Charlie" })).toHaveCount(2);
 });
 
 test("@regression-booking disables duplicate UI submission and sends one mutation", async ({ page, tenant }) => {
@@ -91,7 +91,7 @@ test("@regression-booking disables duplicate UI submission and sends one mutatio
   release();
   await expect(page.getByTestId("modal")).toBeHidden();
   expect(requests).toBe(1);
-  await expect(page.getByTestId("calendar-list").getByText("Charlie")).toHaveCount(1);
+  await expect(page.getByTestId("calendar-list").locator(".appointment-pet", { hasText: "Charlie" })).toHaveCount(1);
 });
 
 test("@regression-booking explicitly overrides a detected conflict and renders both appointments", async ({ page, request, tenant }) => {
@@ -103,11 +103,11 @@ test("@regression-booking explicitly overrides a detected conflict and renders b
   await expect(page.getByTestId("confirm-conflict-override")).toHaveText("Book anyway");
   await page.getByTestId("confirm-conflict-override").click();
   await expect(page.getByTestId("modal")).toBeHidden();
-  await expect(page.getByTestId("calendar-list").getByText("Charlie")).toHaveCount(2);
+  await expect(page.getByTestId("calendar-list").locator(".appointment-pet", { hasText: "Charlie" })).toHaveCount(2);
   await expect(page.getByTestId("conflict-override")).toHaveCount(1);
   await page.reload();
   await page.getByTestId("nav-calendar").click();
-  await expect(page.getByTestId("calendar-list").getByText("Charlie")).toHaveCount(2);
+  await expect(page.getByTestId("calendar-list").locator(".appointment-pet", { hasText: "Charlie" })).toHaveCount(2);
 });
 
 test("@regression-booking hides override UX and denies direct intent without permission", async ({ page, request, tenant }) => {

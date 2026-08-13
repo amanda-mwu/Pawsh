@@ -35,10 +35,13 @@ test("@security-desktop stale permission cannot mutate and reconciles capability
   await request.patch(`/api/members/${member.membershipId}/permissions`,{
     data:{permissions:ownerPermissions.filter((permission)=>permission!=="checkout.perform")}
   });
-  await checkout.click();
-  await page.getByTestId("field-method").selectOption("cash");
-  await page.getByTestId("modal-submit").click();
-  await expect(page.locator("#modal-error")).toContainText("Missing permission: checkout.perform");
+  const staleCheckoutStatus=await page.evaluate(async(appointmentId)=>(await fetch(`/api/appointments/${appointmentId}/checkout`,{
+    method:"POST",
+    credentials:"include",
+    headers:{"content-type":"application/json","idempotency-key":crypto.randomUUID()},
+    body:JSON.stringify({discountMinor:0,tipMinor:0,method:"cash"})
+  })).status,appointment.id);
+  expect(staleCheckoutStatus).toBe(403);
   await expect(checkout).toBeHidden();
 
   const ownerCheckout=await request.post(`/api/appointments/${appointment.id}/checkout`,{

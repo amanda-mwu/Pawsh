@@ -93,6 +93,8 @@ documentation readiness.
 - With the 500-customer scale fixture, search by customer, pet, phone, email, and breed; page forward/back; sort by customer, last visit, and next appointment; and filter active/upcoming records.
 - Open a customer row and confirm contact details, compact pets, rabies/safety information, and on-demand history remain distinct and usable.
 - Verify the customer table remains dense on desktop and collapses secondary columns into a row-to-detail workflow on phone and tablet widths.
-- In Calendar, use Today, previous/next week, previous/next month, and a month date; confirm the month selection and complete seven-day schedule remain synchronized.
-- Verify configured business hours, empty slots, closed periods, sticky headers/time labels, duration-scaled appointments, overlaps, lifecycle controls, and employee filtering.
-- Click an empty slot and confirm the booking form receives the exact local date/time; open and move an existing appointment using the existing workflow.
+- In Calendar, switch between Week and Day, use Today, previous/next period, previous/next month, and a month date; confirm the selected date and navigation remain synchronized.
+- Verify Week remains date-oriented and Day shows a left time axis with one horizontally scrollable column per active groomer.
+- Verify configured business hours, empty slots, closed periods, sticky headers/time labels, duration-scaled appointments, overlaps, visibly bounded lifecycle controls, and groomer filtering.
+- Confirm deficient rabies information appears as the compact, non-interactive `Rabies needed` warning.
+- Click a Week slot and confirm the booking form receives its local date/time. Click a Day slot and confirm it also receives the groomer from that column, including exposed empty space beside a visual appointment; open and move an appointment by clicking its visible card controls.

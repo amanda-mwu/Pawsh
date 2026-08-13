@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import {
   createAppointment,
   createMember,
@@ -12,10 +12,17 @@ import { zonedIso } from "./helpers/date.js";
 async function openBooking(page: Page, tenant: TenantFixture, hour: number): Promise<void> {
   await page.getByTestId("calendar-add-appointment").click();
   await page.getByTestId("field-customerId").selectOption(tenant.customerId);
+  const defaults=page.waitForResponse(response=>response.url().includes(`/api/pets/${tenant.petId}/booking-defaults`));
   await page.getByTestId("field-petId").selectOption(tenant.petId);
-  await page.locator(`input[name="employeeIds"][value="${tenant.employeeId}"]`).check();
-  await page.getByLabel("Full Groom").check();
+  await defaults;
+  await page.locator(`input[name="employeeIds"][value="${tenant.employeeId}"]`).setChecked(true);
+  await page.getByLabel("Full Groom").setChecked(true);
   await page.getByTestId("field-startAt").fill(`${tenant.anchor}T${String(hour).padStart(2,"0")}:00`);
+}
+
+async function openCardAction(card:Locator,name:"Move"|"Cancel"):Promise<void>{
+  await card.getByText("Actions",{exact:true}).click();
+  await card.getByRole("button",{name,exact:true}).click();
 }
 
 test("@regression-booking creates a booking and preserves it after reload", async ({ page, tenant }) => {
@@ -174,7 +181,7 @@ test("@regression-booking reschedules atomically and persists the new time", asy
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
   const card = page.locator(`[data-appointment-id="${appointment.id}"]`);
-  await card.getByRole("button", { name: "Move" }).click();
+  await openCardAction(card,"Move");
   await page.locator(`input[name="employeeIds"][value="${tenant.employeeId}"]`).check();
   await page.getByTestId("field-startAt").fill(`${tenant.anchor}T11:00`);
   await page.getByTestId("modal-submit").click();
@@ -189,7 +196,7 @@ test("@regression-booking explicitly overrides a conflicting reschedule", async 
   const movable = await createAppointment(request, tenant, { startAt: zonedIso(tenant.anchor, 12) });
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
-  await page.locator(`[data-appointment-id="${movable.id}"]`).getByRole("button", { name: "Move" }).click();
+  await openCardAction(page.locator(`[data-appointment-id="${movable.id}"]`),"Move");
   await page.locator(`input[name="employeeIds"][value="${tenant.employeeId}"]`).check();
   await page.getByTestId("field-startAt").fill(`${tenant.anchor}T09:30`);
   await page.getByTestId("modal-submit").click();
@@ -204,7 +211,7 @@ test("@regression-booking cancels persistently and releases employee capacity", 
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
   page.once("dialog", (dialog) => dialog.accept());
-  await page.locator(`[data-appointment-id="${appointment.id}"]`).getByRole("button", { name: "Cancel" }).click();
+  await openCardAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"Cancel");
   await expect(page.locator(`[data-appointment-id="${appointment.id}"]`)).toContainText("cancelled");
   await page.reload();
   await page.getByTestId("nav-calendar").click();

@@ -1,4 +1,4 @@
-import { test, expect, login } from "./fixtures/tenant.js";
+import { createAppointment, test, expect, login } from "./fixtures/tenant.js";
 import {
   expectAuthenticatedSurface,
   expectCriticalTarget,
@@ -81,6 +81,17 @@ test("@responsive calendar booking remains usable and persistent",async({page,te
   await expectAuthenticatedSurface(page);
   await page.getByTestId("nav-calendar").click();
   await expect(page.getByTestId("calendar-list")).toContainText("Charlie");
+  await expectNoDocumentOverflow(page,testInfo);
+});
+
+test("@responsive groomer day view remains contained and touch accessible",async({page,request,tenant},testInfo)=>{
+  await createAppointment(request,tenant,{localStart:`${tenant.anchor}T09:00`});
+  await login(page,tenant.ownerEmail);
+  await page.getByTestId("nav-calendar").click();
+  await expectCriticalTarget(page.locator("#calendar-day-view"));
+  await page.locator("#calendar-day-view").click();
+  await expect(page.locator(".day-groomer",{hasText:"Grace Groomer"})).toBeVisible();
+  await expectCriticalTarget(page.locator(".day-slot").first());
   await expectNoDocumentOverflow(page,testInfo);
 });
 

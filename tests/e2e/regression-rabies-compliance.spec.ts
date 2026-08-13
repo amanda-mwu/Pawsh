@@ -28,6 +28,5 @@ test("@regression-lifecycle enters only rabies expiration and warns for the appo
   await expect(page.getByTestId("booking-rabies-status")).toContainText("Expires before appointment");
   await page.getByTestId("modal-submit").click();
   await expect(page.getByTestId("modal")).toBeHidden();
-  await expect(page.getByTestId("rabies-appointment-status")).toContainText("Expires before appointment");
-  await expect(page.getByTestId("rabies-appointment-status")).toContainText("Update required");
+  await expect(page.getByTestId("rabies-appointment-status")).toHaveText("Rabies needed");
 });

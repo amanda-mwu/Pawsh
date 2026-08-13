@@ -2,7 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const inviteToken = new URLSearchParams(location.search).get("invite");
 const resetToken = new URLSearchParams(location.search).get("reset");
-const state = { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:25}, pets: [], dogBreeds: [], breedCatalog:{query:"",showInactive:false,sortDirection:1,editingId:null}, employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointmentDates:[],employeeId:"",bookingPreset:null,opened:false}, members: [], accessRequests:[], workspaces:[], reports: null, login: false };
+const state = { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:25}, pets: [], dogBreeds: [], breedCatalog:{query:"",showInactive:false,sortDirection:1,editingId:null}, employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointmentDates:[],employeeId:"",view:"week",bookingPreset:null,bookingGroomerId:null,opened:false}, members: [], accessRequests:[], workspaces:[], reports: null, login: false };
 const pendingActions = new Set();
 let customerSearchSequence = 0;
 
@@ -167,9 +167,11 @@ function renderDashboard(data) {
 
 function safetyContext(item) {
   const rabiesLabels={valid_for_appointment:"Valid for appointment",expires_before_appointment:"Expires before appointment",expired:"Expired",unverified:"Unverified",not_provided:"Not provided"};
-  const rabies=item.rabiesAppointmentStatus?`<p class="rabies-status rabies-${escape(item.rabiesAppointmentStatus)}" role="status" data-testid="rabies-appointment-status"><strong>Rabies:</strong> ${escape(rabiesLabels[item.rabiesAppointmentStatus]||item.rabiesAppointmentStatus)}${item.vaccinationExpiresOn?` · Expires ${new Date(`${String(item.vaccinationExpiresOn).slice(0,10)}T12:00:00Z`).toLocaleDateString()}`:""}${item.rabiesAppointmentStatus==="expires_before_appointment"?` · Appointment ${new Date(`${String(item.scheduledLocalStart).slice(0,10)}T12:00:00Z`).toLocaleDateString()} · Update required`:""}${item.rabiesCustomerNotificationStatus&&item.rabiesCustomerNotificationStatus!=="not_required"?` · Customer notice ${escape(item.rabiesCustomerNotificationStatus)}`:""}</p>`:"";
+  const rabies=item.rabiesAppointmentStatus?`<span class="rabies-status rabies-${escape(item.rabiesAppointmentStatus)}" role="status" data-testid="rabies-appointment-status"><strong>Rabies:</strong> ${escape(rabiesLabels[item.rabiesAppointmentStatus]||item.rabiesAppointmentStatus)}${item.vaccinationExpiresOn?` · Expires ${new Date(`${String(item.vaccinationExpiresOn).slice(0,10)}T12:00:00Z`).toLocaleDateString()}`:""}${item.rabiesAppointmentStatus==="expires_before_appointment"?` · Appointment ${new Date(`${String(item.scheduledLocalStart).slice(0,10)}T12:00:00Z`).toLocaleDateString()} · Update required`:""}${item.rabiesCustomerNotificationStatus&&item.rabiesCustomerNotificationStatus!=="not_required"?` · Customer notice ${escape(item.rabiesCustomerNotificationStatus)}`:""}</span>`:"";
+  const rabiesNeeded=["expires_before_appointment","expired","unverified","not_provided"].includes(item.rabiesAppointmentStatus);
+  const compactRabies=rabiesNeeded?`<span class="rabies-status rabies-needed" role="status" data-testid="rabies-appointment-status"><strong>Rabies needed</strong></span>`:"";
   const details = [
-    rabies,
+    compactRabies||rabies,
     item.safetyAlerts ? `<strong>Safety alert:</strong> ${escape(item.safetyAlerts)}` : "",
     item.behaviorNotes ? `<strong>Behavior:</strong> ${escape(item.behaviorNotes)}` : "",
     item.medicalNotes ? `<strong>Medical:</strong> ${escape(item.medicalNotes)}` : "",
@@ -182,34 +184,15 @@ function safetyContext(item) {
 function appointmentHtml(item) {
   const time = schedulingTime(item);
   const customer = `${item.firstName} ${item.lastName}`;
-  const actionDefinition = {
-    scheduled: ["Check in", "operations.check_in"],
-    checked_in: ["Start service", "operations.perform_service"],
-    in_service: ["Complete", "operations.complete"],
-    completed: ["Checkout", "checkout.perform"]
-  }[item.status];
-  const action = actionDefinition && allowed(actionDefinition[1])
-    ? `<button data-testid="appointment-${item.status}" class="text-button appointment-action" data-id="${item.id}" data-status="${item.status}">${actionDefinition[0]} →</button>`
-    : "";
   const conflictOverride=item.conflictOverridden?`<small class="conflict-override" data-testid="conflict-override">Intentional overlap</small>`:"";
-  return `<article class="appointment" data-testid="appointment" data-appointment-id="${item.id}"><time>${time}</time><div><span class="pet">${escape(item.petName)}</span><small>${escape(customer)} · ${escape(item.employeeName)}</small>${conflictOverride}${safetyContext(item)}</div><div class="appointment-actions"><span class="badge ${item.status}">${item.status.replace("_"," ")}</span>${action}</div></article>`;
+  return `<article class="appointment" data-testid="appointment" data-appointment-id="${item.id}"><time>${time}</time><div><span class="pet">${escape(item.petName)}</span><small>${escape(customer)} · ${escape(item.employeeName)}</small>${conflictOverride}${safetyContext(item)}</div><div class="appointment-actions"><span class="badge ${item.status}">${item.status.replace("_"," ")}</span>${calendarAction(item)}</div></article>`;
 }
 function renderAppointments() {
-  renderWeekCalendar();
+  renderCalendar();
   const today = businessDate();
   const todays = state.appointments.filter((item) => appointmentLocalValue(item).slice(0,10) === today);
   $("#today-list").innerHTML = todays.length ? todays.map(appointmentHtml).join("") : "No appointments today.";
   $$(".appointment-action").forEach((button) => button.addEventListener("click", () => advanceAppointment(button.dataset.id, button.dataset.status, button)));
-  state.appointments.filter(item=>item.status==="scheduled" && (allowed("appointments.edit") || allowed("appointments.cancel"))).forEach(item=>{
-    $$(`.appointment-action[data-id="${item.id}"]`).forEach(button=>{
-      button.parentElement.insertAdjacentHTML("beforeend",`<span>${allowed("appointments.edit")?`<button type="button" class="text-button move-action" data-id="${item.id}">Move</button>`:""} ${allowed("appointments.cancel")?`<button type="button" class="text-button terminal-action" data-id="${item.id}" data-status="cancelled">Cancel</button> <button type="button" class="text-button terminal-action" data-id="${item.id}" data-status="no_show">No show</button>`:""}</span>`);
-    });
-  });
-  state.appointments.filter(item=>["checked_in","in_service"].includes(item.status) && allowed("appointments.edit")).forEach(item=>{
-    $$(`.appointment-action[data-id="${item.id}"]`).forEach(button=>{
-      button.parentElement.insertAdjacentHTML("beforeend",`<button type="button" class="text-button service-action" data-id="${item.id}">Adjust services</button>`);
-    });
-  });
   $$(".terminal-action").forEach(button=>button.addEventListener("click",()=>terminalAppointment(button.dataset.id,button.dataset.status)));
   $$(".move-action").forEach(button=>button.addEventListener("click",()=>moveAppointment(button.dataset.id)));
   $$(".service-action").forEach(button=>button.addEventListener("click",()=>adjustServices(button.dataset.id)));
@@ -219,21 +202,43 @@ function calendarHours(){
   return values.length?[Math.floor(Math.min(...values)/30)*30,Math.ceil(Math.max(...values)/30)*30]:[8*60,19*60];
 }
 function timeLabel(minutes){const hour=Math.floor(minutes/60),minute=minutes%60;return new Intl.DateTimeFormat([],{hour:"numeric",minute:"2-digit"}).format(new Date(2020,0,1,hour,minute));}
+function calendarAction(item){
+  const definition={scheduled:["Check in","operations.check_in"],checked_in:["Start service","operations.perform_service"],in_service:["Complete","operations.complete"],completed:["Checkout","checkout.perform"]}[item.status];
+  const controls=[definition&&allowed(definition[1])?`<button data-testid="appointment-${item.status}" class="calendar-action appointment-action" data-id="${item.id}" data-status="${item.status}">${definition[0]}</button>`:""];
+  const secondary=[];
+  if(item.status==="scheduled"&&allowed("appointments.edit"))secondary.push(`<button type="button" class="calendar-action move-action" data-id="${item.id}">Move</button>`);
+  if(item.status==="scheduled"&&allowed("appointments.cancel")){secondary.push(`<button type="button" class="calendar-action terminal-action" data-id="${item.id}" data-status="cancelled">Cancel</button>`);secondary.push(`<button type="button" class="calendar-action terminal-action" data-id="${item.id}" data-status="no_show">No show</button>`);}
+  if(secondary.length)controls.push(`<details class="calendar-actions-menu"><summary class="calendar-action">Actions</summary><div>${secondary.join("")}</div></details>`);
+  if(["checked_in","in_service"].includes(item.status)&&allowed("appointments.edit"))controls.push(`<button type="button" class="calendar-action service-action" data-id="${item.id}">Adjust services</button>`);
+  return controls.join("");
+}
+function renderCalendar(){if(state.calendar.view==="day")renderDayCalendar();else renderWeekCalendar();}
 function renderWeekCalendar(){
   const target=$("#calendar-list");if(!target||!state.calendar.weekStart)return;
+  target.className="week-grid";target.setAttribute("aria-label","Weekly appointment schedule");target.style.removeProperty("--groomer-count");target.style.removeProperty("min-width");
   const days=Array.from({length:7},(_,index)=>dateShift(state.calendar.weekStart,index));const [start,end]=calendarHours();const slots=(end-start)/30;
   const header=`<div class="week-corner" style="grid-column:1;grid-row:1"></div>${days.map((day,index)=>`<button type="button" class="week-day-head ${day===state.calendar.selectedDate?"selected":""}" data-calendar-date="${day}" style="grid-column:${index+2};grid-row:1"><strong>${new Intl.DateTimeFormat([],{weekday:"short"}).format(dateAt(day))}</strong><br>${new Intl.DateTimeFormat([],{month:"short",day:"numeric"}).format(dateAt(day))}</button>`).join("")}`;
   let cells="";
   for(let slot=0;slot<slots;slot++){const minutes=start+slot*30;cells+=`<div class="week-time" style="grid-column:1;grid-row:${slot+2}">${timeLabel(minutes)}</div>`;for(let dayIndex=0;dayIndex<7;dayIndex++){const day=days[dayIndex];const periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(day).getUTCDay());const open=!periods.length&&!state.businessHours.length||periods.some(period=>{const from=Number(String(period.startTime).slice(0,2))*60+Number(String(period.startTime).slice(3,5));const to=Number(String(period.endTime).slice(0,2))*60+Number(String(period.endTime).slice(3,5));return minutes>=from&&minutes<to;});cells+=`<button type="button" aria-label="Book ${day} at ${timeLabel(minutes)}" class="week-slot ${open?"":"closed"}" ${open?`data-slot="${day}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}"`:"disabled"} style="grid-column:${dayIndex+2};grid-row:${slot+2}"></button>`;}}
   const visible=state.appointments.filter(item=>!state.calendar.employeeId||(item.groomers||[]).some(groomer=>groomer.id===state.calendar.employeeId));const placed=[];
-  const appointments=visible.map(item=>{const local=appointmentLocalValue(item),day=local.slice(0,10),dayIndex=days.indexOf(day);if(dayIndex<0)return "";const minutes=Number(local.slice(11,13))*60+Number(local.slice(14,16));const duration=Math.max(30,Math.round((new Date(item.endAt)-new Date(item.startAt))/60000));const row=Math.floor((minutes-start)/30)+2;if(row<2||row>slots+1)return "";const overlap=placed.some(other=>other.day===day&&minutes<other.end&&minutes+duration>other.start);placed.push({day,start:minutes,end:minutes+duration});const actionDefinition={scheduled:["Check in","operations.check_in"],checked_in:["Start service","operations.perform_service"],in_service:["Complete","operations.complete"],completed:["Checkout","checkout.perform"]}[item.status];const action=actionDefinition&&allowed(actionDefinition[1])?`<button data-testid="appointment-${item.status}" class="text-button appointment-action" data-id="${item.id}" data-status="${item.status}">${actionDefinition[0]} →</button>`:"";const groomerNames=(item.groomers||[]).map(groomer=>groomer.displayName).join(", ")||item.employeeName;return `<article class="week-appointment status-${escape(item.status)} ${overlap?"overlap":""}" data-appointment-id="${item.id}" style="grid-column:${dayIndex+2};grid-row:${row}/span ${Math.max(1,Math.ceil(duration/30))}"><button type="button" class="calendar-open" data-calendar-appointment="${item.id}"><time>${schedulingTime(item)}</time><strong>${escape(item.petName)} · ${escape(item.firstName)} ${escape(item.lastName)}</strong><span>${escape(item.services.map(service=>service.name).join(", "))}</span><span>${escape(groomerNames)}</span>${item.conflictOverridden?`<small class="conflict-override" data-testid="conflict-override">Intentional overlap</small>`:""}</button>${safetyContext(item)}<div class="appointment-actions"><span class="badge ${item.status}">${item.status.replace("_"," ")}</span>${action}</div></article>`;}).join("");
+  const appointments=visible.map(item=>{const local=appointmentLocalValue(item),day=local.slice(0,10),dayIndex=days.indexOf(day);if(dayIndex<0)return "";const minutes=Number(local.slice(11,13))*60+Number(local.slice(14,16));const duration=Math.max(30,Math.round((new Date(item.endAt)-new Date(item.startAt))/60000));const row=Math.floor((minutes-start)/30)+2;if(row<2||row>slots+1)return "";const overlap=placed.some(other=>other.day===day&&minutes<other.end&&minutes+duration>other.start);placed.push({day,start:minutes,end:minutes+duration});const groomerNames=(item.groomers||[]).map(groomer=>groomer.displayName).join(", ")||item.employeeName;return `<article class="week-appointment status-${escape(item.status)} ${overlap?"overlap":""}" data-appointment-id="${item.id}" style="grid-column:${dayIndex+2};grid-row:${row}/span ${Math.max(1,Math.ceil(duration/30))}"><button type="button" class="calendar-open" data-calendar-appointment="${item.id}" aria-label="Open ${escape(item.petName)} appointment"><time>${schedulingTime(item)}</time><strong>${escape(item.petName)} · ${escape(item.firstName)} ${escape(item.lastName)}</strong><span>${escape(item.services.map(service=>service.name).join(", "))}</span><span>${escape(groomerNames)}</span>${item.conflictOverridden?`<small class="conflict-override" data-testid="conflict-override">Intentional overlap</small>`:""}</button>${safetyContext(item)}<div class="appointment-actions"><span class="badge ${item.status}">${item.status.replace("_"," ")}</span>${calendarAction(item)}</div></article>`;}).join("");
   target.innerHTML=header+cells+appointments;
   $("#calendar-range").textContent=`${new Intl.DateTimeFormat([],{month:"short",day:"numeric"}).format(dateAt(days[0]))} – ${new Intl.DateTimeFormat([],{month:"short",day:"numeric",year:"numeric"}).format(dateAt(days[6]))}`;
   renderMonthNavigator();
   $$('[data-calendar-date]').forEach(button=>button.addEventListener("click",()=>selectCalendarDate(button.dataset.calendarDate)));
-  $$('[data-slot]').forEach(button=>button.addEventListener("click",()=>{state.calendar.bookingPreset=button.dataset.slot;actions["new-appointment"]();}));
-  $$('[data-calendar-appointment]').forEach(button=>button.addEventListener("click",()=>openCalendarAppointment(button.dataset.calendarAppointment)));
+  bindCalendarInteractions();
 }
+function renderDayCalendar(){
+  const target=$("#calendar-list");if(!target||!state.calendar.selectedDate)return;
+  const groomers=state.employees.filter(employee=>employee.active&&(!state.calendar.employeeId||employee.id===state.calendar.employeeId));
+  const [start,end]=calendarHours(),slots=(end-start)/30,columns=Math.max(1,groomers.length);
+  target.className="day-grid";target.setAttribute("aria-label","Daily appointment schedule by groomer");target.style.setProperty("--groomer-count",columns);target.style.minWidth=`${64+columns*190}px`;
+  let content=`<div class="day-corner" style="grid-column:1;grid-row:1">Time</div>${groomers.map((groomer,index)=>`<div class="day-groomer" style="grid-column:${index+2};grid-row:1">${escape(groomer.displayName)}</div>`).join("")}`;
+  for(let slot=0;slot<slots;slot++){const minutes=start+slot*30,row=slot+2,periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(state.calendar.selectedDate).getUTCDay()),open=!periods.length&&!state.businessHours.length||periods.some(period=>{const from=Number(String(period.startTime).slice(0,2))*60+Number(String(period.startTime).slice(3,5)),to=Number(String(period.endTime).slice(0,2))*60+Number(String(period.endTime).slice(3,5));return minutes>=from&&minutes<to;});content+=`<div class="day-time" style="grid-column:1;grid-row:${row}">${timeLabel(minutes)}</div>`;for(let index=0;index<groomers.length;index++){const groomer=groomers[index],preset=`${state.calendar.selectedDate}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`;content+=`<button type="button" class="day-slot ${open?"":"closed"}" ${open?`data-slot="${preset}" data-slot-groomer="${groomer.id}"`:`disabled`} style="grid-column:${index+2};grid-row:${row}" aria-label="${escape(state.calendar.selectedDate)}, ${timeLabel(minutes)}, ${escape(groomer.displayName)}, ${open?"create appointment":"closed"}"></button>`;}}
+  for(const item of state.appointments.filter(appointment=>appointmentLocalValue(appointment).slice(0,10)===state.calendar.selectedDate)){const local=appointmentLocalValue(item),minutes=Number(local.slice(11,13))*60+Number(local.slice(14,16)),duration=Math.max(30,Math.round((new Date(item.endAt)-new Date(item.startAt))/60000)),row=Math.floor((minutes-start)/30)+2;if(row<2||row>slots+1)continue;for(const assigned of item.groomers||[]){const column=groomers.findIndex(groomer=>groomer.id===assigned.id);if(column<0)continue;content+=`<article class="day-appointment week-appointment status-${escape(item.status)}" data-appointment-id="${item.id}" data-groomer-id="${assigned.id}" style="grid-column:${column+2};grid-row:${row}/span ${Math.max(1,Math.ceil(duration/30))}"><button type="button" class="calendar-open" data-calendar-appointment="${item.id}" aria-label="Open ${escape(item.petName)} appointment"><time>${schedulingTime(item)}</time><strong>${escape(item.petName)} · ${escape(item.firstName)} ${escape(item.lastName)}</strong><span>${escape(item.services.map(service=>service.name).join(", "))}</span></button>${safetyContext(item)}<div class="appointment-actions"><span class="badge ${item.status}">${item.status.replace("_"," ")}</span>${calendarAction(item)}</div></article>`;}}
+  target.innerHTML=content;$("#calendar-range").textContent=new Intl.DateTimeFormat([],{dateStyle:"full"}).format(dateAt(state.calendar.selectedDate));renderMonthNavigator();bindCalendarInteractions();
+}
+function bindCalendarInteractions(){$$('[data-slot]').forEach(button=>button.addEventListener("click",()=>{state.calendar.bookingPreset=button.dataset.slot;state.calendar.bookingGroomerId=button.dataset.slotGroomer||null;actions["new-appointment"]();}));$$('[data-calendar-appointment]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openCalendarAppointment(button.dataset.calendarAppointment);}));}
 function renderMonthNavigator(){
   if(!state.calendar.month)return;const first=`${state.calendar.month}-01`,start=dateShift(first,-dateAt(first).getUTCDay());const appointmentDates=new Set(state.calendar.monthAppointmentDates);
   $("#month-label").textContent=new Intl.DateTimeFormat([],{month:"long",year:"numeric"}).format(dateAt(first));
@@ -241,7 +246,7 @@ function renderMonthNavigator(){
   $$('[data-month-date]').forEach(button=>button.addEventListener("click",()=>selectCalendarDate(button.dataset.monthDate)));
 }
 async function loadCalendarWeek(start=state.calendar.weekStart){
-  state.calendar.weekStart=start;const requests=[api(`/api/appointments?localDate=${start}&days=7`),state.businessHours.length?state.businessHours:api("/api/business/working-hours")];if(!state.calendar.monthAppointmentDates.length)requests.push(loadCalendarMonth(state.calendar.month,false));const [appointments,hours]=await Promise.all(requests);state.appointments=appointments;state.businessHours=hours;renderAppointments();
+  state.calendar.weekStart=start;const rangeStart=state.calendar.view==="day"?state.calendar.selectedDate:start,days=state.calendar.view==="day"?1:7;const requests=[api(`/api/appointments?localDate=${rangeStart}&days=${days}`),state.businessHours.length?state.businessHours:api("/api/business/working-hours")];if(!state.calendar.monthAppointmentDates.length)requests.push(loadCalendarMonth(state.calendar.month,false));const [appointments,hours]=await Promise.all(requests);state.appointments=appointments;state.businessHours=hours;renderAppointments();
 }
 async function openCalendarView(){await loadCalendarWeek();if(!state.calendar.opened&&!state.appointments.length){const upcoming=await api(`/api/appointments?localDate=${businessDate()}&days=31`);if(upcoming.length){const date=appointmentLocalValue(upcoming[0]).slice(0,10);state.calendar.opened=true;return selectCalendarDate(date);}}state.calendar.opened=true;}
 async function loadCalendarMonth(month=state.calendar.month,render=true){const first=`${month}-01`,date=dateAt(first);date.setUTCMonth(date.getUTCMonth()+1);const days=Math.round((date-dateAt(first))/86_400_000);const appointments=await api(`/api/appointments?localDate=${first}&days=${days}`);state.calendar.monthAppointmentDates=[...new Set(appointments.map(item=>appointmentLocalValue(item).slice(0,10)))];if(render)renderMonthNavigator();}
@@ -786,17 +791,18 @@ const actions = {
       api("/api/services")
     ]);
     Object.assign(state, { customers, pets, employees, services });
+    const explicitGroomerId=state.calendar.bookingGroomerId;
     openModal("New appointment",
       select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]))+
       select("petId","Pet",[])+
-      groomerCheckboxes()+bookingServiceCheckboxes()+
+      groomerCheckboxes(explicitGroomerId?[explicitGroomerId]:[])+bookingServiceCheckboxes()+
       field("startAt","Start time","datetime-local",`required value="${state.calendar.bookingPreset||""}"`,true)+disambiguationField()+
       `<div class="wide pricing-preview" role="status" aria-live="polite" data-testid="booking-price-status">Choose a pet and service to calculate pricing.</div>`+
       `<p class="wide" role="status" aria-live="polite" data-testid="booking-rabies-status">Choose a pet and appointment time to evaluate rabies information.</p>`+
       field("notes","Appointment notes","text","",true),
       async (form) => { const o=Object.fromEntries(form); await schedulingMutation("/api/appointments",{locationId:state.me.business.locationId,customerId:o.customerId,petId:o.petId,employeeIds:form.getAll("employeeIds"),serviceIds:form.getAll("serviceIds"),localStart:o.startAt,disambiguation:o.disambiguation||undefined,expectedLocationVersion:state.me.business.locationVersion,notes:o.notes||null},"Booking");return ()=>selectCalendarDate(String(o.startAt).slice(0,10)); });
     const customerSelect=$('[name="customerId"]');const petSelect=$('[name="petId"]');
-    state.calendar.bookingPreset=null;
+    state.calendar.bookingPreset=null;state.calendar.bookingGroomerId=null;
     const startInput=$('[name="startAt"]');const rabiesStatus=$('[data-testid="booking-rabies-status"]');
     const priceStatus=$('[data-testid="booking-price-status"]');let priceSequence=0;
     const updatePricePreview=async()=>{const sequence=++priceSequence;const serviceIds=$$('input[name="serviceIds"]:checked').map(input=>input.value);if(!petSelect.value||!serviceIds.length){priceStatus.textContent="Choose a pet and service to calculate pricing.";return;}priceStatus.textContent="Calculating authoritative price…";try{const prices=await api("/api/pricing/resolve",{method:"POST",body:JSON.stringify({petId:petSelect.value,serviceIds})});if(sequence!==priceSequence)return;priceStatus.innerHTML=prices.map(price=>price.status==="resolved"?`<p><strong>${escape(price.name)}</strong> · ${money(price.priceMinor)} · ${price.durationMinutes} min${price.weightTierLabel?` · ${escape(price.weightTierLabel)}`:""}</p>`:`<p><strong>${escape(price.name)}</strong><br>${price.status==="weight_required"?"Weight required to determine pricing.":price.status==="quote_required"?"Quote required.":"Admin price confirmation required."}</p>`).join("");}catch(error){if(sequence===priceSequence)priceStatus.textContent=error.message;}};
@@ -815,7 +821,7 @@ const actions = {
       updateRabiesPreview();updatePricePreview();
     });
     const bindServicePreview=()=>$$('input[name="serviceIds"]').forEach(input=>input.addEventListener("change",updatePricePreview));
-    const applyBookingDefaults=async()=>{const petId=petSelect.value;if(!petId)return;const defaults=await api(`/api/pets/${petId}/booking-defaults`);if(petSelect.value!==petId)return;const groomerIds=new Set(defaults.groomers.map(item=>item.id)),serviceIds=new Set(defaults.services.map(item=>item.id));$$('input[name="employeeIds"]').forEach(input=>input.checked=groomerIds.has(input.value));$$('input[name="serviceIds"]').forEach(input=>input.checked=serviceIds.has(input.value));updatePricePreview();};
+    const applyBookingDefaults=async()=>{const petId=petSelect.value;if(!petId)return;const defaults=await api(`/api/pets/${petId}/booking-defaults`);if(petSelect.value!==petId)return;const groomerIds=new Set(defaults.groomers.map(item=>item.id)),serviceIds=new Set(defaults.services.map(item=>item.id));if(!explicitGroomerId)$$('input[name="employeeIds"]').forEach(input=>input.checked=groomerIds.has(input.value));$$('input[name="serviceIds"]').forEach(input=>input.checked=serviceIds.has(input.value));updatePricePreview();};
     petSelect.addEventListener("change",()=>{updateRabiesPreview();applyBookingDefaults();});startInput.addEventListener("change",updateRabiesPreview);bindServicePreview();
   }),
   "blocked-time": () => openModal("Block team time",
@@ -928,9 +934,11 @@ $("#breed-search")?.addEventListener("input",event=>{state.breedCatalog.query=ev
 $("#breed-show-inactive")?.addEventListener("change",event=>{state.breedCatalog.showInactive=event.target.checked;renderBreedCatalog();});
 $("#breed-sort-name")?.addEventListener("click",()=>{state.breedCatalog.sortDirection*=-1;$("#breed-sort-name span").textContent=state.breedCatalog.sortDirection===1?"A–Z":"Z–A";renderBreedCatalog();});
 $("#breed-add-form")?.addEventListener("submit",async event=>{event.preventDefault();const form=event.currentTarget,errorBox=$("#breed-add-error");errorBox.textContent="";form.elements.name.removeAttribute("aria-invalid");try{const values=Object.fromEntries(new FormData(form));await api("/api/dog-breeds",{method:"POST",body:JSON.stringify(values)});form.reset();await reloadBreeds();toast("Breed added");}catch(error){errorBox.textContent=error.message;if(error.status===409&&error.data?.existing&&!error.data.existing.active){const button=document.createElement("button");button.type="button";button.className="text-button";button.textContent=`Reactivate ${error.data.existing.name}`;button.addEventListener("click",()=>toggleBreed(error.data.existing.id,true));errorBox.append(" ",button);}form.elements.name.setAttribute("aria-invalid","true");}});
-$("#calendar-today").addEventListener("click",()=>selectCalendarDate(businessDate()));$("#calendar-prev-week").addEventListener("click",()=>selectCalendarDate(dateShift(state.calendar.weekStart,-7)));$("#calendar-next-week").addEventListener("click",()=>selectCalendarDate(dateShift(state.calendar.weekStart,7)));
+$("#calendar-today").addEventListener("click",()=>selectCalendarDate(businessDate()));$("#calendar-prev-week").addEventListener("click",()=>selectCalendarDate(dateShift(state.calendar.view==="day"?state.calendar.selectedDate:state.calendar.weekStart,state.calendar.view==="day"?-1:-7)));$("#calendar-next-week").addEventListener("click",()=>selectCalendarDate(dateShift(state.calendar.view==="day"?state.calendar.selectedDate:state.calendar.weekStart,state.calendar.view==="day"?1:7)));
+function setCalendarView(view){state.calendar.view=view;$("#calendar-week-view").setAttribute("aria-pressed",String(view==="week"));$("#calendar-day-view").setAttribute("aria-pressed",String(view==="day"));loadCalendarWeek();}
+$("#calendar-week-view").addEventListener("click",()=>setCalendarView("week"));$("#calendar-day-view").addEventListener("click",()=>setCalendarView("day"));
 $("#month-prev").addEventListener("click",async()=>{const first=dateAt(`${state.calendar.month}-01`);first.setUTCMonth(first.getUTCMonth()-1);state.calendar.month=first.toISOString().slice(0,7);await loadCalendarMonth();});$("#month-next").addEventListener("click",async()=>{const first=dateAt(`${state.calendar.month}-01`);first.setUTCMonth(first.getUTCMonth()+1);state.calendar.month=first.toISOString().slice(0,7);await loadCalendarMonth();});
-$("#calendar-employee-filter").addEventListener("change",event=>{state.calendar.employeeId=event.target.value;renderWeekCalendar();});
+$("#calendar-employee-filter").addEventListener("change",event=>{state.calendar.employeeId=event.target.value;renderCalendar();});
 document.addEventListener("visibilitychange",async()=>{if(document.visibilityState==="visible"&&state.me){try{state.me=await api("/api/me");applyPermissions();await refresh();}catch{await bootstrap();}}});
 if (inviteToken || resetToken) {
   state.login=true;

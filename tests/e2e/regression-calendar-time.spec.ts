@@ -46,8 +46,11 @@ test("@cross-browser @regression-calendar-time exposes on-demand appointment act
   await login(page,tenant.ownerEmail);await page.getByTestId("nav-calendar").click();
   await page.waitForLoadState("networkidle");
   const card=page.locator(`.week-appointment[data-appointment-id="${appointment.id}"]`);
-  await expect(card.getByTestId("rabies-appointment-status")).toHaveText("Rabies needed");
-  await expect(card.locator(".appointment-card-footer > [data-testid=\"rabies-appointment-status\"]")).toHaveCount(1);
+  await expect(card.locator('.card-warning[aria-label="Rabies needed"]')).toHaveCount(1);
+  await expect(card.locator(".appointment-card-footer")).toHaveCount(0);
+  await expect(card.locator(".appointment-pet")).toHaveText("Charlie");
+  await expect(card.locator(".appointment-breed")).toHaveText("Golden Retriever");
+  await card.locator(".calendar-open").focus();const hover=card.locator(".appointment-hover");await expect(hover).toBeVisible();await expect(hover).toContainText("Grace Customer");await expect(hover).toContainText("Grace Groomer");await expect(hover).toContainText("Full Groom");const hoverBox=await hover.boundingBox();expect(hoverBox).not.toBeNull();expect(hoverBox!.x).toBeGreaterThanOrEqual(0);expect(hoverBox!.x+hoverBox!.width).toBeLessThanOrEqual(await page.evaluate(()=>innerWidth));
   await expect(card.getByRole("menuitem",{name:"Check in"})).toBeHidden();
   const trigger=card.getByRole("button",{name:/Appointment actions for/}).filter({visible:true});await expect(trigger).toBeVisible();await trigger.click();
   await expect(trigger).toHaveAttribute("aria-expanded","true");
@@ -58,7 +61,7 @@ test("@cross-browser @regression-calendar-time exposes on-demand appointment act
   await expect(card.getByRole("menuitem",{name:"No show"})).toBeVisible();
   await expect(card.locator("select")).toHaveCount(0);
   await expect(page.locator(".month-sidebar")).toHaveCount(0);
-  await page.locator("#calendar-agenda-mode").click();await expect(page.locator(".calendar-agenda")).toBeVisible();await expect(page.locator("#calendar-view-control")).toBeHidden();
+  await page.locator("#calendar-agenda-mode").click();await expect(page.locator(".calendar-agenda")).toBeVisible();await expect(page.locator("#calendar-view-control")).toBeHidden();await expect(page.locator(".agenda-day")).toHaveCount(1);await expect(page.locator(".agenda-entry")).toHaveCount(2);expect((await page.locator(".agenda-entry").first().boundingBox())!.height).toBeLessThan(100);
   await page.locator("#calendar-calendar-mode").click();await expect(page.locator("#calendar-view-control")).toBeVisible();
   const laterTrigger=page.locator(`.week-appointment[data-appointment-id="${laterAppointment.id}"]`).getByRole("button",{name:/Appointment actions for/});await laterTrigger.focus();await laterTrigger.press("Enter");await expect(trigger).toHaveAttribute("aria-expanded","false");await expect(laterTrigger).toHaveAttribute("aria-expanded","true");
   await page.keyboard.press("Escape");await expect(laterTrigger).toHaveAttribute("aria-expanded","false");await expect(laterTrigger).toBeFocused();

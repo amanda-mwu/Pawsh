@@ -2133,7 +2133,7 @@ export function registerRoutes(
     const to=localDateBounds(endLocal.toISOString().slice(0,10),location.timezone).from;
     const overlap=query.mode === "overlap";
     const rows = await db`
-      select a.*, c.first_name, c.last_name, p.name as pet_name, p.safety_alerts,
+      select a.*, c.first_name, c.last_name, p.name as pet_name, p.breed, p.safety_alerts,
         p.behavior_notes, p.medical_notes, p.grooming_preferences, p.coat_notes,
         p.vaccination_expires_on,p.rabies_verification_status,p.rabies_verification_method,
         case

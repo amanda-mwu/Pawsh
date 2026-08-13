@@ -27,3 +27,14 @@ Selecting an appointment loads the existing authorized customer-history API
 and presents customer, pet, and appointment context together. Full customer
 profile and existing appointment operations remain separate shared workflows;
 the calendar does not introduce a second customer or appointment data model.
+
+## Appointment presentation
+
+Agenda, Week, Day, Month hover details, and calendar accessibility labels use a
+single browser-side appointment presentation model derived from the bounded
+appointment response. The response includes the pet breed alongside its
+existing snapshot, staffing, status, and safety fields. No card or hover action
+performs a data request. Calendar blocks remain sized by the authoritative
+appointment start/end interval and progressively reveal content as duration
+allows; Agenda groups the same models into dense date sections. Clicking any
+representation continues through the authorized customer-context workflow.

@@ -10,7 +10,7 @@ requester email and are rate limited.
 
 The durable request is tenant scoped and auditable. Active Owners and members
 with `team.manage` receive a notification intent and can review requests only
-inside Salon Setup. Approval never accepts a role from the requester. An
+inside Settings. Approval never accepts a role from the requester. An
 existing Pawsh user receives the `groomer` permission preset in the requested
 workspace; a person without an account receives the existing expiring secure
 membership invitation. Rejection records the reviewer and timestamp. Both

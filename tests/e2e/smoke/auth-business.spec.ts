@@ -85,7 +85,7 @@ test("@smoke breed catalog is compact, searchable, editable, and duplicate-safe"
   await expect(page).toHaveURL(/\/salon\/breeds$/);
   await expect(page.getByTestId("nav-setup")).toHaveAttribute("aria-current","page");
   await expect(page.getByTestId("nav-reports")).not.toHaveAttribute("aria-current","page");
-  await expect(page.locator("#page-title")).toHaveText("Salon setup");
+  await expect(page.locator("#page-title")).toHaveText("Salon");
   await expect(page.getByRole("heading",{name:"Business reports"})).toBeHidden();
   expect(await page.locator("#breed-catalog-body tr[data-breed-id]").count()).toBeGreaterThan(20);
   const name=`QA Coat Dog ${tenant.runId.slice(-8)}`;
@@ -117,15 +117,15 @@ test("@smoke breed catalog is compact, searchable, editable, and duplicate-safe"
   await expect(page.locator("#breed-catalog-body tr[data-breed-id]").filter({hasText:name})).toContainText("Active");
 });
 
-test("@smoke breed catalog route restores Salon setup navigation and redirects legacy routes",async({page,tenant})=>{
+test("@smoke breed catalog route restores Salon navigation and redirects legacy routes",async({page,tenant})=>{
   await login(page,tenant.ownerEmail);
   await expect(page.getByTestId("dashboard").getByText("Breed Catalog")).toHaveCount(0);
   await page.goto("/salon/breeds");
   await expect(page.getByTestId("breed-catalog-view")).toBeVisible();
   await expect(page.getByTestId("nav-setup")).toHaveAttribute("aria-current","page");
   await expect(page.getByTestId("nav-reports")).not.toHaveAttribute("aria-current","page");
-  await expect(page.locator("#page-title")).toHaveText("Salon setup");
-  await expect(page.getByRole("navigation",{name:"Breadcrumb"})).toContainText("Salon setup/Business settings/Breed Catalog");
+  await expect(page.locator("#page-title")).toHaveText("Salon");
+  await expect(page.getByRole("navigation",{name:"Breadcrumb"})).toContainText("Salon/Breed Catalog");
   await page.reload();
   await expect(page.getByTestId("breed-catalog-view")).toBeVisible();
   await expect(page.getByTestId("nav-setup")).toHaveAttribute("aria-current","page");
@@ -145,7 +145,7 @@ test("@smoke breed catalog route restores Salon setup navigation and redirects l
   await expect(page.locator("#reports").getByText("Breed Catalog")).toHaveCount(0);
 });
 
-test("@responsive Breed Catalog preserves compact Salon setup context without horizontal overflow",async({page,tenant})=>{
+test("@responsive Breed Catalog preserves compact Salon context without horizontal overflow",async({page,tenant})=>{
   await login(page,tenant.ownerEmail);
   await page.goto("/salon/breeds");
   for(const width of [1440,1024,768,430,390]){
@@ -155,4 +155,17 @@ test("@responsive Breed Catalog preserves compact Salon setup context without ho
     expect(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth)).toBe(true);
     await expect(page.locator("#breed-catalog .setup-menu summary")).toBeVisible();
   }
+});
+
+test("@smoke Settings owns administration while Profile and Services remain separate",async({page,tenant})=>{
+  await login(page,tenant.ownerEmail);
+  await expect(page.getByTestId("nav-services")).toBeVisible();
+  await expect(page.getByTestId("nav-setup")).toHaveText("Salon");
+  const settings=page.getByTestId("settings-trigger");await expect(settings).toHaveAccessibleName("Settings");await settings.click();
+  await page.getByRole("button",{name:"Workspace access"}).click();
+  await expect(page.getByTestId("admin-settings-view")).toBeVisible();
+  await expect(page.getByRole("heading",{name:"Workspace access"})).toBeVisible();
+  await page.getByTestId("account-trigger").click();await page.getByTestId("profile-account-link").click();
+  await expect(page.getByTestId("profile-account-view")).toBeVisible();
+  await expect(page.getByTestId("admin-settings-view")).toBeHidden();
 });

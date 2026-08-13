@@ -40,18 +40,28 @@ test("@regression-calendar-time synchronizes week navigation and preselects an e
   const slot=page.locator('.week-slot:not(.closed)').first();const preset=await slot.getAttribute("data-slot");await slot.click();await expect(page.getByTestId("field-startAt")).toHaveValue(preset??"");await page.getByRole("button",{name:"Cancel"}).click();
 });
 
-test("@cross-browser @regression-calendar-time exposes appointment actions and a compact rabies warning",async({page,request,tenant})=>{
-  await createAppointment(request,tenant,{localStart:`${tenant.anchor}T09:00`});
+test("@cross-browser @regression-calendar-time exposes on-demand appointment actions and one compact rabies warning",async({page,request,tenant})=>{
+  const appointment=await createAppointment(request,tenant,{localStart:`${tenant.anchor}T09:00`});
+  const laterAppointment=await createAppointment(request,tenant,{localStart:`${tenant.anchor}T11:00`});
   await login(page,tenant.ownerEmail);await page.getByTestId("nav-calendar").click();
-  const card=page.locator(`.week-appointment[data-appointment-id]`).first();
+  const card=page.locator(`.week-appointment[data-appointment-id="${appointment.id}"]`);
   await expect(card.getByTestId("rabies-appointment-status")).toHaveText("Rabies needed");
-  await expect(card.getByRole("button",{name:"Check in"})).toBeVisible();
-  const actionMenu=card.locator(".calendar-actions-menu");await actionMenu.locator("summary").press("Enter");
-  await expect(actionMenu).toHaveAttribute("open","");
-  await expect(card.getByRole("button",{name:"Move"})).toBeVisible();
-  await expect(card.getByRole("button",{name:"Cancel",exact:true})).toBeVisible();
-  await expect(card.getByRole("button",{name:"No show"})).toBeVisible();
+  await expect(card.locator(".appointment-card-footer > [data-testid=\"rabies-appointment-status\"]")).toHaveCount(1);
+  await expect(card.getByRole("menuitem",{name:"Check in"})).toBeHidden();
+  const trigger=card.getByRole("button",{name:/Appointment actions for/});await trigger.press("Enter");
+  await expect(trigger).toHaveAttribute("aria-expanded","true");
+  await expect(card.getByRole("menuitem",{name:"Check in"})).toBeVisible();
+  await expect(card.getByRole("menuitem",{name:"View / Edit"})).toBeVisible();
+  await expect(card.getByRole("menuitem",{name:"Move"})).toBeVisible();
+  await expect(card.getByRole("menuitem",{name:"Cancel appointment"})).toBeVisible();
+  await expect(card.getByRole("menuitem",{name:"No show"})).toBeVisible();
   await expect(card.locator("select")).toHaveCount(0);
+  const laterTrigger=page.locator(`.week-appointment[data-appointment-id="${laterAppointment.id}"]`).getByRole("button",{name:/Appointment actions for/});await laterTrigger.focus();await laterTrigger.press("Enter");await expect(trigger).toHaveAttribute("aria-expanded","false");await expect(laterTrigger).toHaveAttribute("aria-expanded","true");
+  await page.keyboard.press("Escape");await expect(laterTrigger).toHaveAttribute("aria-expanded","false");await expect(laterTrigger).toBeFocused();
+  await trigger.click();
+  await page.locator("#calendar-range").click();await expect(trigger).toHaveAttribute("aria-expanded","false");
+  await card.locator(".calendar-open").click();
+  const dialog=page.getByTestId("modal");await expect(dialog.getByRole("button",{name:"Close"})).toHaveCount(2);await expect(dialog.getByTestId("modal-submit")).toBeHidden();
 });
 
 test("@cross-browser @regression-calendar-time renders groomer day lanes and preserves slot click intent near an appointment",async({page,request,tenant})=>{
@@ -71,7 +81,7 @@ test("@cross-browser @regression-calendar-time renders groomer day lanes and pre
   await expect(page.locator(".day-groomer",{hasText:"Inactive Groomer"})).toHaveCount(0);
   await expect(page.locator(`.day-appointment[data-appointment-id="${appointment.id}"]`)).toHaveCount(2);
   await page.locator(`.day-appointment[data-appointment-id="${appointment.id}"] .calendar-open`).first().click();
-  await expect(page.getByTestId("modal")).toBeVisible();await page.getByTestId("modal").getByRole("button",{name:"Close"}).click();
+  await expect(page.getByTestId("modal")).toBeVisible();await page.getByTestId("modal").locator(".modal-actions").getByRole("button",{name:"Close"}).click();
   const slot=page.locator(`.day-slot[data-slot="${tenant.anchor}T09:00"][data-slot-groomer="${tenant.employeeId}"]`);
   const box=await slot.boundingBox();expect(box).not.toBeNull();
   await slot.click({position:{x:box!.width-3,y:Math.min(10,box!.height/2)}});

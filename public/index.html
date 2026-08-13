@@ -47,10 +47,14 @@
         <button type="button" data-testid="nav-calendar" data-view="calendar" data-permission="calendar.view">Calendar</button>
         <button type="button" data-testid="nav-customers" data-view="customers" data-any-permission="customers.view,pets.view">Customers &amp; pets</button>
         <button type="button" data-testid="nav-services" data-view="services">Services</button>
-        <button type="button" data-testid="nav-setup" data-view="setup" data-any-permission="services.manage,team.manage,settings.manage">Salon setup</button>
+        <button type="button" data-testid="nav-setup" data-view="setup" data-any-permission="services.manage,team.manage,settings.manage">Salon</button>
         <button type="button" data-testid="nav-reports" data-view="reports" data-permission="reports.view">Reports</button>
       </nav>
       <div class="aside-foot">
+        <details class="setup-menu settings-control" data-permission="settings.manage">
+          <summary data-testid="settings-trigger" aria-label="Settings" aria-expanded="false"><span aria-hidden="true">⚙</span> Settings</summary>
+          <nav class="setup-menu-items" aria-label="Administrative settings"><button type="button" data-action="business-settings">Business settings</button><button type="button" data-view-target="admin-settings">Workspace access</button></nav>
+        </details>
         <div class="account-control">
           <button id="account-trigger" data-testid="account-trigger" type="button" aria-haspopup="menu" aria-expanded="false">
             <span class="avatar" id="account-avatar" aria-hidden="true">P</span>
@@ -107,20 +111,28 @@
       </section>
 
       <section id="setup" data-testid="setup-view" class="view" hidden>
-        <div class="split-head"><div><p class="eyebrow">Foundation</p><h3>Salon setup</h3></div><details class="setup-menu"><summary aria-label="Business settings menu" aria-expanded="false">Business settings <span aria-hidden="true">▾</span></summary><nav class="setup-menu-items" aria-label="Salon setup settings"><button data-permission="settings.manage" type="button" data-action="business-hours">Business hours</button><button data-testid="business-settings" data-permission="settings.manage" type="button" data-action="business-settings">Business settings</button><a href="/salon/breeds" data-view-link="breed-catalog">Breed catalog</a></nav></details></div>
+        <div class="split-head"><div><p class="eyebrow">Location operations</p><h3>Salon</h3></div><details class="setup-menu"><summary aria-label="Salon sections" aria-expanded="false">Salon sections <span aria-hidden="true">▾</span></summary><nav class="setup-menu-items" aria-label="Salon sections"><button data-permission="settings.manage" type="button" data-action="business-hours">Business hours</button><a href="/salon/breeds" data-view-link="breed-catalog">Breed catalog</a></nav></details></div>
         <div class="content-grid">
           <article class="panel" data-permission="team.manage"><div class="panel-head"><h3>Team</h3><button type="button" class="text-button" data-action="new-employee">+ Add</button></div><div id="employee-list" class="simple-list"></div></article>
-          <article class="panel" data-permission="team.manage"><div class="panel-head"><h3>Workspace access</h3><button type="button" class="text-button" data-action="invite-member">+ Invite</button></div><div id="member-list" class="simple-list"></div><div class="access-request-section"><h4>Pending access requests</h4><div id="access-request-list" class="simple-list"></div></div></article>
-          <article class="panel" data-permission="services.manage"><h3>Business settings</h3><p>Manage salon details and operating preferences.</p><div class="settings-list"><button class="settings-row" type="button" data-action="business-settings"><span><strong>Open settings</strong><small>Salon identity, timezone, currency, tax, and reminders</small></span><span aria-hidden="true">Open →</span></button></div></article>
+          <article class="panel" data-permission="settings.manage"><h3>Business hours</h3><p>Set the operating hours used by scheduling.</p><div class="settings-list"><button class="settings-row" type="button" data-action="business-hours"><span><strong>Manage hours</strong><small>Location opening and closing times</small></span><span aria-hidden="true">Open →</span></button></div></article>
+          <article class="panel" data-permission="services.manage"><h3>Breed Catalog</h3><p>Manage breeds and pricing classifications.</p><div class="settings-list"><a class="settings-row" href="/salon/breeds" data-view-link="breed-catalog"><span><strong>Manage breeds</strong><small>Active breeds and pricing classes</small></span><span aria-hidden="true">Open →</span></a></div></article>
         </div>
       </section>
 
       <section id="breed-catalog" data-testid="breed-catalog-view" class="view" data-permission="services.manage" hidden>
-        <div class="split-head breed-catalog-head"><div><nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/" data-view-link="setup">Salon setup</a><span aria-hidden="true">/</span><span>Business settings</span><span aria-hidden="true">/</span><span aria-current="page">Breed Catalog</span></nav><p class="eyebrow">Business settings</p><h3>Breed Catalog</h3><p>Manage breeds and pricing classifications.</p></div><details class="setup-menu"><summary aria-label="Business settings menu" aria-expanded="false">Business settings <span aria-hidden="true">▾</span></summary><nav class="setup-menu-items" aria-label="Breed Catalog settings"><button data-permission="settings.manage" type="button" data-action="business-hours">Business hours</button><button data-permission="settings.manage" type="button" data-action="business-settings">Business settings</button><a href="/salon/breeds" data-view-link="breed-catalog" aria-current="page">Breed catalog</a></nav></details></div>
+        <div class="split-head breed-catalog-head"><div><nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/" data-view-link="setup">Salon</a><span aria-hidden="true">/</span><span aria-current="page">Breed Catalog</span></nav><p class="eyebrow">Salon</p><h3>Breed Catalog</h3><p>Manage breeds and pricing classifications.</p></div><details class="setup-menu"><summary aria-label="Salon sections" aria-expanded="false">Salon sections <span aria-hidden="true">▾</span></summary><nav class="setup-menu-items" aria-label="Breed Catalog sections"><button data-permission="settings.manage" type="button" data-action="business-hours">Business hours</button><a href="/salon/breeds" data-view-link="breed-catalog" aria-current="page">Breed catalog</a></nav></details></div>
         <div class="breed-toolbar"><label class="search"><span class="sr-only">Search breeds</span><input data-testid="breed-search" id="breed-search" type="search" placeholder="Search breeds…"></label><label class="inline-check"><input id="breed-show-inactive" type="checkbox"> Show inactive</label></div>
         <form id="breed-add-form" class="breed-add-row"><label><span>Breed name</span><input data-testid="breed-add-name" name="name" type="text" required maxlength="100"></label><label><span>Pricing class</span><select data-testid="breed-add-class" name="defaultPricingClass"><option value="SMOOTH_SINGLE">Smooth Single</option><option value="STANDARD" selected>Standard</option><option value="EXTRA_FLOOF">Extra Floof</option></select></label><button class="primary compact" type="submit">Add breed</button><div id="breed-add-error" class="error breed-error" role="alert" aria-live="assertive"></div></form>
         <div class="breed-table-wrap"><table class="breed-table"><thead><tr><th scope="col"><button id="breed-sort-name" type="button" class="table-sort" aria-label="Sort breed name">Breed <span aria-hidden="true">A–Z</span></button></th><th scope="col">Pricing class</th><th scope="col">Status</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="breed-catalog-body"></tbody></table></div>
         <p id="breed-catalog-status" class="fine" role="status" aria-live="polite"></p>
+      </section>
+
+      <section id="admin-settings" data-testid="admin-settings-view" class="view" data-permission="settings.manage" hidden>
+        <div class="split-head"><div><p class="eyebrow">Administration</p><h3>Settings</h3><p>Manage workspace-wide identity and access.</p></div><button data-testid="business-settings" type="button" class="secondary compact" data-action="business-settings">Business settings</button></div>
+        <div class="content-grid">
+          <article class="panel" data-permission="team.manage"><div class="panel-head"><h3>Workspace access</h3><button type="button" class="secondary compact" data-action="invite-member">+ Invite</button></div><div id="member-list" class="simple-list"></div><div class="access-request-section"><h4>Pending access requests</h4><div id="access-request-list" class="simple-list"></div></div></article>
+          <article class="panel"><h3>Business settings</h3><p>Manage workspace identity, timezone, currency, tax, and reminders.</p><div class="settings-list"><button class="settings-row" type="button" data-action="business-settings"><span><strong>Open settings</strong><small>Global business configuration</small></span><span aria-hidden="true">Open →</span></button></div></article>
+        </div>
       </section>
 
       <section id="reports" class="view" hidden>

@@ -40,27 +40,27 @@
   </div>
 
   <div id="app-view" class="app-shell" hidden>
-    <aside>
+    <aside aria-label="Application navigation">
       <a class="brand" href="/">pawsh<span>.</span></a>
       <button type="button" id="mobile-nav-toggle" class="mobile-nav-toggle" aria-label="Open navigation" aria-expanded="false" aria-controls="primary-navigation">☰</button>
       <nav id="primary-navigation" class="primary-nav" aria-label="Main navigation">
-        <button type="button" data-testid="nav-dashboard" data-view="dashboard" class="active" aria-label="Dashboard"><span class="nav-icon" aria-hidden="true">⌂</span><span>Dashboard</span></button>
-        <button type="button" data-testid="nav-calendar" data-view="calendar" data-permission="calendar.view" aria-label="Calendar"><span class="nav-icon" aria-hidden="true">▦</span><span>Calendar</span></button>
-        <button type="button" data-testid="nav-customers" data-view="customers" data-any-permission="customers.view,pets.view" aria-label="Clients"><span class="nav-icon" aria-hidden="true">♙</span><span>Clients</span></button>
-        <button type="button" data-testid="nav-messages" data-view="messages" aria-label="Messages"><span class="nav-icon" aria-hidden="true">◇</span><span>Messages</span></button>
-        <button type="button" data-testid="nav-reminders" data-view="reminders" aria-label="Reminders"><span class="nav-icon" aria-hidden="true">♢</span><span>Reminders</span></button>
-        <button type="button" data-testid="nav-sales" data-view="sales-expense" data-permission="payments.view" aria-label="Sales and Expense"><span class="nav-icon" aria-hidden="true">$</span><span>Sales &amp; Expense</span></button>
-        <button type="button" data-testid="nav-product" data-view="product" aria-label="Product"><span class="nav-icon" aria-hidden="true">□</span><span>Product</span></button>
-        <button type="button" data-testid="nav-reports" data-view="reports" data-permission="reports.view" aria-label="Report"><span class="nav-icon" aria-hidden="true">⌁</span><span>Report</span></button>
-        <button type="button" data-testid="nav-settings" data-view="admin-settings" data-permission="settings.manage" aria-label="Settings"><span class="nav-icon" aria-hidden="true">⚙</span><span>Settings</span></button>
+        <button type="button" data-testid="nav-dashboard" data-view="dashboard" class="active" aria-label="Dashboard"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 15a8 8 0 1 1 16 0M12 15l4-5M7 19h10"/></svg></span><span>Dashboard</span></button>
+        <button type="button" data-testid="nav-calendar" data-view="calendar" data-permission="calendar.view" aria-label="Calendar"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 10h18M7 14h2M11 14h2M15 14h2"/></svg></span><span>Calendar</span></button>
+        <button type="button" data-testid="nav-customers" data-view="customers" data-any-permission="customers.view,pets.view" aria-label="Clients"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></span><span>Clients</span></button>
+        <button type="button" data-testid="nav-messages" data-view="messages" aria-label="Messages"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h12a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3H9l-5 4V5Z"/><path d="M8 9h7M8 12h5"/></svg></span><span>Messages</span></button>
+        <button type="button" data-testid="nav-reminders" data-view="reminders" aria-label="Reminders"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 9a6 6 0 0 1 12 0v5l2 3H4l2-3V9ZM10 21h4"/></svg></span><span>Reminders</span></button>
+        <button type="button" data-testid="nav-sales" data-view="sales-expense" data-permission="payments.view" aria-label="Sales and Expense"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 8.5c-.8-.5-1.7-.7-2.8-.7-1.5 0-2.7.8-2.7 2s1 1.8 2.7 2.2 2.8 1 2.8 2.3-1.2 2.1-2.9 2.1c-1.2 0-2.3-.3-3.1-.9M12 5.5v13"/></svg></span><span>Sales &amp; Expense</span></button>
+        <button type="button" data-testid="nav-product" data-view="product" aria-label="Product"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 8h14l-1 13H6L5 8ZM9 8a3 3 0 0 1 6 0"/></svg></span><span>Product</span></button>
+        <button type="button" data-testid="nav-reports" data-view="reports" data-permission="reports.view" aria-label="Report"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v9h9A9 9 0 1 1 12 3Z"/><path d="M15 3.5A7 7 0 0 1 20.5 9H15V3.5Z"/></svg></span><span>Report</span></button>
+        <button type="button" data-testid="nav-settings" data-view="admin-settings" data-permission="settings.manage" aria-label="Settings"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg></span><span>Settings</span></button>
         <span class="nav-divider" aria-hidden="true"></span>
-        <button type="button" data-testid="nav-services" data-view="services" aria-label="Services"><span class="nav-icon" aria-hidden="true">✂</span><span>Services</span></button>
-        <button type="button" data-testid="nav-setup" data-view="setup" data-any-permission="services.manage,team.manage,settings.manage" aria-label="Salon"><span class="nav-icon" aria-hidden="true">⌂</span><span>Salon</span></button>
+        <button type="button" data-testid="nav-setup" data-view="setup" data-any-permission="services.manage,team.manage,settings.manage" aria-label="Salon"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m3 11 9-8 9 8M5 10v11h14V10M9 21v-6h6v6"/></svg></span><span>Salon</span></button>
       </nav>
     </aside>
     <main>
       <header>
         <div><p class="eyebrow" id="page-kicker">Daily operations</p><h2 id="page-title">Good morning</h2></div>
+        <button data-testid="header-services" type="button" class="header-services" data-view-target="services">Services</button>
         <div class="header-actions"><span id="today"></span><button data-testid="new-appointment" data-permission="appointments.create" type="button" class="primary compact" data-action="new-appointment">+ New appointment</button><div class="account-control"><button id="account-trigger" data-testid="account-trigger" type="button" aria-label="Account menu" aria-haspopup="menu" aria-expanded="false"><span class="avatar" id="account-avatar" aria-hidden="true">P</span><span class="sr-only" id="account-name">Pawsh user</span><span class="sr-only" id="account-role">Workspace member</span></button><div id="account-menu" class="account-menu" role="menu" hidden><button data-testid="profile-account-link" type="button" role="menuitem" data-view-target="profile-account">Profile &amp; account</button><button id="account-change-password" type="button" role="menuitem">Change password</button><button type="button" role="menuitem" disabled aria-disabled="true" title="Pawsh currently supports one active salon location">Switch location <small>Coming later</small></button><button type="button" role="menuitem" disabled aria-disabled="true" title="Referral invitations are not yet supported">Invite a friend <small>Coming later</small></button><hr><button id="logout" data-testid="logout" type="button" role="menuitem">Sign out</button></div></div></div>
       </header>
 
@@ -99,7 +99,8 @@
       </section>
 
       <section id="services" data-testid="services-view" class="view" hidden>
-        <div class="split-head"><div><p class="eyebrow">Catalog</p><h3>Services &amp; Pricing</h3><p>Configure bookable services, prices, durations, add-ons, and availability.</p></div><button data-permission="services.manage" type="button" class="primary compact" data-action="new-service">+ Service</button></div>
+        <div class="split-head services-head"><div><p class="eyebrow">Catalog &amp; pricing</p><h3>Services</h3><p>Authoritative pricing, duration, and booking availability for future appointments.</p></div><div><button type="button" class="secondary compact" id="add-service-category" disabled title="Pawsh uses fixed operational service categories">+ Add category</button><button data-permission="services.manage" type="button" class="primary compact" data-action="new-service">+ Add service</button></div></div>
+        <div class="service-controls"><label class="search"><span>Search services</span><input id="service-search" type="search" placeholder="Name or description"></label><label>Category<select id="service-category-filter"><option value="all">All categories</option><option value="DOG_BASE">Main services</option><option value="DOG_ADDON">Dog add-ons</option><option value="A_LA_CARTE">À la carte</option><option value="CAT">Cat services</option><option value="GENERAL">General</option></select></label><label>Status<select id="service-status-filter"><option value="active">Active</option><option value="all">All</option><option value="archived">Archived</option></select></label><button type="button" class="secondary compact" id="service-filter-reset">Reset</button></div>
         <div id="service-list" class="service-catalog"></div>
       </section>
 
@@ -121,11 +122,7 @@
       </section>
 
       <section id="admin-settings" data-testid="admin-settings-view" class="view" data-permission="settings.manage" hidden>
-        <div class="split-head"><div><p class="eyebrow">Administration</p><h3>Settings</h3><p>Manage workspace-wide identity and access.</p></div><button data-testid="business-settings" type="button" class="secondary compact" data-action="business-settings">Business settings</button></div>
-        <div class="content-grid">
-          <article class="panel" data-permission="team.manage"><div class="panel-head"><h3>Workspace access</h3><button type="button" class="secondary compact" data-action="invite-member">+ Invite</button></div><div id="member-list" class="simple-list"></div><div class="access-request-section"><h4>Pending access requests</h4><div id="access-request-list" class="simple-list"></div></div></article>
-          <article class="panel"><h3>Business settings</h3><p>Manage workspace identity, timezone, currency, tax, and reminders.</p><div class="settings-list"><button class="settings-row" type="button" data-action="business-settings"><span><strong>Open settings</strong><small>Global business configuration</small></span><span aria-hidden="true">Open →</span></button></div></article>
-        </div>
+        <div class="settings-workspace"><aside class="settings-secondary" aria-label="Settings navigation"><div><p class="eyebrow">Workspace</p><h3>Settings</h3></div><nav id="settings-navigation" aria-label="Settings categories"></nav></aside><div id="settings-content" class="settings-content" tabindex="-1"></div></div>
       </section>
 
       <section id="reports" class="view" hidden>

@@ -31,7 +31,7 @@ test("@smoke business configuration persists through the GUI",async({page,tenant
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-settings").click();
   await expect(page.getByTestId("admin-settings-view")).toBeVisible();
-  await page.getByTestId("business-settings").click();
+  await page.locator("#settings-navigation").getByRole("button",{name:"Business",exact:true}).click();await page.getByRole("button",{name:"Edit business settings"}).click();
   await page.getByTestId("field-name").fill(`QA Salon ${tenant.runId}`);
   await page.getByTestId("field-timezone").fill("America/Los_Angeles");
   await page.getByTestId("field-currency").fill("USD");
@@ -161,11 +161,12 @@ test("@responsive Breed Catalog preserves compact Salon context without horizont
 
 test("@smoke Settings owns administration while Profile and Services remain separate",async({page,tenant})=>{
   await login(page,tenant.ownerEmail);
-  await expect(page.getByTestId("nav-services")).toBeVisible();
+  await expect(page.getByTestId("nav-services")).toHaveCount(0);await expect(page.getByTestId("header-services")).toBeVisible();
   await expect(page.getByTestId("nav-setup")).toContainText("Salon");
   const settings=page.getByTestId("nav-settings");await expect(settings).toHaveAccessibleName("Settings");await settings.click();
   await expect(page.getByTestId("admin-settings-view")).toBeVisible();
-  await expect(page.getByRole("heading",{name:"Workspace access"})).toBeVisible();
+  await expect(page.locator("#settings-navigation").getByRole("button",{name:"Account"})).toHaveAttribute("aria-current","page");
+  await page.locator("#settings-navigation").getByRole("button",{name:"Permissions"}).click();await expect(page.getByTestId("admin-settings-view").locator("h2",{hasText:"Permissions"})).toBeVisible();
   await page.getByTestId("account-trigger").click();await page.getByTestId("profile-account-link").click();
   await expect(page.getByTestId("profile-account-view")).toBeVisible();
   await expect(page.getByTestId("admin-settings-view")).toBeHidden();
@@ -177,11 +178,27 @@ test("@smoke primary navigation exposes requested destinations without orphaning
   for(const [testId,name] of destinations)await expect(page.getByTestId(testId)).toHaveAccessibleName(name);
   await page.getByTestId("nav-messages").click();await expect(page.locator("#messages").getByRole("heading",{name:"Messages"})).toBeVisible();
   await page.getByTestId("nav-product").click();await expect(page.locator("#product").getByRole("heading",{name:"Product"})).toBeVisible();
-  await expect(page.getByTestId("nav-services")).toBeVisible();await expect(page.getByTestId("nav-setup")).toBeVisible();
+  await expect(page.getByTestId("nav-services")).toHaveCount(0);await expect(page.getByTestId("header-services")).toBeVisible();await expect(page.getByTestId("nav-setup")).toBeVisible();
 });
 
 test("@smoke desktop navigation is an accessible minimized icon rail",async({page,tenant})=>{
   await page.setViewportSize({width:1440,height:900});await login(page,tenant.ownerEmail);
-  const nav=page.locator("#primary-navigation"),calendar=page.getByTestId("nav-calendar");expect((await nav.boundingBox())!.width).toBeLessThanOrEqual(55);await expect(calendar).toHaveAccessibleName("Calendar");
+  const nav=page.locator("#primary-navigation"),calendar=page.getByTestId("nav-calendar");expect((await nav.boundingBox())!.width).toBeLessThanOrEqual(55);await expect(calendar).toHaveAccessibleName("Calendar");await expect(nav.locator(".nav-icon svg")).toHaveCount(10);await expect(nav.locator(".nav-icon").first()).toHaveCSS("border-top-color","rgba(0, 0, 0, 0)");
   const label=calendar.locator("span").last();await expect(label).toHaveCSS("opacity","0");await calendar.focus();await expect(label).toHaveCSS("opacity","1");await calendar.click();await expect(calendar).toHaveAttribute("aria-current","page");await expect(calendar).toHaveClass(/active/);
+});
+
+test("@smoke Settings is a deep-linkable categorized workspace with honest canonical links and placeholders",async({page,tenant})=>{
+  await login(page,tenant.ownerEmail);await page.getByTestId("nav-settings").click();const navigation=page.locator("#settings-navigation");
+  const categories=["Account","Staff","Business","Availability","Appointment schedule","Locations","Permissions","Services","Payroll","Pet options","Tax & payments","Coupons & discounts","Automated messages","SMS auto-reply","Agreements","Online booking","Intake form","Client portal","Loyalty program","Review booster","Report card","Integrations"];
+  for(const category of categories)await expect(navigation.getByRole("button",{name:category,exact:true})).toBeVisible();
+  await navigation.getByRole("button",{name:"Payroll",exact:true}).click();await expect(page).toHaveURL(/\/settings\/payroll$/);await expect(page.getByTestId("settings-placeholder")).toContainText("not yet available");await expect(page.getByTestId("settings-placeholder").locator("input,select,textarea")).toHaveCount(0);
+  await page.reload();await expect(page.getByTestId("admin-settings-view").locator("h2",{hasText:"Payroll"})).toBeVisible();await expect(navigation.getByRole("button",{name:"Payroll",exact:true})).toHaveAttribute("aria-current","page");
+  await navigation.getByRole("button",{name:"Services",exact:true}).click();await page.getByRole("button",{name:"Open Services"}).click();await expect(page.getByTestId("services-view")).toBeVisible();
+  await page.getByTestId("account-trigger").click();await page.getByTestId("profile-account-link").click();await expect(page.getByTestId("profile-account-view")).toBeVisible();
+});
+
+test("@smoke Services is a single top-header catalog with dense grouped filtering",async({page,tenant})=>{
+  await login(page,tenant.ownerEmail);await expect(page.getByTestId("nav-services")).toHaveCount(0);const services=page.getByTestId("header-services");await expect(services).toHaveAccessibleName("Services");await services.click();await expect(services).toHaveAttribute("aria-current","page");await expect(page.getByTestId("services-view")).toBeVisible();
+  await expect(page.getByTestId("services-view").locator("h3",{hasText:"Services"})).toBeVisible();await expect(page.getByRole("button",{name:"Add service"})).toBeVisible();await expect(page.getByRole("button",{name:"Add category"})).toBeDisabled();await expect(page.locator(".service-category").first()).toBeVisible();
+  await page.locator("#service-search").fill("Ear Cleaning");await expect(page.locator(".service-row h4",{hasText:"Ear Cleaning"})).toBeVisible();await expect(page.locator(".service-row h4",{hasText:"Ear Plucking"})).toHaveCount(0);await page.locator("#service-filter-reset").click();await expect(page.locator(".service-row h4",{hasText:"Ear Plucking"})).toBeVisible();
 });

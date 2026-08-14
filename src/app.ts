@@ -60,6 +60,8 @@ export async function createApp(
       app.register(staticFiles, { root: resolve("public"), prefix: "/" }));
     app.get("/salon/breeds", async (_request, reply) => reply.sendFile("index.html"));
     app.get("/account", async (_request, reply) => reply.sendFile("index.html"));
+    app.get("/clients/*", async (_request, reply) => reply.sendFile("index.html"));
+    app.get("/intake-submissions", async (_request, reply) => reply.sendFile("index.html"));
     app.get("/settings", async (_request, reply) => reply.sendFile("index.html"));
     app.get("/settings/*", async (_request, reply) => reply.sendFile("index.html"));
     app.get("/reports/breeds", async (_request, reply) => reply.redirect("/salon/breeds", 308));

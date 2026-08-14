@@ -38,10 +38,16 @@ import {resolveServicePrices} from "../domain/service-pricing.js";
 
 type Transaction = postgres.TransactionSql;
 
+const employeeFilterSchema=z.preprocess(
+  value=>value===undefined||value===""?undefined
+    :(Array.isArray(value)?value:String(value).split(",")).map(entry=>String(entry).trim()).filter(Boolean),
+  z.array(z.string().uuid()).min(1).max(50).optional()
+);
 const calendarQuerySchema=z.object({
   localDate:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   days:z.coerce.number().int().min(1).max(31).optional(),
-  mode:z.enum(["start","overlap"]).optional()
+  mode:z.enum(["start","overlap"]).optional(),
+  employeeIds:employeeFilterSchema
 }).strict();
 const customerDirectoryQuerySchema=z.object({
   q:z.string().trim().max(200).optional(),
@@ -56,8 +62,17 @@ const customerDirectoryQuerySchema=z.object({
 }).strict();
 const reportRangeSchema=z.object({
   localDate:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  days:z.coerce.number().int().min(1).max(366).optional()
+  days:z.coerce.number().int().min(1).max(366).optional(),
+  employeeIds:employeeFilterSchema
 }).strict();
+const appointmentHistoryQuerySchema=z.object({
+  page:z.coerce.number().int().min(1).max(1000).default(1),
+  pageSize:z.coerce.number().int().min(10).max(100).default(25)
+}).strict();
+// Client and pet profiles read a bounded first page; the paginated history routes serve the tail.
+const profileHistoryLimit=100;
+const preferredGroomerSchema=z.object({employeeId:z.string().uuid().nullable()}).strict();
+const reminderQuerySchema=z.object({type:z.enum(["appointment_reminder","secondary_reminder","same_day_reminder","rebook_reminder","vaccination_reminder","birthday_reminder"])}).strict();
 
 interface SchedulingConflict {
   appointmentId: string;
@@ -366,6 +381,51 @@ async function completeFinancialRequest(
 
 function body<T>(schema: ZodType<T>, value: unknown): T {
   return schema.parse(value);
+}
+
+// Restricts an `appointments a` projection to appointments assigned to the requested groomers.
+function assignedToEmployees(db: Database, employeeIds: readonly string[] | undefined) {
+  if (!employeeIds?.length) return db`true`;
+  return db`exists(
+    select 1 from appointment_employees scoped_assignment
+    where scoped_assignment.business_id=a.business_id and scoped_assignment.appointment_id=a.id
+      and scoped_assignment.employee_id in ${db(employeeIds as string[])}
+  )`;
+}
+
+// Bounded appointment history projection carrying the service snapshots the profile views render,
+// so the client never has to fan out one request per appointment.
+async function appointmentHistoryPage(
+  db: Database,
+  input: { businessId: string; scope: "customer" | "pet"; id: string; limit: number; offset: number }
+): Promise<{ items: Record<string, unknown>[]; total: number }> {
+  const scope = input.scope === "customer" ? db`a.customer_id=${input.id}` : db`a.pet_id=${input.id}`;
+  const [items, totals] = await Promise.all([
+    db<Record<string, unknown>[]>`
+      select a.*, p.name as pet_name, e.display_name as employee_name,
+        coalesce((select json_agg(json_build_object(
+          'id',aps.id,'serviceId',aps.service_id,'name',aps.service_name_snapshot,
+          'durationMinutes',aps.duration_minutes_snapshot,'priceMinor',aps.price_minor_snapshot
+        ) order by aps.id) from appointment_services aps
+          where aps.business_id=a.business_id and aps.appointment_id=a.id),'[]') as services,
+        coalesce((select json_agg(json_build_object('id',staff.id,'displayName',staff.display_name)
+          order by staff.display_name)
+          from appointment_employees assignment
+          join employees staff on staff.business_id=assignment.business_id and staff.id=assignment.employee_id
+          where assignment.business_id=a.business_id and assignment.appointment_id=a.id),
+          json_build_array(json_build_object('id',e.id,'displayName',e.display_name))) as groomers
+      from appointments a
+      join pets p on p.business_id=a.business_id and p.id=a.pet_id
+      join employees e on e.business_id=a.business_id and e.id=a.employee_id
+      where a.business_id=${input.businessId} and ${scope}
+      order by a.start_at desc,a.id desc limit ${input.limit} offset ${input.offset}
+    `,
+    db<{ count: number }[]>`
+      select count(*)::int count from appointments a
+      where a.business_id=${input.businessId} and ${scope}
+    `
+  ]);
+  return { items, total: totals[0]?.count ?? 0 };
 }
 
 async function setTenant(tx: Transaction, businessId: string): Promise<void> {
@@ -1355,6 +1415,22 @@ export function registerRoutes(
     return reply.code(204).send();
   });
 
+  app.get("/api/employees/:id/working-hours", {
+    preHandler: [authenticate, requirePermission("calendar.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [employee] = await db<{ id: string }[]>`
+      select id from employees where business_id=${context.businessId} and id=${id}
+    `;
+    if (!employee) return reply.code(404).send({ error: "Employee not found" });
+    // HH:MM matches workingHoursSchema exactly, so the editor can feed this response straight
+    // back into PUT without reformatting. Days with no stored period are simply absent (closed).
+    return db`select weekday,to_char(start_time,'HH24:MI') as start_time,to_char(end_time,'HH24:MI') as end_time
+      from employee_working_hours
+      where business_id=${context.businessId} and employee_id=${id} order by weekday,start_time`;
+  });
+
   app.put("/api/employees/:id/working-hours", {
     preHandler: [authenticate, requirePermission("team.manage")]
   }, async (request, reply) => {
@@ -1424,7 +1500,8 @@ export function registerRoutes(
     preHandler: [authenticate, requirePermission("calendar.view")]
   }, async (request) => {
     const context=auth(request);
-    return db`select weekday,start_time,end_time from business_hours
+    return db`select weekday,to_char(start_time,'HH24:MI') as start_time,to_char(end_time,'HH24:MI') as end_time
+      from business_hours
       where business_id=${context.businessId} order by weekday,start_time`;
   });
 
@@ -1540,34 +1617,137 @@ export function registerRoutes(
     return updated;
   });
 
+  app.patch("/api/customers/:id/preferred-groomer", {
+    preHandler: [authenticate, requirePermission("customers.edit")]
+  }, async (request, reply) => {
+    const context=auth(request),{id}=idParams.parse(request.params),input=body(preferredGroomerSchema,request.body);
+    if(input.employeeId){
+      const [employee]=await db`select id from employees where business_id=${context.businessId} and id=${input.employeeId} and active`;
+      if(!employee)return reply.code(400).send({error:"Choose an active groomer"});
+    }
+    const [customer]=await db`
+      update customers set preferred_employee_id=${input.employeeId},updated_by=${context.userId},updated_at=now()
+      where business_id=${context.businessId} and id=${id} and archived_at is null returning id,preferred_employee_id
+    `;
+    if(!customer)return reply.code(404).send({error:"Active customer not found"});
+    return customer;
+  });
+
   app.get("/api/customers/:id/history", {
     preHandler: [authenticate, requirePermission("customers.view")]
   }, async (request, reply) => {
     const context = auth(request);
     const { id } = idParams.parse(request.params);
-    const [customer] = await db`select * from customers where business_id=${context.businessId} and id=${id}`;
+    const [customer] = await db`select customer.*,employee.display_name preferred_employee_name
+      from customers customer left join employees employee
+        on employee.business_id=customer.business_id and employee.id=customer.preferred_employee_id
+      where customer.business_id=${context.businessId} and customer.id=${id}`;
     if (!customer) return reply.code(404).send({ error: "Customer not found" });
     const mayViewCare = mayViewPetCare(context);
     const mayViewPayments = context.isOwner || context.permissions.includes("payments.view");
-    const [pets, appointments, invoices] = await Promise.all([
+    const [pets, history, invoices] = await Promise.all([
       db`select * from pets where business_id=${context.businessId} and customer_id=${id} order by name,id`,
-      db`select a.*, p.name as pet_name, e.display_name as employee_name
-         from appointments a join pets p on p.id=a.pet_id join employees e on e.id=a.employee_id
-         where a.business_id=${context.businessId} and a.customer_id=${id}
-         order by a.start_at desc,a.id desc`,
+      appointmentHistoryPage(db, {
+        businessId: context.businessId, scope: "customer", id, limit: profileHistoryLimit, offset: 0
+      }),
       mayViewPayments
         ? db`select id,invoice_number,status,subtotal_minor,discount_minor,tax_minor,tip_minor,
               total_minor,balance_minor,created_at
              from invoices where business_id=${context.businessId} and customer_id=${id}
-             order by created_at desc,id desc`
+             order by created_at desc,id desc limit ${profileHistoryLimit}`
         : Promise.resolve([])
     ]);
     return {
       customer,
       pets: mayViewCare ? pets : pets.map((pet) => redactPetCare(pet)),
-      appointments,
+      appointments: history.items,
+      appointmentTotal: history.total,
+      appointmentsTruncated: history.total > history.items.length,
       invoices
     };
+  });
+
+  app.get("/api/customers/:id/appointments", {
+    preHandler: [authenticate, requirePermission("customers.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const query = body(appointmentHistoryQuerySchema, request.query);
+    const [customer] = await db<{ id: string }[]>`
+      select id from customers where business_id=${context.businessId} and id=${id}
+    `;
+    if (!customer) return reply.code(404).send({ error: "Customer not found" });
+    const { items, total } = await appointmentHistoryPage(db, {
+      businessId: context.businessId, scope: "customer", id,
+      limit: query.pageSize, offset: (query.page - 1) * query.pageSize
+    });
+    return { items, total, page: query.page, pageSize: query.pageSize };
+  });
+
+  app.get("/api/reminders", {
+    preHandler: [authenticate, requirePermission("appointments.view")]
+  }, async (request) => {
+    const context=auth(request),query=body(reminderQuerySchema,request.query);
+    const supported=query.type==="appointment_reminder"||query.type==="vaccination_reminder";
+    if(!supported)return {supported:false,items:[]};
+    const notificationTypes=query.type==="appointment_reminder"
+      ? ["appointment_reminder"]
+      : ["rabies_expiration_customer","rabies_expiration_staff"];
+    const items=await db`
+      select intent.id,intent.appointment_id,intent.notification_type,intent.status reminder_status,
+        intent.scheduled_occurrence,intent.channel,intent.destination,intent.attempts,
+        appointment.status appointment_status,appointment.start_at,customer.first_name,customer.last_name,
+        coalesce((select json_agg(json_build_object(
+          'attemptNumber',attempt.attempt_number,'outcome',attempt.outcome,'createdAt',attempt.created_at,
+          'attemptKind',case when attempt.attempt_number=1 then 'initial' else 'retry' end,
+          'safeFailureReason',case when attempt.outcome='failed' then 'Delivery failed' else null end
+        ) order by attempt.attempt_number desc) from notification_delivery_attempts attempt
+          where attempt.business_id=intent.business_id and attempt.notification_intent_id=intent.id),'[]') logs
+      from notification_intents intent
+      left join appointments appointment on appointment.business_id=intent.business_id and appointment.id=intent.appointment_id
+      left join customers customer on customer.business_id=intent.business_id and customer.id=intent.customer_id
+      where intent.business_id=${context.businessId} and intent.notification_type in ${db(notificationTypes)}
+      order by intent.scheduled_occurrence desc,intent.id desc limit 200
+    `;
+    return {supported:true,items};
+  });
+
+  app.post("/api/reminders/:id/send", {
+    preHandler: [authenticate, requirePermission("appointments.edit")]
+  }, async (request,reply) => {
+    const context=auth(request),{id}=idParams.parse(request.params);
+    const [intent]=await db`
+      update notification_intents set status='pending',scheduled_occurrence=least(scheduled_occurrence,now()),updated_at=now()
+      where business_id=${context.businessId} and id=${id}
+        and notification_type in ('appointment_reminder','rabies_expiration_customer','rabies_expiration_staff')
+        and status in ('pending','failed') and attempts<5 returning id,status
+    `;
+    if(!intent)return reply.code(409).send({error:"Reminder cannot be sent or is already complete"});
+    return reply.code(202).send({queued:true,id:intent.id});
+  });
+
+  app.get("/api/reminders/:id/logs", {
+    preHandler: [authenticate, requirePermission("appointments.view")]
+  }, async (request, reply) => {
+    const context=auth(request),{id}=idParams.parse(request.params);
+    const [intent]=await db<{id:string;channel:string;destination:string;status:string;attempts:number}[]>`
+      select id,channel,destination,status,attempts from notification_intents
+      where business_id=${context.businessId} and id=${id}
+        and notification_type in ('appointment_reminder','rabies_expiration_customer','rabies_expiration_staff')
+    `;
+    if(!intent)return reply.code(404).send({error:"Reminder not found"});
+    // `attemptKind` keeps the audit trail readable: a first send and a later retry of the same
+    // reminder are otherwise indistinguishable rows. Provider errors stay server-side.
+    const logs=await db`
+      select attempt_number,outcome,created_at,
+        case when attempt_number=1 then 'initial' else 'retry' end as attempt_kind,
+        case when outcome='failed' then 'Delivery failed' else null end as safe_failure_reason
+      from notification_delivery_attempts
+      where business_id=${context.businessId} and notification_intent_id=${id}
+      order by attempt_number desc limit 50
+    `;
+    return {id:intent.id,channel:intent.channel,destination:intent.destination,
+      reminderStatus:intent.status,attempts:intent.attempts,logs};
   });
 
   app.post("/api/customers/:id/archive", {
@@ -1693,6 +1873,49 @@ export function registerRoutes(
       return created;
     });
     return reply.code(201).send(mayViewPetCare(context) ? pet : redactPetCare(pet as PetCareRecord & {id:string}));
+  });
+
+  app.get("/api/pets/:id", {
+    preHandler: [authenticate, requirePermission("pets.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [pet] = await db`
+      select p.*, concat_ws(' ', c.first_name, c.last_name) as customer_name,
+        c.phone as customer_phone, c.email as customer_email, c.archived_at as customer_archived_at,
+        (select upcoming.scheduled_local_start from appointments upcoming
+          where upcoming.business_id=p.business_id and upcoming.pet_id=p.id
+            and upcoming.status='scheduled' and upcoming.start_at>now()
+          order by upcoming.start_at,upcoming.id limit 1) as next_appointment_local_start,
+        coalesce(verifier_employee.display_name,verifier_user.email) as rabies_verified_by_name
+      from pets p
+      join customers c on c.business_id=p.business_id and c.id=p.customer_id
+      left join business_memberships verifier on verifier.business_id=p.business_id
+        and verifier.id=p.rabies_verified_by_membership_id
+      left join users verifier_user on verifier_user.id=verifier.user_id
+      left join employees verifier_employee on verifier_employee.business_id=p.business_id
+        and verifier_employee.membership_id=verifier.id
+      where p.business_id=${context.businessId} and p.id=${id}
+    `;
+    if (!pet) return reply.code(404).send({ error: "Pet not found" });
+    return mayViewPetCare(context) ? pet : redactPetCare(pet);
+  });
+
+  app.get("/api/pets/:id/appointments", {
+    preHandler: [authenticate, requirePermission("pets.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const query = body(appointmentHistoryQuerySchema, request.query);
+    const [pet] = await db<{ id: string }[]>`
+      select id from pets where business_id=${context.businessId} and id=${id}
+    `;
+    if (!pet) return reply.code(404).send({ error: "Pet not found" });
+    const { items, total } = await appointmentHistoryPage(db, {
+      businessId: context.businessId, scope: "pet", id,
+      limit: query.pageSize, offset: (query.page - 1) * query.pageSize
+    });
+    return { items, total, page: query.page, pageSize: query.pageSize };
   });
 
   app.put("/api/pets/:id", {
@@ -2162,6 +2385,7 @@ export function registerRoutes(
       join employees e on e.id=a.employee_id
       left join appointment_services aps on aps.appointment_id=a.id
       where a.business_id=${context.businessId} and a.location_id=${location.id}
+        and ${assignedToEmployees(db,query.employeeIds)}
         and ${overlap
           ? db`a.start_at < ${to} and a.end_at > ${from}`
           : db`a.start_at >= ${from} - interval '2 days' and a.start_at < ${to} + interval '2 days'
@@ -2174,12 +2398,15 @@ export function registerRoutes(
 
   app.get("/api/pets/:id/booking-defaults",{preHandler:[authenticate,requirePermission("appointments.create")]},async(request,reply)=>{
     const context=auth(request);const {id}=idParams.parse(request.params);
-    const [pet]=await db<{id:string}[]>`select id from pets where business_id=${context.businessId} and id=${id} and archived_at is null`;
+    const [pet]=await db<{id:string;preferredEmployeeId:string|null}[]>`select pet.id,customer.preferred_employee_id
+      from pets pet join customers customer on customer.business_id=pet.business_id and customer.id=pet.customer_id
+      where pet.business_id=${context.businessId} and pet.id=${id} and pet.archived_at is null and customer.archived_at is null`;
     if(!pet)return reply.code(404).send({error:"Pet not found"});
     const [recent]=await db<{id:string}[]>`
       select id from appointments where business_id=${context.businessId} and pet_id=${id}
         and status<>'cancelled' order by start_at desc,id desc limit 1`;
-    if(!recent)return {groomers:[],services:[]};
+    if(!recent){const groomers=pet.preferredEmployeeId?await db`select id,display_name from employees
+      where business_id=${context.businessId} and id=${pet.preferredEmployeeId} and active`:[];return {groomers,services:[]};}
     const groomers=await db`
       select employee.id,employee.display_name from appointment_employees assignment
       join employees employee on employee.id=assignment.employee_id and employee.business_id=assignment.business_id
@@ -2199,8 +2426,8 @@ export function registerRoutes(
     const context = auth(request);
     const requestKey=schedulingIdempotencyKey(request);
     const input = body(appointmentSchema, request.body);
-    const employeeIds=[...new Set(input.employeeIds??(input.employeeId?[input.employeeId]:[]))];
-    const primaryEmployeeId=employeeIds[0]!;
+    const primaryEmployeeId=input.employeeId;
+    const employeeIds=[primaryEmployeeId];
     const canonicalizationVersion="appointment.create:v2" as const;
     const normalizedServiceIds=[...new Set(input.serviceIds)].sort();
     const requestHash=schedulingCanonicalHash("appointment.create",canonicalizationVersion,[
@@ -2412,8 +2639,8 @@ export function registerRoutes(
     const { id } = idParams.parse(request.params);
     const requestKey=schedulingIdempotencyKey(request);
     const input = body(appointmentMoveSchema, request.body);
-    const employeeIds=[...new Set(input.employeeIds??(input.employeeId?[input.employeeId]:[]))];
-    const primaryEmployeeId=employeeIds[0]!;
+    const primaryEmployeeId=input.employeeId;
+    const employeeIds=[primaryEmployeeId];
     const canonicalizationVersion="appointment.reschedule:v2" as const;
     const requestHash=schedulingCanonicalHash("appointment.reschedule",canonicalizationVersion,[
       id,input.version,[...employeeIds].sort(),input.localStart,input.disambiguation??null,input.expectedLocationVersion,
@@ -2907,11 +3134,33 @@ export function registerRoutes(
     const from=localDateBounds(localDate,location.timezone).from;
     const end=new Date(Date.UTC(Number(localDate.slice(0,4)),Number(localDate.slice(5,7))-1,Number(localDate.slice(8,10))+days)).toISOString().slice(0,10);
     const to=localDateBounds(end,location.timezone).from;
-    const [revenue, employees, servicesPerformed] = await Promise.all([
+    // One authoritative source for both the Charts and Report views.
+    //
+    // BUSINESS TOTALS (`totals`) count unique underlying business events. The groomer filter is an
+    // `exists` predicate, never a join, so an appointment shared by groomers A and B is counted once
+    // for `employeeIds=A`, once for `employeeIds=B`, and still once for `employeeIds=A,B`. Its invoice
+    // is likewise counted once. Regression: "counts a shared multi-groomer appointment once in
+    // business totals and once per groomer in attribution".
+    //   paidRevenueMinor      sum(invoices.total_minor - invoices.balance_minor) for invoices created in
+    //                         [from,to) whose appointment matches the filter. Cash collected, not billed.
+    //   completedAppointments count(appointments) with status='completed' and start_at in [from,to).
+    //   servicesPerformed     count(appointment_services) rows on those completed appointments.
+    //
+    // GROOMER ATTRIBUTION (`employees`) is deliberately overlapping: every assigned groomer is credited
+    // with the whole shared appointment, because Pawsh has no allocation model and inventing one (splits,
+    // commissions, percentages) would fabricate data. Consequence: these rows MUST NOT be summed to
+    // produce a business total — read `totals` instead.
+    //
+    // DATE SEMANTICS: revenue buckets by invoice `created_at`; operational metrics bucket by appointment
+    // `start_at`. The two windows can legitimately disagree and that is not a bug.
+    const appointmentScope=assignedToEmployees(db,query.employeeIds);
+    const employeeScope=query.employeeIds?.length?db`e.id in ${db(query.employeeIds)}`:db`true`;
+    const [revenue, employees, servicesPerformed, completed] = await Promise.all([
       db`
         select (i.created_at at time zone l.timezone)::date as date,sum(i.total_minor-i.balance_minor)::bigint as revenue_minor
         from invoices i join appointments a on a.id=i.appointment_id join locations l on l.id=a.location_id
         where i.business_id=${context.businessId} and i.created_at>=${from} and i.created_at<${to}
+          and ${appointmentScope}
         group by (i.created_at at time zone l.timezone)::date order by date
       `,
       db`
@@ -2920,18 +3169,32 @@ export function registerRoutes(
           on assignment.business_id=e.business_id and assignment.employee_id=e.id
         left join appointments a on a.id=assignment.appointment_id
           and a.start_at>=${from} and a.start_at<${to} and a.status='completed'
-        where e.business_id=${context.businessId}
+        where e.business_id=${context.businessId} and ${employeeScope}
         group by e.id order by appointment_count desc
       `,
       db`
         select aps.service_name_snapshot as service,count(*)::integer as performed
         from appointment_services aps join appointments a on a.id=aps.appointment_id
         where aps.business_id=${context.businessId} and a.status='completed'
-          and a.start_at>=${from} and a.start_at<${to}
+          and a.start_at>=${from} and a.start_at<${to} and ${appointmentScope}
         group by aps.service_name_snapshot order by performed desc
+      `,
+      db<{ completedAppointments: number }[]>`
+        select count(*)::int completed_appointments from appointments a
+        where a.business_id=${context.businessId} and a.status='completed'
+          and a.start_at>=${from} and a.start_at<${to} and ${appointmentScope}
       `
     ]);
-    return { localDate, days, from, to, revenue, employees, services: servicesPerformed };
+    const totals={
+      paidRevenueMinor:revenue.reduce((sum,row)=>sum+Number((row as {revenueMinor:string|number}).revenueMinor),0),
+      completedAppointments:completed[0]?.completedAppointments??0,
+      servicesPerformed:servicesPerformed.reduce((sum,row)=>sum+Number((row as {performed:number}).performed),0)
+    };
+    return {
+      localDate, days, from, to,
+      employeeIds: query.employeeIds ?? null,
+      totals, revenue, employees, services: servicesPerformed
+    };
   });
 
   app.get("/api/audit", {

@@ -33,7 +33,7 @@ test("@cross-browser calendar booking remains visible after reload",async({page,
   await page.getByTestId("calendar-add-appointment").click();
   await page.getByTestId("field-customerId").selectOption(tenant.customerId);
   await page.getByTestId("field-petId").selectOption(tenant.petId);
-  await page.locator(`input[name="employeeIds"][value="${tenant.employeeId}"]`).check();
+  await page.locator('select[name="employeeId"]').selectOption(tenant.employeeId);
   await page.getByRole("checkbox",{name:/Full Groom/}).check();
   await page.getByTestId("field-startAt").fill(`${tenant.anchor}T09:00`);
   await page.getByTestId("modal-submit").click();

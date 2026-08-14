@@ -169,6 +169,36 @@ describeDatabase("canonical Pawsh workflow", () => {
     petId = pet.json().id;
   });
 
+  it("persists a tenant-scoped customer preferred groomer and uses it as a history fallback", async () => {
+    const saved=await app.inject({method:"PATCH",url:`/api/customers/${customerId}/preferred-groomer`,
+      headers:{cookie:ownerCookie},payload:{employeeId}});
+    expect(saved.statusCode).toBe(200);
+    const profile=await app.inject({method:"GET",url:`/api/customers/${customerId}/history`,headers:{cookie:ownerCookie}});
+    expect(profile.statusCode).toBe(200);
+    expect(profile.json().customer).toMatchObject({preferredEmployeeId:employeeId,preferredEmployeeName:"Jamie"});
+    const defaults=await app.inject({method:"GET",url:`/api/pets/${petId}/booking-defaults`,headers:{cookie:ownerCookie}});
+    expect(defaults.statusCode).toBe(200);
+    expect(defaults.json().groomers).toEqual([expect.objectContaining({id:employeeId,displayName:"Jamie"})]);
+
+    const patch=(payload:Record<string,unknown>)=>app.inject({method:"PATCH",
+      url:`/api/customers/${customerId}/preferred-groomer`,headers:{cookie:ownerCookie},payload});
+    expect((await patch({employeeId:"not-a-uuid"})).statusCode).toBe(400);
+    expect((await patch({})).statusCode).toBe(400);
+    expect((await patch({employeeId,unexpected:true})).statusCode).toBe(400);
+    const unknown=await patch({employeeId:crypto.randomUUID()});
+    expect(unknown.statusCode).toBe(400);
+    expect(unknown.json().error).toBe("Choose an active groomer");
+    const cleared=await patch({employeeId:null});
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json().preferredEmployeeId).toBeNull();
+    const clearedProfile=await app.inject({method:"GET",url:`/api/customers/${customerId}/history`,headers:{cookie:ownerCookie}});
+    expect(clearedProfile.json().customer).toMatchObject({preferredEmployeeId:null,preferredEmployeeName:null});
+    expect((await patch({employeeId})).statusCode).toBe(200);
+    const missingCustomer=await app.inject({method:"PATCH",
+      url:`/api/customers/${crypto.randomUUID()}/preferred-groomer`,headers:{cookie:ownerCookie},payload:{employeeId}});
+    expect(missingCustomer.statusCode).toBe(404);
+  });
+
   it("enforces half-open scheduling and database overlap protection", async () => {
     const create = () => app.inject({
       method: "POST", url: "/api/appointments", headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
@@ -307,6 +337,72 @@ describeDatabase("canonical Pawsh workflow", () => {
     expect(count?.count).toBe(1);
   });
 
+  it("lists and queues supported reminders without fabricating deferred types", async () => {
+    const appointment=await app.inject({method:"GET",url:"/api/reminders?type=appointment_reminder",headers:{cookie:ownerCookie}});
+    expect(appointment.statusCode).toBe(200);
+    expect(appointment.json().supported).toBe(true);
+    const item=appointment.json().items.find((candidate:{appointmentId:string})=>candidate.appointmentId===appointmentId);
+    expect(item).toBeTruthy();
+    const queued=await app.inject({method:"POST",url:`/api/reminders/${item.id}/send`,headers:{cookie:ownerCookie}});
+    expect(queued.statusCode).toBe(202);
+    const deferred=await app.inject({method:"GET",url:"/api/reminders?type=birthday_reminder",headers:{cookie:ownerCookie}});
+    expect(deferred.json()).toEqual({supported:false,items:[]});
+    const logs=await app.inject({method:"GET",url:`/api/reminders/${item.id}/logs`,headers:{cookie:ownerCookie}});
+    expect(logs.statusCode).toBe(200);
+    expect(logs.json()).toMatchObject({id:item.id,channel:"email",reminderStatus:expect.any(String)});
+    expect(Array.isArray(logs.json().logs)).toBe(true);
+    const missingLogs=await app.inject({method:"GET",url:`/api/reminders/${crypto.randomUUID()}/logs`,headers:{cookie:ownerCookie}});
+    expect(missingLogs.statusCode).toBe(404);
+  });
+
+  it("serves bounded profile projections carrying service snapshots", async () => {
+    const profile=await app.inject({method:"GET",url:`/api/customers/${customerId}/history`,headers:{cookie:ownerCookie}});
+    expect(profile.statusCode).toBe(200);
+    expect(profile.json()).toMatchObject({appointmentsTruncated:false,appointmentTotal:expect.any(Number)});
+    const booked=profile.json().appointments.find((item:{id:string})=>item.id===appointmentId);
+    expect(booked.services).toEqual([expect.objectContaining({name:"Full Groom",durationMinutes:60,priceMinor:8500})]);
+    expect(booked.groomers).toEqual([expect.objectContaining({id:employeeId,displayName:"Jamie"})]);
+
+    const page=await app.inject({method:"GET",
+      url:`/api/customers/${customerId}/appointments?page=1&pageSize=10`,headers:{cookie:ownerCookie}});
+    expect(page.statusCode).toBe(200);
+    expect(page.json()).toMatchObject({page:1,pageSize:10,total:profile.json().appointmentTotal});
+
+    const pet=await app.inject({method:"GET",url:`/api/pets/${petId}`,headers:{cookie:ownerCookie}});
+    expect(pet.statusCode).toBe(200);
+    expect(pet.json()).toMatchObject({id:petId,name:"Mochi",customerName:"Pat Lee",safetyAlerts:"Sensitive left hip"});
+
+    const petHistory=await app.inject({method:"GET",url:`/api/pets/${petId}/appointments`,headers:{cookie:ownerCookie}});
+    expect(petHistory.statusCode).toBe(200);
+    expect(petHistory.json().items.every((item:{petId:string})=>item.petId===petId)).toBe(true);
+
+    const availability=await app.inject({method:"GET",
+      url:`/api/employees/${employeeId}/working-hours`,headers:{cookie:ownerCookie}});
+    expect(availability.statusCode).toBe(200);
+    expect(availability.json()).toHaveLength(7);
+  });
+
+  it("filters calendar and report projections by groomer", async () => {
+    const assigned=await app.inject({method:"GET",
+      url:`/api/appointments?localDate=2031-08-01&days=2&employeeIds=${employeeId}`,headers:{cookie:ownerCookie}});
+    expect(assigned.statusCode).toBe(200);
+    expect(assigned.json().some((item:{id:string})=>item.id===appointmentId)).toBe(true);
+    const unassigned=await app.inject({method:"GET",
+      url:`/api/appointments?localDate=2031-08-01&days=2&employeeIds=${crypto.randomUUID()}`,headers:{cookie:ownerCookie}});
+    expect(unassigned.json()).toEqual([]);
+
+    const reports=await app.inject({method:"GET",
+      url:`/api/reports?localDate=2031-08-01&days=2&employeeIds=${employeeId}`,headers:{cookie:ownerCookie}});
+    expect(reports.statusCode).toBe(200);
+    expect(reports.json().totals).toMatchObject({completedAppointments:1,servicesPerformed:1});
+    expect(reports.json().employees.every((row:{id:string})=>row.id===employeeId)).toBe(true);
+    const otherGroomer=await app.inject({method:"GET",
+      url:`/api/reports?localDate=2031-08-01&days=2&employeeIds=${crypto.randomUUID()}`,headers:{cookie:ownerCookie}});
+    expect(otherGroomer.json().totals).toEqual({paidRevenueMinor:0,completedAppointments:0,servicesPerformed:0});
+    const invalid=await app.inject({method:"GET",url:"/api/reports?employeeIds=not-a-uuid",headers:{cookie:ownerCookie}});
+    expect(invalid.statusCode).toBe(400);
+  });
+
   it("atomically claims notification delivery across concurrent workers", async () => {
     const sent: EmailMessage[] = [];
     const provider: EmailProvider = {
@@ -388,6 +484,55 @@ describeDatabase("canonical Pawsh workflow", () => {
     expect(sent).not.toContain(deliveredId);
   });
 
+  it("distinguishes an initial reminder attempt from a retry and never leaks provider detail", async () => {
+    const [intent] = await db<{ id: string }[]>`
+      insert into notification_intents
+        (business_id,appointment_id,customer_id,notification_type,scheduled_occurrence,channel,destination,status,attempts)
+      values (${businessId},${appointmentId},${customerId},'appointment_reminder',now(),'email',
+        ${`reminder-log-${suffix}@example.test`},'failed',2)
+      returning id
+    `;
+    await db`
+      insert into notification_delivery_attempts(business_id,notification_intent_id,attempt_number,outcome,error)
+      values (${businessId},${intent!.id},1,'failed','smtp 550 mailbox unavailable'),
+             (${businessId},${intent!.id},2,'failed','provider-token-should-not-leak')
+    `;
+    const logs = await app.inject({
+      method: "GET", url: `/api/reminders/${intent!.id}/logs`, headers: { cookie: ownerCookie }
+    });
+    expect(logs.statusCode).toBe(200);
+    expect(logs.json()).toMatchObject({ id: intent!.id, channel: "email", reminderStatus: "failed", attempts: 2 });
+    const attempts = logs.json().logs as { attemptNumber: number; attemptKind: string; safeFailureReason: string | null }[];
+    expect(attempts.map((attempt) => attempt.attemptNumber)).toEqual([2, 1]);
+    expect(attempts.find((attempt) => attempt.attemptNumber === 1)?.attemptKind).toBe("initial");
+    expect(attempts.find((attempt) => attempt.attemptNumber === 2)?.attemptKind).toBe("retry");
+    expect(attempts.every((attempt) => attempt.safeFailureReason === "Delivery failed")).toBe(true);
+    expect(logs.body).not.toContain("smtp 550");
+    expect(logs.body).not.toContain("provider-token-should-not-leak");
+
+    // A failed reminder below the attempt ceiling can be resent through the same endpoint.
+    const resent = await app.inject({
+      method: "POST", url: `/api/reminders/${intent!.id}/send`, headers: { cookie: ownerCookie }
+    });
+    expect(resent.statusCode).toBe(202);
+
+    // Exhausted reminders stop offering a send instead of retrying forever.
+    await db`update notification_intents set status='failed',attempts=5 where business_id=${businessId} and id=${intent!.id}`;
+    const exhausted = await app.inject({
+      method: "POST", url: `/api/reminders/${intent!.id}/send`, headers: { cookie: ownerCookie }
+    });
+    expect(exhausted.statusCode).toBe(409);
+
+    const foreign = await app.inject({
+      method: "POST", url: "/api/auth/signup",
+      payload: { email: `reminder-log-foreign-${suffix}@example.test`, password: "correct horse reminder logs", businessName: "Reminder Log Foreign" }
+    });
+    const crossTenant = await app.inject({
+      method: "GET", url: `/api/reminders/${intent!.id}/logs`, headers: { cookie: cookie(foreign) }
+    });
+    expect(crossTenant.statusCode).toBe(404);
+  });
+
   it("supports invitation acceptance and enforces customized permission denial", async () => {
     const invitation = await app.inject({
       method: "POST", url: "/api/members/invitations", headers: { cookie: ownerCookie },
@@ -440,6 +585,25 @@ describeDatabase("canonical Pawsh workflow", () => {
       method: "GET", url: `/api/customers/${customerId}/history`, headers: { cookie: cookie(other) }
     });
     expect(response.statusCode).toBe(404);
+    const preferred=await app.inject({method:"PATCH",url:`/api/customers/${customerId}/preferred-groomer`,
+      headers:{cookie:cookie(other)},payload:{employeeId:null}});
+    expect(preferred.statusCode).toBe(404);
+    const reminders=await app.inject({method:"GET",url:"/api/reminders?type=appointment_reminder",headers:{cookie:cookie(other)}});
+    expect(reminders.statusCode).toBe(200);
+    expect(reminders.json().items.every((item:{appointmentId:string})=>item.appointmentId!==appointmentId)).toBe(true);
+    for(const url of [
+      `/api/customers/${customerId}/appointments`,
+      `/api/pets/${petId}`,
+      `/api/pets/${petId}/appointments`,
+      `/api/employees/${employeeId}/working-hours`
+    ]){
+      const foreign=await app.inject({method:"GET",url,headers:{cookie:cookie(other)}});
+      expect(foreign.statusCode,url).toBe(404);
+    }
+    const foreignFilter=await app.inject({method:"GET",
+      url:`/api/appointments?localDate=2031-08-01&days=2&employeeIds=${employeeId}`,headers:{cookie:cookie(other)}});
+    expect(foreignFilter.statusCode).toBe(200);
+    expect(foreignFilter.json()).toEqual([]);
   });
 
   it("transfers protected ownership without leaving the business ownerless", async () => {

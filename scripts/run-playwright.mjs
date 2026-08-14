@@ -1,8 +1,12 @@
 /* global console */
 import process from "node:process";
 import { runPlaywrightInvocation } from "./playwright-lifecycle.mjs";
+import { createPlaywrightQaEnvironment } from "./qa-environment.mjs";
 
-const result = await runPlaywrightInvocation({ args: process.argv.slice(2) });
+const result = await runPlaywrightInvocation({
+  args: process.argv.slice(2),
+  env: createPlaywrightQaEnvironment(process.env)
+});
 if (result.kind === "watchdog_timeout") {
   console.error(`[ERROR] Playwright wrapper timeout: ${result.error}`);
   console.error(`[ERROR] Profile: ${result.profile}; deadline: ${result.timeoutMs} ms; elapsed: ${result.elapsedMs} ms`);

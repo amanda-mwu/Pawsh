@@ -40,17 +40,71 @@ describeDatabase("appointment service availability",()=>{
     expect(Number(stored?.minutes)).toBe(45);expect(stored?.count).toBe(2);
   });
 
-  it("assigns multiple groomers, blocks each groomer, and returns pet-specific defaults",async()=>{
-    const booking=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},payload:{locationId,customerId,petId,employeeIds:[employeeId,secondEmployeeId],serviceIds:[primaryId],localStart:"2034-04-17T13:00",expectedLocationVersion:1}});
+  it("assigns exactly one groomer, rejects legacy arrays, and returns one pet-specific default",async()=>{
+    const legacy=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},payload:{locationId,customerId,petId,employeeId,employeeIds:[employeeId,secondEmployeeId],serviceIds:[primaryId],localStart:"2034-04-17T13:00",expectedLocationVersion:1}});
+    expect(legacy.statusCode).toBe(400);expect(JSON.stringify(legacy.json())).toContain("An appointment can only be assigned to one groomer.");
+    const booking=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},payload:{locationId,customerId,petId,employeeId,serviceIds:[primaryId],localStart:"2034-04-17T13:00",expectedLocationVersion:1}});
     expect(booking.statusCode).toBe(201);
     const assignments=await db<{employeeId:string}[]>`select employee_id from appointment_employees where business_id=${businessId} and appointment_id=${booking.json().id} order by employee_id`;
-    expect(assignments.map(row=>row.employeeId).sort()).toEqual([employeeId,secondEmployeeId].sort());
-    const conflict=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},payload:{locationId,customerId,petId,employeeIds:[secondEmployeeId],serviceIds:[primaryId],localStart:"2034-04-17T13:00",expectedLocationVersion:1}});
+    expect(assignments.map(row=>row.employeeId)).toEqual([employeeId]);
+    await expect(db`insert into appointment_employees(business_id,appointment_id,employee_id) values (${businessId},${booking.json().id},${secondEmployeeId})`).rejects.toThrow();
+    const legacyMove=await app.inject({method:"PATCH",url:`/api/appointments/${booking.json().id}/schedule`,headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},payload:{employeeId,employeeIds:[employeeId,secondEmployeeId],localStart:"2034-04-17T14:00",expectedLocationVersion:1,version:booking.json().version}});
+    expect(legacyMove.statusCode).toBe(400);expect(JSON.stringify(legacyMove.json())).toContain("An appointment can only be assigned to one groomer.");
+    const conflict=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},payload:{locationId,customerId,petId,employeeId,serviceIds:[primaryId],localStart:"2034-04-17T13:00",expectedLocationVersion:1}});
     expect(conflict.statusCode).toBe(409);
     const defaults=await app.inject({method:"GET",url:`/api/pets/${petId}/booking-defaults`,headers:{cookie:ownerCookie}});
     expect(defaults.statusCode).toBe(200);
-    expect(defaults.json().groomers.map((item:{id:string})=>item.id).sort()).toEqual([employeeId,secondEmployeeId].sort());
+    expect(defaults.json().groomers.map((item:{id:string})=>item.id)).toEqual([employeeId]);
     expect(defaults.json().services.map((item:{id:string})=>item.id)).toEqual([primaryId]);
+  });
+
+  it("keeps multi-employee report filters while attributing an appointment to one groomer",async()=>{
+    const booking=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},
+      payload:{locationId,customerId,petId,employeeId,serviceIds:[primaryId],localStart:"2034-04-19T09:00",expectedLocationVersion:1}});
+    expect(booking.statusCode).toBe(201);
+    const sharedId=booking.json().id;
+    for(const status of ["checked_in","in_service","completed"]){
+      const moved=await app.inject({method:"POST",url:`/api/appointments/${sharedId}/transition`,headers:{cookie:ownerCookie},payload:{status}});
+      expect(moved.statusCode,status).toBe(200);
+    }
+    const invoice=await app.inject({method:"POST",url:`/api/appointments/${sharedId}/checkout`,
+      headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},payload:{discountMinor:0,tipMinor:0}});
+    expect(invoice.statusCode).toBe(201);
+    const totalMinor=invoice.json().totalMinor;
+    const payment=await app.inject({method:"POST",url:`/api/invoices/${invoice.json().id}/payments`,
+      headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},
+      payload:{amountMinor:totalMinor,expectedBalanceMinor:totalMinor,method:"cash"}});
+    expect(payment.statusCode).toBe(201);
+
+    // Operational metrics bucket by appointment start (2034-04-19), so this window sees the
+    // appointment but not the invoice, which was created today.
+    const operational=(employeeIds:string)=>app.inject({method:"GET",
+      url:`/api/reports?localDate=2034-04-19&days=1&employeeIds=${employeeIds}`,headers:{cookie:ownerCookie}});
+    const first=await operational(employeeId);
+    const second=await operational(secondEmployeeId);
+    const both=await operational(`${employeeId},${secondEmployeeId}`);
+    for(const response of [first,second,both])expect(response.statusCode).toBe(200);
+    expect(first.json().totals).toMatchObject({completedAppointments:1,servicesPerformed:1});
+    expect(second.json().totals).toMatchObject({completedAppointments:0,servicesPerformed:0});
+    expect(both.json().totals).toEqual(first.json().totals);
+    expect(both.json().totals.completedAppointments).toBe(1);
+    expect(both.json().totals.servicesPerformed).toBe(1);
+
+    const attribution=both.json().employees.filter((row:{appointmentCount:number})=>row.appointmentCount>0);
+    expect(attribution.map((row:{id:string})=>row.id)).toEqual([employeeId]);
+    const summed=attribution.reduce((total:number,row:{appointmentCount:number})=>total+row.appointmentCount,0);
+    expect(summed).toBe(1);
+
+    // Paid revenue buckets by invoice creation date, so it lands in the default (recent) window
+    // and is likewise counted once when both groomers are selected.
+    const revenueFor=(employeeIds:string)=>app.inject({method:"GET",
+      url:`/api/reports?employeeIds=${employeeIds}`,headers:{cookie:ownerCookie}});
+    const singleRevenue=await revenueFor(employeeId);
+    const sharedRevenue=await revenueFor(`${employeeId},${secondEmployeeId}`);
+    expect(singleRevenue.json().totals.paidRevenueMinor).toBe(totalMinor);
+    expect(sharedRevenue.json().totals.paidRevenueMinor).toBe(totalMinor);
+    expect(singleRevenue.json().totals.completedAppointments).toBe(0);
+    expect(first.json().totals.paidRevenueMinor).toBe(0);
   });
 
   it("names an inactive service instead of reporting generic availability",async()=>{
@@ -68,13 +122,13 @@ describeDatabase("appointment service availability",()=>{
     expect(booking.statusCode).toBe(400);expect(booking.json().error).toBe("One or more selected services are unavailable");
   });
 
-  it("requires a groomer and rejects duplicate or cross-tenant groomer assignments",async()=>{
-    const send=(employeeIds:string[])=>app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},payload:{locationId,customerId,petId,employeeIds,serviceIds:[primaryId],localStart:"2034-04-18T09:00",expectedLocationVersion:1}});
-    expect((await send([])).statusCode).toBe(400);
-    expect((await send([employeeId,employeeId])).statusCode).toBe(400);
+  it("requires one groomer and rejects legacy arrays or cross-tenant groomers",async()=>{
+    const send=(assigned?:string,employeeIds?:string[])=>app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},payload:{locationId,customerId,petId,...(assigned?{employeeId:assigned}:{}),...(employeeIds?{employeeIds}:{}),serviceIds:[primaryId],localStart:"2034-04-18T09:00",expectedLocationVersion:1}});
+    expect((await send()).statusCode).toBe(400);
+    const multiple=await send(employeeId,[employeeId,secondEmployeeId]);expect(multiple.statusCode).toBe(400);expect(JSON.stringify(multiple.json())).toContain("An appointment can only be assigned to one groomer.");
     const foreign=await app.inject({method:"POST",url:"/api/auth/signup",payload:{email:`foreign-groomer-${crypto.randomUUID()}@example.test`,password:"correct horse foreign groomer",businessName:"Foreign Groomer"}});
     const foreignEmployee=await app.inject({method:"POST",url:"/api/employees",headers:{cookie:cookie(foreign)},payload:{displayName:"Wrong Tenant Groomer",serviceIds:[]}});
-    const response=await send([foreignEmployee.json().id]);
+    const response=await send(foreignEmployee.json().id);
     expect(response.statusCode).toBe(400);expect(response.json().error).toBe("One or more selected groomers are unavailable");
   });
 });

@@ -190,6 +190,25 @@ describeDatabase("D3 customer, pet, and history regression", () => {
     expect(missingVersion.statusCode).toBe(400);
   });
 
+  it("authorizes preferred groomer writes by permission and exposes the read through the profile projection", async () => {
+    // customers.edit is the write gate; customers.view alone is enough to read the field back.
+    const denied = await app.inject({
+      method: "PATCH", url: `/api/customers/${customerId}/preferred-groomer`,
+      headers: { cookie: editorCookie }, payload: { employeeId }
+    });
+    expect(denied.statusCode).toBe(403);
+    const allowed = await app.inject({
+      method: "PATCH", url: `/api/customers/${customerId}/preferred-groomer`,
+      headers: { cookie: ownerCookie }, payload: { employeeId }
+    });
+    expect(allowed.statusCode).toBe(200);
+    const projection = await app.inject({
+      method: "GET", url: `/api/customers/${customerId}/history`, headers: { cookie: historyCookie }
+    });
+    expect(projection.statusCode).toBe(200);
+    expect(projection.json().customer.preferredEmployeeId).toBe(employeeId);
+  });
+
   it("rejects retired permission inputs while retaining historical audit readability", async () => {
     const retiredInvitation = await app.inject({
       method: "POST", url: "/api/members/invitations", headers: { cookie: ownerCookie },
@@ -398,6 +417,22 @@ describeDatabase("D3 customer, pet, and history regression", () => {
     console.info("D3_QUERY_DIAGNOSTICS", JSON.stringify(evidence));
     expect(evidence.customerSearch.count).toBe(100);
     expect(evidence.petSearch.count).toBe(100);
-    expect(evidence.highFrequencyHistory.count).toBe(300);
+    // The client profile projection is bounded; the paginated history route serves the tail.
+    expect(evidence.highFrequencyHistory.count).toBe(100);
+    const profile = await app.inject({
+      method: "GET", url: `/api/customers/${frequentCustomer!.id}/history`,
+      headers: { cookie: ownerCookie }
+    });
+    expect(profile.json()).toMatchObject({ appointmentTotal: 300, appointmentsTruncated: true });
+    const secondPage = await app.inject({
+      method: "GET",
+      url: `/api/customers/${frequentCustomer!.id}/appointments?page=2&pageSize=100`,
+      headers: { cookie: ownerCookie }
+    });
+    expect(secondPage.statusCode).toBe(200);
+    expect(secondPage.json()).toMatchObject({ total: 300, page: 2, pageSize: 100 });
+    expect(secondPage.json().items).toHaveLength(100);
+    const firstPageIds = new Set(profile.json().appointments.map((item: { id: string }) => item.id));
+    expect(secondPage.json().items.every((item: { id: string }) => !firstPageIds.has(item.id))).toBe(true);
   }, 30_000);
 });

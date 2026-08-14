@@ -15,7 +15,7 @@ async function openBooking(page: Page, tenant: TenantFixture, hour: number): Pro
   const defaults=page.waitForResponse(response=>response.url().includes(`/api/pets/${tenant.petId}/booking-defaults`));
   await page.getByTestId("field-petId").selectOption(tenant.petId);
   await defaults;
-  await page.locator(`input[name="employeeIds"][value="${tenant.employeeId}"]`).setChecked(true);
+  await page.locator('select[name="employeeId"]').selectOption(tenant.employeeId);
   await page.getByRole("checkbox", { name: /Full Groom/ }).setChecked(true);
   await page.getByTestId("field-startAt").fill(`${tenant.anchor}T${String(hour).padStart(2,"0")}:00`);
 }
@@ -40,20 +40,21 @@ test("@regression-booking creates a booking and preserves it after reload", asyn
 
 test("@regression-booking defaults from pet history without service-to-groomer labels and permits overrides", async ({ page, request, tenant }) => {
   await createAppointment(request, tenant, { startAt: zonedIso(tenant.anchor, 9) });
+  const alternate=await (await request.post("/api/employees",{data:{displayName:"Alternate Groomer",serviceIds:[tenant.serviceId]}})).json() as {id:string};
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
   await page.getByTestId("calendar-add-appointment").click();
   await page.getByTestId("field-customerId").selectOption(tenant.customerId);
   await page.getByTestId("field-petId").selectOption(tenant.petId);
-  const groomer=page.locator(`input[name="employeeIds"][value="${tenant.employeeId}"]`);
+  const groomer=page.locator('select[name="employeeId"]');
   const service=page.locator(`input[name="serviceIds"][value="${tenant.serviceId}"]`);
-  await expect(groomer).toBeChecked();
+  await expect(groomer).toHaveValue(tenant.employeeId);
   await expect(service).toBeChecked();
   await expect(page.getByTestId("modal")).not.toContainText("Not assigned to");
-  await groomer.uncheck();
+  await groomer.selectOption(alternate.id);
   await service.uncheck();
   await page.getByTestId("field-startAt").fill(`${tenant.anchor}T11:00`);
-  await expect(groomer).not.toBeChecked();
+  await expect(groomer).toHaveValue(alternate.id);
   await expect(service).not.toBeChecked();
 });
 
@@ -183,7 +184,7 @@ test("@regression-booking reschedules atomically and persists the new time", asy
   await page.getByTestId("nav-calendar").click();
   const card = page.locator(`[data-appointment-id="${appointment.id}"]`);
   await openCardAction(card,"Move");
-  await page.locator(`input[name="employeeIds"][value="${tenant.employeeId}"]`).check();
+  await page.locator('select[name="employeeId"]').selectOption(tenant.employeeId);
   await page.getByTestId("field-startAt").fill(`${tenant.anchor}T11:00`);
   await page.getByTestId("modal-submit").click();
   await expect(page.getByTestId("modal")).toBeHidden();
@@ -198,7 +199,7 @@ test("@regression-booking explicitly overrides a conflicting reschedule", async 
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
   await openCardAction(page.locator(`[data-appointment-id="${movable.id}"]`),"Move");
-  await page.locator(`input[name="employeeIds"][value="${tenant.employeeId}"]`).check();
+  await page.locator('select[name="employeeId"]').selectOption(tenant.employeeId);
   await page.getByTestId("field-startAt").fill(`${tenant.anchor}T09:30`);
   await page.getByTestId("modal-submit").click();
   await expect(page.getByTestId("confirm-conflict-override")).toHaveText("Move anyway");

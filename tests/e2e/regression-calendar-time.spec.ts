@@ -61,7 +61,8 @@ test("@cross-browser @regression-calendar-time exposes on-demand appointment act
   await expect(card.locator(".appointment-card-footer")).toHaveCount(0);
   await expect(card.locator(".appointment-pet")).toHaveText("Charlie");
   await expect(card.locator(".appointment-breed")).toHaveText("Golden Retriever");
-  await card.locator(".calendar-open").focus();const hover=card.locator(".appointment-hover");await expect(hover).toBeVisible();await expect(hover).toHaveCSS("pointer-events","none");await expect(hover).toContainText("Emma Johnson");await expect(hover).toContainText("Grace Groomer");await expect(hover).toContainText("Full Groom");const hoverBox=await hover.boundingBox();expect(hoverBox).not.toBeNull();expect(hoverBox!.x).toBeGreaterThanOrEqual(0);expect(hoverBox!.x+hoverBox!.width).toBeLessThanOrEqual(await page.evaluate(()=>innerWidth));
+  await card.locator(".calendar-open").hover();const hover=page.locator("#calendar-hover-preview");await expect(hover).toBeVisible();await expect(hover).toHaveCSS("pointer-events","none");await expect(hover).toContainText("Emma Johnson");await expect(hover).toContainText("Charlie");await expect(hover).toContainText("Grace Groomer");await expect(hover).toContainText("Full Groom");await expect(hover).toContainText("90 min");const hoverBox=await hover.boundingBox();expect(hoverBox).not.toBeNull();expect(hoverBox!.x).toBeGreaterThanOrEqual(0);expect(hoverBox!.x+hoverBox!.width).toBeLessThanOrEqual(await page.evaluate(()=>innerWidth));
+  const laterCard=page.locator(`.week-appointment[data-appointment-id="${laterAppointment.id}"]`);await laterCard.locator(".calendar-open").hover();await expect(hover).toHaveAttribute("data-hover-appointment-id",laterAppointment.id);await page.mouse.move(0,0);await expect(hover).toBeHidden();await expect(page.locator("#calendar-hover-preview")).toHaveCount(1);
   await expect(card.getByRole("menuitem",{name:"Check in"})).toBeHidden();
   const trigger=card.getByRole("button",{name:/Appointment actions for/}).filter({visible:true});await expect(trigger).toBeVisible();await trigger.click();
   await expect(trigger).toHaveAttribute("aria-expanded","true");
@@ -78,8 +79,9 @@ test("@cross-browser @regression-calendar-time exposes on-demand appointment act
   await page.keyboard.press("Escape");await expect(laterTrigger).toHaveAttribute("aria-expanded","false");await expect(laterTrigger).toBeFocused();
   await trigger.click();
   await page.locator("#calendar-range").click();await expect(trigger).toHaveAttribute("aria-expanded","false");
-  await card.locator(".calendar-open").click();
-  const dialog=page.getByTestId("modal");await expect(dialog.getByText("Customer",{exact:true})).toBeVisible();await expect(dialog.getByText("Pet",{exact:true})).toBeVisible();await expect(dialog.getByText("Appointment",{exact:true})).toBeVisible();await expect(dialog.getByRole("button",{name:"View full customer profile"})).toBeVisible();await expect(dialog.getByRole("button",{name:"Close"})).toHaveCount(2);await expect(dialog.getByTestId("modal-submit")).toBeHidden();
+  const open=card.locator(".calendar-open");await open.click();const detail=page.getByTestId("appointment-detail");await expect(detail).toBeVisible();await expect(page.getByRole("button",{name:"Close appointment details"})).toBeVisible();await expect(detail).toContainText("Emma Johnson");await expect(detail).toContainText("Charlie");await expect(detail).toContainText("Grace Groomer");await expect(detail).toContainText("Full Groom");await expect(detail).toContainText("90 min");await expect(detail.getByText("Grace Groomer",{exact:true})).toHaveCount(1);await page.getByRole("button",{name:"Close appointment details"}).click();await expect(detail).toBeHidden();await expect(page.getByTestId("calendar")).toBeVisible();await expect(page.locator("#calendar-view-select")).toHaveValue("week");await expect(open).toBeFocused();
+  await open.click();await page.keyboard.press("Escape");await expect(detail).toBeHidden();await expect(open).toBeFocused();
+  await open.click();await detail.getByRole("button",{name:"View client"}).click();await expect(page.getByTestId("client-profile-view")).toBeVisible();await page.locator(".client-profile-back").click();await expect(page.getByTestId("calendar")).toBeVisible();await expect(page.locator("#calendar-view-select")).toHaveValue("week");
 });
 
 test("@cross-browser @regression-calendar-time month view and applied groomer filter share calendar state",async({page,request,tenant})=>{
@@ -101,7 +103,7 @@ test("@cross-browser @regression-calendar-time renders groomer day lanes and pre
   expect(inactiveResponse.status()).toBe(201);const inactiveEmployee=await inactiveResponse.json() as {id:string};
   expect((await request.delete(`/api/employees/${inactiveEmployee.id}`)).status()).toBe(204);
   expect((await request.put(`/api/employees/${secondEmployee.id}/working-hours`,{data:{hours:[1,2,3,4,5].map(weekday=>({weekday,startTime:"08:00",endTime:"18:00"}))}})).status()).toBe(204);
-  const appointmentResponse=await request.post("/api/appointments",{headers:{"Idempotency-Key":crypto.randomUUID()},data:{locationId:tenant.locationId,customerId:tenant.customerId,petId:tenant.petId,employeeIds:[tenant.employeeId,secondEmployee.id],serviceIds:[tenant.serviceId],localStart:`${tenant.anchor}T09:00`,expectedLocationVersion:tenant.locationVersion}});
+  const appointmentResponse=await request.post("/api/appointments",{headers:{"Idempotency-Key":crypto.randomUUID()},data:{locationId:tenant.locationId,customerId:tenant.customerId,petId:tenant.petId,employeeId:tenant.employeeId,serviceIds:[tenant.serviceId],localStart:`${tenant.anchor}T09:00`,expectedLocationVersion:tenant.locationVersion}});
   expect(appointmentResponse.status()).toBe(201);const appointment=await appointmentResponse.json() as {id:string};
   await login(page,tenant.ownerEmail);await page.getByTestId("nav-calendar").click();
   await page.locator("#calendar-view-select").selectOption("day");
@@ -109,19 +111,17 @@ test("@cross-browser @regression-calendar-time renders groomer day lanes and pre
   await expect(page.locator(".day-corner")).toHaveText("Time");
   await expect(page.locator(".day-groomer",{hasText:"Grace Groomer"})).toBeVisible();
   await expect(page.locator(".day-groomer",{hasText:"Inactive Groomer"})).toHaveCount(0);
-  await expect(page.locator(`.day-appointment[data-appointment-id="${appointment.id}"]`)).toHaveCount(2);
+  await expect(page.locator(`.day-appointment[data-appointment-id="${appointment.id}"]`)).toHaveCount(1);
   await page.locator(`.day-appointment[data-appointment-id="${appointment.id}"] .calendar-open`).first().click();
-  await expect(page.getByTestId("modal")).toBeVisible();await page.getByTestId("modal").locator(".modal-actions").getByRole("button",{name:"Close"}).click();
-  const slot=page.locator(`.day-slot[data-slot="${tenant.anchor}T09:00"][data-slot-groomer="${tenant.employeeId}"]`);
-  const box=await slot.boundingBox();expect(box).not.toBeNull();
-  await slot.click({position:{x:box!.width-3,y:Math.min(10,box!.height/2)}});
-  await expect(page.getByTestId("field-startAt")).toHaveValue(`${tenant.anchor}T09:00`);
-  await expect(page.locator(`input[name="employeeIds"][value="${tenant.employeeId}"]`)).toBeChecked();
+  await expect(page.getByTestId("appointment-detail")).toBeVisible();await page.getByRole("button",{name:"Close appointment details"}).click();await expect(page.getByTestId("calendar")).toBeVisible();
+  const slot=page.locator(`.day-slot[data-slot="${tenant.anchor}T10:30"][data-slot-groomer="${tenant.employeeId}"]`);
+  await slot.click();
+  await expect(page.getByTestId("field-startAt")).toHaveValue(`${tenant.anchor}T10:30`);
+  await expect(page.locator('select[name="employeeId"]')).toHaveValue(tenant.employeeId);
   await page.getByRole("button",{name:"Cancel",exact:true}).last().click();
   await page.locator(`.day-slot[data-slot="${tenant.anchor}T11:00"][data-slot-groomer="${secondEmployee.id}"]`).click({position:{x:185,y:18}});
   await page.getByTestId("field-customerId").selectOption(tenant.customerId);
   await page.getByTestId("field-petId").selectOption(tenant.petId);
-  await expect(page.locator(`input[name="employeeIds"][value="${secondEmployee.id}"]`)).toBeChecked();
-  await expect(page.locator(`input[name="employeeIds"][value="${tenant.employeeId}"]`)).not.toBeChecked();
+  await expect(page.locator('select[name="employeeId"]')).toHaveValue(secondEmployee.id);
   await expect(page.locator(`input[name="serviceIds"][value="${tenant.serviceId}"]`)).toBeChecked();
 });

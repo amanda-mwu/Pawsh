@@ -143,7 +143,7 @@ test("@smoke breed catalog route restores Salon navigation and redirects legacy 
   await page.getByTestId("nav-reports").click();
   await expect(page.getByTestId("nav-reports")).toHaveAttribute("aria-current","page");
   await expect(page.getByTestId("breed-catalog-view")).toBeHidden();
-  await expect(page.locator("#reports").getByRole("heading",{name:"Business reports"})).toBeVisible();
+  await expect(page.locator("#reports").getByRole("heading",{name:"Dashboard reporting"})).toBeVisible();
   await expect(page.locator("#reports").getByText("Breed Catalog")).toHaveCount(0);
 });
 

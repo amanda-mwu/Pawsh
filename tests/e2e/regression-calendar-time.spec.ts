@@ -40,6 +40,17 @@ test("@regression-calendar-time synchronizes week navigation and preselects an e
   const slot=page.locator('.week-slot:not(.closed)').first();const preset=await slot.getAttribute("data-slot");await slot.click();await expect(page.getByTestId("field-startAt")).toHaveValue(preset??"");await page.getByRole("button",{name:"Cancel"}).click();
 });
 
+test("@cross-browser @regression-calendar-time provides bounded print preview and view-only calendar settings",async({page,request,tenant})=>{
+  await createAppointment(request,tenant,{localStart:`${tenant.anchor}T09:00`});
+  await login(page,tenant.ownerEmail);await page.getByTestId("nav-calendar").click();await page.waitForLoadState("networkidle");
+  await expect(page.getByTestId("print-agenda")).toHaveAccessibleName("Print agenda");await page.getByTestId("print-agenda").click();
+  const dialog=page.getByTestId("modal");await expect(dialog.getByRole("heading",{name:"Print agenda"})).toBeVisible();await expect(dialog.locator("#print-agenda-preview")).toContainText("Charlie");await expect(dialog.locator("#print-agenda-preview")).toContainText("Emma Johnson");await expect(dialog.locator("#print-agenda-preview")).toContainText("Full Groom");await dialog.getByRole("button",{name:"Close"}).last().click();
+  const before=await request.get("/api/business/working-hours");expect(before.status()).toBe(200);const authoritative=await before.json();
+  await page.getByTestId("calendar-settings").click();await expect(dialog.getByRole("heading",{name:"Calendar settings"})).toBeVisible();await dialog.locator('select[name="firstDay"]').selectOption("monday");await dialog.locator('select[name="density"]').selectOption("compact");await dialog.getByRole("button",{name:"Apply changes"}).click();await expect(dialog).toBeHidden();
+  await expect(page.locator("#calendar")).toHaveAttribute("data-calendar-density","compact");await page.locator("#calendar-view-select").selectOption("month");await expect(page.locator(".calendar-month-weekday").first()).toHaveText("Mon");
+  expect(await (await request.get("/api/business/working-hours")).json()).toEqual(authoritative);
+});
+
 test("@cross-browser @regression-calendar-time exposes on-demand appointment actions and one compact rabies warning",async({page,request,tenant})=>{
   const appointment=await createAppointment(request,tenant,{localStart:`${tenant.anchor}T09:00`});
   const laterAppointment=await createAppointment(request,tenant,{localStart:`${tenant.anchor}T11:00`});

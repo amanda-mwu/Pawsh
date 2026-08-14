@@ -179,3 +179,9 @@ test("@smoke primary navigation exposes requested destinations without orphaning
   await page.getByTestId("nav-product").click();await expect(page.locator("#product").getByRole("heading",{name:"Product"})).toBeVisible();
   await expect(page.getByTestId("nav-services")).toBeVisible();await expect(page.getByTestId("nav-setup")).toBeVisible();
 });
+
+test("@smoke desktop navigation is an accessible minimized icon rail",async({page,tenant})=>{
+  await page.setViewportSize({width:1440,height:900});await login(page,tenant.ownerEmail);
+  const nav=page.locator("#primary-navigation"),calendar=page.getByTestId("nav-calendar");expect((await nav.boundingBox())!.width).toBeLessThanOrEqual(55);await expect(calendar).toHaveAccessibleName("Calendar");
+  const label=calendar.locator("span").last();await expect(label).toHaveCSS("opacity","0");await calendar.focus();await expect(label).toHaveCSS("opacity","1");await calendar.click();await expect(calendar).toHaveAttribute("aria-current","page");await expect(calendar).toHaveClass(/active/);
+});

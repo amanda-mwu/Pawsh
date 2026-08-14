@@ -38,3 +38,12 @@ performs a data request. Calendar blocks remain sized by the authoritative
 appointment start/end interval and progressively reveal content as duration
 allows; Agenda groups the same models into dense date sections. Clicking any
 representation continues through the authorized customer-context workflow.
+
+## Calendar utilities
+
+Print Agenda requests only a user-selected, maximum 31-day range through the
+tenant-authorized appointments API and prints a dedicated agenda surface.
+Calendar Settings persists only namespaced view preferences (visible viewport
+hours, week start, visual density, and card detail) in browser storage. These
+preferences never alter authoritative Salon business hours, employee
+availability, appointment duration, or conflict validation.

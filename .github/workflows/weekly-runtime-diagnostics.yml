@@ -1,8 +1,9 @@
 name: Weekly runtime diagnostics
 
 on:
-  schedule:
-    - cron: "17 9 * * 1"
+  # No cron during active pre-live development: unattended runs only produce noise while the
+  # repository changes daily. Dependency and runtime drift is still checked on demand through
+  # workflow_dispatch, and a schedule can be restored when Pawsh reaches staging readiness.
   workflow_dispatch:
 
 jobs:

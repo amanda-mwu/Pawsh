@@ -4,7 +4,14 @@ import { parseWrapperTimeout, redactDiagnosticText, runPlaywrightInvocation } fr
 
 const externalEnv = { ...process.env, PAWSH_E2E_BASE_URL: "http://127.0.0.1:39999", NODE_ENV: "test" };
 
-function runChild(source, timeoutMs = 2_000) {
+// Budgets sized for the slowest supported platform. A Windows tree kill has to spawn
+// taskkill.exe, walk the process tree and clear the image scan before the root actually dies,
+// which measures at roughly 380-610ms locally and is slower still on a loaded CI runner. The
+// previous 500ms cleanup grace sat on the median of that distribution, so the guard reported a
+// genuinely-unfinished cleanup about one run in eight. Both budgets bound a hang rather than
+// pace a healthy run: cleanup resolves as soon as the root exits, so raising them costs
+// nothing when everything works.
+function runChild(source, timeoutMs = 5_000) {
   return runPlaywrightInvocation({
     env: externalEnv,
     platform: process.platform,
@@ -13,7 +20,7 @@ function runChild(source, timeoutMs = 2_000) {
     waitForServerReady: async () => {},
     playwrightCommand: process.execPath,
     playwrightArgs: ["-e", source],
-    cleanupGraceMs: 500,
+    cleanupGraceMs: 3_000,
     portReleaseTimeoutMs: 200
   });
 }

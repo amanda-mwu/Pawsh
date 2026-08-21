@@ -121,11 +121,20 @@ async function terminateRoot(child, platform, spawnImplementation = spawn, grace
   if (platform === "win32") {
     try {
       const killer = spawnImplementation("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
+      // `taskkill.exe` is only the instrument; the root's own exit is the authoritative
+      // signal, exactly as the POSIX branch below treats `waitForProcessExit`. Spawning and
+      // running the helper can outlast the grace window on a loaded Windows runner even
+      // though the tree it was asked to destroy is already gone, so race the root's exit
+      // alongside it and only report an incomplete cleanup when the root is still alive.
       const killResult = await Promise.race([
         new Promise((resolve) => killer.once("exit", (code, signal) => resolve({ completed: true, code, signal }))),
-        delay(graceMs).then(() => ({ completed: false }))
+        waitForProcessExit(child, graceMs).then((exited) => ({ completed: false, exited }))
       ]);
-      if (!killResult.completed) return { status: "incomplete", reason: "taskkill_timeout" };
+      if (!killResult.completed) {
+        return killResult.exited
+          ? { status: "complete", reason: "taskkill_root_exited" }
+          : { status: "incomplete", reason: "taskkill_timeout" };
+      }
       if (killResult.code === 0) return { status: "complete", reason: "taskkill" };
       // taskkill may report a nonzero code when the root exited between the
       // state check and command execution. The bounded command itself has

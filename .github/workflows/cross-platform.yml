@@ -4,8 +4,6 @@ on:
   pull_request:
   push:
     branches: [main]
-  schedule:
-    - cron: "23 8 * * *"
   workflow_dispatch:
     inputs:
       release_candidate:
@@ -127,13 +125,19 @@ jobs:
       - run: npm run compatibility:fixtures
       - name: Install Chromium for Node 22 smoke
         if: matrix.node == '22'
-        run: npx playwright install --with-deps chromium
+        timeout-minutes: 5
+        run: npx playwright install chromium
       - name: Critical Chromium smoke
         if: matrix.node == '22'
         run: npm run test:smoke
+      - name: Install canonical browser system dependencies
+        if: matrix.node == '24'
+        timeout-minutes: 8
+        run: npx playwright install-deps chromium firefox webkit
       - name: Install canonical browser matrix
         if: matrix.node == '24'
-        run: npx playwright install --with-deps chromium firefox webkit
+        timeout-minutes: 10
+        run: npx playwright install chromium firefox webkit
       - name: Full canonical browser, accessibility, responsive, security, and regression suite
         if: matrix.node == '24'
         run: npm run test:e2e
@@ -216,7 +220,9 @@ jobs:
         if: matrix.node == '24'
         shell: pwsh
         run: ./scripts/validate-windows-filesystem.ps1
-      - run: npx playwright install chromium
+      - name: Install Chromium
+        timeout-minutes: 5
+        run: npx playwright install chromium
       - run: npm run test:smoke -- --workers=1
       - name: Validate a repository path with spaces and Unicode
         if: matrix.node == '24'
@@ -301,7 +307,9 @@ jobs:
       - run: npm run validate:runtime
       - run: npm run compatibility:startup
       - run: npm run compatibility:fixtures
-      - run: npx playwright install chromium webkit
+      - name: Install Chromium and WebKit
+        timeout-minutes: 8
+        run: npx playwright install chromium webkit
       - run: npm run test:smoke
       - run: node scripts/run-playwright.mjs --project=webkit-desktop --grep @cross-browser
       - run: npm run compatibility:metadata

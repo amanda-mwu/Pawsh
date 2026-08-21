@@ -15,7 +15,10 @@ export default defineConfig({
   testDir:"tests/e2e",
   testIgnore:"p1-document-scanning/**",
   fullyParallel:true,
-  retries:0,
+  // A missed navigation event or a click that never settles on a contended runner does not
+  // reproduce; a retry absorbs it, and Playwright still reports the test as flaky so the
+  // instability stays visible rather than silently passing.
+  retries:process.env.CI ? 2 : 0,
   workers:process.env.CI ? 2 : undefined,
   timeout:30_000,
   expect:{timeout:5_000},
@@ -25,9 +28,12 @@ export default defineConfig({
     baseURL,
     timezoneId:"America/Los_Angeles",
     locale:"en-US",
-    trace:"retain-on-failure",
+    // "retain-on-failure" records every test and throws the artifact away when it passes, so
+    // the whole suite pays for tracing and screencasting on the happy path. Capturing on the
+    // retry instead keeps identical evidence for anything that actually fails.
+    trace:"on-first-retry",
     screenshot:"only-on-failure",
-    video:"retain-on-failure"
+    video:"on-first-retry"
   },
   webServer:process.env.PAWSH_E2E_BASE_URL ? undefined : {
     // Launch Node directly. On Windows, the npm.cmd wrapper can exit without

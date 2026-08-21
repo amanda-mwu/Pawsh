@@ -41,6 +41,11 @@ test("@regression-pet-documents enforces Pet Care document permissions", async (
   await page.getByTestId("nav-customers").click();
   const card = page.getByTestId("customer-card").filter({ hasText: "Charlie" });
   await card.getByRole("button", { name: "Documents" }).click();
+  // showPetDocuments() awaits GET /api/pets/:id/documents before opening the modal, so the
+  // absence assertion below resolves instantly against a dialog that does not exist yet and
+  // the revoke lands mid-request. Wait for the dialog first: the assertion then means "the
+  // upload field is absent from an open Pet Care modal" rather than "nothing has rendered".
+  await expect(page.getByTestId("modal")).toBeVisible();
   await expect(page.getByTestId("field-rabiesPdf")).toHaveCount(0);
 
   const revoked = await request.patch(`/api/members/${member.membershipId}/permissions`, {

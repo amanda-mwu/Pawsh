@@ -32,6 +32,22 @@ export function formatBoundAddress(address: AddressInfo | string | null): string
   return `${host}:${address.port}`;
 }
 
+/**
+ * Safe database identity for lifecycle logs: host, port, and database name only.
+ * Never includes the username or password, so boot output can be pasted freely.
+ */
+export function describeDatabaseTarget(databaseUrl: string): string {
+  let url: URL;
+  try {
+    url = new URL(databaseUrl);
+  } catch {
+    return "unknown";
+  }
+  const database = decodeURIComponent(url.pathname.startsWith("/") ? url.pathname.slice(1) : url.pathname);
+  if (!url.hostname || !database) return "unknown";
+  return `${url.hostname}:${url.port || "5432"}/${database}`;
+}
+
 export function startupFailureMessage(error: unknown): string {
   if (error instanceof Error && error.name === "ZodError") return "Configuration validation failed";
   const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";

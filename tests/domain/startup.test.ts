@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { browserLaunchCommand } from "../../src/default-browser.js";
 import {
+  describeDatabaseTarget,
   formatBoundAddress,
   createStartupDiagnostics,
   lifecycleLoggingEnabled,
@@ -64,6 +65,25 @@ describe("startup developer experience", () => {
     expect(output).toContain('operation="Plugin registration"');
     expect(output).toContain('error="Application initialization failed"');
     expect(output).not.toContain("do-not-log");
+    write.mockRestore();
+  });
+  it("reports database identity without exposing credentials", () => {
+    expect(describeDatabaseTarget("postgres://pawsh:pawsh-local-only@127.0.0.1:55432/pawsh?options=-c%20TimeZone%3DUTC"))
+      .toBe("127.0.0.1:55432/pawsh");
+    expect(describeDatabaseTarget("postgres://pawsh_local:secret@127.0.0.1/pawsh_dev")).toBe("127.0.0.1:5432/pawsh_dev");
+    expect(describeDatabaseTarget("not a url")).toBe("unknown");
+    expect(describeDatabaseTarget("postgres://user:pw@host/")).toBe("unknown");
+  });
+
+  it("never leaks the password into lifecycle output", () => {
+    const target = describeDatabaseTarget("postgres://pawsh:sup3r-s3cret-value@127.0.0.1:55432/pawsh");
+    expect(target).not.toContain("sup3r-s3cret-value");
+    expect(target).not.toContain("pawsh:");
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    writeLifecycleLog(true, "BOOT", "Waiting for PostgreSQL", { target });
+    const output = write.mock.calls.map((call) => String(call[0])).join("");
+    expect(output).toContain('target="127.0.0.1:55432/pawsh"');
+    expect(output).not.toContain("sup3r-s3cret-value");
     write.mockRestore();
   });
 });

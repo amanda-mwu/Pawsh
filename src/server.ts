@@ -4,6 +4,7 @@ import { loadConfig } from "./config.js";
 import { createDatabase, type Database } from "./db/client.js";
 import {
   createStartupDiagnostics,
+  describeDatabaseTarget,
   formatBoundAddress,
   lifecycleLoggingEnabled,
   startupFailureMessage,
@@ -24,7 +25,7 @@ async function main(): Promise<void> {
     writeLifecycleLog(lifecycleLogs, "BOOT", "Configuration loaded", { environment: config.NODE_ENV });
 
     db = createDatabase(config);
-    writeLifecycleLog(lifecycleLogs, "BOOT", "Waiting for PostgreSQL");
+    writeLifecycleLog(lifecycleLogs, "BOOT", "Waiting for PostgreSQL", { target: describeDatabaseTarget(config.DATABASE_URL) });
     waitingDiagnostic = setTimeout(() => {
       writeLifecycleLog(lifecycleLogs, "BOOT", "Still waiting for PostgreSQL");
     }, 3_000);

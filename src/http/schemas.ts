@@ -66,6 +66,7 @@ export const workspaceAccessRequestSchema=z.object({
 }).strict();
 
 export const workspaceSelectionSchema=z.object({businessId:z.string().uuid()}).strict();
+export const locationSelectionSchema=z.object({locationId:z.string().uuid()}).strict();
 
 export const customerSchema = z.object({
   firstName: z.string().trim().min(1).max(80),

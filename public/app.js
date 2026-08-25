@@ -2,7 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const inviteToken = new URLSearchParams(location.search).get("invite");
 const resetToken = new URLSearchParams(location.search).get("reset");
-const state = { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:25}, pets: [], dogBreeds: [], breedCatalog:{query:"",showInactive:false,sortDirection:1,editingId:null}, employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointments:[],selectedGroomerIds:null,pendingGroomerIds:null,filterInitialized:false,displayMode:"calendar",view:"week",bookingPreset:null,bookingGroomerId:null,bookingCustomerId:null,bookingPetId:null,opened:false,preferences:null}, clientProfile:null,clientProfileReturnView:"customers", messageClientId:null, reportMode:"charts",reminders:{type:"appointment_reminder",items:[],supported:true}, members: [], accessRequests:[], workspaces:[], reports: null, login: false };
+const state = { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:25}, pets: [], dogBreeds: [], breedCatalog:{query:"",showInactive:false,sortDirection:1,editingId:null}, employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointments:[],selectedGroomerIds:null,pendingGroomerIds:null,filterInitialized:false,displayMode:"calendar",view:"week",bookingPreset:null,bookingGroomerId:null,bookingCustomerId:null,bookingPetId:null,opened:false,preferences:null}, clientProfile:null,clientProfileReturnView:"customers", messageClientId:null, reportMode:"charts",reminders:{type:"appointment_reminder",items:[],supported:true}, members: [], accessRequests:[], workspaces:[], locations: [], reports: null, login: false };
 const pendingActions = new Set();
 let customerSearchSequence = 0;
 let calendarDetailOrigin = null;
@@ -50,6 +50,8 @@ async function api(path, options = {}) {
 
 function settleUnauthenticated() {
   state.me=null;
+  state.locations=[];
+  closeLocationMenu();
   state.calendar.preferences=null;state.calendar.filterInitialized=false;state.calendar.selectedGroomerIds=null;
   $("#app-view").hidden=true;
   $("#auth-view").hidden=false;
@@ -151,11 +153,13 @@ async function refresh() {
     safe("reports.view") ? api("/api/reports") : null,
     safe("pets.view") && !state.dogBreeds.length ? api("/api/dog-breeds") : state.dogBreeds,
     safe("team.manage") ? api("/api/workspace-access-requests") : [],
-    api("/api/workspaces")
+    api("/api/workspaces"),
+    loadLocations()
   ];
-  const [dashboard, customerDirectory, pets, employees, services, appointments, members, reports, dogBreeds, accessRequests, workspaces] = await Promise.all(requests);
-  Object.assign(state, { customerDirectory,customers:customerDirectory.items||[], pets, employees, services, appointments, members, reports, dogBreeds, accessRequests, workspaces });
+  const [dashboard, customerDirectory, pets, employees, services, appointments, members, reports, dogBreeds, accessRequests, workspaces, locations] = await Promise.all(requests);
+  Object.assign(state, { customerDirectory,customers:customerDirectory.items||[], pets, employees, services, appointments, members, reports, dogBreeds, accessRequests, workspaces, locations });
   renderAccountIdentity();
+  renderLocationSwitcher();
   reconcileGroomerFilter();
   if(!state.calendar.selectedDate){state.calendar.selectedDate=state.appointments[0]?appointmentLocalValue(state.appointments[0]).slice(0,10):businessDate();state.calendar.weekStart=weekStart(state.calendar.selectedDate);state.calendar.month=state.calendar.selectedDate.slice(0,7);}
   $("#today").textContent = new Intl.DateTimeFormat([], {timeZone:schedulingZone(),weekday:"long",month:"short",day:"numeric"}).format(new Date());
@@ -249,9 +253,10 @@ function calendarAction(item){
   if(["checked_in","in_service"].includes(item.status)&&allowed("appointments.edit"))controls.push(`<button type="button" role="menuitem" class="calendar-action service-action" data-id="${item.id}">Adjust services</button>`);
   return `<div class="calendar-actions-menu"><button type="button" class="calendar-action-trigger" aria-label="Appointment actions for ${escape(item.petName)}" aria-haspopup="menu" aria-expanded="false" data-appointment-menu="${item.id}">&#8943;</button><div class="calendar-action-popover" role="menu" hidden>${controls.join("")}</div></div>`;
 }
+function groomerSlot(id){if(!id)return"";let hash=0;const key=String(id);for(let index=0;index<key.length;index++)hash=(hash*31+key.charCodeAt(index))>>>0;return hash%5;}
 function appointmentCard(item,{day=false,style="",groomerId="",overlap=false}={}){
   const model=appointmentPresentation(item),density=model.durationMinutes<=30?"short":model.durationMinutes<90?"medium":"long",shown=model.services.slice(0,density==="long"?3:1),extra=model.services.length-shown.length;
-  return `<article class="${day?"day-appointment ":""}week-appointment appointment-block density-${density} status-${escape(item.status)} ${overlap?"overlap":""}" data-appointment-id="${item.id}" ${groomerId?`data-groomer-id="${groomerId}"`:""} style="${style}"><button type="button" class="calendar-open" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><time>${escape(model.timeRange)}</time><strong class="appointment-pet">${escape(model.petName)}</strong>${model.breed?`<span class="appointment-breed">${escape(model.breed)}</span>`:""}<span class="appointment-services">${shown.map(escape).join("<br>")}${extra>0?`<small>+${extra} more</small>`:""}</span><span class="appointment-badges"><small class="appointment-status">${escape(model.status)}</small>${model.conflictOverridden?`<small class="conflict-override" data-testid="conflict-override">Intentional overlap</small>`:""}${model.rabiesNeeded?`<small class="card-warning" aria-label="Rabies needed">!</small>`:""}${model.warning?`<small class="card-warning" aria-label="Pet warning">⚠</small>`:""}</span></button><div class="sr-only appointment-accessible-safety">${safetyContext(item)}</div><div class="appointment-quick-actions">${calendarAction(item)}</div></article>`;
+  return `<article class="${day?"day-appointment ":""}week-appointment appointment-block density-${density} status-${escape(item.status)} ${overlap?"overlap":""}" data-appointment-id="${item.id}" ${groomerId?`data-groomer-id="${groomerId}" data-groomer-slot="${groomerSlot(groomerId)}"`:""} style="${style}"><button type="button" class="calendar-open" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><time>${escape(model.timeRange)}</time><strong class="appointment-pet">${escape(model.petName)}</strong>${model.breed?`<span class="appointment-breed">${escape(model.breed)}</span>`:""}<span class="appointment-services">${shown.map(escape).join("<br>")}${extra>0?`<small>+${extra} more</small>`:""}</span><span class="appointment-badges"><small class="appointment-status">${escape(model.status)}</small>${model.conflictOverridden?`<small class="conflict-override" data-testid="conflict-override">Intentional overlap</small>`:""}${model.rabiesNeeded?`<small class="card-warning" aria-label="Rabies needed">!</small>`:""}${model.warning?`<small class="card-warning" aria-label="Pet warning">⚠</small>`:""}</span></button><div class="sr-only appointment-accessible-safety">${safetyContext(item)}</div><div class="appointment-quick-actions">${calendarAction(item)}</div></article>`;
 }
 function activeGroomers(){return state.employees.filter(employee=>employee.active).sort((a,b)=>a.displayName.localeCompare(b.displayName));}
 function selectedGroomers(){const selected=state.calendar.selectedGroomerIds;return activeGroomers().filter(employee=>selected===null||selected.has(employee.id));}
@@ -265,7 +270,7 @@ function reconcileGroomerFilter(){
 }
 function renderGroomerFilter(){
   const groomers=activeGroomers(),selected=state.calendar.pendingGroomerIds??new Set(groomers.map(item=>item.id));
-  $("#groomer-filter-options").innerHTML=groomers.map(item=>`<label><input type="checkbox" value="${item.id}" ${selected.has(item.id)?"checked":""}> ${escape(item.displayName)}</label>`).join("")||"<p>No active groomers.</p>";
+  $("#groomer-filter-options").innerHTML=groomers.map(item=>`<label data-groomer-slot="${groomerSlot(item.id)}"><input type="checkbox" value="${item.id}" ${selected.has(item.id)?"checked":""}> ${escape(item.displayName)}</label>`).join("")||"<p>No active groomers.</p>";
   const applied=state.calendar.selectedGroomerIds,count=applied===null?groomers.length:applied.size;
   $("#groomer-filter-trigger").firstChild.textContent=count===groomers.length?"All groomers ":`${count} groomer${count===1?"":"s"} `;
 }
@@ -275,23 +280,37 @@ function renderAgendaCalendar(){
   const groups=items.reduce((map,item)=>{const date=appointmentPresentation(item).date,mapItems=map.get(date)||[];mapItems.push(item);map.set(date,mapItems);return map;},new Map());target.className="calendar-agenda";target.style.removeProperty("min-width");target.style.removeProperty("--groomer-count");target.innerHTML=items.length?[...groups].map(([date,group])=>`<section class="agenda-day"><h3>${new Intl.DateTimeFormat([],{weekday:"long",month:"long",day:"numeric"}).format(dateAt(date))}</h3>${group.map(item=>{const model=appointmentPresentation(item);return `<article class="agenda-entry" data-appointment-id="${item.id}"><time datetime="${escape(item.startAt)}">${escape(model.timeRange)}</time><button type="button" class="agenda-appointment" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><strong>${escape(model.petName)}${model.breed?` <span>(${escape(model.breed)})</span>`:""}</strong><span>${escape(model.customerName)}</span><span>${model.services.map(escape).join(", ")}</span><small>${escape(model.groomer)}</small></button><div class="agenda-indicators"><span class="appointment-status">${escape(model.status)}</span>${model.rabiesNeeded?`<span class="rabies-needed">Rabies needed</span>`:""}${model.warning?`<span class="agenda-warning">⚠ ${escape(model.warning)}</span>`:""}</div></article>`;}).join("")}</section>`).join(""):"<p class=\"empty\">No appointments in this period.</p>";
   const days=state.calendar.view==="day"?1:state.calendar.view==="month"?42:7,start=state.calendar.view==="day"?state.calendar.selectedDate:state.calendar.view==="month"?dateShift(`${state.calendar.month}-01`,-dateAt(`${state.calendar.month}-01`).getUTCDay()):state.calendar.weekStart,end=dateShift(start,days-1);$("#calendar-range").textContent=days===1?new Intl.DateTimeFormat([],{dateStyle:"full"}).format(dateAt(start)):`${new Intl.DateTimeFormat([],{month:"short",day:"numeric"}).format(dateAt(start))} – ${new Intl.DateTimeFormat([],{month:"short",day:"numeric",year:"numeric"}).format(dateAt(end))}`;bindCalendarInteractions(target);
 }
+// Month cells are a fixed height so all six week rows stay uniform; MONTH_EVENT_LIMIT is the
+// number of 21px pills that fit under the header line, with the "+N more" link occupying the
+// reserved strip at the bottom. Keep it in step with .calendar-month-day min-height in styles.css.
+const MONTH_EVENT_LIMIT=12;
+// Cancelled and no-show bookings still occupy the day but earn nothing, so they render neutral
+// grey, stay out of the revenue and pet totals, and sort behind the live bookings. The seed
+// interleaves a cancellation beside almost every booking, so leaving them in time order pushed
+// half of the day's real work behind the "+N more" link.
+function monthNeutralStatus(item){return ["cancelled","no_show"].includes(item.status);}
 function renderMonthCalendar(){
   const target=$("#calendar-list");if(!target||!state.calendar.month)return;
   const first=`${state.calendar.month}-01`,start=weekStart(first),days=Array.from({length:42},(_,index)=>dateShift(start,index)),today=businessDate(),visible=filteredAppointments(state.calendar.monthAppointments.length?state.calendar.monthAppointments:state.appointments);
   target.className="calendar-month-view";target.setAttribute("aria-label","Monthly appointment schedule");target.style.removeProperty("--groomer-count");target.style.removeProperty("min-width");
   const headings=(calendarPreferences().firstDay==="monday"?["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]:["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]).map(day=>`<div class="calendar-month-weekday">${day}</div>`).join("");
-  const cells=days.map(day=>{const items=visible.filter(item=>appointmentLocalValue(item).slice(0,10)===day).sort((a,b)=>new Date(a.startAt)-new Date(b.startAt)),shown=items.slice(0,3),outside=day.slice(0,7)!==state.calendar.month,periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(day).getUTCDay()),closed=state.businessHours.length>0&&!periods.length;return `<div class="calendar-month-day ${outside?"outside":""} ${closed?"closed":""} ${day===today?"today":""} ${day===state.calendar.selectedDate?"selected":""}" data-month-cell="${day}"><button type="button" class="calendar-month-date" data-month-open-date="${day}" aria-label="Open ${new Intl.DateTimeFormat([],{dateStyle:"full"}).format(dateAt(day))} in day view">${Number(day.slice(8,10))}</button><div class="calendar-month-events">${shown.map(item=>{const model=appointmentPresentation(item);return `<span class="month-appointment-wrap" data-appointment-id="${item.id}"><button type="button" class="calendar-month-event" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><time>${schedulingTime(item)}</time> ${escape(item.petName)}</button></span>`;}).join("")}${items.length>3?`<button type="button" class="calendar-month-more" data-month-open-date="${day}">+${items.length-3} more</button>`:""}</div><button type="button" class="calendar-month-add" data-month-book-date="${day}" aria-label="Create appointment on ${day}">+</button></div>`;}).join("");
+  const cells=days.map(day=>{const items=visible.filter(item=>appointmentLocalValue(item).slice(0,10)===day).sort((a,b)=>new Date(a.startAt)-new Date(b.startAt)),outside=day.slice(0,7)!==state.calendar.month,periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(day).getUTCDay()),closed=state.businessHours.length>0&&!periods.length,booked=items.filter(item=>!monthNeutralStatus(item)),revenue=booked.reduce((total,item)=>total+(item.services||[]).reduce((sum,service)=>sum+Number(service.priceMinor||0),0),0),ordered=[...booked,...items.filter(monthNeutralStatus)],shown=ordered.slice(0,MONTH_EVENT_LIMIT),dayLabel=new Intl.DateTimeFormat([],{dateStyle:"full"}).format(dateAt(day));return `<div class="calendar-month-day ${outside?"outside":""} ${closed?"closed":""} ${day===today?"today":""} ${day===state.calendar.selectedDate?"selected":""}" data-month-cell="${day}"><div class="month-day-head">${booked.length?`<span class="month-day-total"><span class="month-day-money">(${escape(money(revenue))}, </span>${booked.length} pet${booked.length===1?"":"s"}<span class="month-day-money">)</span></span>`:`<span class="month-day-total"></span>`}<button type="button" class="calendar-month-add" data-month-book-date="${day}" aria-label="Create appointment on ${escape(dayLabel)}">+</button><button type="button" class="calendar-month-date" data-month-open-date="${day}" aria-label="Open ${escape(dayLabel)} in day view">${Number(day.slice(8,10))}</button></div><div class="calendar-month-events">${shown.map(item=>{const model=appointmentPresentation(item),neutral=monthNeutralStatus(item),slot=neutral?"":groomerSlot((item.groomers||[])[0]?.id||item.employeeId);return `<span class="month-appointment-wrap ${neutral?"neutral":""}" data-appointment-id="${item.id}" ${slot===""?"":`data-groomer-slot="${slot}"`}><button type="button" class="calendar-month-event" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><time>${escape(schedulingTime(item))}</time><span class="month-event-name">${escape(model.customerName)}</span></button></span>`;}).join("")}</div>${ordered.length>MONTH_EVENT_LIMIT?`<button type="button" class="calendar-month-more" data-month-open-date="${day}">+${ordered.length-MONTH_EVENT_LIMIT} more</button>`:""}</div>`;}).join("");
   target.innerHTML=headings+cells;$("#calendar-range").textContent=new Intl.DateTimeFormat([],{month:"long",year:"numeric"}).format(dateAt(first));
   $$('[data-month-open-date]').forEach(button=>button.addEventListener("click",()=>{state.calendar.view="day";updateCalendarViewControls();selectCalendarDate(button.dataset.monthOpenDate);}));
   $$('[data-month-book-date]').forEach(button=>button.addEventListener("click",()=>{state.calendar.bookingPreset=`${button.dataset.monthBookDate}T09:00`;state.calendar.bookingGroomerId=null;actions["new-appointment"]();}));bindCalendarInteractions();
 }
+const WEEK_LANE_WIDTH=160;
 function renderWeekCalendar(){
   const target=$("#calendar-list");if(!target||!state.calendar.weekStart)return;
   const groomers=selectedGroomers();if(!groomers.length){target.className="calendar-empty-groomers";target.innerHTML="<p><strong>No groomers selected.</strong><br>Choose groomers to display.</p>";return;}
-  const days=Array.from({length:7},(_,index)=>dateShift(state.calendar.weekStart,index)),laneCount=days.length*groomers.length;target.className="week-grid week-groomer-grid";target.setAttribute("aria-label","Weekly appointment schedule by groomer");target.style.setProperty("--week-lanes",laneCount);target.style.minWidth=`${64+laneCount*120}px`;const [start,end]=calendarHours();const slots=(end-start)/30;
-  const header=`<div class="week-corner" style="grid-column:1;grid-row:1/span 2">Time</div>${days.map((day,index)=>`<button type="button" class="week-day-head ${day===state.calendar.selectedDate?"selected":""}" data-calendar-date="${day}" style="grid-column:${index*groomers.length+2}/span ${groomers.length};grid-row:1"><strong>${new Intl.DateTimeFormat([],{weekday:"short"}).format(dateAt(day))}</strong> ${new Intl.DateTimeFormat([],{month:"short",day:"numeric"}).format(dateAt(day))}</button>`).join("")}${days.flatMap((day,dayIndex)=>groomers.map((groomer,groomerIndex)=>`<div class="week-groomer-head" style="grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:2">${escape(groomer.displayName)}</div>`)).join("")}`;
+  const days=Array.from({length:7},(_,index)=>dateShift(state.calendar.weekStart,index)),laneCount=days.length*groomers.length;target.className="week-grid week-groomer-grid";target.setAttribute("aria-label","Weekly appointment schedule by groomer");target.style.setProperty("--week-lanes",laneCount);
+  // Every groomer of every day gets its own lane, so the grid is only readable once each lane has a
+  // real floor. WEEK_LANE_WIDTH matches the minmax() floor in styles.css; the resulting width is
+  // absorbed by .week-scroll, which is marked data-allow-horizontal-scroll.
+  target.style.minWidth=`${64+laneCount*WEEK_LANE_WIDTH}px`;const [start,end]=calendarHours();const slots=(end-start)/30;
+  const header=`<div class="week-corner" style="grid-column:1;grid-row:1/span 2">Time</div>${days.map((day,index)=>`<button type="button" class="week-day-head ${day===state.calendar.selectedDate?"selected":""}" data-calendar-date="${day}" style="grid-column:${index*groomers.length+2}/span ${groomers.length};grid-row:1"><strong>${new Intl.DateTimeFormat([],{weekday:"short"}).format(dateAt(day))}</strong> ${new Intl.DateTimeFormat([],{month:"short",day:"numeric"}).format(dateAt(day))}</button>`).join("")}${days.flatMap((day,dayIndex)=>groomers.map((groomer,groomerIndex)=>`<div class="week-groomer-head ${groomerIndex===0?"week-day-start":""}" data-groomer-slot="${groomerSlot(groomer.id)}" style="grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:2" title="${escape(groomer.displayName)}">${escape(groomer.displayName)}</div>`)).join("")}`;
   let cells="";
-  for(let slot=0;slot<slots;slot++){const minutes=start+slot*30,row=slot+3;cells+=`<div class="week-time" style="grid-column:1;grid-row:${row}">${timeLabel(minutes)}</div>`;for(let dayIndex=0;dayIndex<7;dayIndex++){const day=days[dayIndex],periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(day).getUTCDay()),open=!periods.length&&!state.businessHours.length||periods.some(period=>{const from=Number(String(period.startTime).slice(0,2))*60+Number(String(period.startTime).slice(3,5)),to=Number(String(period.endTime).slice(0,2))*60+Number(String(period.endTime).slice(3,5));return minutes>=from&&minutes<to;});for(let groomerIndex=0;groomerIndex<groomers.length;groomerIndex++){const groomer=groomers[groomerIndex],preset=`${day}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`;cells+=`<button type="button" aria-label="${day}, ${timeLabel(minutes)}, ${escape(groomer.displayName)}, ${open?"create appointment":"closed"}" class="week-slot ${open?"":"closed"}" ${open?`data-slot="${preset}" data-slot-groomer="${groomer.id}"`:"disabled"} style="grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${row}"></button>`;}}}
+  for(let slot=0;slot<slots;slot++){const minutes=start+slot*30,row=slot+3;cells+=`<div class="week-time" style="grid-column:1;grid-row:${row}">${timeLabel(minutes)}</div>`;for(let dayIndex=0;dayIndex<7;dayIndex++){const day=days[dayIndex],periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(day).getUTCDay()),open=!periods.length&&!state.businessHours.length||periods.some(period=>{const from=Number(String(period.startTime).slice(0,2))*60+Number(String(period.startTime).slice(3,5)),to=Number(String(period.endTime).slice(0,2))*60+Number(String(period.endTime).slice(3,5));return minutes>=from&&minutes<to;});for(let groomerIndex=0;groomerIndex<groomers.length;groomerIndex++){const groomer=groomers[groomerIndex],preset=`${day}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`;cells+=`<button type="button" aria-label="${day}, ${timeLabel(minutes)}, ${escape(groomer.displayName)}, ${open?"create appointment":"closed"}" class="week-slot ${groomerIndex===0?"week-day-start ":""}${open?"":"closed"}" ${open?`data-slot="${preset}" data-slot-groomer="${groomer.id}"`:"disabled"} style="grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${row}"></button>`;}}}
   const visible=filteredAppointments();const placed=[];
   const appointments=visible.flatMap(item=>{const local=appointmentLocalValue(item),day=local.slice(0,10),dayIndex=days.indexOf(day);if(dayIndex<0)return [];const minutes=Number(local.slice(11,13))*60+Number(local.slice(14,16)),duration=Math.max(30,Math.round((new Date(item.endAt)-new Date(item.startAt))/60000)),row=Math.floor((minutes-start)/30)+3;if(row<3||row>slots+2)return [];return (item.groomers||[]).map(assigned=>{const groomerIndex=groomers.findIndex(groomer=>groomer.id===assigned.id);if(groomerIndex<0)return "";const lane=`${day}:${assigned.id}`,overlap=placed.some(other=>other.lane===lane&&minutes<other.end&&minutes+duration>other.start);placed.push({lane,start:minutes,end:minutes+duration});return appointmentCard(item,{day:true,groomerId:assigned.id,overlap,style:`grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${row}/span ${Math.max(1,Math.ceil(duration/30))}`});});}).join("");
   const now=currentBusinessMinutes(),todayIndex=days.indexOf(businessDate()),nowRow=Math.floor((now-start)/30)+3,currentLine=todayIndex>=0&&now>=start&&now<end?`<div class="calendar-now-line" role="status" aria-label="Current business time" style="grid-column:${todayIndex*groomers.length+2}/span ${groomers.length};grid-row:${nowRow}"></div>`:"";target.innerHTML=header+cells+appointments+currentLine;
@@ -305,7 +324,7 @@ function renderDayCalendar(){
   const [start,end]=calendarHours(),slots=(end-start)/30,columns=Math.max(1,groomers.length);
   target.className="day-grid";target.setAttribute("aria-label","Daily appointment schedule by groomer");target.style.setProperty("--groomer-count",columns);target.style.minWidth=`${64+columns*190}px`;
   if(!groomers.length){target.className="calendar-empty-groomers";target.innerHTML="<p><strong>No groomers selected.</strong><br>Choose groomers to display.</p>";$("#calendar-range").textContent=new Intl.DateTimeFormat([],{dateStyle:"full"}).format(dateAt(state.calendar.selectedDate));return;}
-  let content=`<div class="day-corner" style="grid-column:1;grid-row:1">Time</div>${groomers.map((groomer,index)=>`<div class="day-groomer" style="grid-column:${index+2};grid-row:1">${escape(groomer.displayName)}</div>`).join("")}`;
+  let content=`<div class="day-corner" style="grid-column:1;grid-row:1">Time</div>${groomers.map((groomer,index)=>`<div class="day-groomer" data-groomer-slot="${groomerSlot(groomer.id)}" style="grid-column:${index+2};grid-row:1">${escape(groomer.displayName)}</div>`).join("")}`;
   for(let slot=0;slot<slots;slot++){const minutes=start+slot*30,row=slot+2,periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(state.calendar.selectedDate).getUTCDay()),open=!periods.length&&!state.businessHours.length||periods.some(period=>{const from=Number(String(period.startTime).slice(0,2))*60+Number(String(period.startTime).slice(3,5)),to=Number(String(period.endTime).slice(0,2))*60+Number(String(period.endTime).slice(3,5));return minutes>=from&&minutes<to;});content+=`<div class="day-time" style="grid-column:1;grid-row:${row}">${timeLabel(minutes)}</div>`;for(let index=0;index<groomers.length;index++){const groomer=groomers[index],preset=`${state.calendar.selectedDate}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`;content+=`<button type="button" class="day-slot ${open?"":"closed"}" ${open?`data-slot="${preset}" data-slot-groomer="${groomer.id}"`:`disabled`} style="grid-column:${index+2};grid-row:${row}" aria-label="${escape(state.calendar.selectedDate)}, ${timeLabel(minutes)}, ${escape(groomer.displayName)}, ${open?"create appointment":"closed"}"></button>`;}}
   for(const item of filteredAppointments().filter(appointment=>appointmentLocalValue(appointment).slice(0,10)===state.calendar.selectedDate)){const local=appointmentLocalValue(item),minutes=Number(local.slice(11,13))*60+Number(local.slice(14,16)),duration=Math.max(30,Math.round((new Date(item.endAt)-new Date(item.startAt))/60000)),row=Math.floor((minutes-start)/30)+2;if(row<2||row>slots+1)continue;for(const assigned of item.groomers||[]){const column=groomers.findIndex(groomer=>groomer.id===assigned.id);if(column<0)continue;content+=appointmentCard(item,{day:true,groomerId:assigned.id,style:`grid-column:${column+2};grid-row:${row}/span ${Math.max(1,Math.ceil(duration/30))}`});}}
   const now=currentBusinessMinutes(),nowRow=Math.floor((now-start)/30)+2;if(state.calendar.selectedDate===businessDate()&&now>=start&&now<end)content+=`<div class="calendar-now-line" role="status" aria-label="Current business time" style="grid-column:2/-1;grid-row:${nowRow}"></div>`;target.innerHTML=content;$("#calendar-range").textContent=new Intl.DateTimeFormat([],{dateStyle:"full"}).format(dateAt(state.calendar.selectedDate));bindCalendarInteractions();
@@ -443,14 +462,61 @@ async function reviewAccessRequest(id,decision){
   if(!confirm(`${decision==="approve"?"Approve":"Reject"} this workspace access request?`))return;
   try{const result=await api(`/api/workspace-access-requests/${id}/${decision}`,{method:"POST"});let copied=false;if(result.acceptancePath&&navigator.clipboard){try{await navigator.clipboard.writeText(`${location.origin}${result.acceptancePath}`);copied=true;}catch{copied=false;}}toast(result.acceptancePath?(copied?"Approved; secure setup link copied":"Approved; the requester invitation was queued"):"Access request updated");await refresh();}catch(error){toast(error.message);}
 }
+let clientRowMenusBound=false;
+function closeClientRowMenus(){
+  $$("#customer-grid .row-menu[open]").forEach(menu=>{menu.open=false;menu.querySelector("summary")?.setAttribute("aria-expanded","false");});
+}
+function bindClientRowMenus(){
+  if(clientRowMenusBound)return;clientRowMenusBound=true;
+  document.addEventListener("click",event=>{if(!event.target.closest?.(".row-menu"))closeClientRowMenus();});
+  document.addEventListener("keydown",event=>{if(event.key==="Escape")closeClientRowMenus();});
+  globalThis.addEventListener("resize",closeClientRowMenus);
+  $(".directory-table-wrap")?.addEventListener("scroll",closeClientRowMenus);
+}
+function placeClientRowMenu(menu){
+  const trigger=menu.querySelector("summary"),list=menu.querySelector(".row-menu-list");
+  if(!trigger||!list)return;
+  const box=trigger.getBoundingClientRect(),width=list.offsetWidth,height=list.offsetHeight;
+  list.style.left=`${Math.round(Math.max(8,Math.min(box.right-width,globalThis.innerWidth-width-8)))}px`;
+  list.style.top=`${Math.round(box.bottom+6+height>globalThis.innerHeight-8?Math.max(8,box.top-6-height):box.bottom+6)}px`;
+}
 function renderCustomersEnhanced() {
-  const directory=state.customerDirectory,formatDate=value=>value?new Intl.DateTimeFormat([],{dateStyle:"medium",timeZone:schedulingZone()}).format(new Date(value)):"—";
-  $("#customer-grid").innerHTML=directory.items.length?directory.items.map(customer=>{const pets=customer.pets||[],shown=pets.slice(0,3),extra=pets.length-shown.length;return `<tr class="directory-row customer-card" tabindex="0" data-testid="customer-card" data-customer-id="${customer.id}" aria-label="Open ${escape(customer.firstName)} ${escape(customer.lastName)}"><td><div class="directory-customer"><button type="button" class="text-button customer-detail" data-id="${customer.id}"><strong>${escape(customer.firstName)} ${escape(customer.lastName)}</strong></button><span class="pet-summary">${shown.map(pet=>`<span data-pet-id="${pet.id}">${escape(pet.name)}${pet.breed?` · ${escape(pet.breed)}`:""}${pet.safetyAlerts?" !":""} <span class="pet-row-actions">${allowed("pets.edit")?`<button type="button" class="text-button row-pet-action" data-customer-id="${customer.id}" data-id="${pet.id}" data-action-name="profile">Profile</button>`:""}${allowed("pets.care.view")&&allowed("pets.care.edit")?`<button type="button" class="text-button row-pet-action" data-customer-id="${customer.id}" data-id="${pet.id}" data-action-name="care">Care</button>`:""}${allowed("pets.care.view")?`<button type="button" class="text-button row-pet-action" data-customer-id="${customer.id}" data-id="${pet.id}" data-action-name="documents">Documents</button>`:""}</span></span>`).join("; ")||"No active pets"}${extra>0?` · +${extra} more`:""}</span></div></td><td>${escape(customer.phone||"—")}</td><td>${escape(customer.email||"—")}</td><td>${formatDate(customer.lastVisit)}</td><td>${formatDate(customer.nextAppointment)}</td><td><span class="status-dot ${customer.archivedAt?"inactive":""}">${customer.archivedAt?"Inactive":"Active"}</span></td></tr>`;}).join(""):`<tr><td colspan="6" class="empty">No customers match these filters.</td></tr>`;
-  directory.items.forEach(customer=>document.querySelector(`[data-customer-id="${customer.id}"] .directory-customer`)?.insertAdjacentHTML("beforeend",`<button type="button" class="text-button customer-history" data-id="${customer.id}">History</button>`));
+  const directory=state.customerDirectory,
+    formatDate=value=>value?new Intl.DateTimeFormat([],{dateStyle:"medium",timeZone:schedulingZone()}).format(new Date(value)):"—",
+    attr=value=>escape(value).replaceAll('"',"&quot;"),
+    cell=(value,className)=>{const text=value||"—",tooltip=text==="—"?"":` title="${attr(text)}"`;return `<td class="${className}"${tooltip}>${escape(text)}</td>`;};
+  $("#customer-grid").innerHTML=directory.items.length?directory.items.map(customer=>{
+    const pets=customer.pets||[],shown=pets.slice(0,2),extra=pets.length-shown.length,
+      label=pet=>`${pet.name}${pet.breed?` (${pet.breed})`:""}`,
+      name=`${customer.firstName} ${customer.lastName}`,
+      petText=pets.length?shown.map(label).join(", ")+(extra>0?` +${extra}`:""):"No active pets",
+      petTitle=pets.length?pets.map(label).join(", "):"No active pets",
+      alerted=pets.filter(pet=>pet.safetyAlerts),
+      isNew=!customer.lastVisit&&!customer.nextAppointment,
+      petActions=pets.map(pet=>`<p class="row-menu-label">${escape(pet.name)}</p>${allowed("pets.edit")?`<button type="button" class="row-menu-item row-pet-action" data-customer-id="${customer.id}" data-id="${pet.id}" data-action-name="profile">Pet profile</button>`:""}${allowed("pets.care.view")&&allowed("pets.care.edit")?`<button type="button" class="row-menu-item row-pet-action" data-customer-id="${customer.id}" data-id="${pet.id}" data-action-name="care">Pet care</button>`:""}${allowed("pets.care.view")?`<button type="button" class="row-menu-item row-pet-action" data-customer-id="${customer.id}" data-id="${pet.id}" data-action-name="documents">Documents</button>`:""}`).join("");
+    return `<tr class="directory-row customer-card" tabindex="0" data-testid="customer-card" data-customer-id="${customer.id}" aria-label="Open ${attr(name)}">`
+      +`<td class="clients-name"><button type="button" class="text-button customer-detail" data-id="${customer.id}">${escape(name)}</button>${isNew?`<span class="client-chip">New</span>`:""}</td>`
+      +`<td class="clients-pets" title="${attr(petTitle)}">${escape(petText)}${alerted.length?`<span class="pet-alert"><span aria-hidden="true">!</span><span class="visually-hidden">Safety alert on ${escape(alerted.map(pet=>pet.name).join(", "))}</span></span>`:""}</td>`
+      +cell(customer.preferredEmployeeName,"clients-groomer")
+      +cell(customer.phone,"clients-phone")
+      +cell(customer.email,"clients-email")
+      +cell(formatDate(customer.lastVisit),"clients-date")
+      +cell(formatDate(customer.nextAppointment),"clients-date")
+      +`<td class="clients-status"><span class="status-dot ${customer.archivedAt?"inactive":""}">${customer.archivedAt?"Inactive":"Active"}</span></td>`
+      +`<td class="clients-actions"><details class="row-menu"><summary class="row-menu-trigger" aria-expanded="false" aria-label="Actions for ${attr(name)}"><span aria-hidden="true">⋯</span></summary><div class="row-menu-list" role="group" aria-label="Actions for ${attr(name)}"><button type="button" class="row-menu-item customer-detail" data-id="${customer.id}">Client profile</button><button type="button" class="row-menu-item customer-history" data-id="${customer.id}">Appointment history</button>${petActions}</div></details></td></tr>`;
+  }).join(""):`<tr><td colspan="9" class="empty">No customers match these filters.</td></tr>`;
   const pages=Math.max(1,Math.ceil(directory.total/directory.pageSize));$("#customer-page-status").textContent=`Page ${directory.page} of ${pages} · ${directory.total} customers`;$("#customer-prev").disabled=directory.page<=1;$("#customer-next").disabled=directory.page>=pages;
   $$(".customer-detail").forEach(button=>button.addEventListener("click",()=>openClientProfile(button.dataset.id,{returnView:"customers"})));$$(".customer-history").forEach(button=>button.addEventListener("click",()=>showCustomerHistory(button.dataset.id)));
-  $$(".directory-row").forEach(row=>{row.addEventListener("click",event=>{if(!event.target.closest("button,a,input,select"))openClientProfile(row.dataset.customerId,{returnView:"customers"});});row.addEventListener("keydown",event=>{if(event.target===row&&(event.key==="Enter"||event.key===" ")){event.preventDefault();openClientProfile(row.dataset.customerId,{returnView:"customers"});}});});
+  $$(".directory-row").forEach(row=>{row.addEventListener("click",event=>{if(!event.target.closest("button,a,input,select,summary,details"))openClientProfile(row.dataset.customerId,{returnView:"customers"});});row.addEventListener("keydown",event=>{if(event.target===row&&(event.key==="Enter"||event.key===" ")){event.preventDefault();openClientProfile(row.dataset.customerId,{returnView:"customers"});}});});
   $$(".row-pet-action").forEach(button=>button.addEventListener("click",async()=>{const data=await api(`/api/customers/${button.dataset.customerId}/history`);state.pets=[...state.pets.filter(pet=>pet.customerId!==button.dataset.customerId),...data.pets];if(button.dataset.actionName==="profile")editPet(button.dataset.id);else if(button.dataset.actionName==="care")editPetCare(button.dataset.id);else showPetDocuments(button.dataset.id);}));
+  $$("#customer-grid .row-menu-item").forEach(button=>button.addEventListener("click",closeClientRowMenus));
+  $$("#customer-grid .row-menu").forEach(menu=>menu.addEventListener("toggle",()=>{
+    menu.querySelector("summary")?.setAttribute("aria-expanded",menu.open?"true":"false");
+    if(!menu.open)return;
+    $$("#customer-grid .row-menu[open]").forEach(other=>{if(other!==menu){other.open=false;other.querySelector("summary")?.setAttribute("aria-expanded","false");}});
+    placeClientRowMenu(menu);
+  }));
+  bindClientRowMenus();
 }
 async function loadCustomerDirectory(page=1){const params=new URLSearchParams({paged:"true",page:String(page),pageSize:"25",q:$("#customer-search").value,status:$("#customer-status").value,upcoming:$("#customer-upcoming").value,sort:$("#customer-sort").value});const result=await api(`/api/customers?${params}`);state.customerDirectory=result;state.customers=result.items;renderCustomersEnhanced();}
 async function showCustomerDetail(id){try{const data=await api(`/api/customers/${id}/history`);state.pets=[...state.pets.filter(pet=>pet.customerId!==id),...data.pets];if(!state.customers.some(customer=>customer.id===id))state.customers.push(data.customer);const pets=data.pets.map(pet=>`<div class="customer-pet-row"><span><strong>${escape(pet.name)}</strong><small>${escape(pet.breed||"Breed not provided")} · ${pet.weightOunces?`${Number(pet.weightOunces)/16} lb`:"Weight not provided"}</small><small>${pet.vaccinationExpiresOn?`Rabies expires ${String(pet.vaccinationExpiresOn).slice(0,10)}`:"Rabies expiration not provided"}${pet.safetyAlerts?` · Safety: ${escape(pet.safetyAlerts)}`:""}</small></span><span>${allowed("pets.edit")?`<button type="button" class="text-button detail-edit-pet" data-id="${pet.id}">Profile</button>`:""}${allowed("pets.care.view")?`<button type="button" class="text-button detail-care" data-id="${pet.id}">Care & history</button>`:""}</span></div>`).join("")||"<p>No pets yet.</p>";openModal(`${data.customer.firstName} ${data.customer.lastName}`,`<div class="wide customer-detail"><p><strong>${escape(data.customer.phone||"No phone")}</strong> · ${escape(data.customer.email||"No email")}</p><div class="customer-detail-actions">${allowed("customers.edit")?`<button type="button" class="text-button detail-edit-customer">Edit customer</button><button type="button" class="text-button detail-archive-customer">Archive</button>`:""}<button type="button" class="text-button detail-history">Full history</button></div><h4>Pets</h4>${pets}</div>`,async()=>{});const next=callback=>{$("#modal").close();setTimeout(callback,50);};$(".detail-edit-customer")?.addEventListener("click",()=>next(()=>editCustomer(id)));$(".detail-archive-customer")?.addEventListener("click",()=>next(()=>archiveCustomer(id)));$(".detail-history")?.addEventListener("click",()=>next(()=>showCustomerHistory(id)));$$(".detail-edit-pet").forEach(button=>button.addEventListener("click",()=>next(()=>editPet(button.dataset.id))));$$(".detail-care").forEach(button=>button.addEventListener("click",()=>next(()=>editPetCare(button.dataset.id))));}catch(error){toast(error.message);}}
@@ -984,25 +1050,102 @@ $("#logout").addEventListener("click", async () => {
 });
 const accountTrigger=$("#account-trigger"),accountMenu=$("#account-menu");
 function closeAccountMenu({restoreFocus=false}={}){accountMenu.hidden=true;accountTrigger.setAttribute("aria-expanded","false");if(restoreFocus)accountTrigger.focus();}
-function openAccountMenu(){closeNewActionMenu();accountMenu.hidden=false;accountTrigger.setAttribute("aria-expanded","true");}
+function openAccountMenu(){closeNewActionMenu();closeLocationMenu();accountMenu.hidden=false;accountTrigger.setAttribute("aria-expanded","true");}
 accountTrigger.addEventListener("click",()=>accountMenu.hidden?openAccountMenu():closeAccountMenu());
 accountTrigger.addEventListener("keydown",event=>{if(["ArrowDown","ArrowUp"].includes(event.key)){event.preventDefault();openAccountMenu();const items=[...accountMenu.querySelectorAll("[role=menuitem]:not(:disabled)")];items[event.key==="ArrowDown"?0:items.length-1]?.focus();}});
 accountMenu.addEventListener("keydown",event=>{const items=[...accountMenu.querySelectorAll("[role=menuitem]:not(:disabled)")],index=items.indexOf(document.activeElement);if(event.key==="Escape"){event.preventDefault();closeAccountMenu({restoreFocus:true});}else if(["ArrowDown","ArrowUp","Home","End"].includes(event.key)){event.preventDefault();const next=event.key==="Home"?0:event.key==="End"?items.length-1:(index+(event.key==="ArrowDown"?1:-1)+items.length)%items.length;items[next]?.focus();}});
 $("#account-change-password").addEventListener("click",()=>{closeAccountMenu();showView("profile-account");setTimeout(()=>$("#password-form input[name=currentPassword]")?.focus(),50);});
 document.addEventListener("click",event=>{if(!accountMenu.hidden&&!$(".account-control").contains(event.target))closeAccountMenu();});
 document.addEventListener("click",event=>{if(!event.target.closest(".calendar-actions-menu"))closeCalendarMenus();});
+// Location switcher. business.locationId, locationVersion and timezone are read by every scheduling
+// write (booking, blocked time, and business settings' expectedLocationVersion), so the shop in play
+// belongs in the header rather than behind a menu, and a switch has to land in state before anything
+// else can be saved against the location the user just left.
+const locationControl=$("#location-control"),locationTrigger=$("#location-switcher"),locationMenu=$("#location-menu");
+function activeViewId(){return $$(".view").find(section=>!section.hidden)?.id||"dashboard";}
+function multiLocation(){return Number(state.me?.business?.locationCount||0)>1;}
+// A single-shop workspace must not see the control at all, so the list is only fetched once /api/me
+// says there is something to switch between. A deployment without the endpoints reports no count and
+// never asks; a request that fails anyway leaves the list empty, which renderLocationSwitcher treats
+// exactly like having one shop.
+async function loadLocations(){
+  if(!multiLocation())return [];
+  try{const result=await api("/api/locations");return Array.isArray(result)?result:[];}
+  catch{return [];}
+}
+function locationOptions(){return [...locationMenu.querySelectorAll(".location-option:not(:disabled)")];}
+// Phones fold the header pill away, so dismissing the menu there has to hand focus back to the
+// account button that opened it rather than to a control that is not rendered.
+function locationReturnFocus(){return locationTrigger.offsetParent?locationTrigger:accountTrigger;}
+function closeLocationMenu({restoreFocus=false}={}){if(!locationMenu||locationMenu.hidden)return;locationMenu.hidden=true;locationTrigger.setAttribute("aria-expanded","false");if(restoreFocus)locationReturnFocus().focus();}
+function openLocationMenu({focus="none"}={}){if(!locationControl||locationControl.hidden)return;closeAccountMenu();closeNewActionMenu();locationMenu.hidden=false;locationTrigger.setAttribute("aria-expanded","true");const items=locationOptions();if(focus==="first")(items.find(item=>item.getAttribute("aria-checked")==="true")||items[0])?.focus();if(focus==="last")items.at(-1)?.focus();}
+function locationOptionMarkup(entry,current){
+  const badge=current?`<span class="location-option-current">Current</span>`:"";
+  const address=entry.address?`<span class="location-option-address">${escape(entry.address)}</span>`:"";
+  return `<button type="button" role="menuitemradio" aria-checked="${current}" class="location-option" data-testid="location-option" data-location-id="${escape(entry.id)}"><span class="location-option-mark" aria-hidden="true">✓</span><span class="location-option-text"><span class="location-option-name"><span class="location-option-title">${escape(entry.name)}</span>${badge}</span>${address}</span></button>`;
+}
+function renderLocationSwitcher(){
+  if(!locationControl)return;
+  const business=state.me?.business,available=multiLocation()&&state.locations.length>1,accountItem=$("#account-switch-location");
+  // The account menu keeps its placeholder until the capability is real, so the entry that opens the
+  // switcher only exists for a workspace that has somewhere to switch to.
+  if(accountItem){
+    accountItem.disabled=!available;
+    accountItem.setAttribute("aria-disabled",String(!available));
+    accountItem.querySelector("small")?.toggleAttribute("hidden",available);
+    if(available)accountItem.removeAttribute("title");
+    else accountItem.title="Pawsh currently supports one active salon location";
+  }
+  if(!available){closeLocationMenu();locationControl.hidden=true;locationMenu.replaceChildren();return;}
+  locationControl.hidden=false;
+  $("#location-current-name").textContent=business.locationName||"Location";
+  locationTrigger.setAttribute("aria-label",`Location: ${business.locationName||"unknown"}. Switch location`);
+  locationMenu.innerHTML=state.locations.map(entry=>locationOptionMarkup(entry,entry.id===business.locationId)).join("")||`<p class="location-menu-empty">No other active locations</p>`;
+}
+async function switchLocation(locationId){
+  if(!locationId)return;
+  if(locationId===state.me?.business?.locationId){closeLocationMenu({restoreFocus:true});return;}
+  closeLocationMenu({restoreFocus:true});
+  locationTrigger.disabled=true;locationTrigger.setAttribute("aria-busy","true");
+  try{
+    const result=await api("/api/me/location",{method:"POST",body:JSON.stringify({locationId})});
+    // Identity first: a stale locationId or locationVersion reaching the next booking or settings
+    // save would write against the location the user just left.
+    state.me=await api("/api/me");
+    state.calendar.opened=false;state.calendar.monthAppointments=[];state.businessHours=[];
+    applyPermissions();
+    toast(`Switched to ${result?.locationName||state.me.business.locationName}`);
+    await refresh();
+    await showView(activeViewId(),{history:"none"});
+  }catch(error){
+    // A dropped request has no status and reaches here as a raw "Failed to fetch", which tells the
+    // user nothing about what did or did not happen to the location they picked.
+    toast(error.status===404?"That location is no longer available":error.status?error.message:"Could not switch location. Check your connection and try again.");
+    if(error.status===404)runDetached(async()=>{state.locations=await loadLocations();renderLocationSwitcher();});
+  }finally{
+    locationTrigger.disabled=false;locationTrigger.removeAttribute("aria-busy");
+  }
+}
+locationTrigger.addEventListener("click",()=>locationMenu.hidden?openLocationMenu():closeLocationMenu({restoreFocus:true}));
+locationTrigger.addEventListener("keydown",event=>{if(["ArrowDown","ArrowUp"].includes(event.key)){event.preventDefault();openLocationMenu({focus:event.key==="ArrowDown"?"first":"last"});}});
+locationMenu.addEventListener("keydown",event=>{const items=locationOptions(),index=items.indexOf(document.activeElement);if(event.key==="Escape"){event.preventDefault();closeLocationMenu({restoreFocus:true});}else if(event.key==="Tab"){closeLocationMenu();}else if(["ArrowDown","ArrowUp","Home","End"].includes(event.key)){event.preventDefault();const next=event.key==="Home"?0:event.key==="End"?items.length-1:(index+(event.key==="ArrowDown"?1:-1)+items.length)%items.length;items[next]?.focus();}});
+locationMenu.addEventListener("click",event=>{const option=event.target.closest?.(".location-option");if(!option)return;runDetached(()=>switchLocation(option.dataset.locationId));});
+// The account entry opens the menu on its own click, which then keeps bubbling to this listener, so
+// the entry counts as inside the control for the purpose of dismissing it.
+document.addEventListener("click",event=>{if(!locationMenu.hidden&&!locationControl.contains(event.target)&&!event.target.closest?.("#account-switch-location"))closeLocationMenu();});
+$("#account-switch-location").addEventListener("click",event=>{if(event.currentTarget.disabled)return;closeAccountMenu();openLocationMenu({focus:"first"});});
 const newActionTrigger=$("#new-action-trigger"),newActionMenu=$("#new-action-menu");
 newActionTrigger.querySelector('[aria-hidden="true"]')?.remove();
 function newActionItems(){return [...newActionMenu.querySelectorAll('[role="menuitem"]:not(:disabled)')];}
 function syncNewActionAvailability(){if(!newActionMenu)return;const availability={"new-appointment":allowed("appointments.create"),"quick-existing":allowed("appointments.create"),"blocked-time":allowed("appointments.edit")};for(const [action,enabled] of Object.entries(availability)){const item=newActionMenu.querySelector(`[data-new-action="${action}"]`);if(!item)continue;item.disabled=!enabled;item.setAttribute("aria-disabled",String(!enabled));if(!enabled)item.title="You do not have permission for this action";else item.removeAttribute("title");}}
 function closeNewActionMenu({restoreFocus=false}={}){if(!newActionMenu)return;newActionMenu.hidden=true;newActionTrigger.setAttribute("aria-expanded","false");if(restoreFocus)newActionTrigger.focus();}
-function openNewActionMenu({focus="none"}={}){closeAccountMenu();syncNewActionAvailability();newActionMenu.hidden=false;newActionTrigger.setAttribute("aria-expanded","true");const items=newActionItems();if(focus==="first")items[0]?.focus();if(focus==="last")items.at(-1)?.focus();}
+function openNewActionMenu({focus="none"}={}){closeAccountMenu();closeLocationMenu();syncNewActionAvailability();newActionMenu.hidden=false;newActionTrigger.setAttribute("aria-expanded","true");const items=newActionItems();if(focus==="first")items[0]?.focus();if(focus==="last")items.at(-1)?.focus();}
 newActionTrigger.addEventListener("click",()=>newActionMenu.hidden?openNewActionMenu():closeNewActionMenu({restoreFocus:true}));
 newActionTrigger.addEventListener("keydown",event=>{if(["ArrowDown","ArrowUp"].includes(event.key)){event.preventDefault();openNewActionMenu({focus:event.key==="ArrowDown"?"first":"last"});}});
 newActionMenu.addEventListener("keydown",event=>{const items=newActionItems(),index=items.indexOf(document.activeElement);if(event.key==="Escape"){event.preventDefault();closeNewActionMenu({restoreFocus:true});}else if(["ArrowDown","ArrowUp","Home","End"].includes(event.key)){event.preventDefault();const next=event.key==="Home"?0:event.key==="End"?items.length-1:(index+(event.key==="ArrowDown"?1:-1)+items.length)%items.length;items[next]?.focus();}});
 newActionMenu.addEventListener("click",async event=>{const item=event.target.closest?.("[data-new-action]");if(!item||item.disabled)return;const action=item.dataset.newAction;closeNewActionMenu();if(action==="quick-existing"){await actions["new-appointment"]();setTimeout(()=>$('#modal [name="customerId"]')?.focus(),0);}else await actions[action]?.();});
 document.addEventListener("click",event=>{if(!newActionMenu.hidden&&!$(".new-action-control").contains(event.target))closeNewActionMenu();});
-document.addEventListener("keydown",event=>{if(event.key==="Escape"){if(!newActionMenu.hidden){event.preventDefault();closeNewActionMenu({restoreFocus:true});}else if(!accountMenu.hidden){event.preventDefault();closeAccountMenu({restoreFocus:true});}else if($(".calendar-action-popover:not([hidden])")){event.preventDefault();closeCalendarMenus({restoreFocus:true});}}});
+document.addEventListener("keydown",event=>{if(event.key==="Escape"){if(!newActionMenu.hidden){event.preventDefault();closeNewActionMenu({restoreFocus:true});}else if(locationMenu&&!locationMenu.hidden){event.preventDefault();closeLocationMenu({restoreFocus:true});}else if(!accountMenu.hidden){event.preventDefault();closeAccountMenu({restoreFocus:true});}else if($(".calendar-action-popover:not([hidden])")){event.preventDefault();closeCalendarMenus({restoreFocus:true});}}});
 $("#profile-form").addEventListener("submit",async event=>{event.preventDefault();const form=event.currentTarget,error=$("#profile-error"),button=form.querySelector("button[type=submit]");error.textContent="";button.disabled=true;try{await api("/api/me",{method:"PATCH",body:JSON.stringify({displayName:new FormData(form).get("displayName")})});state.me=await api("/api/me");renderAccountIdentity();toast("Profile updated");}catch(problem){error.textContent=problem.message;}finally{button.disabled=false;}});
 $("#profile-cancel").addEventListener("click",()=>{renderAccountIdentity();$("#profile-error").textContent="";});
 $("#profile-workspace-select").addEventListener("change",async event=>{try{await api("/api/workspaces/select",{method:"POST",body:JSON.stringify({businessId:event.target.value})});location.reload();}catch(error){toast(error.message);renderAccountIdentity();}});
@@ -1071,7 +1214,7 @@ globalThis.addEventListener("popstate",()=>showView(viewForPath(location.pathnam
 async function showView(view,{history="push"}={}) {
   if(!activateView(view,{history}))return;
   try{
-    state.me=await api("/api/me");applyPermissions();
+    state.me=await api("/api/me");applyPermissions();renderLocationSwitcher();
     if(view==="calendar")await openCalendarView();
     if(view==="customers")await loadCustomerDirectory(state.customerDirectory.page||1);
     if(view==="messages")renderMessages();

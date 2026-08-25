@@ -9,6 +9,8 @@ export interface AuthContext {
   membershipId: string;
   isOwner: boolean;
   permissions: string[];
+  /** Active location for this session; null only when the business has no active location. */
+  locationId: string | null;
 }
 
 declare module "fastify" {
@@ -36,12 +38,23 @@ export function authentication(db: Database) {
       membershipId: string;
       isOwner: boolean;
       permissions: string[];
+      locationId: string | null;
     }[]>`
-      select s.user_id, m.business_id, m.id as membership_id, m.is_owner, m.permissions
+      select s.user_id, m.business_id, m.id as membership_id, m.is_owner, m.permissions,
+        active_location.id as location_id
       from sessions s
       join users u on u.id = s.user_id
       join business_memberships m on m.user_id = u.id
       join businesses b on b.id = m.business_id
+      -- The chosen location wins while it is still active and still owned by the
+      -- resolved business; otherwise the (name,id) ordering makes the fallback
+      -- deterministic rather than whatever the planner returns first.
+      left join lateral (
+        select l.id from locations l
+        where l.business_id = m.business_id and l.active
+        order by (l.id is not distinct from s.location_id) desc, l.name, l.id
+        limit 1
+      ) active_location on true
       where s.token_hash = ${tokenHash(token)}
         and s.revoked_at is null and s.expires_at > now()
         and u.disabled_at is null and m.status = 'active' and b.status = 'active'
@@ -71,7 +84,7 @@ export function platformAuthentication(db: Database) {
     if (!row) return reply.code(403).send({ error: "Platform administrator access required" });
     request.auth = {
       userId: row.userId, businessId: "", membershipId: "",
-      isOwner: false, permissions: []
+      isOwner: false, permissions: [], locationId: null
     };
   };
 }

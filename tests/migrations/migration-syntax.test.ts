@@ -62,5 +62,10 @@ describe("database migrations", () => {
     expect(multiGroomer).toContain("one_active_normalized_service_name");
     expect(multiGroomer).toContain("'Ear Cleaning'");
     expect(multiGroomer).toContain("'Ear Plucking'");
+    const sessionLocations = await readFile("migrations/0018_session_location_selection.sql", "utf8");
+    expect(sessionLocations).toContain("drop index if exists one_active_location_per_business");
+    expect(sessionLocations).toContain("alter table sessions add column location_id uuid");
+    expect(sessionLocations).toContain("sessions_location_within_business");
+    expect(sessionLocations).toContain("references locations(business_id,id)");
   });
 });

@@ -20,7 +20,8 @@ import {
   passwordResetRequestSchema, passwordResetConfirmSchema, invitationSchema,
   invitationAcceptSchema, ownershipTransferSchema, petProfileUpdateSchema, petCareUpdateSchema,
   servicePricingSchema,breedCatalogCreateSchema,breedCatalogUpdateSchema,priceResolutionSchema,
-  ownProfileUpdateSchema,passwordChangeSchema,workspaceAccessRequestSchema,workspaceSelectionSchema
+  ownProfileUpdateSchema,passwordChangeSchema,workspaceAccessRequestSchema,workspaceSelectionSchema,
+  locationSelectionSchema
 } from "./schemas.js";
 import { sealSecret } from "../security/secrets.js";
 import { hashPassword, validateNewPassword, verifyPassword } from "../security/passwords.js";
@@ -663,8 +664,8 @@ export function registerRoutes(
       await provisionBusinessCatalog(tx,business.id);
       const token = issueToken();
       await tx`
-        insert into sessions (user_id, business_id, token_hash, expires_at)
-        values (${user.id}, ${business.id}, ${tokenHash(token)}, now() + interval '14 days')
+        insert into sessions (user_id, business_id, location_id, token_hash, expires_at)
+        values (${user.id}, ${business.id}, ${location?.id ?? null}, ${tokenHash(token)}, now() + interval '14 days')
       `;
       await record(tx, {
         businessId: business.id, actorId: user.id, action: "business.create",
@@ -902,9 +903,14 @@ export function registerRoutes(
     const [account] = await db<{ email: string; displayName: string }[]>`
       select email,display_name from users where id=${context.userId}
     `;
+    // Joined on the session's already-resolved location id, so a multi-location
+    // business returns exactly one deterministic row instead of an arbitrary one.
     const [business] = await db`
-      select b.*, l.id as location_id, l.name as location_name, l.timezone, l.version as location_version
-      from businesses b join locations l on l.business_id = b.id and l.active
+      select b.*, l.id as location_id, l.name as location_name, l.timezone, l.version as location_version,
+        (select count(*)::int from locations c where c.business_id = b.id and c.active) as location_count
+      from businesses b
+      left join locations l
+        on l.business_id = b.id and l.active and l.id = ${context.locationId}::uuid
       where b.id = ${context.businessId}
     `;
     return { ...context, account, business };
@@ -928,9 +934,40 @@ export function registerRoutes(
         and business_id=${input.businessId} and status='active'
     `;
     if(!membership)return reply.code(404).send({error:"Workspace access is unavailable"});
-    await db`update sessions set business_id=${input.businessId}
+    // Switching workspace must drop the previous workspace's location, otherwise the
+    // session would reference a location owned by a different business.
+    await db`update sessions set business_id=${input.businessId},location_id=null
       where token_hash=${tokenHash(request.cookies.pawsh_session??"")} and user_id=${context.userId}`;
     return {selected:true};
+  });
+
+  app.get("/api/locations",{preHandler:authenticate},async request=>{
+    const context=auth(request);
+    return db`
+      select id,name,address,timezone,version,
+        (id is not distinct from ${context.locationId}::uuid) as current
+      from locations where business_id=${context.businessId} and active
+      order by name,id
+    `;
+  });
+
+  app.post("/api/me/location",{preHandler:authenticate},async(request,reply)=>{
+    const context=auth(request);const input=body(locationSelectionSchema,request.body);
+    const sessionTokenHash=tokenHash(request.cookies.pawsh_session??"");
+    const selected=await db.begin(async tx=>{
+      await setTenant(tx,context.businessId);
+      // Scoped to the caller's business, so an id from another tenant is simply absent.
+      const [location]=await tx<{id:string;name:string;timezone:string;version:number}[]>`
+        select id,name,timezone,version from locations
+        where business_id=${context.businessId} and id=${input.locationId} and active
+      `;
+      if(!location)return null;
+      await tx`update sessions set location_id=${location.id}
+        where token_hash=${sessionTokenHash} and user_id=${context.userId}`;
+      return location;
+    });
+    if(!selected)return reply.code(404).send({error:"Location is unavailable"});
+    return {locationId:selected.id,locationName:selected.name,timezone:selected.timezone,locationVersion:selected.version};
   });
 
   app.patch("/api/me", { preHandler: authenticate }, async (request) => {
@@ -1003,7 +1040,7 @@ export function registerRoutes(
     const timezone = validateTimeZone(input.timezone);
     return db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [activeLocation]=await tx<{id:string}[]>`select id from locations where business_id=${context.businessId} and active`;
+      const [activeLocation]=await tx<{id:string}[]>`select id from locations where business_id=${context.businessId} and id=${context.locationId}::uuid and active`;
       if(!activeLocation)return reply.code(404).send({error:"Active location not found"});
       await tx`select pg_advisory_xact_lock(hashtextextended(${'location-settings:' + activeLocation.id},0))`;
       const [location] = await tx<{ id:string; timezone:string; version:number }[]>`
@@ -1482,7 +1519,7 @@ export function registerRoutes(
     await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
       const [location] = await tx<{ id: string }[]>`
-        select id from locations where business_id=${context.businessId} and active
+        select id from locations where business_id=${context.businessId} and id=${context.locationId}::uuid and active
       `;
       if (!location) throw new Error("Active location not found");
       await tx`delete from business_hours where business_id=${context.businessId} and location_id=${location.id}`;
@@ -1502,7 +1539,8 @@ export function registerRoutes(
     const context=auth(request);
     return db`select weekday,to_char(start_time,'HH24:MI') as start_time,to_char(end_time,'HH24:MI') as end_time
       from business_hours
-      where business_id=${context.businessId} order by weekday,start_time`;
+      where business_id=${context.businessId} and location_id=${context.locationId}::uuid
+      order by weekday,start_time`;
   });
 
   app.get("/api/customers", {
@@ -1535,6 +1573,9 @@ export function registerRoutes(
         : query.direction==="desc"?db`customer.last_name desc,customer.first_name desc,customer.id`:db`customer.last_name,customer.first_name,customer.id`;
     const base=db`
       from customers customer
+      left join employees preferred_employee
+        on preferred_employee.business_id=customer.business_id
+        and preferred_employee.id=customer.preferred_employee_id
       left join lateral (
         select
           max(appointment.start_at) filter(where appointment.start_at<now() and appointment.status='completed') last_visit,
@@ -1545,6 +1586,7 @@ export function registerRoutes(
     const [rows,totalRows]=await Promise.all([
       db`select customer.id,customer.first_name,customer.last_name,customer.phone,customer.email,
         customer.archived_at,summary.last_visit,summary.next_appointment,
+        customer.preferred_employee_id,preferred_employee.display_name preferred_employee_name,
         coalesce((select json_agg(json_build_object('id',pet.id,'name',pet.name,'breed',pet.breed,'safetyAlerts',pet.safety_alerts)
           order by pet.name,pet.id) from pets pet where pet.business_id=customer.business_id
           and pet.customer_id=customer.id and pet.archived_at is null),'[]') pets
@@ -2346,7 +2388,7 @@ export function registerRoutes(
     const context = auth(request);
     const query = body(calendarQuerySchema,request.query);
     const [location] = await db<{ id:string; timezone:string }[]>`
-      select id,timezone from locations where business_id=${context.businessId} and active
+      select id,timezone from locations where business_id=${context.businessId} and id=${context.locationId}::uuid and active
     `;
     if (!location) return reply.code(404).send({ error:"Active location not found" });
     const localDate=query.localDate ?? localDateForInstant(new Date(),location.timezone);
@@ -3090,7 +3132,7 @@ export function registerRoutes(
     preHandler: [authenticate, requirePermission("reports.view")]
   }, async (request) => {
     const context = auth(request);
-    const [location]=await db<{id:string;timezone:string}[]>`select id,timezone from locations where business_id=${context.businessId} and active`;
+    const [location]=await db<{id:string;timezone:string}[]>`select id,timezone from locations where business_id=${context.businessId} and id=${context.locationId}::uuid and active`;
     if(!location)throw new Error("Active location not found");
     const today=localDateForInstant(new Date(),location.timezone);
     const bounds=localDateBounds(today,location.timezone);
@@ -3125,7 +3167,7 @@ export function registerRoutes(
   }, async (request, reply) => {
     const context = auth(request);
     const query=body(reportRangeSchema,request.query);
-    const [location]=await db<{id:string;timezone:string}[]>`select id,timezone from locations where business_id=${context.businessId} and active`;
+    const [location]=await db<{id:string;timezone:string}[]>`select id,timezone from locations where business_id=${context.businessId} and id=${context.locationId}::uuid and active`;
     if(!location)return reply.code(404).send({error:"Active location not found"});
     const today=localDateForInstant(new Date(),location.timezone);
     const defaultStart=new Date(Date.UTC(Number(today.slice(0,4)),Number(today.slice(5,7))-1,Number(today.slice(8,10))-30)).toISOString().slice(0,10);

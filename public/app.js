@@ -534,11 +534,77 @@ function renderSetupEnhanced() {
 }
 function pricingMatrix(service){
   if(service.pricingMode!=="TIERED")return "";
-  const classes=[...new Set(service.priceTiers.map(price=>price.pricingClass))];const tiers=[["TIER_1","1–20"],["TIER_2","21–40"],["TIER_3","41–60"],["TIER_4","61–80"],["TIER_5","81–100"],["TIER_6","100+"]];
+  const classes=["SMOOTH_SINGLE","STANDARD","EXTRA_FLOOF"];const tiers=[["TIER_1","1–20"],["TIER_2","21–40"],["TIER_3","41–60"],["TIER_4","61–80"],["TIER_5","81–100"],["TIER_6","100+"]];
   return `<div class="pricing-scroll"><table class="pricing-matrix"><caption>${escape(service.name)} pricing tiers</caption><thead><tr><th scope="col">Pricing class</th>${tiers.map(([,label])=>`<th scope="col">${label} lb</th>`).join("")}</tr></thead><tbody>${classes.map(pricingClass=>`<tr><th scope="row">${escape(pricingClass.replaceAll("_"," "))}</th>${tiers.map(([code])=>`<td>${money(service.priceTiers.find(price=>price.pricingClass===pricingClass&&price.weightTierCode===code)?.priceMinor??0)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
+// The catalog opens on the work a salon does every day. DOG_BASE leads, the add-ons that
+// hang off it follow, then à la carte, cat, and anything general; a category the server
+// adds later sorts in after those, alphabetically, so the order never depends on the order
+// rows happen to arrive in.
+const serviceCategoryOrder=["DOG_BASE","DOG_ADDON","A_LA_CARTE","CAT","GENERAL"];
+// Which sections are collapsed is a view preference, like the calendar ones above: per
+// account, per business, local to the browser, and never part of the catalog data.
+function serviceSectionKey(){return `pawsh:service-sections:${state.me?.account?.id||state.me?.account?.email||"anonymous"}:${state.me?.business?.id||"none"}`;}
+let serviceSectionStore=null;
+function serviceSectionStorage(){
+  const key=serviceSectionKey();
+  if(serviceSectionStore?.key===key)return serviceSectionStore;
+  let saved={};
+  try{const parsed=JSON.parse(globalThis.localStorage.getItem(key)||"null");if(parsed&&typeof parsed==="object")saved=parsed;}
+  catch{saved={};}
+  // `revealed` holds the sections a filter opened. It is deliberately memory-only: a search
+  // that surfaced a section keeps it open for the rest of the visit - clearing the search
+  // must not slam shut the thing the user was just reading - but the next load starts from
+  // the stored preference again.
+  serviceSectionStore={key,saved,revealed:new Set()};
+  return serviceSectionStore;
+}
+function serviceSectionOpen(category){
+  const store=serviceSectionStorage();
+  if(store.revealed.has(category))return true;
+  return typeof store.saved[category]==="boolean"?store.saved[category]:category==="DOG_BASE";
+}
+function saveServiceSection(category,open){
+  const store=serviceSectionStorage();
+  store.saved[category]=open;
+  if(open)store.revealed.add(category);else store.revealed.delete(category);
+  try{globalThis.localStorage.setItem(store.key,JSON.stringify(store.saved));}
+  catch{/* private browsing or a full quota: the section still toggles, it just is not remembered */}
+}
 function renderServices(){
-  const target=$("#service-list");if(!target)return;const query=($("#service-search")?.value||"").trim().toLowerCase(),category=$("#service-category-filter")?.value||"all",status=$("#service-status-filter")?.value||"active",labels={DOG_BASE:"Main services",DOG_ADDON:"Dog add-ons",A_LA_CARTE:"À la carte",CAT:"Cat services",GENERAL:"General"};const filtered=state.services.filter(service=>(!query||`${service.name} ${service.description||""}`.toLowerCase().includes(query))&&(category==="all"||service.category===category)&&(status==="all"||status==="active"&&service.active||status==="archived"&&!service.active));const groups=[...new Set(filtered.map(service=>service.category))];target.innerHTML=groups.map(group=>`<section class="service-category"><details open><summary><span>${escape(labels[group]||group.replaceAll("_"," "))}</span><small>${filtered.filter(service=>service.category===group).length} services</small></summary><div>${filtered.filter(service=>service.category===group).map(service=>{const price=service.pricingMode==="FIXED"?money(service.basePriceMinor):service.pricingMode==="RANGE"?`${money(service.basePriceMinor)}–${money(service.rangeMaxMinor)}`:`From ${money(service.basePriceMinor)} · tiered`;return `<article class="service-row ${service.active?"":"archived"}"><div class="service-row-main"><h4>${escape(service.name)}</h4><p>${escape(service.description||"No description")}</p><span class="service-state">${service.active?"Active · Bookable":"Archived · Not bookable"}</span></div><div class="service-row-facts"><strong>${price}</strong><span>${service.baseDurationMinutes>0?`${service.baseDurationMinutes} min`:"Duration required"}</span></div>${allowed("services.manage")?`<div class="service-row-actions"><button type="button" class="secondary compact edit-service" data-id="${service.id}" aria-label="Edit ${escape(service.name)}">Edit</button>${service.active?`<button type="button" class="text-button deactivate-service" data-id="${service.id}" aria-label="Archive ${escape(service.name)}">Archive</button>`:""}</div>`:""}${pricingMatrix(service)}</article>`}).join("")}</div></details></section>`).join("")||`<p class="empty">No services match these filters.</p>`;
+  const target=$("#service-list");if(!target)return;
+  const query=($("#service-search")?.value||"").trim().toLowerCase(),category=$("#service-category-filter")?.value||"all",status=$("#service-status-filter")?.value||"active",
+    attr=value=>escape(value).replaceAll('"',"&quot;"),
+    labels={DOG_BASE:"Main services",DOG_ADDON:"Dog add-ons",A_LA_CARTE:"À la carte",CAT:"Cat services",GENERAL:"General"},
+    // Any narrowing of the catalog - text, category or status - expands every section that
+    // survives it. A match hidden inside a collapsed section reads to the user as no match.
+    filtering=Boolean(query)||category!=="all"||status!=="active";
+  const filtered=state.services.filter(service=>(!query||`${service.name} ${service.description||""}`.toLowerCase().includes(query))&&(category==="all"||service.category===category)&&(status==="all"||status==="active"&&service.active||status==="archived"&&!service.active));
+  const groups=[...new Set(filtered.map(service=>service.category))].sort((left,right)=>{
+    const rank=value=>{const index=serviceCategoryOrder.indexOf(value);return index<0?serviceCategoryOrder.length:index;};
+    return rank(left)-rank(right)||left.localeCompare(right);
+  });
+  target.innerHTML=groups.map(group=>{
+    const services=filtered.filter(service=>service.category===group),open=filtering||serviceSectionOpen(group);
+    if(filtering)serviceSectionStorage().revealed.add(group);
+    const rows=services.map(service=>{const price=service.pricingMode==="FIXED"?money(service.basePriceMinor):service.pricingMode==="RANGE"?`${money(service.basePriceMinor)}–${money(service.rangeMaxMinor)}`:`From ${money(service.basePriceMinor)} · tiered`;return `<article class="service-row ${service.active?"":"archived"}"><div class="service-row-main"><h4>${escape(service.name)}</h4><p>${escape(service.description||"No description")}</p><span class="service-state">${service.active?"Active · Bookable":"Archived · Not bookable"}</span></div><div class="service-row-facts"><strong>${price}</strong><span>${service.baseDurationMinutes>0?`${service.baseDurationMinutes} min`:"Duration required"}</span></div>${allowed("services.manage")?`<div class="service-row-actions"><button type="button" class="secondary compact edit-service" data-id="${service.id}" aria-label="Edit ${escape(service.name)}">Edit</button>${service.active?`<button type="button" class="text-button deactivate-service" data-id="${service.id}" aria-label="Archive ${escape(service.name)}">Archive</button>`:""}</div>`:""}${pricingMatrix(service)}</article>`}).join("");
+    return `<section class="service-category"><details class="service-section" data-category="${attr(group)}" data-rendered-open="${open?"true":"false"}"${open?" open":""}><summary class="service-section-summary" aria-expanded="${open?"true":"false"}"><span class="service-section-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></span><span class="service-section-title">${escape(labels[group]||group.replaceAll("_"," "))}</span><small>${services.length} ${services.length===1?"service":"services"}</small></summary><div class="service-section-body">${rows}</div></details></section>`;
+  }).join("")||`<p class="empty">No services match these filters.</p>`;
+  $$("#service-list .service-section").forEach(section=>{
+    const summary=section.querySelector("summary");
+    section.addEventListener("toggle",()=>{
+      summary?.setAttribute("aria-expanded",section.open?"true":"false");
+      // Chromium fires toggle for a <details open> that innerHTML just parsed, so the event
+      // alone cannot tell a person opening a section from the markup this render wrote. Only
+      // a state that differs from what was rendered came from the user; without this guard a
+      // section a search had revealed saved itself as the stored preference.
+      const rendered=section.dataset.renderedOpen==="true";
+      section.dataset.renderedOpen=section.open?"true":"false";
+      if(section.open===rendered)return;
+      // A filtered view is transient, so what a search opened never becomes the preference.
+      if(!filtering)saveServiceSection(section.dataset.category,section.open);
+    });
+  });
   $$(".edit-service").forEach(button=>button.addEventListener("click",()=>editService(button.dataset.id)));$$(".deactivate-service").forEach(button=>button.addEventListener("click",()=>deactivate("services",button.dataset.id)));
 }
 function renderReportGroomers(){
@@ -555,19 +621,134 @@ function reportQuery(){
   if(groomers.length)params.set("employeeIds",groomers.join(","));
   return params;
 }
+// == reports charts ==========================================================
+// Pawsh has no bundler and no chart library, so a bar is a plain element whose only runtime
+// style is its own length. Two rules hold everywhere below: every bar prints its label and
+// its exact value as text, so the reading survives colour-blindness, 400% zoom and a screen
+// reader with the graphics ignored; and a figure the server cannot supply gets an explicit
+// empty state instead of a zero-height bar, because a zero bar is a claim ("this person
+// earned nothing") that Pawsh is not entitled to make.
+const reportAttr=value=>escape(value).replaceAll('"',"&quot;");
+const reportMethodLabels={cash:"Cash",external_card:"External card",check:"Check",card:"Card",other:"Other"};
+function reportMethodLabel(method){
+  const key=String(method??"");
+  return reportMethodLabels[key]||(key?key.replaceAll("_"," ").replace(/^./,letter=>letter.toUpperCase()):"Unrecorded");
+}
+function reportBarLength(value,max){return max>0?Math.max(0,Math.min(100,Math.round(Number(value)/max*1000)/10)):0;}
+function reportEmpty(message){return `<p class="empty chart-empty">${escape(message)}</p>`;}
+function reportNote(message){return message?`<p class="chart-note">${escape(message)}</p>`:"";}
+// Vertical bars read top to bottom as plot, value, label, note, while the DOM order is the
+// reverse of that (label first) so the accessible reading is "Net, $1,690.00" rather than a
+// value arriving before the thing it measures. Grid areas keep the two orders independent.
+function reportVerticalBars(rows,{empty,note}={}){
+  const values=rows.map(row=>Number(row.value)||0),max=Math.max(0,...values);
+  if(!rows.length||max<=0)return reportEmpty(empty||"Nothing to chart in this range.");
+  return reportNote(note)+`<ol class="chart chart-vertical">${rows.map((row,index)=>
+    `<li class="vbar"${row.tone?` data-tone="${reportAttr(row.tone)}"`:""}>`
+    +`<span class="vbar-label">${escape(row.label)}</span>`
+    +`<span class="vbar-value">${escape(row.display)}</span>`
+    +(row.note?`<span class="vbar-note">${escape(row.note)}</span>`:"")
+    +`<span class="vbar-track" aria-hidden="true"><span class="vbar-fill" style="height:${reportBarLength(values[index],max)}%"></span></span>`
+    +`</li>`).join("")}</ol>`;
+}
+// Horizontal bars carry the groomer identity slot, so a groomer is the same colour here as
+// on the calendar. A row with no slot - the Unassigned bucket - falls back to the muted tone.
+function reportHorizontalBars(rows,{empty,note}={}){
+  const values=rows.map(row=>Number(row.value)||0),max=Math.max(0,...values);
+  if(!rows.length||max<=0)return reportEmpty(empty||"Nothing to chart in this range.");
+  return reportNote(note)+`<ol class="chart chart-horizontal">${rows.map((row,index)=>
+    `<li class="hbar"${row.slot===null||row.slot===undefined||row.slot===""?"":` data-groomer-slot="${reportAttr(row.slot)}"`}${row.tone?` data-tone="${reportAttr(row.tone)}"`:""}>`
+    +`<span class="hbar-label" title="${reportAttr(row.label)}">${escape(row.label)}</span>`
+    +`<span class="hbar-track" aria-hidden="true"><span class="hbar-fill" style="width:${reportBarLength(values[index],max)}%"></span></span>`
+    +`<span class="hbar-value">${escape(row.display)}</span>`
+    +`</li>`).join("")}</ol>`;
+}
+// One row per groomer, largest first, plus the server's unattributed bucket when it holds
+// anything. Without that bucket the bars quietly fail to sum to the business total, and the
+// gap looks like a rounding error rather than the appointments-without-a-groomer that it is.
+function reportStaffRows(employees,field,unattributedMinor){
+  const rows=employees.map(employee=>{
+    const value=Number(employee[field]||0);
+    return {label:employee.displayName,value,display:money(value),slot:groomerSlot(employee.id)};
+  });
+  const unattributed=Number(unattributedMinor||0);
+  if(unattributed>0)rows.push({label:"Unassigned",value:unattributed,display:money(unattributed),slot:null,tone:"unassigned"});
+  return rows.sort((left,right)=>right.value-left.value);
+}
+function reportUnassignedNote(unattributedMinor){
+  return Number(unattributedMinor||0)>0?"Unassigned is money on invoices whose appointment has no groomer on record. It is shown so the bars add up to the business total.":"";
+}
+function renderReportCharts(){
+  const totals=state.reports.totals??{},employees=state.reports.employees??[],
+    amount=value=>Number(value||0),
+    bar=(label,value,extra={})=>({label,value:amount(value),display:money(amount(value)),...extra});
+  $("#report-summary").innerHTML=[
+    ["Completed appointments",String(amount(totals.completedAppointments))],
+    ["Total pets",String(amount(totals.totalPets))],
+    ["Services performed",String(amount(totals.servicesPerformed))],
+    ["Earned revenue",money(amount(totals.paidRevenueMinor))],
+    ["Expected revenue",money(amount(totals.expectedRevenueMinor))]
+  ].map(([label,value])=>`<div class="metric"><span>${escape(label)}</span><strong>${escape(value)}</strong></div>`).join("");
+  $("#report-revenue-chart").innerHTML=reportVerticalBars([
+    bar("Net",totals.netMinor),bar("Tax",totals.taxMinor),bar("Sales",totals.salesMinor),
+    bar("Tips",totals.tipMinor),bar("Total",totals.billedRevenueMinor,{tone:"total"})
+  ],{empty:"No invoiced revenue in this range."});
+  $("#report-staff-revenue").innerHTML=reportHorizontalBars(
+    reportStaffRows(employees,"revenueMinor",totals.unattributedRevenueMinor),
+    {empty:"No attributed revenue in this range.",note:reportUnassignedNote(totals.unattributedRevenueMinor)});
+  // Commission is null, not zero: Pawsh has no commission model, so there is no figure to
+  // draw. Zero-height bars under five names would read as "nobody earned any commission".
+  const commission=employees.filter(employee=>employee.commissionMinor!==null&&employee.commissionMinor!==undefined);
+  $("#report-staff-commission").innerHTML=commission.length
+    ?reportHorizontalBars(commission.map(employee=>({label:employee.displayName,value:amount(employee.commissionMinor),display:money(amount(employee.commissionMinor)),slot:groomerSlot(employee.id)})).sort((left,right)=>right.value-left.value),{empty:"No commission in this range."})
+    :reportEmpty("Not tracked yet. Pawsh has no commission model, so there is no commission to report - this is not $0 earned.");
+  $("#report-staff-tips").innerHTML=reportHorizontalBars(
+    reportStaffRows(employees,"tipMinor",totals.unattributedTipMinor),
+    {empty:"No tips in this range.",note:reportUnassignedNote(totals.unattributedTipMinor)});
+  const salesItems=state.reports.salesItems??{};
+  $("#report-sales-items").innerHTML=reportVerticalBars([
+    bar("Services",salesItems.servicesMinor),bar("Products",salesItems.productsMinor),
+    bar("Tax",salesItems.taxMinor),bar("Tips",salesItems.tipMinor)
+  ],{empty:"No sales in this range.",note:amount(salesItems.productsMinor)===0?"Products is a true zero: Pawsh does not sell retail items yet.":""});
+  const paymentStatus=state.reports.paymentStatus??{};
+  $("#report-payment-status").innerHTML=reportVerticalBars([
+    bar("Paid",paymentStatus.paidMinor,{tone:"paid"}),bar("Outstanding",paymentStatus.outstandingMinor,{tone:"outstanding"})
+  ],{empty:"Nothing billed in this range."});
+  const methods=(state.reports.paymentMethods??[]).map(row=>bar(reportMethodLabel(row.method),row.amountMinor,{note:`${amount(row.count)} ${amount(row.count)===1?"payment":"payments"}`})).sort((left,right)=>right.value-left.value);
+  $("#report-payment-methods").innerHTML=reportVerticalBars(methods,{empty:"No payments recorded in this range."});
+}
+function renderReportTables(){
+  const totals=state.reports.totals??{},amount=value=>Number(value||0),
+    // Each revenue row is a DATE - the business-local day the invoice was cut - which arrives
+    // as UTC midnight. Formatting it in the viewer's zone slides it a day backwards west of
+    // UTC, so it is read back in UTC to land on the day the server actually meant.
+    dayFormat=new Intl.DateTimeFormat([],{dateStyle:"medium",timeZone:"UTC"});
+  // The metric rows stay one-to-one with the Summary card, in the same order: Charts and
+  // Report are two readings of one server payload and must never disagree.
+  $("#report-table-body").innerHTML=[
+    ["Completed appointments","Completed appointments whose <em>start</em> falls in range, counted once each.",String(amount(totals.completedAppointments))],
+    ["Total pets","Distinct pets seen on those completed appointments.",String(amount(totals.totalPets))],
+    ["Services performed","Historical service snapshots on those completed appointments.",String(amount(totals.servicesPerformed))],
+    ["Earned revenue","Invoice total less current balance, for invoices <em>created</em> in range. Counted once per invoice.",money(amount(totals.paidRevenueMinor))],
+    ["Expected revenue","Balance still owed on those same invoices. Billed, not yet collected.",money(amount(totals.expectedRevenueMinor))]
+  ].map(([metric,definition,value])=>`<tr><td>${escape(metric)}</td><td>${definition}</td><td>${escape(value)}</td></tr>`).join("");
+  const employees=state.reports.employees??[],
+    commissionCell=employee=>employee.commissionMinor===null||employee.commissionMinor===undefined?`<td class="report-not-tracked">Not tracked</td>`:`<td>${escape(money(amount(employee.commissionMinor)))}</td>`;
+  const staffRows=employees.map(employee=>`<tr><td>${escape(employee.displayName)}</td><td>${amount(employee.appointmentCount)}</td><td>${escape(money(amount(employee.revenueMinor)))}</td><td>${escape(money(amount(employee.tipMinor)))}</td>${commissionCell(employee)}</tr>`);
+  if(amount(totals.unattributedRevenueMinor)>0||amount(totals.unattributedTipMinor)>0)
+    staffRows.push(`<tr class="report-unassigned-row"><td>Unassigned</td><td>—</td><td>${escape(money(amount(totals.unattributedRevenueMinor)))}</td><td>${escape(money(amount(totals.unattributedTipMinor)))}</td><td class="report-not-tracked">—</td></tr>`);
+  $("#report-staff-table-body").innerHTML=staffRows.join("")||`<tr><td colspan="5" class="empty">No completed appointments.</td></tr>`;
+  $("#report-services-table-body").innerHTML=(state.reports.services??[]).map(row=>`<tr><td>${escape(row.service)}</td><td>${amount(row.performed)}</td></tr>`).join("")||`<tr><td colspan="2" class="empty">No services completed.</td></tr>`;
+  $("#report-daily-table-body").innerHTML=(state.reports.revenue??[]).map(row=>`<tr><td>${escape(dayFormat.format(new Date(row.date)))}</td><td>${escape(money(amount(row.revenueMinor)))}</td></tr>`).join("")||`<tr><td colspan="2" class="empty">No paid revenue yet.</td></tr>`;
+}
 function renderReports() {
   if (!state.reports) return;
-  // Business totals come from the server so Charts and Report can never disagree. The groomer rows
-  // below are attribution only and are never summed to produce a business total.
-  const totals=state.reports.totals??{paidRevenueMinor:0,completedAppointments:0,servicesPerformed:0};
-  const paidRevenue=Number(totals.paidRevenueMinor),completed=Number(totals.completedAppointments),services=Number(totals.servicesPerformed);
+  // Business totals come from the server so Charts and Report can never disagree. The groomer
+  // rows below are attribution only and are never summed to produce a business total.
   $("#report-start").value=state.reports.localDate;$("#report-days").value=String(state.reports.days);
   renderReportGroomers();
-  $("#report-summary").innerHTML=[["Paid revenue",money(paidRevenue)],["Completed appointments",completed],["Services performed",services]].map(([label,value])=>`<div class="metric"><strong>${value}</strong><span>${label}</span></div>`).join("");
-  $("#revenue-report").innerHTML=state.reports.revenue.length?state.reports.revenue.map(row=>`<div><span>${new Date(`${row.date}T00:00:00`).toLocaleDateString()}</span><strong>${money(row.revenueMinor)}</strong></div>`).join(""):`<p class="empty">No paid revenue yet.</p>`;
-  $("#employee-report").innerHTML=state.reports.employees.length?state.reports.employees.map(row=>`<div><span>${escape(row.displayName)}</span><strong>${row.appointmentCount}</strong></div>`).join(""):`<p class="empty">No completed appointments.</p>`;
-  $("#service-report").innerHTML=state.reports.services.length?state.reports.services.map(row=>`<div><span>${escape(row.service)}</span><strong>${row.performed}</strong></div>`).join(""):`<p class="empty">No services completed.</p>`;
-  $("#report-table-body").innerHTML=`<tr><td>Paid revenue</td><td>Invoice total less current balance, for invoices <em>created</em> in range. Counted once per invoice.</td><td>${money(paidRevenue)}</td></tr><tr><td>Completed appointments</td><td>Completed appointments whose <em>start</em> falls in range, counted once each.</td><td>${completed}</td></tr><tr><td>Services performed</td><td>Historical service snapshots on those completed appointments.</td><td>${services}</td></tr>`;
+  renderReportCharts();
+  renderReportTables();
   $("#report-charts").hidden=state.reportMode!=="charts";$("#report-table").hidden=state.reportMode!=="table";$("#report-charts-mode").setAttribute("aria-pressed",String(state.reportMode==="charts"));$("#report-table-mode").setAttribute("aria-pressed",String(state.reportMode==="table"));
 }
 
@@ -623,7 +804,7 @@ async function editEmployee(id) {
 }
 function editService(id) {
   const service=state.services.find(item=>item.id===id);
-  const tierFields=service.pricingMode==="TIERED"?`<fieldset class="wide"><legend>Pricing matrix</legend><div class="pricing-scroll"><table class="pricing-matrix"><thead><tr><th scope="col">Class</th>${["1–20","21–40","41–60","61–80","81–100","100+"].map(label=>`<th scope="col">${label}</th>`).join("")}</tr></thead><tbody>${[...new Set(service.priceTiers.map(price=>price.pricingClass))].map(pricingClass=>`<tr><th scope="row">${escape(pricingClass.replaceAll("_"," "))}</th>${[1,2,3,4,5,6].map(index=>{const price=service.priceTiers.find(item=>item.pricingClass===pricingClass&&item.weightTierCode===`TIER_${index}`);return `<td><label><span class="sr-only">${escape(pricingClass)} ${index} price</span><input name="tier:${pricingClass}:TIER_${index}" type="number" min="0" step=".01" value="${Number(price?.priceMinor??0)/100}"></label></td>`;}).join("")}</tr>`).join("")}</tbody></table></div></fieldset>`:"";
+  const tierFields=service.pricingMode==="TIERED"?`<fieldset class="wide"><legend>Pricing matrix</legend><div class="pricing-scroll"><table class="pricing-matrix"><thead><tr><th scope="col">Class</th>${["1–20","21–40","41–60","61–80","81–100","100+"].map(label=>`<th scope="col">${label}</th>`).join("")}</tr></thead><tbody>${["SMOOTH_SINGLE","STANDARD","EXTRA_FLOOF"].map(pricingClass=>`<tr><th scope="row">${escape(pricingClass.replaceAll("_"," "))}</th>${[1,2,3,4,5,6].map(index=>{const price=service.priceTiers.find(item=>item.pricingClass===pricingClass&&item.weightTierCode===`TIER_${index}`);return `<td><label><span class="sr-only">${escape(pricingClass)} ${index} price</span><input name="tier:${pricingClass}:TIER_${index}" type="number" min="0" step=".01" value="${Number(price?.priceMinor??0)/100}"></label></td>`;}).join("")}</tr>`).join("")}</tbody></table></div></fieldset>`:"";
   openModal("Edit service",field("name","Service name","text",`required value="${escape(service.name)}"`)+field("baseDurationMinutes","Duration (minutes)","number",`required min="1" value="${service.baseDurationMinutes}"`)+field("basePrice","Base/fixed price ($)","number",`required min="0" step=".01" value="${Number(service.basePriceMinor)/100}`)+field("description","Description","text",`value="${escape(service.description||"")}"`,true)+`<label><input name="active" type="checkbox" ${service.active?"checked":""}> Active</label>`+tierFields,async form=>{const values=Object.fromEntries(form);await api(`/api/services/${id}`,{method:"PUT",body:JSON.stringify({name:values.name,description:values.description||null,baseDurationMinutes:Number(values.baseDurationMinutes),basePriceMinor:Math.round(Number(values.basePrice)*100),category:service.category,pricingMode:service.pricingMode,rangeMaxMinor:service.rangeMaxMinor,priceConfirmationRequired:service.priceConfirmationRequired,active:form.has("active")})});const prices=[...form.entries()].filter(([name])=>name.startsWith("tier:")).map(([name,value])=>{const [,pricingClass,weightTierCode]=name.split(":");return {pricingClass,weightTierCode,priceMinor:Math.round(Number(value)*100)};});if(prices.length)await api(`/api/services/${id}/pricing`,{method:"PUT",body:JSON.stringify({prices})});});
 }
 const breedClasses=[["SMOOTH_SINGLE","Smooth Single"],["STANDARD","Standard"],["EXTRA_FLOOF","Extra Floof"]];

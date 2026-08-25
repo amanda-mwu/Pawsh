@@ -137,12 +137,22 @@
       <section id="reports" class="view" hidden>
         <div class="split-head"><div><p class="eyebrow">Authoritative operations</p><h3>Dashboard reporting</h3><p>Paid invoice revenue and completed work use one reporting source.</p></div><div class="report-mode" role="group" aria-label="Report display"><button type="button" id="report-charts-mode" aria-pressed="true">Charts</button><button type="button" id="report-table-mode" aria-pressed="false">Report</button></div></div>
         <div class="report-filters"><label>From<input id="report-start" type="date"></label><label>Range<select id="report-days"><option value="7">7 days</option><option value="31" selected>31 days</option><option value="90">90 days</option></select></label><label class="report-groomer-filter">Groomers<select id="report-groomers" multiple size="3" aria-describedby="report-groomers-hint"></select><small id="report-groomers-hint">All groomers when none selected</small></label><button type="button" class="primary compact" id="report-apply">Apply</button></div>
-        <div id="report-summary" class="metric-grid"></div><div id="report-charts" class="content-grid">
-          <article class="panel"><h3>Revenue</h3><div id="revenue-report" class="simple-list"></div></article>
-          <article class="panel"><h3>Appointments by groomer</h3><p class="panel-note">Each appointment is attributed to its assigned groomer. The totals above stay the authoritative business figures.</p><div id="employee-report" class="simple-list"></div></article>
-          <article class="panel"><h3>Services performed</h3><div id="service-report" class="simple-list"></div></article>
+        <div id="report-charts" class="report-grid">
+          <article class="panel report-panel"><h3>Summary</h3><div id="report-summary" class="report-summary"></div></article>
+          <article class="panel report-panel report-panel-wide"><h3>Revenue</h3><p class="panel-note">Sales is list price before discounts. Total is Net + Tax + Tips, billed rather than collected.</p><div id="report-revenue-chart" class="report-chart" data-allow-horizontal-scroll></div></article>
+          <article class="panel report-panel"><h3>Revenue by Staff</h3><div id="report-staff-revenue" class="report-chart"></div></article>
+          <article class="panel report-panel"><h3>Commission by Staff</h3><div id="report-staff-commission" class="report-chart"></div></article>
+          <article class="panel report-panel"><h3>Tips by Staff</h3><div id="report-staff-tips" class="report-chart"></div></article>
+          <article class="panel report-panel"><h3>Sales Item</h3><div id="report-sales-items" class="report-chart" data-allow-horizontal-scroll></div></article>
+          <article class="panel report-panel"><h3>Payment Status</h3><div id="report-payment-status" class="report-chart" data-allow-horizontal-scroll></div></article>
+          <article class="panel report-panel"><h3>Sales by method</h3><div id="report-payment-methods" class="report-chart" data-allow-horizontal-scroll></div></article>
         </div>
-        <div id="report-table" class="report-table-wrap" hidden><table class="directory-table"><thead><tr><th>Metric</th><th>Definition</th><th>Value</th></tr></thead><tbody id="report-table-body"></tbody></table></div>
+        <div id="report-table" class="report-tables" hidden>
+          <section class="report-table-section"><h4>Business totals</h4><div class="report-table-wrap"><table class="directory-table"><thead><tr><th scope="col">Metric</th><th scope="col">Definition</th><th scope="col">Value</th></tr></thead><tbody id="report-table-body"></tbody></table></div></section>
+          <section class="report-table-section"><h4>Staff attribution</h4><p class="panel-note">Attribution only. Each appointment is credited to its assigned groomer; the business totals above stay the authoritative figures.</p><div class="report-table-wrap"><table class="directory-table"><thead><tr><th scope="col">Groomer</th><th scope="col">Appointments</th><th scope="col">Revenue</th><th scope="col">Tips</th><th scope="col">Commission</th></tr></thead><tbody id="report-staff-table-body"></tbody></table></div></section>
+          <section class="report-table-section"><h4>Services performed</h4><div class="report-table-wrap"><table class="directory-table"><thead><tr><th scope="col">Service</th><th scope="col">Performed</th></tr></thead><tbody id="report-services-table-body"></tbody></table></div></section>
+          <section class="report-table-section"><h4>Paid revenue by day</h4><div class="report-table-wrap"><table class="directory-table"><thead><tr><th scope="col">Date</th><th scope="col">Paid revenue</th></tr></thead><tbody id="report-daily-table-body"></tbody></table></div></section>
+        </div>
       </section>
 
       <section id="profile-account" data-testid="profile-account-view" class="view" hidden>

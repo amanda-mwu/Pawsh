@@ -398,7 +398,14 @@ describeDatabase("canonical Pawsh workflow", () => {
     expect(reports.json().employees.every((row:{id:string})=>row.id===employeeId)).toBe(true);
     const otherGroomer=await app.inject({method:"GET",
       url:`/api/reports?localDate=2031-08-01&days=2&employeeIds=${crypto.randomUUID()}`,headers:{cookie:ownerCookie}});
-    expect(otherGroomer.json().totals).toEqual({paidRevenueMinor:0,completedAppointments:0,servicesPerformed:0});
+    // Exact shape on purpose: a groomer with no work must produce a fully zeroed dashboard, and a new
+    // aggregate that forgets the groomer filter would surface here as an unexpected non-zero key.
+    expect(otherGroomer.json().totals).toEqual({
+      paidRevenueMinor:0,completedAppointments:0,servicesPerformed:0,totalPets:0,
+      expectedRevenueMinor:0,outstandingMinor:0,billedRevenueMinor:0,salesMinor:0,
+      discountMinor:0,netMinor:0,taxMinor:0,tipMinor:0,unattributedRevenueMinor:0,
+      unattributedTipMinor:0,commissionMinor:null
+    });
     const invalid=await app.inject({method:"GET",url:"/api/reports?employeeIds=not-a-uuid",headers:{cookie:ownerCookie}});
     expect(invalid.statusCode).toBe(400);
   });

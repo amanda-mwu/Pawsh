@@ -3176,7 +3176,10 @@ export function registerRoutes(
     const from=localDateBounds(localDate,location.timezone).from;
     const end=new Date(Date.UTC(Number(localDate.slice(0,4)),Number(localDate.slice(5,7))-1,Number(localDate.slice(8,10))+days)).toISOString().slice(0,10);
     const to=localDateBounds(end,location.timezone).from;
-    // One authoritative source for both the Charts and Report views.
+    // One authoritative source for the Charts view, the Report table, and the analytics dashboard.
+    //
+    // SCOPE: every aggregate below is restricted to the session's resolved location, the requested
+    // window, and the groomer filter. Reports must never blend locations the operator did not select.
     //
     // BUSINESS TOTALS (`totals`) count unique underlying business events. The groomer filter is an
     // `exists` predicate, never a join, so an appointment shared by groomers A and B is counted once
@@ -3185,57 +3188,148 @@ export function registerRoutes(
     // business totals and once per groomer in attribution".
     //   paidRevenueMinor      sum(invoices.total_minor - invoices.balance_minor) for invoices created in
     //                         [from,to) whose appointment matches the filter. Cash collected, not billed.
+    //   expectedRevenueMinor  sum(invoices.balance_minor) over the same invoices — billed and still owed.
+    //                         `outstandingMinor` and `paymentStatus.outstandingMinor` are the same figure
+    //                         under the names the dashboard panels use; they are aliases, not extra money.
+    //   billedRevenueMinor    sum(invoices.total_minor) = paidRevenueMinor + expectedRevenueMinor.
+    //   salesMinor            sum(subtotal_minor): gross line-item sales BEFORE discount.
+    //   discountMinor         sum(discount_minor). salesMinor - discountMinor = netMinor.
+    //   netMinor              sum(subtotal_minor - discount_minor): charged for work, before tax and tip.
+    //                         billedRevenueMinor = netMinor + taxMinor + tipMinor, by invoice construction.
     //   completedAppointments count(appointments) with status='completed' and start_at in [from,to).
+    //   totalPets             count(distinct pet) on exactly those completed appointments.
     //   servicesPerformed     count(appointment_services) rows on those completed appointments.
+    //   commissionMinor       null. Pawsh has NO commission model: no rate, plan, or ledger exists in the
+    //                         schema, so there is nothing to sum. Null (not zero) says "unknown", which is
+    //                         the only honest answer; the dashboard renders an empty Commission panel.
     //
-    // GROOMER ATTRIBUTION (`employees`) is deliberately overlapping: every assigned groomer is credited
-    // with the whole shared appointment, because Pawsh has no allocation model and inventing one (splits,
-    // commissions, percentages) would fabricate data. Consequence: these rows MUST NOT be summed to
-    // produce a business total — read `totals` instead.
+    // GROOMER ATTRIBUTION (`employees`) credits every assigned groomer with the whole appointment and its
+    // whole invoice, because Pawsh has no allocation model and inventing one (splits, percentages) would
+    // fabricate data. Migration 0017 currently enforces one groomer per appointment, so the rows do not
+    // overlap today — but that is a property of the data, not a guarantee of this endpoint. If shared
+    // appointments return, these rows double-count: read `totals` for business figures.
+    //   unattributedRevenueMinor / unattributedTipMinor
+    //                         the remainder that belongs to NO groomer, because the appointment carries no
+    //                         `appointment_employees` row (legacy and directly-seeded rows exist in real
+    //                         data). Without it the "Revenue by Staff" bars silently fail to add up to
+    //                         `paidRevenueMinor`; with it the dashboard can show an honest Unassigned bar.
+    //                         Zero when every appointment in the window is assigned.
     //
-    // DATE SEMANTICS: revenue buckets by invoice `created_at`; operational metrics bucket by appointment
+    // DATE SEMANTICS: money buckets by invoice `created_at`; operational metrics bucket by appointment
     // `start_at`. The two windows can legitimately disagree and that is not a bug.
     const appointmentScope=assignedToEmployees(db,query.employeeIds);
     const employeeScope=query.employeeIds?.length?db`e.id in ${db(query.employeeIds)}`:db`true`;
-    const [revenue, employees, servicesPerformed, completed] = await Promise.all([
-      db`
+    // Reusable predicates so every panel provably shares one definition of "in this report".
+    // Both assume the enclosing query aliases `invoices i` / `appointments a`.
+    const reportedInvoices=db`i.business_id=${context.businessId} and a.location_id=${location.id}::uuid
+      and i.status<>'void' and i.created_at>=${from} and i.created_at<${to} and ${appointmentScope}`;
+    const completedAppointmentsScope=db`a.business_id=${context.businessId} and a.location_id=${location.id}::uuid
+      and a.status='completed' and a.start_at>=${from} and a.start_at<${to} and ${appointmentScope}`;
+    const [revenue, employees, servicesPerformed, operations, money, attribution, paymentMethodRows] = await Promise.all([
+      db<{date:string;revenueMinor:string|number}[]>`
         select (i.created_at at time zone l.timezone)::date as date,sum(i.total_minor-i.balance_minor)::bigint as revenue_minor
         from invoices i join appointments a on a.id=i.appointment_id join locations l on l.id=a.location_id
-        where i.business_id=${context.businessId} and i.created_at>=${from} and i.created_at<${to}
-          and ${appointmentScope}
+        where ${reportedInvoices}
         group by (i.created_at at time zone l.timezone)::date order by date
       `,
-      db`
+      db<{id:string;displayName:string;appointmentCount:number}[]>`
         select e.id,e.display_name,count(a.id)::integer as appointment_count
         from employees e left join appointment_employees assignment
           on assignment.business_id=e.business_id and assignment.employee_id=e.id
         left join appointments a on a.id=assignment.appointment_id
           and a.start_at>=${from} and a.start_at<${to} and a.status='completed'
+          and a.location_id=${location.id}::uuid
         where e.business_id=${context.businessId} and ${employeeScope}
         group by e.id order by appointment_count desc
       `,
-      db`
+      db<{service:string;performed:number}[]>`
         select aps.service_name_snapshot as service,count(*)::integer as performed
         from appointment_services aps join appointments a on a.id=aps.appointment_id
-        where aps.business_id=${context.businessId} and a.status='completed'
-          and a.start_at>=${from} and a.start_at<${to} and ${appointmentScope}
+        where aps.business_id=${context.businessId} and ${completedAppointmentsScope}
         group by aps.service_name_snapshot order by performed desc
       `,
-      db<{ completedAppointments: number }[]>`
-        select count(*)::int completed_appointments from appointments a
-        where a.business_id=${context.businessId} and a.status='completed'
-          and a.start_at>=${from} and a.start_at<${to} and ${appointmentScope}
+      db<{completedAppointments:number;totalPets:number}[]>`
+        select count(*)::int completed_appointments,count(distinct a.pet_id)::int total_pets
+        from appointments a where ${completedAppointmentsScope}
+      `,
+      db<{salesMinor:string;discountMinor:string;netMinor:string;taxMinor:string;tipMinor:string;
+        billedRevenueMinor:string;outstandingMinor:string}[]>`
+        select
+          coalesce(sum(i.subtotal_minor),0)::bigint as sales_minor,
+          coalesce(sum(i.discount_minor),0)::bigint as discount_minor,
+          coalesce(sum(i.subtotal_minor-i.discount_minor),0)::bigint as net_minor,
+          coalesce(sum(i.tax_minor),0)::bigint as tax_minor,
+          coalesce(sum(i.tip_minor),0)::bigint as tip_minor,
+          coalesce(sum(i.total_minor),0)::bigint as billed_revenue_minor,
+          coalesce(sum(i.balance_minor),0)::bigint as outstanding_minor
+        from invoices i join appointments a on a.id=i.appointment_id
+        where ${reportedInvoices}
+      `,
+      db<{id:string;revenueMinor:string;tipMinor:string}[]>`
+        select assignment.employee_id as id,
+          coalesce(sum(i.total_minor-i.balance_minor),0)::bigint as revenue_minor,
+          coalesce(sum(i.tip_minor),0)::bigint as tip_minor
+        from invoices i join appointments a on a.id=i.appointment_id
+        join appointment_employees assignment
+          on assignment.business_id=i.business_id and assignment.appointment_id=a.id
+        where ${reportedInvoices}
+        group by assignment.employee_id
+      `,
+      // Voided payments never collected money, and `balance_minor` already excludes them, so the same
+      // filter here keeps sum(paymentMethods[].amountMinor) === totals.paidRevenueMinor.
+      db<{method:string;amountMinor:string;paymentCount:number}[]>`
+        select p.method,coalesce(sum(p.amount_minor),0)::bigint as amount_minor,count(*)::int as payment_count
+        from payments p join invoices i on i.id=p.invoice_id join appointments a on a.id=i.appointment_id
+        where p.business_id=${context.businessId} and p.status='recorded' and ${reportedInvoices}
+        group by p.method order by amount_minor desc,p.method
       `
     ]);
+    // bigint sums arrive as strings from postgres.js; the wire contract is integer minor units.
+    const minor=(value:string|number|null|undefined):number=>Number(value??0);
+    const financials=money[0];
+    const paidRevenueMinor=revenue.reduce((sum,row)=>sum+minor(row.revenueMinor),0);
+    const outstandingMinor=minor(financials?.outstandingMinor);
+    const taxMinor=minor(financials?.taxMinor);
+    const tipMinor=minor(financials?.tipMinor);
+    const netMinor=minor(financials?.netMinor);
+    const byEmployee=new Map(attribution.map((row)=>[row.id,row]));
+    const attributedRevenueMinor=attribution.reduce((sum,row)=>sum+minor(row.revenueMinor),0);
+    const attributedTipMinor=attribution.reduce((sum,row)=>sum+minor(row.tipMinor),0);
     const totals={
-      paidRevenueMinor:revenue.reduce((sum,row)=>sum+Number((row as {revenueMinor:string|number}).revenueMinor),0),
-      completedAppointments:completed[0]?.completedAppointments??0,
-      servicesPerformed:servicesPerformed.reduce((sum,row)=>sum+Number((row as {performed:number}).performed),0)
+      paidRevenueMinor,
+      completedAppointments:operations[0]?.completedAppointments??0,
+      servicesPerformed:servicesPerformed.reduce((sum,row)=>sum+Number(row.performed),0),
+      totalPets:operations[0]?.totalPets??0,
+      expectedRevenueMinor:outstandingMinor,
+      outstandingMinor,
+      billedRevenueMinor:minor(financials?.billedRevenueMinor),
+      salesMinor:minor(financials?.salesMinor),
+      discountMinor:minor(financials?.discountMinor),
+      netMinor, taxMinor, tipMinor,
+      unattributedRevenueMinor:paidRevenueMinor-attributedRevenueMinor,
+      unattributedTipMinor:tipMinor-attributedTipMinor,
+      // No commission model exists in this schema; see the comment above.
+      commissionMinor:null
     };
     return {
       localDate, days, from, to,
       employeeIds: query.employeeIds ?? null,
-      totals, revenue, employees, services: servicesPerformed
+      totals, revenue,
+      employees: employees.map((row)=>({
+        ...row,
+        revenueMinor:minor(byEmployee.get(row.id)?.revenueMinor),
+        tipMinor:minor(byEmployee.get(row.id)?.tipMinor),
+        commissionMinor:null
+      })),
+      services: servicesPerformed,
+      paymentMethods: paymentMethodRows.map((row)=>({
+        method:row.method, amountMinor:minor(row.amountMinor), count:Number(row.paymentCount)
+      })),
+      // `productsMinor` is a structural zero, not a measurement: Pawsh has no product or retail model,
+      // and every invoice line is created from an appointment service at checkout. `servicesMinor` is
+      // net of discount so the four buckets sum to `totals.billedRevenueMinor`.
+      salesItems: { servicesMinor: netMinor, productsMinor: 0, taxMinor, tipMinor },
+      paymentStatus: { paidMinor: paidRevenueMinor, outstandingMinor }
     };
   });
 

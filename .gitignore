@@ -12,3 +12,7 @@ artifacts/
 .DS_Store
 .npm-cache/
 .pawsh-qa/
+.pawsh-documents/
+.pawsh-data/
+.tmp-ci-artifacts/
+.local/

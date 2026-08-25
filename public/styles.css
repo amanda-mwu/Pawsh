@@ -37,7 +37,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--coral);outline-offs
 @media(max-width:900px){.settings-control{margin:0 0 0 auto}.settings-control>summary{white-space:nowrap}.settings-control .setup-menu-items{top:48px;right:0;bottom:auto;left:auto;margin:5px 0 0}.aside-foot{display:flex;align-items:center;gap:8px;margin-left:0}}
 
 /* Compact navigation and shared calendar shell */
-.app-shell{grid-template-columns:205px minmax(0,1fr)}aside{padding:24px 16px}.primary-nav{gap:3px;margin-top:28px;overflow-y:auto}.primary-nav button{display:flex;align-items:center;gap:10px;padding:8px 10px;font-size:13px}.nav-icon{display:grid;place-items:center;flex:0 0 26px;width:26px;height:26px;border:1px solid rgba(0,0,0,.16);border-radius:7px;font-size:15px;line-height:1}.primary-nav button.active .nav-icon{background:var(--ink);border-color:var(--ink);color:#fff}.nav-divider{height:1px;background:rgba(0,0,0,.12);margin:6px 8px}.placeholder-view{max-width:700px;padding:28px;border:1px solid var(--line);border-radius:14px;background:var(--paper)}.placeholder-view p:last-child{color:var(--muted)}
+@media(min-width:901px){.app-shell{grid-template-columns:205px minmax(0,1fr)}}aside{padding:24px 16px}.primary-nav{gap:3px;margin-top:28px;overflow-y:auto}.primary-nav button{display:flex;align-items:center;gap:10px;padding:8px 10px;font-size:13px}.nav-icon{display:grid;place-items:center;flex:0 0 26px;width:26px;height:26px;border:1px solid rgba(0,0,0,.16);border-radius:7px;font-size:15px;line-height:1}.primary-nav button.active .nav-icon{background:var(--ink);border-color:var(--ink);color:#fff}.nav-divider{height:1px;background:rgba(0,0,0,.12);margin:6px 8px}.placeholder-view{max-width:700px;padding:28px;border:1px solid var(--line);border-radius:14px;background:var(--paper)}.placeholder-view p:last-child{color:var(--muted)}
 .mobile-nav-toggle{display:none;width:44px;height:44px;border:1px solid var(--line);border-radius:9px;background:var(--paper);color:var(--ink);font-size:20px}
 .groomer-filter{position:relative}.groomer-filter>summary{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;padding:8px 12px;border:1px solid var(--line);border-radius:9px;background:var(--paper);font-size:13px;font-weight:700;cursor:pointer;list-style:none}.groomer-filter>summary::-webkit-details-marker{display:none}.groomer-filter[open]>summary{background:var(--mint)}.groomer-filter-popover{position:absolute;left:0;top:49px;z-index:30;width:250px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--paper);box-shadow:var(--shadow)}.groomer-filter-bulk{display:flex!important;justify-content:space-between}.groomer-filter-bulk button{min-height:36px;border:0;background:transparent;color:var(--link);font-size:12px;font-weight:700}.groomer-filter fieldset{display:grid;gap:3px;max-height:240px;overflow:auto;margin:5px 0 10px;padding:8px 0;border:0;border-block:1px solid var(--line)}.groomer-filter label{display:flex;align-items:center;gap:8px;min-height:40px;margin:0;padding:5px 7px;border-radius:7px}.groomer-filter label:hover{background:var(--mint)}.groomer-filter input{width:auto}.groomer-filter-apply{width:100%}
 .calendar-month-view{display:grid;grid-template-columns:repeat(7,minmax(120px,1fr));min-width:840px;background:var(--line);gap:1px}.calendar-month-weekday{position:sticky;top:0;z-index:4;padding:10px;background:var(--mint);font-size:12px;font-weight:700;text-align:center}.calendar-month-day{position:relative;min-height:126px;padding:7px;background:var(--paper)}.calendar-month-day.outside{background:#f1f3f1;color:#68706b}.calendar-month-day.closed{background:#f7f8f6}.calendar-month-day.today{box-shadow:inset 0 0 0 2px var(--coral)}.calendar-month-day.selected .calendar-month-date{background:var(--brand);color:var(--on-brand)}.calendar-month-date{display:grid;place-items:center;width:30px;height:30px;border:0;border-radius:50%;background:transparent;color:inherit;font-weight:700}.calendar-month-events{display:grid;gap:3px;margin-top:4px}.calendar-month-event,.calendar-month-more{display:block;width:100%;min-height:25px;padding:4px 5px;border:0;border-radius:5px;background:var(--mint);color:var(--ink);overflow:hidden;text-align:left;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.calendar-month-more{background:transparent;color:var(--link);font-weight:700}.calendar-month-add{position:absolute;right:5px;top:5px;width:30px;height:30px;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--muted)}.calendar-month-add:hover,.calendar-month-add:focus-visible{border-color:#e2e6e2;background:var(--mint)}
@@ -229,8 +229,12 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 
 /* 44px touch contract. Density elsewhere comes from padding and type scale;
    these specific controls are asserted by expectCriticalTarget and stay 44. */
+/* Source of truth: every locator passed to expectCriticalTarget() in
+   tests/e2e/responsive.spec.ts and tests/e2e/helpers/responsive.ts.
+   .day-slot is intentionally absent - its height is grid-row driven. */
 [data-testid="new-customer"],[data-testid="account-trigger"],[data-testid="logout"],
 [data-testid="nav-customers"],[data-testid="modal-submit"],.modal-actions .close,
+[data-testid="calendar-add-appointment"],#calendar-view-select,
 .primary-nav button{min-height:44px}
 [data-testid="account-trigger"],[data-testid="logout"],.modal-actions .close{min-width:44px}
 @media (pointer:coarse){:root{--control-h:44px;--icon-btn:44px}}
@@ -463,4 +467,106 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
   .header-actions .location-menu span{display:inline}
   .header-actions .location-menu .location-option-text{display:grid}
   .header-actions .location-menu .location-option-name{display:flex}
+}
+
+/* == services catalog == */
+/* Forty-three services, and the three tiered ones under Main services each carry an
+   eighteen-cell matrix, so the catalog used to open on several screens of pricing before
+   the add-ons appeared at all. Every category is now a disclosure whose whole header row
+   is the control - <details>/<summary> gives the click target, the keyboard activation and
+   the expanded state for free, and app.js mirrors that state into aria-expanded. */
+.service-category>details>summary{display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:10px;min-height:52px;padding:12px 16px;background:var(--cream);list-style:none}
+.service-category>details>summary::-webkit-details-marker{display:none}
+/* The hover cue is an inset bar rather than a fill: the count beside the title is muted
+   text, and a tinted background behind it drops below the AA ratio it clears on cream. */
+.service-category>details>summary:hover{box-shadow:inset 3px 0 0 var(--brand)}
+.service-category>details>summary:focus-visible{outline:2px solid var(--ink);outline-offset:-3px}
+.service-category>details[open]>summary{border-bottom:1px solid var(--line)}
+.service-section-title{overflow:hidden;font-weight:800;text-overflow:ellipsis;white-space:nowrap}
+/* The count is the whole content of a collapsed section, so it keeps its own column and
+   never wraps under the title. */
+.service-category>details>summary small{color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap}
+.service-section-chevron{display:grid;place-items:center;width:18px;height:18px;color:var(--muted);transition:transform .15s ease}
+.service-section-chevron svg{display:block;width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.service-category>details[open]>summary .service-section-chevron{transform:rotate(90deg)}
+.service-category>details>summary:hover .service-section-chevron,.service-category>details>summary:focus-visible .service-section-chevron{color:var(--brand)}
+@media(prefers-reduced-motion:reduce){.service-section-chevron{transition:none}}
+/* The open header already draws the rule the first row used to supply on its own. */
+.service-section-body>.service-row:first-child{border-top:0}
+/* The tiered matrices are ~620px wide, and .pricing-scroll only scrolls if it is allowed
+   to be narrower than the table inside it: as a grid item it floors at min-content unless
+   told otherwise, so on a narrow column the table pushed the whole page sideways instead
+   of scrolling inside its own row. The phone track list is the same fix one level up:
+   the single column above it is a bare 1fr, which floors at min-content too. */
+.service-row>.pricing-scroll{min-width:0;max-width:100%;overflow-x:auto}
+@media(max-width:580px){.service-row{grid-template-columns:minmax(0,1fr)}}
+
+/* == reports charts ==
+   Eight cards on the page background. There is no charting library and no bundler here, so a
+   bar is an element whose length is its only runtime style; everything else - scale, colour,
+   gridlines, layout - is declared once below.
+
+   Two rules govern the colour. Per-staff charts reuse the calendar's groomer identity palette
+   through the shared [data-groomer-slot] custom properties, so a groomer is the same colour in
+   Reports as on the calendar and the set stays separated under deuteranopia and protanopia.
+   Everything else is a single measure, so it takes a single brand fill; colour only becomes
+   meaningful for Paid vs Outstanding, which take --success and --warning. */
+.report-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-4);align-items:start}
+.report-panel{min-width:0}
+.report-panel-wide{grid-column:span 2}
+.report-chart{margin-top:var(--space-3)}
+.report-chart>.chart-note:first-child{margin-top:0}
+
+/* Summary is a text card, not a metric wall: label left, figure right, one rule between rows.
+   The .metric/strong structure is what the reporting parity check reads, so it stays. */
+.report-summary .metric{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3);padding:9px 0;background:none;border:0;border-top:1px solid var(--line);border-radius:0;box-shadow:none}
+.report-summary .metric:first-child{border-top:0}
+.report-summary .metric span{font-size:12.5px;color:var(--muted)}
+.report-summary .metric strong{display:block;font:700 15px/1.3 var(--font-sans);font-variant-numeric:tabular-nums;color:var(--ink)}
+
+.chart{list-style:none;margin:0;padding:0}
+.chart-note{margin:0 0 var(--space-3);font-size:11px;line-height:1.45;color:var(--muted)}
+/* A figure the server cannot supply gets words, never a flat bar: a zero-height bar under a
+   groomer's name asserts that they earned nothing, which is a different claim from "Pawsh
+   does not track this". */
+.chart-empty{padding:var(--space-4) 0;font-size:12.5px;line-height:1.5;color:var(--muted)}
+
+/* Vertical bars. The visual order is plot, value, label, note; the DOM order is the reverse of
+   that so the reading is "Net, $1,690.00". Named grid areas keep the two independent. */
+.chart-vertical{display:flex;align-items:stretch;gap:var(--space-2);overflow-x:auto;scrollbar-width:thin;padding-bottom:var(--space-1)}
+.vbar{flex:1 1 0;min-width:64px;display:grid;grid-template-rows:minmax(104px,1fr) auto auto auto;grid-template-areas:"plot" "value" "label" "note";gap:var(--space-1);text-align:center}
+.vbar-track{grid-area:plot;display:flex;align-items:flex-end;justify-content:center;border-bottom:1px solid var(--line);background-image:repeating-linear-gradient(to top,var(--line) 0 1px,transparent 1px 25%)}
+.vbar-fill{display:block;width:min(62%,40px);border-radius:var(--radius-sm) var(--radius-sm) 0 0;background:var(--brand)}
+.vbar-value{grid-area:value;font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--ink)}
+.vbar-label{grid-area:label;font-size:12px;font-weight:600;line-height:1.3;color:var(--ink);overflow-wrap:anywhere}
+.vbar-note{grid-area:note;font-size:11px;color:var(--muted)}
+.vbar[data-tone="total"] .vbar-fill{background:var(--brand-strong)}
+.vbar[data-tone="paid"] .vbar-fill{background:var(--success)}
+.vbar[data-tone="outstanding"] .vbar-fill{background:var(--warning)}
+
+/* Horizontal bars. --g / --g-tint arrive from the shared [data-groomer-slot] rules above; a row
+   with no slot is the Unassigned bucket, which is deliberately not any groomer's colour. */
+.chart-horizontal{display:grid;gap:var(--space-2)}
+.hbar{display:grid;grid-template-columns:minmax(0,8.5rem) minmax(0,1fr) auto;grid-template-areas:"label plot value";align-items:center;gap:var(--space-3)}
+.hbar-label{grid-area:label;font-size:12px;font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hbar-track{grid-area:plot;height:14px;border-radius:var(--radius-sm);background:var(--g-tint,var(--surface-2));overflow:hidden}
+.hbar-fill{display:block;height:100%;border-radius:inherit;background:var(--g,var(--brand))}
+.hbar[data-tone="unassigned"] .hbar-track{background:var(--surface-2)}
+.hbar[data-tone="unassigned"] .hbar-fill{background:var(--muted)}
+.hbar-value{grid-area:value;font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--ink)}
+
+/* Report mode keeps the metric definitions and carries the per-groomer, per-service and
+   per-day detail that the eight cards summarise. */
+.report-tables{display:grid;gap:var(--section-gap)}
+.report-table-section h4{font:600 13px/1.35 var(--font-sans);margin-bottom:var(--space-2)}
+.report-not-tracked{color:var(--muted)}
+.report-unassigned-row td:first-child{color:var(--muted)}
+
+/* Two columns: the wide Revenue card gives up its span rather than claiming a row of its own
+   and leaving Summary beside an empty half. Five bars still clear their 64px floor here. */
+@media(max-width:1180px){.report-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.report-panel-wide{grid-column:auto}}
+@media(max-width:760px){
+  .report-grid{grid-template-columns:minmax(0,1fr)}
+  .report-panel-wide{grid-column:auto}
+  .hbar{grid-template-columns:minmax(0,6.5rem) minmax(0,1fr) auto;gap:var(--space-2)}
 }

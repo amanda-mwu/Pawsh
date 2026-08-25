@@ -6,6 +6,7 @@ import {
   createMember,
   prepareReceipt
 } from "./fixtures/tenant.js";
+import { cardForPet, petAction } from "./helpers/clients.js";
 
 test("@regression-crm-history creates a customer and pet and persists their relationship", async ({ page, tenant }) => {
   const token = tenant.runId.slice(-8);
@@ -32,27 +33,27 @@ test("@regression-crm-history creates a customer and pet and persists their rela
   await page.getByTestId("nav-customers").click();
   const card = page.getByTestId("customer-card").filter({ hasText: `D3 Persist ${token}` });
   await expect(card).toContainText(`Pet ${token}`);
-  await card.getByRole("button",{name:"Profile"}).click();
+  await petAction(card, "profile");
   await expect(page.getByTestId("field-breed")).toHaveValue("Golden Retriever");
   await page.getByTestId("field-breed").fill("Historic Village Dog");
   await page.getByTestId("field-breed").press("Escape");
   await page.getByTestId("modal-submit").click();
   await expect(page.getByTestId("modal")).toBeHidden();
-  await card.getByRole("button",{name:"Profile"}).click();
+  await petAction(card, "profile");
   await expect(page.getByTestId("field-breed")).toHaveValue("Historic Village Dog");
 });
 
 test("@regression-crm-history protects Pet Care edits and reconciles a stale care form", async ({ page, request, tenant }) => {
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-customers").click();
-  await page.locator(`[data-pet-id="${tenant.rockyPetId}"]`).getByRole("button", { name: "Care" }).click();
+  await petAction(cardForPet(page, tenant.rockyPetId), "care", tenant.rockyPetId);
   await page.getByTestId("field-safetyAlerts").fill("Two handlers required");
   await page.getByTestId("modal-submit").click();
   await expect(page.getByTestId("modal")).toBeHidden();
 
   const current = (await (await request.get(`/api/pets?customerId=${tenant.rockyCustomerId}`)).json())
     .find((pet: { id: string }) => pet.id === tenant.rockyPetId);
-  await page.locator(`[data-pet-id="${tenant.rockyPetId}"]`).getByRole("button", { name: "Care" }).click();
+  await petAction(cardForPet(page, tenant.rockyPetId), "care", tenant.rockyPetId);
   await expect(page.getByTestId("field-safetyAlerts")).toHaveValue("Two handlers required");
 
   const concurrent = await request.put(`/api/pets/${tenant.rockyPetId}/care`, {
@@ -125,7 +126,8 @@ test("@regression-crm-history shows current names and terminal history while per
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-customers").click();
   const ownerCard = page.getByTestId("customer-card").filter({ hasText: "Current Identity" });
-  await ownerCard.getByRole("button", { name: "History" }).click();
+  await ownerCard.getByTestId("client-row-actions").click();
+  await ownerCard.getByTestId("client-appointment-history").click();
   await expect(page.getByTestId("modal")).toContainText("Current Pet");
   await expect(page.getByTestId("modal")).toContainText("completed");
   await expect(page.getByTestId("modal")).toContainText("cancelled");
@@ -141,9 +143,10 @@ test("@regression-crm-history shows current names and terminal history while per
   const restrictedPage = await restrictedContext.newPage();
   await login(restrictedPage, member.email);
   await restrictedPage.getByTestId("nav-customers").click();
-  await restrictedPage.getByTestId("customer-card")
-    .filter({ hasText: "Current Identity" })
-    .getByRole("button", { name: "History" }).click();
+  const restrictedCard = restrictedPage.getByTestId("customer-card")
+    .filter({ hasText: "Current Identity" });
+  await restrictedCard.getByTestId("client-row-actions").click();
+  await restrictedCard.getByTestId("client-appointment-history").click();
   await expect(restrictedPage.getByTestId("modal")).toContainText("Financial history requires payment access");
   await expect(restrictedPage.getByTestId("modal")).not.toContainText("Invoice ");
   await restrictedContext.close();

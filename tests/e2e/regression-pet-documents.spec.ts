@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { test, expect, login, createMember } from "./fixtures/tenant.js";
+import { petAction, petActionSelector } from "./helpers/clients.js";
 
 const fixture = resolve("tests/fixtures/rabies-vaccination.pdf");
 
@@ -7,17 +8,17 @@ test("@regression-pet-documents uploads, downloads, and replaces a rabies record
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-customers").click();
   const card = page.getByTestId("customer-card").filter({ hasText: "Charlie" });
-  await card.getByRole("button", { name: "Care" }).click();
+  await petAction(card, "care");
   await page.getByTestId("field-vaccinationExpiresOn").fill("2036-08-17");
   await page.getByTestId("modal-submit").click();
   await expect(page.getByTestId("modal")).toBeHidden();
-  await card.getByRole("button", { name: "Documents" }).click();
+  await petAction(card, "documents");
   await page.getByTestId("field-rabiesPdf").setInputFiles(fixture);
   await expect(page.locator('input[name="expiration"]')).toHaveCount(0);
   await page.getByTestId("modal-submit").click();
   await expect(page.getByTestId("modal")).toBeHidden();
 
-  await card.getByRole("button", { name: "Documents" }).click();
+  await petAction(card, "documents");
   await expect(page.getByTestId("rabies-current")).toContainText("rabies-vaccination.pdf");
   await expect(page.getByTestId("rabies-current")).toContainText("8/17/2036");
   const downloadPromise = page.waitForEvent("download");
@@ -28,7 +29,7 @@ test("@regression-pet-documents uploads, downloads, and replaces a rabies record
   await page.getByTestId("field-rabiesPdf").setInputFiles(fixture);
   await page.getByTestId("modal-submit").click();
   await expect(page.getByTestId("modal")).toBeHidden();
-  await card.getByRole("button", { name: "Documents" }).click();
+  await petAction(card, "documents");
   await expect(page.getByTestId("rabies-current")).toContainText("8/17/2036");
   await expect(page.getByText("Previous records")).toBeVisible();
 });
@@ -40,7 +41,7 @@ test("@regression-pet-documents enforces Pet Care document permissions", async (
   await login(page, member.email);
   await page.getByTestId("nav-customers").click();
   const card = page.getByTestId("customer-card").filter({ hasText: "Charlie" });
-  await card.getByRole("button", { name: "Documents" }).click();
+  await petAction(card, "documents");
   // showPetDocuments() awaits GET /api/pets/:id/documents before opening the modal, so the
   // absence assertion below resolves instantly against a dialog that does not exist yet and
   // the revoke lands mid-request. Wait for the dialog first: the assertion then means "the
@@ -55,14 +56,14 @@ test("@regression-pet-documents enforces Pet Care document permissions", async (
   await page.getByRole("button", { name: "Cancel" }).click();
   await page.reload();
   await page.getByTestId("nav-customers").click();
-  await expect(card.getByRole("button", { name: "Documents" })).toHaveCount(0);
+  await expect(card.locator(petActionSelector("documents"))).toHaveCount(0);
 });
 
 test("@regression-pet-documents keeps archived Pet Care evidence reachable outside active search", async ({ page, request, tenant }) => {
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-customers").click();
   const card = page.getByTestId("customer-card").filter({ hasText: "Charlie" });
-  await card.getByRole("button", { name: "Documents" }).click();
+  await petAction(card, "documents");
   await page.getByTestId("field-rabiesPdf").setInputFiles(fixture);
   await page.getByTestId("modal-submit").click();
   await expect(page.getByTestId("modal")).toBeHidden();

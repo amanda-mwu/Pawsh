@@ -78,7 +78,8 @@ test("@cross-browser completed checkout receipt renders prepared totals",async({
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-customers").click();
   const customer=page.getByTestId("customer-card").filter({hasText:"Emma Johnson"});
-  await customer.getByRole("button",{name:"History"}).click();
+  await customer.getByTestId("client-row-actions").click();
+  await customer.getByTestId("client-appointment-history").click();
   await page.getByRole("button",{name:"Receipt"}).click();
 
   const receipt=page.getByTestId("receipt");

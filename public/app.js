@@ -471,7 +471,13 @@ function bindClientRowMenus(){
   document.addEventListener("click",event=>{if(!event.target.closest?.(".row-menu"))closeClientRowMenus();});
   document.addEventListener("keydown",event=>{if(event.key==="Escape")closeClientRowMenus();});
   globalThis.addEventListener("resize",closeClientRowMenus);
-  $(".directory-table-wrap")?.addEventListener("scroll",closeClientRowMenus);
+  $(".directory-table-wrap")?.addEventListener("scroll",()=>{
+    $$("#customer-grid .row-menu[open]").forEach(menu=>{
+      const trigger=menu.querySelector("summary"),box=trigger?.getBoundingClientRect();
+      if(!box||box.bottom<0||box.top>globalThis.innerHeight){menu.open=false;trigger?.setAttribute("aria-expanded","false");return;}
+      placeClientRowMenu(menu);
+    });
+  });
 }
 function placeClientRowMenu(menu){
   const trigger=menu.querySelector("summary"),list=menu.querySelector(".row-menu-list");
@@ -503,7 +509,7 @@ function renderCustomersEnhanced() {
       +cell(formatDate(customer.lastVisit),"clients-date")
       +cell(formatDate(customer.nextAppointment),"clients-date")
       +`<td class="clients-status"><span class="status-dot ${customer.archivedAt?"inactive":""}">${customer.archivedAt?"Inactive":"Active"}</span></td>`
-      +`<td class="clients-actions"><details class="row-menu"><summary class="row-menu-trigger" aria-expanded="false" aria-label="Actions for ${attr(name)}"><span aria-hidden="true">⋯</span></summary><div class="row-menu-list" role="group" aria-label="Actions for ${attr(name)}"><button type="button" class="row-menu-item customer-detail" data-id="${customer.id}">Client profile</button><button type="button" class="row-menu-item customer-history" data-id="${customer.id}">Appointment history</button>${petActions}</div></details></td></tr>`;
+      +`<td class="clients-actions"><details class="row-menu"><summary class="row-menu-trigger" aria-expanded="false" data-testid="client-row-actions" aria-label="Actions for ${attr(name)}"><span aria-hidden="true">⋯</span></summary><div class="row-menu-list" role="group" aria-label="Actions for ${attr(name)}"><button type="button" class="row-menu-item customer-detail" data-testid="client-profile-action" data-id="${customer.id}">Client profile</button><button type="button" class="row-menu-item customer-history" data-testid="client-appointment-history" data-id="${customer.id}">Appointment history</button>${petActions}</div></details></td></tr>`;
   }).join(""):`<tr><td colspan="9" class="empty">No customers match these filters.</td></tr>`;
   const pages=Math.max(1,Math.ceil(directory.total/directory.pageSize));$("#customer-page-status").textContent=`Page ${directory.page} of ${pages} · ${directory.total} customers`;$("#customer-prev").disabled=directory.page<=1;$("#customer-next").disabled=directory.page>=pages;
   $$(".customer-detail").forEach(button=>button.addEventListener("click",()=>openClientProfile(button.dataset.id,{returnView:"customers"})));$$(".customer-history").forEach(button=>button.addEventListener("click",()=>showCustomerHistory(button.dataset.id)));

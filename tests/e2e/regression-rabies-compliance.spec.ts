@@ -1,4 +1,5 @@
 import {expect,login,test} from "./fixtures/tenant.js";
+import { cardForPet, petAction } from "./helpers/clients.js";
 
 function addDays(dateOnly:string,days:number):string {
   const date=new Date(`${dateOnly}T12:00:00Z`);
@@ -10,7 +11,7 @@ test("@regression-lifecycle enters only rabies expiration and warns for the appo
   const expiration=addDays(tenant.anchor,-1);
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-customers").click();
-  await page.locator(`[data-pet-id="${tenant.petId}"]`).getByRole("button",{name:"Care"}).click();
+  await petAction(cardForPet(page, tenant.petId), "care", tenant.petId);
   await expect(page.getByRole("group",{name:"Rabies Information"})).toBeVisible();
   await page.getByTestId("field-vaccinationExpiresOn").fill(expiration);
   await expect(page.getByTestId("field-rabiesVerificationStatus")).toHaveCount(0);

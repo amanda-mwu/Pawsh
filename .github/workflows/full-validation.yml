@@ -330,15 +330,20 @@ jobs:
       - name: Lint
         run: npx eslint apps/mobile
       - name: Typecheck
-        run: npx --prefix apps/mobile tsc -p apps/mobile/tsconfig.json --noEmit
+        working-directory: apps/mobile
+        run: npm run typecheck
       - name: Tests
-        run: npm test --prefix apps/mobile
+        working-directory: apps/mobile
+        run: npm test
       - name: Expo configuration check
-        run: npx --prefix apps/mobile expo-doctor
+        working-directory: apps/mobile
+        run: npx expo-doctor
       - name: Bundle for iOS
-        run: npx --prefix apps/mobile expo export --platform ios --output-dir /tmp/pawsh-ios
+        working-directory: apps/mobile
+        run: npx expo export --platform ios --output-dir .expo-export-ios
       - name: Bundle for Android
-        run: npx --prefix apps/mobile expo export --platform android --output-dir /tmp/pawsh-android
+        working-directory: apps/mobile
+        run: npx expo export --platform android --output-dir .expo-export-android
 
   # Windows, macOS, UTC canonicalization, and the Ubuntu runtime matrix. Called with the full
   # matrix forced so that dispatching this workflow always means "validate everything", rather

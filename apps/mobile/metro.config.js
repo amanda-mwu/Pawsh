@@ -10,10 +10,9 @@ const domainRoot = path.resolve(projectRoot, "..", "..", "packages", "domain");
 const config = getDefaultConfig(projectRoot);
 
 config.watchFolders = [domainRoot];
-// Resolve every dependency from this app's own tree. The repository root has its own
-// `node_modules` for the server, and letting Metro walk up into it is how a bundle ends up
-// containing a second copy of React.
+// Prefer this app's own tree when resolving. Hierarchical lookup stays enabled: the repository
+// root holds only the server's dependencies and no copy of React, so there is nothing up there to
+// shadow, and disabling it diverges from the resolver configuration Expo expects.
 config.resolver.nodeModulesPaths = [path.resolve(projectRoot, "node_modules")];
-config.resolver.disableHierarchicalLookup = true;
 
 module.exports = config;

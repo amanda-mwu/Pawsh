@@ -83,11 +83,13 @@ jobs:
 
       - name: Mobile typecheck
         if: ${{ steps.classify.outputs.executable == 'true' && steps.classify.outputs.mobile == 'true' }}
-        run: npx --prefix apps/mobile tsc -p apps/mobile/tsconfig.json --noEmit
+        working-directory: apps/mobile
+        run: npm run typecheck
 
       - name: Mobile tests
         if: ${{ steps.classify.outputs.executable == 'true' && steps.classify.outputs.mobile == 'true' }}
-        run: npm test --prefix apps/mobile
+        working-directory: apps/mobile
+        run: npm test
 
       - name: Summarize
         env:

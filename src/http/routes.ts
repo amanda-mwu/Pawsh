@@ -26,7 +26,11 @@ import {
   customerNoteQuerySchema,customerPreferencesSchema,
   agreementTemplateCreateSchema,agreementTemplateUpdateSchema,agreementTemplateQuerySchema,
   agreementSignatureSchema,agreementSendSchema,customerAgreementParams,vaccinationReminderSchema,
-  reportCardCreateSchema,reportCardUpdateSchema,reportCardSendSchema
+  reportCardCreateSchema,reportCardUpdateSchema,reportCardSendSchema,
+  petNoteParams,petPhotoUploadMetadataSchema,petAvatarSchema,
+  customerChildParams,customerAddressCreateSchema,customerAddressUpdateSchema,
+  customerContactCreateSchema,customerContactUpdateSchema,
+  petVaccinationCreateSchema,petVaccinationUpdateSchema,petDeceasedSchema
 } from "./schemas.js";
 import { sealSecret } from "../security/secrets.js";
 import { hashPassword, validateNewPassword, verifyPassword } from "../security/passwords.js";
@@ -138,6 +142,8 @@ const photoUploadMetadataSchema = z.object({
 // exists so a stuck retry loop cannot fill the bucket, and it is reported rather than silently
 // dropping the extra.
 const maxPhotosPerPhase = 12;
+// A pet gallery is a handful of portraits over the years, not an album.
+const maxPetPhotos = 24;
 
 /**
  * Escape a value for interpolation into the report card preview page.
@@ -2069,6 +2075,280 @@ export function registerRoutes(
     return customer;
   });
 
+  // ---------------------------------------------------------------------------
+  // Client addresses and contacts
+  //
+  // A client is rarely one address and one phone number. Both lists carry exactly one primary,
+  // and promoting a record demotes the incumbent inside the same transaction — the partial
+  // unique index would otherwise reject the second primary and leave the caller to work out why.
+  // ---------------------------------------------------------------------------
+  async function customerAddressRows(database: Database, businessId: string, customerId: string) {
+    return database`
+      select id,address,label,is_primary,created_at,updated_at from customer_addresses
+      where business_id=${businessId} and customer_id=${customerId}
+      order by is_primary desc,created_at,id
+    `;
+  }
+
+  async function customerContactRows(database: Database, businessId: string, customerId: string) {
+    return database`
+      select id,name,phone,title,receives_automated_messages,is_primary,created_at,updated_at
+      from customer_contacts
+      where business_id=${businessId} and customer_id=${customerId}
+      order by is_primary desc,created_at,id
+    `;
+  }
+
+  async function activeCustomer(businessId: string, customerId: string) {
+    const [customer] = await db<{ id: string }[]>`
+      select id from customers
+      where business_id=${businessId} and id=${customerId} and archived_at is null
+    `;
+    return customer ?? null;
+  }
+
+  /** Step the current primary down so the partial unique index has room for the new one. */
+  async function demotePrimary(
+    tx: Transaction, table: "customer_addresses" | "customer_contacts",
+    businessId: string, customerId: string, keepId: string | null
+  ) {
+    const scope = table === "customer_addresses"
+      ? tx`update customer_addresses set is_primary=false,updated_at=now()
+           where business_id=${businessId} and customer_id=${customerId} and is_primary
+             and (${keepId}::uuid is null or id<>${keepId}::uuid)`
+      : tx`update customer_contacts set is_primary=false,updated_at=now()
+           where business_id=${businessId} and customer_id=${customerId} and is_primary
+             and (${keepId}::uuid is null or id<>${keepId}::uuid)`;
+    await scope;
+  }
+
+  app.get("/api/customers/:id/addresses", {
+    preHandler: [authenticate, requirePermission("customers.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    if (!await activeCustomer(context.businessId, id)) {
+      return reply.code(404).send({ error: "Customer not found" });
+    }
+    return { items: await customerAddressRows(db, context.businessId, id) };
+  });
+
+  app.post("/api/customers/:id/addresses", {
+    preHandler: [authenticate, requirePermission("customers.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(customerAddressCreateSchema, request.body);
+    if (!await activeCustomer(context.businessId, id)) {
+      return reply.code(404).send({ error: "Customer not found" });
+    }
+    await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [existing] = await tx<{ count: number }[]>`
+        select count(*)::int count from customer_addresses
+        where business_id=${context.businessId} and customer_id=${id}
+      `;
+      // The first address is the primary whether or not anybody said so: a list of one with no
+      // primary would leave the mirrored column empty for no reason.
+      const primary = input.isPrimary || (existing?.count ?? 0) === 0;
+      if (primary) await demotePrimary(tx, "customer_addresses", context.businessId, id, null);
+      await tx`
+        insert into customer_addresses (business_id,customer_id,address,label,is_primary,created_by)
+        values (${context.businessId},${id},${input.address},${input.label ?? null},${primary},${context.userId})
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "customer.address.create", resourceType: "customer", resourceId: id
+      });
+    });
+    return reply.code(201).send({ items: await customerAddressRows(db, context.businessId, id) });
+  });
+
+  app.patch("/api/customers/:id/addresses/:childId", {
+    preHandler: [authenticate, requirePermission("customers.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id, childId } = customerChildParams.parse(request.params);
+    const input = body(customerAddressUpdateSchema, request.body);
+    const updated = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [current] = await tx<{ id: string; address: string; label: string | null; isPrimary: boolean }[]>`
+        select id,address,label,is_primary from customer_addresses
+        where business_id=${context.businessId} and customer_id=${id} and id=${childId} for update
+      `;
+      if (!current) return null;
+      if (input.isPrimary) await demotePrimary(tx, "customer_addresses", context.businessId, id, childId);
+      await tx`
+        update customer_addresses set
+          address=${input.address ?? current.address},
+          label=${input.label === undefined ? current.label : input.label},
+          is_primary=${input.isPrimary ?? current.isPrimary},updated_at=now()
+        where business_id=${context.businessId} and id=${childId}
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "customer.address.edit", resourceType: "customer", resourceId: id
+      });
+      return current;
+    });
+    if (!updated) return reply.code(404).send({ error: "Address not found" });
+    return { items: await customerAddressRows(db, context.businessId, id) };
+  });
+
+  app.delete("/api/customers/:id/addresses/:childId", {
+    preHandler: [authenticate, requirePermission("customers.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id, childId } = customerChildParams.parse(request.params);
+    const removed = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [row] = await tx<{ id: string; isPrimary: boolean }[]>`
+        delete from customer_addresses
+        where business_id=${context.businessId} and customer_id=${id} and id=${childId}
+        returning id,is_primary
+      `;
+      if (!row) return null;
+      // Deleting the primary promotes the next one rather than leaving the client with several
+      // addresses and no answer to "where do we go?".
+      if (row.isPrimary) {
+        await tx`
+          update customer_addresses set is_primary=true,updated_at=now()
+          where business_id=${context.businessId} and id=(
+            select id from customer_addresses
+            where business_id=${context.businessId} and customer_id=${id}
+            order by created_at,id limit 1
+          )
+        `;
+      }
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "customer.address.delete", resourceType: "customer", resourceId: id
+      });
+      return row;
+    });
+    if (!removed) return reply.code(404).send({ error: "Address not found" });
+    return { items: await customerAddressRows(db, context.businessId, id) };
+  });
+
+  app.get("/api/customers/:id/contacts", {
+    preHandler: [authenticate, requirePermission("customers.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    if (!await activeCustomer(context.businessId, id)) {
+      return reply.code(404).send({ error: "Customer not found" });
+    }
+    return {
+      items: await customerContactRows(db, context.businessId, id),
+      // Said in the payload as well as the interface: a caller reading this list must not take
+      // the flag to mean anything is being sent.
+      automatedMessagesSupported: false
+    };
+  });
+
+  app.post("/api/customers/:id/contacts", {
+    preHandler: [authenticate, requirePermission("customers.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(customerContactCreateSchema, request.body);
+    if (!await activeCustomer(context.businessId, id)) {
+      return reply.code(404).send({ error: "Customer not found" });
+    }
+    await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [existing] = await tx<{ count: number }[]>`
+        select count(*)::int count from customer_contacts
+        where business_id=${context.businessId} and customer_id=${id}
+      `;
+      const primary = input.isPrimary || (existing?.count ?? 0) === 0;
+      if (primary) await demotePrimary(tx, "customer_contacts", context.businessId, id, null);
+      await tx`
+        insert into customer_contacts
+          (business_id,customer_id,name,phone,normalized_phone,title,
+           receives_automated_messages,is_primary,created_by)
+        values (${context.businessId},${id},${input.name},${input.phone},
+          ${normalizePhone(input.phone)},${input.title ?? null},
+          ${input.receivesAutomatedMessages},${primary},${context.userId})
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "customer.contact.create", resourceType: "customer", resourceId: id
+      });
+    });
+    return reply.code(201).send({ items: await customerContactRows(db, context.businessId, id) });
+  });
+
+  app.patch("/api/customers/:id/contacts/:childId", {
+    preHandler: [authenticate, requirePermission("customers.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id, childId } = customerChildParams.parse(request.params);
+    const input = body(customerContactUpdateSchema, request.body);
+    const updated = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [current] = await tx<{
+        id: string; name: string; phone: string; title: string | null;
+        receivesAutomatedMessages: boolean; isPrimary: boolean;
+      }[]>`
+        select id,name,phone,title,receives_automated_messages,is_primary from customer_contacts
+        where business_id=${context.businessId} and customer_id=${id} and id=${childId} for update
+      `;
+      if (!current) return null;
+      if (input.isPrimary) await demotePrimary(tx, "customer_contacts", context.businessId, id, childId);
+      const phone = input.phone ?? current.phone;
+      await tx`
+        update customer_contacts set
+          name=${input.name ?? current.name},
+          phone=${phone},normalized_phone=${normalizePhone(phone)},
+          title=${input.title === undefined ? current.title : input.title},
+          receives_automated_messages=${input.receivesAutomatedMessages ?? current.receivesAutomatedMessages},
+          is_primary=${input.isPrimary ?? current.isPrimary},updated_at=now()
+        where business_id=${context.businessId} and id=${childId}
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "customer.contact.edit", resourceType: "customer", resourceId: id
+      });
+      return current;
+    });
+    if (!updated) return reply.code(404).send({ error: "Contact not found" });
+    return { items: await customerContactRows(db, context.businessId, id) };
+  });
+
+  app.delete("/api/customers/:id/contacts/:childId", {
+    preHandler: [authenticate, requirePermission("customers.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id, childId } = customerChildParams.parse(request.params);
+    const removed = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [row] = await tx<{ id: string; isPrimary: boolean }[]>`
+        delete from customer_contacts
+        where business_id=${context.businessId} and customer_id=${id} and id=${childId}
+        returning id,is_primary
+      `;
+      if (!row) return null;
+      if (row.isPrimary) {
+        await tx`
+          update customer_contacts set is_primary=true,updated_at=now()
+          where business_id=${context.businessId} and id=(
+            select id from customer_contacts
+            where business_id=${context.businessId} and customer_id=${id}
+            order by created_at,id limit 1
+          )
+        `;
+      }
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "customer.contact.delete", resourceType: "customer", resourceId: id
+      });
+      return row;
+    });
+    if (!removed) return reply.code(404).send({ error: "Contact not found" });
+    return { items: await customerContactRows(db, context.businessId, id) };
+  });
+
   app.get("/api/customers/:id/notes", {
     preHandler: [authenticate, requirePermission("customers.view")]
   }, async (request, reply) => {
@@ -3099,7 +3379,12 @@ export function registerRoutes(
           approximate_age=${input.approximateAge ?? null},weight_ounces=${input.weightOunces ?? null},
           sex=${input.sex ?? null},coat_notes=${input.coatNotes ?? null},
           grooming_preferences=${input.groomingPreferences ?? null},
-          photo_permission=${input.photoPermission ?? null},version=version+1,
+          photo_permission=${input.photoPermission ?? null},
+          mixed_breed=${input.mixedBreed ?? null},hair_length=${input.hairLength ?? null},
+          coat_color=${input.coatColor ?? null},fixed_status=${input.fixedStatus ?? null},
+          preferred_shampoo=${input.preferredShampoo ?? null},
+          approximate_age_years=${input.approximateAgeYears ?? null},
+          approximate_age_months=${input.approximateAgeMonths ?? null},version=version+1,
           updated_by=${context.userId},updated_at=now()
         where business_id=${context.businessId} and id=${id} and archived_at is null
           and version=${input.version}
@@ -3150,13 +3435,20 @@ export function registerRoutes(
         rabiesVerificationMethod: string | null;
         rabiesVerificationDate: string | null;
         rabiesVerifiedByMembershipId: string | null;
+        healthIssues: string[] | null;
+        vetName: string | null;
+        vetPhone: string | null;
+        vetContactName: string | null;
+        vetContactPhone: string | null;
+        vetAddress: string | null;
         version: number;
       }[]>`
         select safety_alerts,medical_notes,behavior_notes,emergency_contact,veterinarian,
           vaccination_notes,vaccination_expires_on,rabies_vaccination_date,
           rabies_certificate_reference,rabies_verification_status,rabies_verification_method,
           rabies_verified_at as rabies_verification_date,
-          rabies_verified_by_membership_id,version
+          rabies_verified_by_membership_id,
+          health_issues,vet_name,vet_phone,vet_contact_name,vet_contact_phone,vet_address,version
         from pets
         where business_id=${context.businessId} and id=${id} and archived_at is null
         for update
@@ -3189,6 +3481,12 @@ export function registerRoutes(
           rabies_verification_method=${method},
           rabies_verified_at=${verifiedAt},
           rabies_verified_by_membership_id=${before.rabiesVerifiedByMembershipId},
+          health_issues=${supplied.has("healthIssues") ? input.healthIssues ?? null : before.healthIssues},
+          vet_name=${supplied.has("vetName") ? input.vetName ?? null : before.vetName},
+          vet_phone=${supplied.has("vetPhone") ? input.vetPhone ?? null : before.vetPhone},
+          vet_contact_name=${supplied.has("vetContactName") ? input.vetContactName ?? null : before.vetContactName},
+          vet_contact_phone=${supplied.has("vetContactPhone") ? input.vetContactPhone ?? null : before.vetContactPhone},
+          vet_address=${supplied.has("vetAddress") ? input.vetAddress ?? null : before.vetAddress},
           version=version+1,updated_by=${context.userId},updated_at=now()
         where business_id=${context.businessId} and id=${id} and version=${input.version}
         returning *
@@ -3467,10 +3765,15 @@ export function registerRoutes(
       const object = await documentStorage.get(document.storageKey);
       if (object.size !== head.size) return reply.code(503).send({ error: "Document is temporarily unavailable" });
       const encoded = encodeURIComponent(document.safeDownloadFilename).replace(/['()]/g, escape);
+      // The pet profile links "View document", which should open the certificate rather than
+      // download it. Inline is opt-in per request, so nothing that already downloads changes,
+      // and the response keeps nosniff plus a policy that permits nothing at all.
+      const inline = (request.query as { disposition?: string } | undefined)?.disposition === "inline";
       return reply
         .header("Content-Type", "application/pdf")
         .header("X-Content-Type-Options", "nosniff")
-        .header("Content-Disposition", `attachment; filename="rabies-vaccination.pdf"; filename*=UTF-8''${encoded}`)
+        .header("Content-Security-Policy", "default-src 'none'; sandbox")
+        .header("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="rabies-vaccination.pdf"; filename*=UTF-8''${encoded}`)
         .header("Cache-Control", "private, no-store")
         .header("Content-Length", object.size)
         .code(200).send(Buffer.from(object.bytes));
@@ -3478,6 +3781,671 @@ export function registerRoutes(
       request.log.warn({ documentId: id, errorName: (error as Error).name }, "pet document download unavailable");
       return reply.code(503).send({ error: "Document is temporarily unavailable" });
     }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Pet notes
+  //
+  // The same thread the client profile has, against a pet. Every entry records who wrote it and
+  // when, because a grooming instruction nobody can be asked about is not much use later.
+  // Gated on the ordinary pet permissions rather than pet care: "one inch reverse, round head"
+  // is a grooming instruction, not medical information.
+  // ---------------------------------------------------------------------------
+  async function petNoteRows(database: Database, input: { businessId: string; petId: string }) {
+    return database`
+      select note.id,note.body,note.pinned,note.created_at,note.updated_at,
+        coalesce(author_employee.display_name,author_user.display_name,author_user.email) as author_name
+      from pet_notes note
+      left join users author_user on author_user.id=note.created_by
+      left join business_memberships author_membership
+        on author_membership.business_id=note.business_id and author_membership.user_id=note.created_by
+      left join employees author_employee
+        on author_employee.business_id=author_membership.business_id
+        and author_employee.membership_id=author_membership.id
+      where note.business_id=${input.businessId} and note.pet_id=${input.petId}
+      order by note.pinned desc,note.created_at desc,note.id desc
+      limit 200
+    `;
+  }
+
+  async function activePet(businessId: string, petId: string) {
+    const [pet] = await db<{ id: string }[]>`
+      select id from pets where business_id=${businessId} and id=${petId} and archived_at is null
+    `;
+    return pet ?? null;
+  }
+
+  /**
+   * Coat colours already in use in this salon.
+   *
+   * A managed vocabulary with its own admin screen would be a heavier thing than this deserves;
+   * suggesting what the salon has already typed gives the same "pick one or add a new one"
+   * behaviour, and a colour becomes a suggestion the moment somebody first uses it.
+   */
+  app.get("/api/pets/coat-colors", {
+    preHandler: [authenticate, requirePermission("pets.view")]
+  }, async (request) => {
+    const context = auth(request);
+    const rows = await db<{ coatColor: string }[]>`
+      select distinct coat_color from pets
+      where business_id=${context.businessId} and coat_color is not null and btrim(coat_color) <> ''
+      order by coat_color limit 200
+    `;
+    return { items: rows.map((row) => row.coatColor) };
+  });
+
+  app.get("/api/pets/:id/notes", {
+    preHandler: [authenticate, requirePermission("pets.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    if (!await activePet(context.businessId, id)) return reply.code(404).send({ error: "Pet not found" });
+    return { items: await petNoteRows(db, { businessId: context.businessId, petId: id }) };
+  });
+
+  app.post("/api/pets/:id/notes", {
+    preHandler: [authenticate, requirePermission("pets.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(customerNoteCreateSchema, request.body);
+    if (!await activePet(context.businessId, id)) return reply.code(404).send({ error: "Pet not found" });
+    await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      await tx`
+        insert into pet_notes (business_id,pet_id,body,pinned,created_by)
+        values (${context.businessId},${id},${input.body},${input.pinned},${context.userId})
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "pet.note.create", resourceType: "pet", resourceId: id
+      });
+    });
+    return reply.code(201).send({ items: await petNoteRows(db, { businessId: context.businessId, petId: id }) });
+  });
+
+  app.patch("/api/pets/:id/notes/:noteId", {
+    preHandler: [authenticate, requirePermission("pets.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id, noteId } = petNoteParams.parse(request.params);
+    const input = body(customerNoteUpdateSchema, request.body);
+    const updated = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [current] = await tx<{ id: string; body: string; pinned: boolean }[]>`
+        select id,body,pinned from pet_notes
+        where business_id=${context.businessId} and pet_id=${id} and id=${noteId} for update
+      `;
+      if (!current) return null;
+      await tx`
+        update pet_notes set body=${input.body ?? current.body},
+          pinned=${input.pinned ?? current.pinned},updated_at=now()
+        where business_id=${context.businessId} and id=${noteId}
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "pet.note.edit", resourceType: "pet", resourceId: id
+      });
+      return current;
+    });
+    if (!updated) return reply.code(404).send({ error: "Note not found" });
+    return { items: await petNoteRows(db, { businessId: context.businessId, petId: id }) };
+  });
+
+  app.delete("/api/pets/:id/notes/:noteId", {
+    preHandler: [authenticate, requirePermission("pets.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id, noteId } = petNoteParams.parse(request.params);
+    const removed = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [row] = await tx<{ id: string }[]>`
+        delete from pet_notes where business_id=${context.businessId} and pet_id=${id} and id=${noteId}
+        returning id
+      `;
+      if (!row) return null;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "pet.note.delete", resourceType: "pet", resourceId: id
+      });
+      return row;
+    });
+    if (!removed) return reply.code(404).send({ error: "Note not found" });
+    return reply.code(204).send();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Pet photographs
+  //
+  // A gallery of the pet over time, any one of which can become the avatar. Same validation and
+  // serving posture as appointment photographs: the bytes decide the type, a truncated upload is
+  // refused, and delivery is inline under nosniff and a null content policy.
+  // ---------------------------------------------------------------------------
+  app.get("/api/pets/:id/photos", {
+    preHandler: [authenticate, requirePermission("pets.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [pet] = await db<{ id: string; avatarPhotoId: string | null }[]>`
+      select id,avatar_photo_id from pets
+      where business_id=${context.businessId} and id=${id} and archived_at is null
+    `;
+    if (!pet) return reply.code(404).send({ error: "Pet not found" });
+    const items = await db`
+      select id,width,height,size_bytes,original_filename,content_type,created_at
+      from pet_photos
+      where business_id=${context.businessId} and pet_id=${id} and state='stored'
+      order by created_at desc,id desc
+    `;
+    return {
+      items, avatarPhotoId: pet.avatarPhotoId,
+      canEdit: context.isOwner || context.permissions.includes("pets.edit")
+    };
+  });
+
+  app.post("/api/pets/:id/photos", {
+    preHandler: [authenticate, requirePermission("pets.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    if (!request.isMultipart()) return reply.code(400).send({ error: "Multipart upload required" });
+    const iterator = request.parts()[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    if (first.done || first.value.type !== "field" || first.value.fieldname !== "metadata") {
+      return reply.code(400).send({ error: "Metadata must be the first multipart field" });
+    }
+    let metadataValue: unknown;
+    try { metadataValue = JSON.parse(String(first.value.value)); }
+    catch { return reply.code(400).send({ error: "Invalid upload metadata" }); }
+    const parsed = petPhotoUploadMetadataSchema.safeParse(metadataValue);
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid upload metadata" });
+    const metadata = parsed.data;
+    if (!await activePet(context.businessId, id)) return reply.code(404).send({ error: "Pet not found" });
+
+    const [duplicate] = await db<{ id: string; state: string }[]>`
+      select id,state from pet_photos
+      where business_id=${context.businessId} and pet_id=${id}
+        and upload_request_id=${metadata.uploadRequestId}
+    `;
+    if (duplicate?.state === "stored") {
+      const [existing] = await db`
+        select id,width,height,size_bytes,original_filename,content_type,created_at
+        from pet_photos where business_id=${context.businessId} and id=${duplicate.id}
+      `;
+      return reply.code(200).send(existing);
+    }
+
+    const second = await iterator.next();
+    if (second.done || second.value.type !== "file") {
+      return reply.code(400).send({ error: "Exactly one image file is required" });
+    }
+    let bytes: Buffer;
+    try { bytes = await second.value.toBuffer(); }
+    catch { return reply.code(413).send({ error: "Photos must be 8 MB or smaller" }); }
+    const extra = await iterator.next();
+    if (!extra.done) {
+      if (extra.value.type === "file") extra.value.file.resume();
+      return reply.code(400).send({ error: "Duplicate upload fields are not allowed" });
+    }
+    if (bytes.byteLength > maxPhotoBytes) {
+      return reply.code(413).send({ error: "Photos must be 8 MB or smaller" });
+    }
+    const shape = readPhotoShape(bytes);
+    if (!shape) {
+      return reply.code(400).send({
+        error: "That file is not a readable JPEG, PNG, or WebP image",
+        supportedTypes: ["image/jpeg", "image/png", "image/webp"]
+      });
+    }
+    const [count] = await db<{ count: number }[]>`
+      select count(*)::int count from pet_photos
+      where business_id=${context.businessId} and pet_id=${id} and state='stored'
+    `;
+    if ((count?.count ?? 0) >= maxPetPhotos) {
+      return reply.code(409).send({
+        code: "PHOTO_LIMIT_REACHED",
+        error: `Up to ${maxPetPhotos} photos can be kept for one pet.`
+      });
+    }
+
+    const photoId = randomUUID();
+    const storageKey = `business/${context.businessId}/pets/${id}/photos/${photoId}`;
+    const filename = safePhotoFilename(second.value.filename || "photo", shape.contentType);
+    const [reserved] = await db<{ id: string }[]>`
+      insert into pet_photos
+        (id,business_id,pet_id,state,storage_key,content_type,width,height,
+         original_filename,upload_request_id,uploaded_by)
+      values (${photoId},${context.businessId},${id},'pending',${storageKey},${shape.contentType},
+        ${shape.width},${shape.height},${filename},${metadata.uploadRequestId},${context.userId})
+      on conflict (business_id,pet_id,upload_request_id) do nothing
+      returning id
+    `;
+    if (!reserved) return reply.code(409).send({ error: "That upload is already in progress" });
+
+    let uploaded = false;
+    try {
+      await documentStorage.put(storageKey, bytes, shape.contentType);
+      uploaded = true;
+      await db.begin(async (tx) => {
+        await setTenant(tx, context.businessId);
+        await tx`
+          update pet_photos set state='stored',size_bytes=${bytes.byteLength},
+            sha256=${sha256(bytes)},updated_at=now()
+          where business_id=${context.businessId} and id=${photoId} and state='pending'
+        `;
+        // The first photograph of a pet becomes its avatar, because the alternative is a gallery
+        // with a picture in it and a profile still showing an initial.
+        if (metadata.useAsAvatar || (count?.count ?? 0) === 0) {
+          await tx`
+            update pets set avatar_photo_id=${photoId},updated_at=now()
+            where business_id=${context.businessId} and id=${id}
+          `;
+        }
+        await record(tx, {
+          businessId: context.businessId, actorId: context.userId,
+          action: "pet.photo.add", resourceType: "pet", resourceId: id, after: { photoId }
+        });
+      });
+      const [stored] = await db`
+        select id,width,height,size_bytes,original_filename,content_type,created_at
+        from pet_photos where business_id=${context.businessId} and id=${photoId}
+      `;
+      return reply.code(201).send(stored);
+    } catch (error) {
+      await db`delete from pet_photos
+        where business_id=${context.businessId} and id=${photoId} and state='pending'`;
+      if (uploaded) await documentStorage.delete(storageKey).catch(() => undefined);
+      request.log.warn({ petId: id, errorName: (error as Error).name }, "pet photo upload failed");
+      return reply.code(503).send({ error: "The photo could not be stored" });
+    }
+  });
+
+  app.get("/api/pet-photos/:id/content", {
+    preHandler: [authenticate, requirePermission("pets.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [photo] = await db<{
+      storageKey: string; sizeBytes: string; contentType: string; originalFilename: string;
+    }[]>`
+      select storage_key,size_bytes,content_type,original_filename from pet_photos
+      where business_id=${context.businessId} and id=${id} and state='stored'
+    `;
+    if (!photo) return reply.code(404).send({ error: "Photo not found" });
+    try {
+      const object = await documentStorage.get(photo.storageKey);
+      if (object.size !== Number(photo.sizeBytes)) {
+        request.log.error({ photoId: id }, "pet photo storage size mismatch");
+        return reply.code(503).send({ error: "Photo is temporarily unavailable" });
+      }
+      const encoded = encodeURIComponent(photo.originalFilename).replace(/['()]/g, escape);
+      return reply
+        .header("Content-Type", photo.contentType)
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Content-Security-Policy", "default-src 'none'; sandbox")
+        .header("Content-Disposition", `inline; filename*=UTF-8''${encoded}`)
+        .header("Cache-Control", "private, max-age=300")
+        .header("Content-Length", object.size)
+        .code(200).send(Buffer.from(object.bytes));
+    } catch (error) {
+      request.log.warn({ photoId: id, errorName: (error as Error).name }, "pet photo unavailable");
+      return reply.code(503).send({ error: "Photo is temporarily unavailable" });
+    }
+  });
+
+  /** Choose which photograph represents the pet, or clear it back to an initial. */
+  app.patch("/api/pets/:id/avatar", {
+    preHandler: [authenticate, requirePermission("pets.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(petAvatarSchema, request.body);
+    const result = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      if (input.photoId) {
+        const [photo] = await tx<{ id: string }[]>`
+          select id from pet_photos
+          where business_id=${context.businessId} and pet_id=${id} and id=${input.photoId}
+            and state='stored'
+        `;
+        if (!photo) return { missingPhoto: true } as const;
+      }
+      const [pet] = await tx<{ id: string }[]>`
+        update pets set avatar_photo_id=${input.photoId ?? null},updated_at=now()
+        where business_id=${context.businessId} and id=${id} and archived_at is null
+        returning id
+      `;
+      if (!pet) return { missingPet: true } as const;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "pet.avatar.set", resourceType: "pet", resourceId: id,
+        after: { photoId: input.photoId ?? null }
+      });
+      return { avatarPhotoId: input.photoId ?? null };
+    });
+    if ("missingPet" in result) return reply.code(404).send({ error: "Pet not found" });
+    if ("missingPhoto" in result) return reply.code(404).send({ error: "Photo not found" });
+    return result;
+  });
+
+  app.delete("/api/pet-photos/:id", {
+    preHandler: [authenticate, requirePermission("pets.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const removed = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [photo] = await tx<{ id: string; storageKey: string; petId: string }[]>`
+        select id,storage_key,pet_id from pet_photos
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!photo) return null;
+      // Cleared here rather than by the foreign key: the reference is composite, so a cascade
+      // would set every column in it, including the not-null business_id. A pet whose portrait
+      // is deleted falls back to its initial.
+      await tx`
+        update pets set avatar_photo_id=null,updated_at=now()
+        where business_id=${context.businessId} and avatar_photo_id=${id}
+      `;
+      await tx`delete from pet_photos where business_id=${context.businessId} and id=${id}`;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "pet.photo.remove", resourceType: "pet", resourceId: photo.petId,
+        before: { photoId: id }
+      });
+      return photo;
+    });
+    if (!removed) return reply.code(404).send({ error: "Photo not found" });
+    await documentStorage.delete(removed.storageKey).catch(() => undefined);
+    return reply.code(204).send();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Vaccination records
+  //
+  // Rabies is not stored here; the schema refuses it. It already has an authoritative home on
+  // the pet and in `pet_documents`, where the expiry drives appointment eligibility and customer
+  // notification. The interface renders that record alongside these and sends edits to the place
+  // that owns it, so there is never a second answer to "is this dog covered?".
+  // ---------------------------------------------------------------------------
+  app.get("/api/pets/:id/vaccinations", {
+    preHandler: [authenticate, requirePermission("pets.care.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [pet] = await db<{
+      id: string; vaccinationExpiresOn: string | null; rabiesVaccinationDate: string | null;
+    }[]>`
+      select id,vaccination_expires_on,rabies_vaccination_date from pets
+      where business_id=${context.businessId} and id=${id} and archived_at is null
+    `;
+    if (!pet) return reply.code(404).send({ error: "Pet not found" });
+    const [items, documents] = await Promise.all([
+      db`
+        select id,vaccine,expires_on,notes,version,created_at,updated_at,
+          document_filename,document_content_type,
+          (document_storage_key is not null) as has_document
+        from pet_vaccinations
+        where business_id=${context.businessId} and pet_id=${id}
+        order by expires_on desc nulls last,id
+      `,
+      db`
+        select id,safe_download_filename,document_type,created_at from pet_documents
+        where business_id=${context.businessId} and pet_id=${id} and state='current'
+      `
+    ]);
+    return {
+      items,
+      // Reported separately and marked as owned elsewhere, so the interface can show it in the
+      // same table without implying it is editable in the same way.
+      rabies: {
+        expiresOn: pet.vaccinationExpiresOn,
+        vaccinatedOn: pet.rabiesVaccinationDate,
+        documentId: documents.find((document) => document.documentType === "rabies_vaccination")?.id ?? null,
+        managedElsewhere: true
+      },
+      canEdit: context.isOwner || context.permissions.includes("pets.care.edit")
+    };
+  });
+
+  app.post("/api/pets/:id/vaccinations", {
+    preHandler: [authenticate, requirePermission("pets.care.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(petVaccinationCreateSchema, request.body);
+    if (!await activePet(context.businessId, id)) return reply.code(404).send({ error: "Pet not found" });
+    if (input.vaccine.trim().toLowerCase() === "rabies") {
+      return reply.code(409).send({
+        code: "RABIES_MANAGED_ELSEWHERE",
+        error: "Rabies is recorded on the pet's care record and its document, not as a free record."
+      });
+    }
+    const created = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [row] = await tx<{ id: string }[]>`
+        insert into pet_vaccinations
+          (business_id,pet_id,vaccine,expires_on,notes,created_by,updated_by)
+        values (${context.businessId},${id},${input.vaccine},${input.expiresOn ?? null},
+          ${input.notes ?? null},${context.userId},${context.userId})
+        returning id
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "pet.vaccination.create", resourceType: "pet", resourceId: id,
+        after: { vaccine: input.vaccine, expiresOn: input.expiresOn ?? null }
+      });
+      return row;
+    });
+    return reply.code(201).send({ id: created?.id });
+  });
+
+  /**
+   * Attach the certificate a vaccination came from — a photo of the card, or a PDF.
+   *
+   * Both are accepted and both are checked structurally: an image has its header parsed the same
+   * way a pet photograph does, and a PDF has to start and end like one. The declared mimetype is
+   * ignored in favour of what the bytes are, because this file is served back to a browser.
+   *
+   * Replacing an attachment deletes the old object after the row points at the new one, so a
+   * failure part-way through leaves a readable record rather than a broken link.
+   */
+  app.post("/api/pet-vaccinations/:id/document", {
+    preHandler: [authenticate, requirePermission("pets.care.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    if (!request.isMultipart()) return reply.code(400).send({ error: "Multipart upload required" });
+    const [current] = await db<{ id: string; petId: string; documentStorageKey: string | null }[]>`
+      select id,pet_id,document_storage_key from pet_vaccinations
+      where business_id=${context.businessId} and id=${id}
+    `;
+    if (!current) return reply.code(404).send({ error: "Vaccination record not found" });
+
+    const iterator = request.parts()[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    if (first.done || first.value.type !== "file") {
+      return reply.code(400).send({ error: "Exactly one file is required" });
+    }
+    let bytes: Buffer;
+    try { bytes = await first.value.toBuffer(); }
+    catch { return reply.code(413).send({ error: "Attachments must be 8 MB or smaller" }); }
+    const extra = await iterator.next();
+    if (!extra.done) {
+      if (extra.value.type === "file") extra.value.file.resume();
+      return reply.code(400).send({ error: "Only one file can be attached" });
+    }
+    if (bytes.byteLength > maxPhotoBytes) {
+      return reply.code(413).send({ error: "Attachments must be 8 MB or smaller" });
+    }
+    const image = readPhotoShape(bytes);
+    const contentType = image?.contentType ?? (validPdf(bytes) ? "application/pdf" : null);
+    if (!contentType) {
+      return reply.code(400).send({
+        error: "Attach a readable PDF, JPEG, PNG, or WebP file",
+        supportedTypes: ["application/pdf", "image/jpeg", "image/png", "image/webp"]
+      });
+    }
+    const filename = contentType === "application/pdf"
+      ? safePdfFilename(first.value.filename || "vaccination.pdf").download
+      : safePhotoFilename(first.value.filename || "vaccination", image!.contentType);
+    const storageKey = `business/${context.businessId}/pets/${current.petId}/vaccinations/${id}/${randomUUID()}`;
+    try {
+      await documentStorage.put(storageKey, bytes, contentType);
+    } catch (error) {
+      request.log.warn({ vaccinationId: id, errorName: (error as Error).name }, "vaccination attachment failed");
+      return reply.code(503).send({ error: "The attachment could not be stored" });
+    }
+    await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      await tx`
+        update pet_vaccinations set
+          document_storage_key=${storageKey},document_content_type=${contentType},
+          document_filename=${filename},document_size_bytes=${bytes.byteLength},
+          document_sha256=${sha256(bytes)},document_uploaded_at=now(),
+          version=version+1,updated_by=${context.userId},updated_at=now()
+        where business_id=${context.businessId} and id=${id}
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "pet.vaccination.document", resourceType: "pet", resourceId: current.petId,
+        after: { vaccinationId: id, contentType }
+      });
+    });
+    // Only once the row points at the new object, so a failure leaves a readable record.
+    if (current.documentStorageKey) {
+      await documentStorage.delete(current.documentStorageKey).catch(() => undefined);
+    }
+    return reply.code(201).send({ filename, contentType });
+  });
+
+  app.get("/api/pet-vaccinations/:id/document", {
+    preHandler: [authenticate, requirePermission("pets.care.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [row] = await db<{
+      documentStorageKey: string | null; documentContentType: string | null;
+      documentFilename: string | null; documentSizeBytes: string | null;
+    }[]>`
+      select document_storage_key,document_content_type,document_filename,document_size_bytes
+      from pet_vaccinations where business_id=${context.businessId} and id=${id}
+    `;
+    if (!row?.documentStorageKey) return reply.code(404).send({ error: "No attachment on this record" });
+    try {
+      const object = await documentStorage.get(row.documentStorageKey);
+      if (object.size !== Number(row.documentSizeBytes)) {
+        request.log.error({ vaccinationId: id }, "vaccination attachment size mismatch");
+        return reply.code(503).send({ error: "Attachment is temporarily unavailable" });
+      }
+      const encoded = encodeURIComponent(row.documentFilename ?? "vaccination").replace(/['()]/g, escape);
+      return reply
+        .header("Content-Type", row.documentContentType!)
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Content-Security-Policy", "default-src 'none'; sandbox")
+        .header("Content-Disposition", `inline; filename*=UTF-8''${encoded}`)
+        .header("Cache-Control", "private, no-store")
+        .header("Content-Length", object.size)
+        .code(200).send(Buffer.from(object.bytes));
+    } catch (error) {
+      request.log.warn({ vaccinationId: id, errorName: (error as Error).name }, "vaccination attachment unavailable");
+      return reply.code(503).send({ error: "Attachment is temporarily unavailable" });
+    }
+  });
+
+  app.patch("/api/pet-vaccinations/:id", {
+    preHandler: [authenticate, requirePermission("pets.care.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(petVaccinationUpdateSchema, request.body);
+    const result = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [current] = await tx<{
+        id: string; petId: string; vaccine: string; expiresOn: string | null;
+        notes: string | null; version: number;
+      }[]>`
+        select id,pet_id,vaccine,expires_on,notes,version from pet_vaccinations
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!current) return { missing: true } as const;
+      if (current.version !== input.version) return { stale: true } as const;
+      await tx`
+        update pet_vaccinations set
+          vaccine=${input.vaccine ?? current.vaccine},
+          expires_on=${input.expiresOn === undefined ? current.expiresOn : input.expiresOn},
+          notes=${input.notes === undefined ? current.notes : input.notes},
+          version=version+1,updated_by=${context.userId},updated_at=now()
+        where business_id=${context.businessId} and id=${id}
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "pet.vaccination.edit", resourceType: "pet", resourceId: current.petId,
+        before: { vaccine: current.vaccine, expiresOn: current.expiresOn }
+      });
+      return { updated: true } as const;
+    });
+    if ("missing" in result) return reply.code(404).send({ error: "Vaccination record not found" });
+    if ("stale" in result) {
+      return reply.code(409).send({ error: "The record changed; refresh and try again" });
+    }
+    return { updated: true };
+  });
+
+  app.delete("/api/pet-vaccinations/:id", {
+    preHandler: [authenticate, requirePermission("pets.care.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const removed = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [row] = await tx<{ id: string; petId: string; vaccine: string }[]>`
+        delete from pet_vaccinations where business_id=${context.businessId} and id=${id}
+        returning id,pet_id,vaccine
+      `;
+      if (!row) return null;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "pet.vaccination.delete", resourceType: "pet", resourceId: row.petId,
+        before: { vaccine: row.vaccine }
+      });
+      return row;
+    });
+    if (!removed) return reply.code(404).send({ error: "Vaccination record not found" });
+    return reply.code(204).send();
+  });
+
+  /**
+   * Mark a pet as having died, or reverse that.
+   *
+   * The record stays: its history, invoices, and report cards all still have to be explainable,
+   * and archiving it would hide the pet from the profile that explains them. What changes is that
+   * the interface stops offering to book it and says why.
+   */
+  app.post("/api/pets/:id/deceased", {
+    preHandler: [authenticate, requirePermission("pets.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(petDeceasedSchema, request.body);
+    const result = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [pet] = await tx<{ id: string; deceasedAt: Date | null }[]>`
+        update pets set deceased_at=${input.deceased ? new Date() : null},
+          version=version+1,updated_by=${context.userId},updated_at=now()
+        where business_id=${context.businessId} and id=${id} and archived_at is null
+        returning id,deceased_at
+      `;
+      if (!pet) return null;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: input.deceased ? "pet.deceased.mark" : "pet.deceased.clear",
+        resourceType: "pet", resourceId: id
+      });
+      return pet;
+    });
+    if (!result) return reply.code(404).send({ error: "Pet not found" });
+    return { deceasedAt: result.deceasedAt };
   });
 
   app.post("/api/pets/:id/archive", {

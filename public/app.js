@@ -1142,29 +1142,240 @@ async function deactivate(type,id) {
   if(!confirm(`Deactivate this ${type==="services"?"service":"team member"}?`))return;
   try{await api(`/api/${type}/${id}`,{method:"DELETE"});toast("Deactivated");await refresh();}catch(error){toast(error.message);}
 }
-function editCustomer(id) {
-  const customer=state.customers.find(item=>item.id===id);
-  const contactOptions=["email","phone","none"].map(value=>`<option value="${value}" ${customer.preferredContactMethod===value?"selected":""}>${value}</option>`).join("");
-  openModal("Edit customer",
-    field("firstName","First name","text",`value="${escape(customer.firstName||"")}"`)+
-    field("lastName","Last name","text",`value="${escape(customer.lastName||"")}"`)+
-    field("email","Email","email",`value="${escape(customer.email||"")}"`)+
-    field("phone","Phone","tel",`value="${escape(customer.phone||"")}"`)+
-    field("address","Address","text",`value="${escape(customer.address||"")}"`,true)+
-    `<label>Preferred contact<select data-testid="field-preferredContactMethod" name="preferredContactMethod">${contactOptions}</select></label>`+
-    `<label><input data-testid="field-emailAllowed" name="emailAllowed" type="checkbox" ${customer.emailAllowed?"checked":""}> Email allowed</label>`+
-    field("notes","Notes","text",`value="${escape(customer.notes||"")}"`,true),
-    async form=>{
-      await api(`/api/customers/${id}`,{method:"PUT",body:JSON.stringify({
-        ...Object.fromEntries(form),
-        emailAllowed:form.has("emailAllowed")
-      })});
-      // The shared refresh reloads directories, not the open profile, so renaming a client from
-      // their own profile used to leave the old name on screen until you navigated away.
-      if(state.clientProfile?.data.customer.id===id)return reloadClientProfile;
-      return undefined;
+// ---------------------------------------------------------------------------
+// Client editor
+//
+// Basic details, addresses, and contacts in one panel, each saving on its own. A client is
+// rarely one address and one phone number: there is the house and the second home, the owner
+// and the partner and the dog walker who actually does the pick-up.
+// ---------------------------------------------------------------------------
+const clientEditState={customerId:null,customer:null,addresses:[],contacts:[],automatedMessagesSupported:false};
+
+function clientBasicSectionMarkup(customer){
+  const contactOptions=["email","phone","none"].map(value=>
+    `<option value="${value}" ${customer.preferredContactMethod===value?"selected":""}>${value}</option>`).join("");
+  return `<form class="pet-profile-section" data-client-section="basic">`
+    +`<h4>Basic info</h4>`
+    +`<div class="pet-field-grid">`
+      +field("firstName","First name","text",`value="${escape(customer.firstName||"")}"`)
+      +field("lastName","Last name","text",`value="${escape(customer.lastName||"")}"`)
+      +field("email","Email","email",`value="${escape(customer.email||"")}"`)
+      // The client's own number stays here. Contacts below are the other people who might be
+      // rung about this dog, and a partial record created from a phone call has nowhere else
+      // to put the number it was given.
+      +field("phone","Phone","tel",`value="${escape(customer.phone||"")}"`)
+      +`<label>Preferred contact<select data-testid="field-preferredContactMethod" name="preferredContactMethod">${contactOptions}</select></label>`
+      +`<label class="pet-check"><input data-testid="field-emailAllowed" name="emailAllowed" type="checkbox" ${customer.emailAllowed?"checked":""}> Email allowed</label>`
+    +`</div>`
+    +`<div class="pet-section-actions"><button type="submit" class="primary compact" data-testid="client-basic-save">Save</button></div>`
+    +`</form>`;
+}
+
+function clientAddressesSectionMarkup(){
+  const items=clientEditState.addresses;
+  return `<section class="pet-profile-section">`
+    +`<div class="pet-section-head"><h4>Addresses</h4><button type="button" class="text-button" data-testid="client-address-add">Add</button></div>`
+    +(items.length
+      ? `<div class="pet-table-wrap" data-allow-horizontal-scroll><table class="pet-table" data-testid="client-addresses">`
+        +`<thead><tr><th scope="col">Primary</th><th scope="col">Address</th><th scope="col">Label</th><th scope="col">Action</th></tr></thead><tbody>`
+        +items.map(item=>`<tr>`
+          +`<td><input type="radio" name="primaryAddress" data-client-address-primary="${escape(item.id)}" ${item.isPrimary?"checked":""} aria-label="Make ${escape(item.address)} the primary address"></td>`
+          +`<td>${escape(item.address)}</td><td>${escape(item.label||"—")}</td>`
+          +`<td><button type="button" class="text-button" data-client-address-edit="${escape(item.id)}">Edit</button>`
+          +`<button type="button" class="text-button destructive" data-client-address-delete="${escape(item.id)}">Delete</button></td></tr>`).join("")
+        +`</tbody></table></div>`
+      : `<p class="pet-empty">No address on file.</p>`)
+    +`</section>`;
+}
+
+function clientContactsSectionMarkup(){
+  const items=clientEditState.contacts;
+  return `<section class="pet-profile-section">`
+    +`<div class="pet-section-head"><h4>Contacts (${escape(String(items.length))})</h4>`
+      +`<button type="button" class="text-button" data-testid="client-contact-add">Add</button></div>`
+    +(items.length
+      ? `<div class="pet-table-wrap" data-allow-horizontal-scroll><table class="pet-table" data-testid="client-contacts">`
+        +`<thead><tr><th scope="col">Primary</th><th scope="col">Name</th><th scope="col">Receive auto msg</th>`
+        +`<th scope="col">Phone number</th><th scope="col">Title</th><th scope="col">Action</th></tr></thead><tbody>`
+        +items.map(item=>`<tr>`
+          +`<td><input type="radio" name="primaryContact" data-client-contact-primary="${escape(item.id)}" ${item.isPrimary?"checked":""} aria-label="Make ${escape(item.name)} the primary contact"></td>`
+          +`<td>${escape(item.name)}</td>`
+          +`<td><input type="checkbox" data-client-contact-auto="${escape(item.id)}" ${item.receivesAutomatedMessages?"checked":""} aria-label="${escape(item.name)} receives automated messages"></td>`
+          +`<td>${escape(item.phone)}</td><td>${escape(item.title||"—")}</td>`
+          +`<td><button type="button" class="text-button" data-client-contact-edit="${escape(item.id)}">Edit</button>`
+          +`<button type="button" class="text-button destructive" data-client-contact-delete="${escape(item.id)}">Delete</button></td></tr>`).join("")
+        +`</tbody></table></div>`
+      : `<p class="pet-empty">No contacts on file.</p>`)
+    // Recorded now so the salon is not asked again once something reads it. Nothing does today,
+    // and saying so here is cheaper than a support conversation about messages nobody sent.
+    +`<p class="pet-section-note">Receive auto msg is recorded but not acted on: Pawsh sends email,`
+    +` and a contact here carries a phone number rather than an address.</p>`
+    +`</section>`;
+}
+
+function renderClientEdit(){
+  const customer=clientEditState.customer;if(!customer)return;
+  $("#client-edit-title").textContent=`${clientName(customer)} · Edit client`;
+  $("#client-edit-body").innerHTML=
+    clientBasicSectionMarkup(customer)
+    +clientAddressesSectionMarkup()
+    +clientContactsSectionMarkup();
+  bindClientEdit();
+}
+
+async function reloadClientEdit({sections=["customer","addresses","contacts"]}={}){
+  const id=clientEditState.customerId;if(!id)return;
+  const wants=new Set(sections);
+  const [history,addresses,contacts]=await Promise.all([
+    wants.has("customer")?api(`/api/customers/${id}/history`).catch(()=>null):Promise.resolve(null),
+    wants.has("addresses")?api(`/api/customers/${id}/addresses`).catch(()=>null):Promise.resolve(null),
+    wants.has("contacts")?api(`/api/customers/${id}/contacts`).catch(()=>null):Promise.resolve(null)
+  ]);
+  if(clientEditState.customerId!==id)return;
+  if(history)clientEditState.customer=history.customer;
+  if(addresses)clientEditState.addresses=addresses.items||[];
+  if(contacts){
+    clientEditState.contacts=contacts.items||[];
+    clientEditState.automatedMessagesSupported=Boolean(contacts.automatedMessagesSupported);
+  }
+  renderClientEdit();
+}
+
+function openClientAddressEditor(existing){
+  openStackedDialog({
+    title:existing?"Edit address":"Add address",
+    body:`<label class="stacked-field">Address<textarea name="address" rows="3" maxlength="500">${escape(existing?.address||"")}</textarea></label>`
+      +`<label class="stacked-field">Label<input name="label" maxlength="60" placeholder="Home, work, summer" value="${escape(existing?.label||"")}"></label>`,
+    dismissLabel:"Cancel",confirmLabel:existing?"Save":"Add",
+    onConfirm:async body=>{
+      const address=String(body.querySelector('[name="address"]').value||"").trim();
+      if(!address){toast("Enter the address first.");return false;}
+      const label=String(body.querySelector('[name="label"]').value||"").trim()||null;
+      const path=`/api/customers/${clientEditState.customerId}/addresses`;
+      if(existing)await api(`${path}/${existing.id}`,{method:"PATCH",body:JSON.stringify({address,label})});
+      else await api(path,{method:"POST",body:JSON.stringify({address,label})});
+      await reloadClientEdit({sections:["addresses","customer"]});
+      return true;
     }
-  );
+  });
+}
+
+function openClientContactEditor(existing){
+  openStackedDialog({
+    title:existing?"Edit contact":"Add contact",
+    body:`<label class="stacked-field">Name<input name="name" maxlength="120" value="${escape(existing?.name||"")}"></label>`
+      +`<label class="stacked-field">Phone<input name="phone" type="tel" maxlength="40" value="${escape(existing?.phone||"")}"></label>`
+      +`<label class="stacked-field">Title<input name="title" maxlength="80" placeholder="Owner, partner, dog walker" value="${escape(existing?.title||"")}"></label>`
+      +`<label class="stacked-check"><input type="checkbox" name="receivesAutomatedMessages" ${existing?(existing.receivesAutomatedMessages?"checked":""):"checked"}> Receive automated messages</label>`
+      +`<p class="fine">Nothing sends to contacts yet: Pawsh has no SMS transport, and this record carries a phone number rather than an email address.</p>`,
+    dismissLabel:"Cancel",confirmLabel:"OK",
+    onConfirm:async body=>{
+      const name=String(body.querySelector('[name="name"]').value||"").trim();
+      const phone=String(body.querySelector('[name="phone"]').value||"").trim();
+      if(!name||!phone){toast("A contact needs a name and a phone number.");return false;}
+      const payload={
+        name,phone,
+        title:String(body.querySelector('[name="title"]').value||"").trim()||null,
+        receivesAutomatedMessages:body.querySelector('[name="receivesAutomatedMessages"]').checked
+      };
+      const path=`/api/customers/${clientEditState.customerId}/contacts`;
+      if(existing)await api(`${path}/${existing.id}`,{method:"PATCH",body:JSON.stringify(payload)});
+      else await api(path,{method:"POST",body:JSON.stringify(payload)});
+      await reloadClientEdit({sections:["contacts"]});
+      return true;
+    }
+  });
+}
+
+function bindClientEdit(){
+  const root=$("#client-edit-body");
+  const id=clientEditState.customerId;
+  const run=async(work)=>{try{await work();}catch(error){toast(error.message);}};
+
+  root.querySelector('[data-client-section="basic"]')?.addEventListener("submit",async event=>{
+    event.preventDefault();
+    const form=event.currentTarget,values=Object.fromEntries(new FormData(form));
+    const button=form.querySelector('button[type="submit"]');
+    button.disabled=true;
+    await run(async()=>{
+      await api(`/api/customers/${id}`,{method:"PUT",body:JSON.stringify({
+        ...values,emailAllowed:form.querySelector('[name="emailAllowed"]').checked
+      })});
+      await reloadClientEdit({sections:["customer"]});
+      // The directory row and any open profile both show this name.
+      await refresh();
+      if(state.clientProfile?.data.customer.id===id)await reloadClientProfile();
+      toast("Client saved");
+    });
+    button.disabled=false;
+  });
+
+  root.querySelector('[data-testid="client-address-add"]')?.addEventListener("click",()=>openClientAddressEditor(null));
+  root.querySelectorAll("[data-client-address-edit]").forEach(button=>button.addEventListener("click",()=>
+    openClientAddressEditor(clientEditState.addresses.find(item=>item.id===button.dataset.clientAddressEdit))));
+  root.querySelectorAll("[data-client-address-delete]").forEach(button=>button.addEventListener("click",()=>run(async()=>{
+    if(!confirm("Delete this address?"))return;
+    await api(`/api/customers/${id}/addresses/${button.dataset.clientAddressDelete}`,{method:"DELETE"});
+    await reloadClientEdit({sections:["addresses","customer"]});
+  })));
+  root.querySelectorAll("[data-client-address-primary]").forEach(input=>input.addEventListener("change",()=>run(async()=>{
+    await api(`/api/customers/${id}/addresses/${input.dataset.clientAddressPrimary}`,
+      {method:"PATCH",body:JSON.stringify({isPrimary:true})});
+    await reloadClientEdit({sections:["addresses","customer"]});
+  })));
+
+  root.querySelector('[data-testid="client-contact-add"]')?.addEventListener("click",()=>openClientContactEditor(null));
+  root.querySelectorAll("[data-client-contact-edit]").forEach(button=>button.addEventListener("click",()=>
+    openClientContactEditor(clientEditState.contacts.find(item=>item.id===button.dataset.clientContactEdit))));
+  root.querySelectorAll("[data-client-contact-delete]").forEach(button=>button.addEventListener("click",()=>run(async()=>{
+    if(!confirm("Delete this contact?"))return;
+    await api(`/api/customers/${id}/contacts/${button.dataset.clientContactDelete}`,{method:"DELETE"});
+    await reloadClientEdit({sections:["contacts"]});
+  })));
+  root.querySelectorAll("[data-client-contact-primary]").forEach(input=>input.addEventListener("change",()=>run(async()=>{
+    await api(`/api/customers/${id}/contacts/${input.dataset.clientContactPrimary}`,
+      {method:"PATCH",body:JSON.stringify({isPrimary:true})});
+    await reloadClientEdit({sections:["contacts"]});
+  })));
+  root.querySelectorAll("[data-client-contact-auto]").forEach(input=>input.addEventListener("change",()=>run(async()=>{
+    await api(`/api/customers/${id}/contacts/${input.dataset.clientContactAuto}`,
+      {method:"PATCH",body:JSON.stringify({receivesAutomatedMessages:input.checked})});
+    await reloadClientEdit({sections:["contacts"]});
+  })));
+}
+
+function bindClientEditDialog(){
+  const dialog=$("#client-edit-dialog");
+  dialog.querySelectorAll(".close").forEach(button=>button.addEventListener("click",()=>dialog.close()));
+  dialog.addEventListener("close",()=>{$("#stacked-dialog").close();});
+  dialog.querySelector('[data-testid="client-archive"]')?.addEventListener("click",async()=>{
+    const customer=clientEditState.customer;if(!customer)return;
+    if(!confirm(`Archive ${clientName(customer)}? History is kept and new bookings are blocked.`))return;
+    try{
+      await api(`/api/customers/${customer.id}/archive`,{method:"POST"});
+      dialog.close();
+      toast("Client archived");
+      await refresh();
+      showView("customers");
+    }catch(error){toast(error.message);}
+  });
+}
+bindClientEditDialog();
+
+async function editCustomer(id){
+  clientEditState.customerId=id;
+  clientEditState.customer=null;
+  clientEditState.addresses=[];clientEditState.contacts=[];
+  const dialog=$("#client-edit-dialog");
+  // Opened empty and rendered once the record is in hand. Painting from the cached copy first
+  // and re-rendering when the load lands would wipe anything typed in between.
+  $("#client-edit-title").textContent="Client";
+  $("#client-edit-body").innerHTML=`<p class="pet-empty">Loading client…</p>`;
+  if(!dialog.open)dialog.showModal();
+  await reloadClientEdit();
+  if(!clientEditState.customer){
+    $("#client-edit-body").innerHTML=`<p class="pet-empty">This client could not be loaded.</p>`;
+  }
 }
 async function showCustomerHistory(id) {
   try{
@@ -2075,8 +2286,518 @@ async function openClientProfile(customerId,{petId=null,appointmentId=null,retur
   state.clientProfile={data,notes,agreements,notesExpanded:previous?.notesExpanded||false,tab:previous?.tab||"pets",petId:petId||data.pets[0]?.id||null,appointmentId,historyView:{page:1,pageSize:HISTORY_INITIAL_ROWS},historyLoading:false};
   state.pets=[...state.pets.filter(pet=>pet.customerId!==customerId),...data.pets];activateView("client-profile");renderClientProfile();
 }
-function petProfileDetails(pet){const values=[["Species",pet.species],["Breed",pet.breed],["Gender",pet.sex],["Weight",pet.weightOunces?`${Number(pet.weightOunces)/16} lb`:null],["Birthday",pet.dateOfBirth?new Date(`${String(pet.dateOfBirth).slice(0,10)}T12:00:00Z`).toLocaleDateString():null],["Age",pet.approximateAge],["Coat",pet.coatNotes],["Behavior",pet.behaviorNotes],["Grooming preferences",pet.groomingPreferences],["Medical",pet.medicalNotes],["Safety",pet.safetyAlerts],["Rabies",pet.vaccinationExpiresOn?`Expires ${new Date(`${String(pet.vaccinationExpiresOn).slice(0,10)}T12:00:00Z`).toLocaleDateString()}`:"Rabies needed"]].filter(([,value])=>value);return values.map(([label,value])=>`<div><dt>${escape(label)}</dt><dd>${escape(value)}</dd></div>`).join("");}
-function openPetProfile(petId){const pet=state.clientProfile?.data.pets.find(item=>item.id===petId);if(!pet)return;openModal(`${pet.name} · Pet Profile`,`<div class="wide pet-profile-modal"><div class="pet-avatar" aria-hidden="true">${escape(Array.from(pet.name)[0]?.toUpperCase()||"P")}</div><div><p class="eyebrow">Pet profile</p><h3>${escape(petName(pet))}</h3></div><dl class="pet-profile-facts">${petProfileDetails(pet)}</dl>${allowed("pets.edit")?`<button type="button" class="secondary compact pet-profile-edit">Edit pet</button>`:""}${allowed("pets.care.view")?`<button type="button" class="secondary compact pet-profile-documents">Rabies documents</button>`:""}</div>`,null,{cancelLabel:"Close"});$(".pet-profile-edit")?.addEventListener("click",()=>{$("#modal").close();setTimeout(()=>editPet(pet.id),50);});$(".pet-profile-documents")?.addEventListener("click",()=>{$("#modal").close();setTimeout(()=>showPetDocuments(pet.id),50);});}
+// ---------------------------------------------------------------------------
+// Pet profile
+//
+// One scrollable panel holding everything a salon keeps about a pet: identity and coat, an
+// authored note thread, photographs over time, structured medical information, vaccinations,
+// and the vet. Each section saves independently, because somebody correcting a weight should
+// not have to re-confirm the medical record to do it.
+// ---------------------------------------------------------------------------
+const PET_HEALTH_ISSUES=[
+  ["diabetes_mellitus","Diabetes mellitus"],["heart_condition","Heart condition"],
+  ["distemper","Distemper"],["blind","Blind"],["epilepsy","Epilepsy"],
+  ["arthritis","Arthritis"],["fleas_ticks_mites","Fleas, ticks & mites"],["deaf","Deaf"],
+  ["obesity","Obesity"],["cancer","Cancer"]
+];
+// The salon's own vocabulary rather than a generic one: hair length drives which grooming
+// service applies, and the cat entries exist because a cat is not a short-haired dog.
+const PET_HAIR_LENGTHS=["Smooth Single Coat","All Other Coats","Cat Short Hair","Cat Long Hair"];
+const PET_TYPES=["Dog","Cat"];
+const PET_GENDERS=["Male","Female"];
+// Spayed and neutered also carry the sex, which a plain "fixed: yes" would lose.
+const PET_FIXED_STATUSES=[["spayed","Spayed (female)"],["neutered","Neutered (male)"],["intact","Intact"]];
+let petCoatColors=[];
+
+const petProfileState={petId:null,pet:null,notes:[],photos:null,vaccinations:null,failed:false};
+
+function petAvatarMarkup(pet,photos){
+  const avatarId=photos?.avatarPhotoId||null;
+  if(avatarId){
+    return `<img class="pet-avatar-image" src="/api/pet-photos/${encodeURIComponent(avatarId)}/content" alt="${escape(petName(pet))}">`;
+  }
+  return `<span class="pet-avatar" aria-hidden="true">${escape(Array.from(petName(pet,"?"))[0]?.toUpperCase()||"?")}</span>`;
+}
+
+function petIdentitySectionMarkup(pet,photos){
+  const editable=allowed("pets.edit");
+  // Every one of these opens blank when nothing has been recorded, so an unanswered question
+  // never renders as though somebody answered it.
+  const choice=(name,label,options,value,blank="Not set")=>`<label>${escape(label)}`
+    +`<select data-testid="field-${name}" name="${name}">`
+    +`<option value="" ${value===null||value===undefined||value===""?"selected":""}>${escape(blank)}</option>`
+    +options.map(option=>{
+      const [optionValue,optionLabel]=Array.isArray(option)?option:[option,option];
+      return `<option value="${escape(optionValue)}" ${String(value ?? "").toLowerCase()===String(optionValue).toLowerCase()?"selected":""}>${escape(optionLabel)}</option>`;
+    }).join("")
+    +`</select></label>`;
+  // A species the catalog does not list is kept rather than silently rewritten to Dog.
+  const speciesOptions=PET_TYPES.some(type=>type.toLowerCase()===String(pet.species||"").toLowerCase())
+    ? PET_TYPES : [...PET_TYPES,pet.species].filter(Boolean);
+  const years=Array.from({length:31},(unused,index)=>[String(index),`${index} ${index===1?"year":"years"}`]);
+  const months=Array.from({length:12},(unused,index)=>[String(index),`${index} ${index===1?"month":"months"}`]);
+  return `<form class="pet-profile-section pet-identity" data-pet-section="identity">`
+    +`<div class="pet-identity-head">${petAvatarMarkup(pet,photos)}`
+      +`<div><p class="eyebrow">Pet profile</p><h4>${escape(petName(pet))}</h4>`
+      +(pet.deceasedAt?`<p class="pet-deceased-flag" data-testid="pet-deceased-flag">Recorded as having passed away</p>`:"")
+      +`</div></div>`
+    +`<div class="pet-field-grid">`
+      +field("name","Pet name","text",`value="${escape(pet.name||"")}"`)
+      +choice("species","Type",speciesOptions,pet.species,"Not set")
+      +breedField(pet.breed||"")
+      +`<label class="pet-check"><input data-testid="field-mixedBreed" name="mixedBreed" type="checkbox" ${pet.mixedBreed?"checked":""}> Mixed breed</label>`
+      +choice("hairLength","Hair length",PET_HAIR_LENGTHS,pet.hairLength)
+      +choice("sex","Gender",PET_GENDERS,pet.sex)
+      +field("weightPounds","Weight (lb)","number",`min="0.0625" step="0.0625" value="${pet.weightOunces===null||pet.weightOunces===undefined?"":Number(pet.weightOunces)/16}"`)
+      +field("dateOfBirth","Birthday","date",`value="${pet.dateOfBirth?String(pet.dateOfBirth).slice(0,10):""}"`)
+      +choice("approximateAgeYears","Age (years)",years,pet.approximateAgeYears===null||pet.approximateAgeYears===undefined?"":String(pet.approximateAgeYears),"Year")
+      +choice("approximateAgeMonths","Age (months)",months,pet.approximateAgeMonths===null||pet.approximateAgeMonths===undefined?"":String(pet.approximateAgeMonths),"Month")
+      +choice("fixedStatus","Fixed",PET_FIXED_STATUSES,pet.fixedStatus)
+      // A free field with suggestions rather than a managed list: a colour becomes a suggestion
+      // the moment somebody first types it.
+      +`<label>Coat colour<input data-testid="field-coatColor" name="coatColor" list="pet-coat-colors" maxlength="60" value="${escape(pet.coatColor||"")}">`
+        +`<datalist id="pet-coat-colors">${petCoatColors.map(colour=>`<option value="${escape(colour)}"></option>`).join("")}</datalist></label>`
+      +field("preferredShampoo","Preferred shampoo","text",`value="${escape(pet.preferredShampoo||"")}"`,true)
+      +field("coatNotes","Coat notes","text",`value="${escape(pet.coatNotes||"")}"`,true)
+    +`</div>`
+    +(editable?`<div class="pet-section-actions"><button type="submit" class="primary compact" data-testid="pet-identity-save">Save</button></div>`:"")
+    +`</form>`;
+}
+
+function petNotesSectionMarkup(){
+  const notes=petProfileState.notes;
+  return `<section class="pet-profile-section">`
+    +`<div class="pet-section-head"><h4>Notes</h4>${allowed("pets.edit")?`<button type="button" class="text-button" data-testid="pet-note-add">Add</button>`:""}</div>`
+    +(notes.length
+      // Authorship and time are the point of the thread: an instruction nobody can be asked
+      // about is not much use six months later.
+      ? `<ul class="pet-note-list" data-testid="pet-notes">${notes.map(note=>`<li class="pet-note${note.pinned?" pinned":""}">`
+        +`<p>${escape(note.body)}</p>`
+        +`<small>${escape(reportCardStamp(note.createdAt)||"")} by ${escape(note.authorName||"an unknown account")}${note.pinned?" · pinned":""}</small>`
+        +(allowed("pets.edit")?`<div class="pet-note-actions">`
+          +`<button type="button" class="text-button" data-pet-note-pin="${escape(note.id)}">${note.pinned?"Unpin":"Pin"}</button>`
+          +`<button type="button" class="text-button destructive" data-pet-note-delete="${escape(note.id)}">Delete</button></div>`:"")
+        +`</li>`).join("")}</ul>`
+      : `<p class="pet-empty">No notes on this pet.</p>`)
+    +`</section>`;
+}
+
+function petPhotosSectionMarkup(){
+  const photos=petProfileState.photos;
+  if(!photos)return `<section class="pet-profile-section"><h4>Photos</h4><p class="pet-empty">Loading photos…</p></section>`;
+  const canEdit=photos.canEdit;
+  return `<section class="pet-profile-section">`
+    +`<div class="pet-section-head"><h4>Photos</h4><span class="pet-section-note">Any photo can be the profile picture.</span></div>`
+    +`<div class="photo-strip" data-testid="pet-photos">`
+      +(canEdit?`<button type="button" class="photo-add" data-testid="pet-photo-add" aria-label="Add a photo of this pet"><span aria-hidden="true">+</span><small>Add</small></button>`:"")
+      +photos.items.map(photo=>{
+        const ratio=photo.width&&photo.height?`${photo.width} / ${photo.height}`:"1 / 1";
+        const isAvatar=photos.avatarPhotoId===photo.id;
+        return `<figure class="photo-tile${isAvatar?" is-avatar":""}" style="aspect-ratio:${ratio}">`
+          +`<img src="/api/pet-photos/${encodeURIComponent(photo.id)}/content" alt="${escape(photo.originalFilename)}" loading="lazy">`
+          +(canEdit?`<button type="button" class="photo-remove" data-pet-photo-remove="${escape(photo.id)}" aria-label="Remove ${escape(photo.originalFilename)}">×</button>`:"")
+          +(canEdit&&!isAvatar?`<button type="button" class="photo-avatar-set" data-pet-avatar="${escape(photo.id)}">Use as photo</button>`:"")
+          +(isAvatar?`<figcaption class="photo-avatar-flag">Profile photo</figcaption>`:"")
+          +`</figure>`;
+      }).join("")
+      +(!photos.items.length&&!canEdit?`<p class="pet-empty">No photos of this pet.</p>`:"")
+    +`</div></section>`;
+}
+
+function petMedicalSectionMarkup(pet){
+  if(!allowed("pets.care.view")){
+    return `<section class="pet-profile-section"><h4>Medical info</h4>`
+      +`<p class="pet-empty">Medical information needs the Pet Care permission.</p></section>`;
+  }
+  const selected=new Set(pet.healthIssues||[]);
+  // Null and [] are different facts: nobody asked, versus asked and nothing to report.
+  const asked=Array.isArray(pet.healthIssues);
+  const editable=allowed("pets.care.edit");
+  return `<form class="pet-profile-section" data-pet-section="medical">`
+    +`<div class="pet-section-head"><h4>Medical info</h4>`
+      +`<span class="pet-section-note">${asked?(selected.size?"":"Recorded as nothing to report."):"Not asked yet."}</span></div>`
+    +`<fieldset class="pet-health-issues"><legend>Health issues</legend><div class="compact-options">`
+      +PET_HEALTH_ISSUES.map(([value,label])=>`<label><input type="checkbox" name="healthIssues" value="${value}" ${selected.has(value)?"checked":""} ${editable?"":"disabled"}> <span>${escape(label)}</span></label>`).join("")
+    +`</div></fieldset>`
+    // Rabies is recorded once, where it drives eligibility and notifications. A second tick box
+    // here would be an unverified answer to the same question.
+    +`<p class="pet-section-note">Rabies is not listed here: it is recorded in Vaccination records, where its expiry drives booking eligibility.</p>`
+    +field("medicalNotes","Medical comments","text",`value="${escape(pet.medicalNotes||"")}" ${editable?"":"disabled"}`,true)
+    +(editable?`<div class="pet-section-actions"><button type="submit" class="primary compact" data-testid="pet-medical-save">Save</button></div>`:"")
+    +`</form>`;
+}
+
+function petVaccinationsSectionMarkup(){
+  if(!allowed("pets.care.view")){
+    return `<section class="pet-profile-section"><h4>Vaccination records</h4>`
+      +`<p class="pet-empty">Vaccination records need the Pet Care permission.</p></section>`;
+  }
+  const data=petProfileState.vaccinations;
+  if(!data)return `<section class="pet-profile-section"><h4>Vaccination records</h4><p class="pet-empty">Loading records…</p></section>`;
+  const stamp=value=>value?new Date(`${String(value).slice(0,10)}T12:00:00Z`).toLocaleDateString():"—";
+  const rabiesDocument=data.rabies.documentId
+    ? `<a href="/api/pet-documents/${encodeURIComponent(data.rabies.documentId)}/download?disposition=inline" target="_blank" rel="noopener">View document</a>`
+    : "—";
+  // Rabies is listed with the rest but is stored on the pet's care record; editing it opens the
+  // same dialog, which knows to write it where booking eligibility reads from.
+  const rows=`<tr data-testid="pet-vaccination-rabies"><td>Rabies</td><td>${escape(stamp(data.rabies.expiresOn))}</td><td>${rabiesDocument}</td>`
+    +`<td>${data.canEdit?`<button type="button" class="text-button" data-testid="pet-rabies-edit">Edit</button>`:"—"}</td></tr>`
+    +data.items.map(item=>`<tr>`
+      +`<td>${escape(item.vaccine)}</td><td>${escape(stamp(item.expiresOn))}</td>`
+      +`<td>${item.hasDocument
+        ? `<a href="/api/pet-vaccinations/${encodeURIComponent(item.id)}/document" target="_blank" rel="noopener">View document</a>`
+        : "—"}</td>`
+      +`<td>${data.canEdit?`<button type="button" class="text-button" data-pet-vaccination-edit="${escape(item.id)}">Edit</button>`
+        +`<button type="button" class="text-button destructive" data-pet-vaccination-delete="${escape(item.id)}">Delete</button>`:"—"}</td></tr>`).join("");
+  return `<section class="pet-profile-section">`
+    +`<div class="pet-section-head"><h4>Vaccination records</h4>${data.canEdit?`<button type="button" class="text-button" data-testid="pet-vaccination-add">Add</button>`:""}</div>`
+    +`<div class="pet-table-wrap" data-allow-horizontal-scroll><table class="pet-table" data-testid="pet-vaccinations">`
+    +`<thead><tr><th scope="col">Vaccine</th><th scope="col">Expires on</th><th scope="col">Document</th><th scope="col">Action</th></tr></thead>`
+    +`<tbody>${rows}</tbody></table></div></section>`;
+}
+
+function petVetSectionMarkup(pet){
+  if(!allowed("pets.care.view")){
+    return `<section class="pet-profile-section"><h4>Vet info</h4>`
+      +`<p class="pet-empty">Vet details need the Pet Care permission.</p></section>`;
+  }
+  const editable=allowed("pets.care.edit");
+  const attr=editable?"":"disabled";
+  return `<form class="pet-profile-section" data-pet-section="vet">`
+    +`<h4>Vet info</h4>`
+    +`<div class="pet-field-grid">`
+      +field("vetName","Vet name","text",`value="${escape(pet.vetName||"")}" ${attr}`)
+      +field("vetPhone","Vet phone","tel",`value="${escape(pet.vetPhone||"")}" ${attr}`)
+      +field("vetContactName","Contact name","text",`value="${escape(pet.vetContactName||"")}" ${attr}`)
+      +field("vetContactPhone","Contact phone","tel",`value="${escape(pet.vetContactPhone||"")}" ${attr}`)
+      +field("vetAddress","Address","text",`value="${escape(pet.vetAddress||"")}" ${attr}`,true)
+    +`</div>`
+    +(editable?`<div class="pet-section-actions"><button type="submit" class="primary compact" data-testid="pet-vet-save">Save</button></div>`:"")
+    +`</form>`;
+}
+
+// Present and named, so the concept is documented, but not faked. Per-pet overrides would have
+// to take part in price resolution, checkout, and reporting, and a section that looked editable
+// while changing nothing would be worse than one that says where price actually comes from.
+function petPricingSectionMarkup(){
+  return `<section class="pet-profile-section pet-pricing-placeholder" data-testid="pet-pricing">`
+    +`<h4>Customized price and duration</h4>`
+    +`<p class="pet-empty">Not available. Pawsh resolves a service's price and duration from the`
+    +` catalog and the pet's weight tier, and there is no per-pet override. This section is named`
+    +` here so the idea is on the record; enabling it would mean price resolution, checkout, and`
+    +` reporting all learning about overrides.</p></section>`;
+}
+
+function renderPetProfile(){
+  const pet=petProfileState.pet;if(!pet)return;
+  $("#pet-profile-title").textContent=`${petName(pet)} · Pet profile`;
+  $("#pet-profile-body").innerHTML=
+    petIdentitySectionMarkup(pet,petProfileState.photos)
+    +petNotesSectionMarkup()
+    +petPhotosSectionMarkup()
+    +petMedicalSectionMarkup(pet)
+    +petVaccinationsSectionMarkup()
+    +petVetSectionMarkup(pet)
+    +petPricingSectionMarkup();
+  bindPetProfile();
+}
+
+async function reloadPetProfile({sections=["pet","notes","photos","vaccinations"]}={}){
+  const id=petProfileState.petId;if(!id)return;
+  const wants=new Set(sections);
+  if(!petCoatColors.length){
+    petCoatColors=await api("/api/pets/coat-colors").then(result=>result.items||[]).catch(()=>[]);
+  }
+  const [pet,notes,photos,vaccinations]=await Promise.all([
+    wants.has("pet")||!petProfileState.pet
+      ? api(`/api/pets/${id}`).catch(()=>null) : Promise.resolve(petProfileState.pet),
+    wants.has("notes")?api(`/api/pets/${id}/notes`).then(result=>result.items).catch(()=>[]):Promise.resolve(petProfileState.notes),
+    wants.has("photos")?api(`/api/pets/${id}/photos`).catch(()=>null):Promise.resolve(petProfileState.photos),
+    wants.has("vaccinations")&&allowed("pets.care.view")
+      ? api(`/api/pets/${id}/vaccinations`).catch(()=>null)
+      : Promise.resolve(petProfileState.vaccinations)
+  ]);
+  if(petProfileState.petId!==id)return;
+  if(pet)petProfileState.pet=pet;
+  petProfileState.notes=notes||[];
+  petProfileState.photos=photos;
+  petProfileState.vaccinations=vaccinations;
+  renderPetProfile();
+}
+
+function petPoundsToOunces(value){
+  const pounds=String(value??"").trim();
+  if(!pounds)return null;
+  return Math.round(Number(pounds)*16);
+}
+
+async function savePetIdentity(form){
+  const values=Object.fromEntries(new FormData(form));
+  const pet=petProfileState.pet;
+  const updated=await api(`/api/pets/${pet.id}`,{method:"PUT",body:JSON.stringify({
+    customerId:pet.customerId,
+    name:values.name||null,species:values.species,breed:values.breed||null,
+    dateOfBirth:values.dateOfBirth||null,approximateAge:pet.approximateAge??null,
+    weightOunces:petPoundsToOunces(values.weightPounds),
+    sex:values.sex||null,coatNotes:values.coatNotes||null,
+    groomingPreferences:pet.groomingPreferences??null,photoPermission:pet.photoPermission??null,
+    mixedBreed:form.querySelector('[name="mixedBreed"]').checked,
+    hairLength:values.hairLength||null,
+    coatColor:values.coatColor||null,fixedStatus:values.fixedStatus||null,
+    preferredShampoo:values.preferredShampoo||null,
+    approximateAgeYears:values.approximateAgeYears===""?null:Number(values.approximateAgeYears),
+    approximateAgeMonths:values.approximateAgeMonths===""?null:Number(values.approximateAgeMonths),
+    version:pet.version
+  })});
+  petProfileState.pet=updated;
+  renderPetProfile();
+  toast("Pet saved");
+}
+
+async function savePetCareSection(form,section){
+  const values=Object.fromEntries(new FormData(form));
+  const pet=petProfileState.pet;
+  const payload=section==="medical"
+    ? {
+      // A submitted medical form always records an answer, so "nothing ticked" becomes an
+      // explicit empty list rather than leaving the question unasked.
+      healthIssues:[...new FormData(form).getAll("healthIssues")].map(String),
+      medicalNotes:values.medicalNotes||null
+    }
+    : {
+      vetName:values.vetName||null,vetPhone:values.vetPhone||null,
+      vetContactName:values.vetContactName||null,vetContactPhone:values.vetContactPhone||null,
+      vetAddress:values.vetAddress||null
+    };
+  await api(`/api/pets/${pet.id}/care`,{method:"PUT",body:JSON.stringify({...payload,version:pet.version})});
+  await reloadPetProfile({sections:["pet"]});
+  toast(section==="medical"?"Medical info saved":"Vet info saved");
+}
+
+function openPetNoteEditor(){
+  openStackedDialog({
+    title:"Add a note",
+    body:`<label class="stacked-field">Note<textarea name="body" rows="5" maxlength="5000" placeholder="Grooming instructions, temperament, anything the next groomer should know."></textarea></label>`
+      +`<label class="stacked-check"><input type="checkbox" name="pinned"> Pin to the top of the thread</label>`,
+    dismissLabel:"Cancel",confirmLabel:"Add",
+    onConfirm:async body=>{
+      const text=String(body.querySelector('[name="body"]').value||"").trim();
+      if(!text){toast("Enter the note first.");return false;}
+      await api(`/api/pets/${petProfileState.petId}/notes`,{method:"POST",
+        body:JSON.stringify({body:text,pinned:body.querySelector('[name="pinned"]').checked})});
+      await reloadPetProfile({sections:["notes"]});
+      return true;
+    }
+  });
+}
+
+// The vaccines a salon records. Rabies leads because it is the one that decides whether an
+// appointment can go ahead; the rest are here so the list is useful rather than exhaustive.
+const PET_VACCINES=["Rabies","Bordetella","DHPP","Leptospirosis","Canine Influenza","Lyme","FVRCP","Feline Leukemia"];
+
+/**
+ * One dialog for every vaccine, including rabies.
+ *
+ * Rabies does not become a row in `pet_vaccinations`: it is written to the pet's care record,
+ * where the expiry drives appointment eligibility and customer notices, and its certificate goes
+ * to the rabies document. Everything else is an ordinary record with its own attachment. The
+ * operator sees one form either way; what differs is where the answer is kept, and that matters
+ * because there can only be one answer to "is this dog covered?".
+ */
+function openPetVaccinationEditor(existing){
+  const known=existing?.vaccine&&!PET_VACCINES.includes(existing.vaccine)
+    ? [...PET_VACCINES,existing.vaccine] : PET_VACCINES;
+  const selected=existing?.vaccine||"Rabies";
+  openStackedDialog({
+    title:"Vaccine record",
+    body:`<label class="stacked-field">Vaccine<select name="vaccine">`
+      +known.map(value=>`<option value="${escape(value)}" ${value===selected?"selected":""}>${escape(value)}</option>`).join("")
+      +`<option value="__other">Other…</option></select></label>`
+      +`<label class="stacked-field" data-vaccine-other hidden>Vaccine name<input name="vaccineOther" maxlength="80"></label>`
+      +`<label class="stacked-field">Expires on<input name="expiresOn" type="date" value="${existing?.expiresOn?String(existing.expiresOn).slice(0,10):""}"></label>`
+      +`<label class="stacked-field">Document<input name="document" type="file" accept="application/pdf,image/jpeg,image/png,image/webp"></label>`
+      +`<p class="fine">One PDF or image. Rabies is stored on the pet's care record, where its expiry decides whether an appointment can go ahead.</p>`,
+    dismissLabel:"Cancel",confirmLabel:"OK",
+    onConfirm:async body=>{
+      const select=body.querySelector('[name="vaccine"]');
+      const other=body.querySelector('[name="vaccineOther"]');
+      const vaccine=select.value==="__other"?String(other.value||"").trim():select.value;
+      const expiresOn=String(body.querySelector('[name="expiresOn"]').value||"");
+      // Both are required: a vaccine with no expiry cannot answer the only question anybody
+      // asks of it.
+      if(!vaccine){toast("Choose or name the vaccine.");return false;}
+      if(!expiresOn){toast("Enter the expiry date.");return false;}
+      const file=body.querySelector('[name="document"]').files?.[0]||null;
+      if(vaccine.trim().toLowerCase()==="rabies"){
+        await savePetRabiesVaccination(expiresOn,file);
+      }else{
+        const path=`/api/pets/${petProfileState.petId}/vaccinations`;
+        const saved=existing
+          ? await api(`/api/pet-vaccinations/${existing.id}`,{method:"PATCH",
+            body:JSON.stringify({vaccine,expiresOn,version:existing.version})}).then(()=>existing)
+          : await api(path,{method:"POST",body:JSON.stringify({vaccine,expiresOn})});
+        if(file){
+          const upload=new FormData();
+          upload.append("file",file,file.name||"vaccination");
+          await api(`/api/pet-vaccinations/${saved.id}/document`,{method:"POST",body:upload});
+        }
+      }
+      await reloadPetProfile({sections:["vaccinations","pet"]});
+      return true;
+    }
+  });
+  const select=$('#stacked-dialog [name="vaccine"]');
+  const otherField=$("#stacked-dialog [data-vaccine-other]");
+  const syncOther=()=>{otherField.hidden=select.value!=="__other";};
+  select.addEventListener("change",syncOther);
+  syncOther();
+}
+
+/**
+ * Rabies goes to the two places that already own it: the expiry onto the pet's care record, and
+ * the certificate into the rabies document. Writing it as a free record instead would leave two
+ * dates and no way to say which one booking should believe.
+ */
+async function savePetRabiesVaccination(expiresOn,file){
+  const pet=petProfileState.pet;
+  await api(`/api/pets/${pet.id}/care`,{method:"PUT",
+    body:JSON.stringify({vaccinationExpiresOn:expiresOn,version:pet.version})});
+  if(!file)return;
+  const current=petProfileState.vaccinations?.rabies?.documentId||null;
+  const upload=new FormData();
+  upload.append("metadata",JSON.stringify({
+    uploadRequestId:globalThis.crypto.randomUUID(),
+    expectedCurrentDocumentId:current,
+    ...(current?{expectedCurrentDocumentVersion:1}:{}),
+    expiration:{intent:"preserve"}
+  }));
+  upload.append("file",file,file.name||"rabies");
+  await api(`/api/pets/${pet.id}/documents/rabies`,{method:"POST",body:upload});
+}
+
+function bindPetProfile(){
+  const root=$("#pet-profile-body");
+  root.querySelectorAll("[data-pet-section]").forEach(form=>form.addEventListener("submit",async event=>{
+    event.preventDefault();
+    const button=form.querySelector('button[type="submit"]');
+    if(button)button.disabled=true;
+    try{
+      if(form.dataset.petSection==="identity")await savePetIdentity(form);
+      else await savePetCareSection(form,form.dataset.petSection);
+    }catch(error){toast(error.message);}
+    finally{if(button)button.disabled=false;}
+  }));
+  setupBreedAutocomplete();
+
+  root.querySelector('[data-testid="pet-note-add"]')?.addEventListener("click",openPetNoteEditor);
+  root.querySelectorAll("[data-pet-note-pin]").forEach(button=>button.addEventListener("click",async()=>{
+    const note=petProfileState.notes.find(item=>item.id===button.dataset.petNotePin);
+    try{
+      await api(`/api/pets/${petProfileState.petId}/notes/${note.id}`,{method:"PATCH",
+        body:JSON.stringify({pinned:!note.pinned})});
+      await reloadPetProfile({sections:["notes"]});
+    }catch(error){toast(error.message);}
+  }));
+  root.querySelectorAll("[data-pet-note-delete]").forEach(button=>button.addEventListener("click",async()=>{
+    if(!confirm("Delete this note?"))return;
+    try{
+      await api(`/api/pets/${petProfileState.petId}/notes/${button.dataset.petNoteDelete}`,{method:"DELETE"});
+      await reloadPetProfile({sections:["notes"]});
+    }catch(error){toast(error.message);}
+  }));
+
+  root.querySelector('[data-testid="pet-photo-add"]')?.addEventListener("click",()=>{
+    const input=document.createElement("input");
+    input.type="file";input.accept=PHOTO_ACCEPT;
+    input.addEventListener("change",async()=>{
+      const file=input.files?.[0];if(!file)return;
+      const body=new FormData();
+      body.append("metadata",JSON.stringify({uploadRequestId:globalThis.crypto.randomUUID(),useAsAvatar:false}));
+      body.append("file",file,file.name||"photo");
+      try{
+        await api(`/api/pets/${petProfileState.petId}/photos`,{method:"POST",body});
+        await reloadPetProfile({sections:["photos"]});
+      }catch(error){toast(error.message);}
+    },{once:true});
+    input.click();
+  });
+  root.querySelectorAll("[data-pet-photo-remove]").forEach(button=>button.addEventListener("click",async()=>{
+    if(!confirm("Remove this photo?"))return;
+    try{
+      await api(`/api/pet-photos/${button.dataset.petPhotoRemove}`,{method:"DELETE"});
+      await reloadPetProfile({sections:["photos"]});
+    }catch(error){toast(error.message);}
+  }));
+  root.querySelectorAll("[data-pet-avatar]").forEach(button=>button.addEventListener("click",async()=>{
+    try{
+      await api(`/api/pets/${petProfileState.petId}/avatar`,{method:"PATCH",
+        body:JSON.stringify({photoId:button.dataset.petAvatar})});
+      await reloadPetProfile({sections:["photos"]});
+      toast("Profile photo updated");
+    }catch(error){toast(error.message);}
+  }));
+
+  root.querySelector('[data-testid="pet-vaccination-add"]')?.addEventListener("click",()=>openPetVaccinationEditor(null));
+  root.querySelectorAll("[data-pet-vaccination-edit]").forEach(button=>button.addEventListener("click",()=>{
+    openPetVaccinationEditor(petProfileState.vaccinations.items.find(item=>item.id===button.dataset.petVaccinationEdit));
+  }));
+  root.querySelectorAll("[data-pet-vaccination-delete]").forEach(button=>button.addEventListener("click",async()=>{
+    if(!confirm("Delete this vaccination record?"))return;
+    try{
+      await api(`/api/pet-vaccinations/${button.dataset.petVaccinationDelete}`,{method:"DELETE"});
+      await reloadPetProfile({sections:["vaccinations"]});
+    }catch(error){toast(error.message);}
+  }));
+  root.querySelector('[data-testid="pet-rabies-edit"]')?.addEventListener("click",()=>
+    openPetVaccinationEditor({vaccine:"Rabies",expiresOn:petProfileState.vaccinations?.rabies?.expiresOn||null}));
+}
+
+// The panel's footer actions. Both are about the pet's standing rather than any one section,
+// so they live beside Close rather than inside a form.
+function bindPetProfileDialog(){
+  const dialog=$("#pet-profile-dialog");
+  dialog.querySelectorAll(".close").forEach(button=>
+    button.addEventListener("click",()=>dialog.close()));
+  dialog.addEventListener("close",()=>{$("#stacked-dialog").close();});
+  dialog.querySelector('[data-testid="pet-deceased"]')?.addEventListener("click",async()=>{
+    const pet=petProfileState.pet;if(!pet)return;
+    const marking=!pet.deceasedAt;
+    if(marking&&!confirm(`Record ${petName(pet)} as having passed away? The record stays so past visits and invoices remain explainable.`))return;
+    try{
+      await api(`/api/pets/${pet.id}/deceased`,{method:"POST",body:JSON.stringify({deceased:marking})});
+      await reloadPetProfile({sections:["pet"]});
+      toast(marking?"Recorded as passed away":"Marking removed");
+    }catch(error){toast(error.message);}
+  });
+  dialog.querySelector('[data-testid="pet-archive"]')?.addEventListener("click",async()=>{
+    const pet=petProfileState.pet;if(!pet)return;
+    if(!confirm(`Archive ${petName(pet)}? History is kept and the pet stops appearing for booking.`))return;
+    try{
+      await api(`/api/pets/${pet.id}/archive`,{method:"POST"});
+      dialog.close();
+      toast("Pet archived");
+      await refresh();
+      if(state.clientProfile)await reloadClientProfile();
+    }catch(error){toast(error.message);}
+  });
+}
+bindPetProfileDialog();
+
+async function openPetProfile(petId){
+  petProfileState.petId=petId;
+  petProfileState.pet=null;
+  petProfileState.notes=[];petProfileState.photos=null;petProfileState.vaccinations=null;
+  const dialog=$("#pet-profile-dialog");
+  // Rendered once, after the record arrives, for the same reason the client editor is: a first
+  // paint from the cached copy would be replaced mid-edit and take any typing with it.
+  $("#pet-profile-title").textContent="Pet";
+  $("#pet-profile-body").innerHTML=`<p class="pet-empty">Loading pet…</p>`;
+  if(!dialog.open)dialog.showModal();
+  await reloadPetProfile();
+  if(!petProfileState.pet){
+    $("#pet-profile-body").innerHTML=`<p class="pet-empty">This pet could not be loaded.</p>`;
+  }
+}
 function openPreferredGroomer(){const {customer}=state.clientProfile.data,active=state.employees.filter(employee=>employee.active);openModal("Set preferred groomer",`<label class="wide">Preferred groomer<select name="employeeId"><option value="">Not set</option>${active.map(employee=>`<option value="${employee.id}" ${customer.preferredEmployeeId===employee.id?"selected":""}>${escape(employee.displayName)}</option>`).join("")}</select></label>`,async form=>{await api(`/api/customers/${customer.id}/preferred-groomer`,{method:"PATCH",body:JSON.stringify({employeeId:form.get("employeeId")||null})});const data=await api(`/api/customers/${customer.id}/history`);state.clientProfile.data=data;renderClientProfile();},{cancelLabel:"Cancel",submitLabel:"Save"});}
 // History opens at two rows and grows three at a time, with arrows stepping through pages of
 // whatever size it has grown to. A client with years of visits would otherwise push the rest of
@@ -2295,7 +3016,7 @@ function petNotesMarkup(pet){
 function petCardMarkup(pet){
   const weight=pet.weightOunces?`${Number(pet.weightOunces)/16} lb`:null;
   const detail=[pet.breed||pet.species||"Pet",weight].filter(Boolean).join(" - ");
-  return `<article class="pet-card"><div class="pet-card-head"><span class="pet-avatar" aria-hidden="true">${escape(Array.from(pet.name||"P")[0]?.toUpperCase()||"P")}</span><button type="button" class="pet-card-name" data-pet-profile="${clientAttr(pet.id)}"><strong>${escape(petName(pet))}</strong> <span>(${escape(detail)})</span></button></div><dl class="pet-fact-grid">${petFactCells(pet)}</dl>${petNotesMarkup(pet)}</article>`;
+  return `<article class="pet-card"><div class="pet-card-head">${pet.avatarPhotoId?`<img class="pet-avatar-image pet-card-avatar" src="/api/pet-photos/${encodeURIComponent(pet.avatarPhotoId)}/content" alt="">`:`<span class="pet-avatar" aria-hidden="true">${escape(Array.from(pet.name||"P")[0]?.toUpperCase()||"P")}</span>`}<button type="button" class="pet-card-name" data-pet-profile="${clientAttr(pet.id)}"><strong>${escape(petName(pet))}</strong> <span>(${escape(detail)})</span></button></div><dl class="pet-fact-grid">${petFactCells(pet)}</dl>${petNotesMarkup(pet)}</article>`;
 }
 
 // History table. Duration reads `1 h 30 mins`, matching how the salon quotes an appointment.

@@ -206,6 +206,23 @@
       </div>
     </form>
   </dialog>
+  <dialog id="client-edit-dialog" class="pet-profile-dialog" aria-labelledby="client-edit-title" data-testid="client-edit-dialog">
+    <div class="pet-profile-head"><h3 id="client-edit-title">Client</h3><button type="button" class="close" aria-label="Close client editor">×</button></div>
+    <div id="client-edit-body" class="pet-profile-body"></div>
+    <div class="pet-profile-actions">
+      <button type="button" class="text-button destructive" data-testid="client-archive">Archive</button>
+      <button type="button" class="secondary compact close">Close</button>
+    </div>
+  </dialog>
+  <dialog id="pet-profile-dialog" class="pet-profile-dialog" aria-labelledby="pet-profile-title" data-testid="pet-profile-dialog">
+    <div class="pet-profile-head"><h3 id="pet-profile-title">Pet</h3><button type="button" class="close" aria-label="Close pet profile">×</button></div>
+    <div id="pet-profile-body" class="pet-profile-body"></div>
+    <div class="pet-profile-actions">
+      <button type="button" class="secondary compact" data-testid="pet-deceased">Pass away</button>
+      <button type="button" class="text-button destructive" data-testid="pet-archive">Archive</button>
+      <button type="button" class="secondary compact close">Close</button>
+    </div>
+  </dialog>
   <dialog id="stacked-dialog" class="stacked-dialog" aria-labelledby="stacked-dialog-title" data-testid="stacked-dialog">
     <h4 id="stacked-dialog-title">Details</h4>
     <div id="stacked-dialog-body"></div>

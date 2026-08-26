@@ -74,10 +74,20 @@ export async function expectNoDocumentOverflow(page: Page,testInfo: TestInfo): P
 export async function expectCriticalTarget(locator: Locator): Promise<void> {
   await expect(locator).toBeVisible();
   await expect(locator).toBeEnabled();
-  const box=await locator.boundingBox();
-  expect(box,"Critical target must have a rendered bounding box").not.toBeNull();
-  expect(box!.width,"Critical target width").toBeGreaterThanOrEqual(44);
-  expect(box!.height,"Critical target height").toBeGreaterThanOrEqual(44);
+  // Measured through a poll rather than a single read. The calendar re-renders whenever a load
+  // settles, which detaches the element being measured and makes `boundingBox()` return null —
+  // a race that showed up as a different responsive test failing on each full-suite run while
+  // every one of them passed alone.
+  const measured = { width: 0, height: 0 };
+  await expect.poll(async () => {
+    const box = await locator.boundingBox().catch(() => null);
+    if (!box) return null;
+    measured.width = box.width;
+    measured.height = box.height;
+    return Math.min(box.width, box.height);
+  }, { message: "Critical target must have a rendered bounding box" }).not.toBeNull();
+  expect(measured.width,"Critical target width").toBeGreaterThanOrEqual(44);
+  expect(measured.height,"Critical target height").toBeGreaterThanOrEqual(44);
 }
 
 /**

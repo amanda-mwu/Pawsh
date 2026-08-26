@@ -7,6 +7,7 @@ import {
   prepareReceipt
 } from "./fixtures/tenant.js";
 import { cardForPet, petAction } from "./helpers/clients.js";
+import { decodablePng } from "../support/images.js";
 
 test("@regression-crm-history creates a customer and pet and persists their relationship", async ({ page, tenant }) => {
   const token = tenant.runId.slice(-8);
@@ -240,9 +241,177 @@ test("@regression-crm-history records a phone enquiry with no name and fills it 
   // And it becomes a full record when they call back, without a second row appearing.
   await page.getByTestId("customer-card").getByRole("button", { name: "Not set" }).click();
   await expect(page.getByTestId("client-profile-view")).toBeVisible();
+  // Editing a client is its own panel now, alongside their addresses and contacts.
   await page.getByRole("button", { name: "Edit" }).first().click();
-  await page.getByTestId("field-firstName").fill("Aaron");
-  await page.getByTestId("field-lastName").fill("Cayabyab");
-  await page.getByTestId("modal-submit").click();
+  const editor = page.getByTestId("client-edit-dialog");
+  await expect(editor).toBeVisible();
+  await editor.getByTestId("field-firstName").fill("Aaron");
+  await editor.getByTestId("field-lastName").fill("Cayabyab");
+  await editor.getByTestId("client-basic-save").click();
+  // Wait for the save to land before closing: the panel retitles itself from the reloaded record.
+  await expect(page.locator("#client-edit-title")).toHaveText("Aaron Cayabyab · Edit client");
+  await editor.getByRole("button", { name: "Close client editor" }).click();
   await expect(page.getByRole("heading", { name: "Aaron Cayabyab" })).toBeVisible();
+});
+
+// The pet profile is one panel with independently-saving sections. Each records something the
+// salon actually keeps, and each is honest about what it does not know.
+test("@regression-crm-history pet profile keeps identity, notes, photos, medical, and vaccinations", async ({ page, tenant }) => {
+  await login(page, tenant.ownerEmail);
+  await page.getByTestId("nav-customers").click();
+  await page.getByTestId("customer-card").filter({ hasText: "Emma Johnson" })
+    .getByRole("button", { name: "Emma Johnson" }).click();
+  await page.locator(`[data-pet-profile="${tenant.petId}"]`).click();
+  const panel = page.getByTestId("pet-profile-dialog");
+  await expect(panel).toBeVisible();
+
+  // Every dropdown opens blank when nothing was recorded, so an unanswered question never
+  // renders as though somebody answered it.
+  await expect(panel.getByTestId("field-fixedStatus")).toHaveValue("");
+  await expect(panel.getByTestId("field-hairLength")).toHaveValue("");
+  // Spayed and neutered carry the sex too, which a plain yes/no would lose.
+  await panel.getByTestId("field-fixedStatus").selectOption("neutered");
+  await panel.getByTestId("field-hairLength").selectOption("Cat Long Hair");
+  await panel.getByTestId("field-species").selectOption("Cat");
+  await panel.getByTestId("field-sex").selectOption("Male");
+  await panel.getByTestId("field-approximateAgeMonths").selectOption("4");
+  await panel.getByTestId("field-mixedBreed").check();
+  await panel.getByTestId("field-coatColor").fill("Parti");
+  await panel.getByTestId("field-preferredShampoo").fill("Oatmeal");
+  await panel.getByTestId("pet-identity-save").click();
+  await expect(panel.getByTestId("field-fixedStatus")).toHaveValue("neutered");
+  await expect(panel.getByTestId("field-species")).toHaveValue("Cat");
+  await expect(panel.getByTestId("field-approximateAgeMonths")).toHaveValue("4");
+  await expect(panel.getByTestId("field-mixedBreed")).toBeChecked();
+  await expect(panel.getByTestId("field-preferredShampoo")).toHaveValue("Oatmeal");
+  // A colour becomes a suggestion for the next pet the moment somebody types it.
+  await expect(panel.locator("#pet-coat-colors option[value=\"Parti\"]")).toHaveCount(0);
+  await panel.getByRole("button", { name: "Close pet profile" }).click();
+  await page.locator(`[data-pet-profile="${tenant.petId}"]`).click();
+  await expect(panel.locator("#pet-coat-colors option[value=\"Parti\"]")).toHaveCount(1);
+
+  // Notes carry their author and time.
+  await panel.getByTestId("pet-note-add").click();
+  await page.locator('#stacked-dialog [name="body"]').fill("One inch reverse, round head.");
+  await page.getByTestId("stacked-dialog-confirm").click();
+  const notes = panel.getByTestId("pet-notes");
+  await expect(notes).toContainText("One inch reverse, round head.");
+  await expect(notes.locator("li").first().locator("small")).toContainText("by ");
+
+  // Medical: not asked and nothing-to-report are different facts, and the panel says which.
+  await expect(panel).toContainText("Not asked yet.");
+  await panel.getByTestId("pet-medical-save").click();
+  await expect(panel).toContainText("Recorded as nothing to report.");
+  // Rabies is not offered as a tick box; it is recorded where it decides bookability.
+  await expect(panel.locator(".pet-health-issues")).not.toContainText("Rabies");
+  await expect(panel).toContainText("Rabies is not listed here");
+
+  // Photos, with the first upload becoming the profile picture.
+  const chooser = page.waitForEvent("filechooser");
+  await panel.getByTestId("pet-photo-add").click();
+  await (await chooser).setFiles({
+    name: "charlie.png", mimeType: "image/png", buffer: decodablePng(300, 300)
+  });
+  const tile = panel.getByTestId("pet-photos").locator(".photo-tile");
+  await expect(tile).toHaveCount(1);
+  await expect(tile).toHaveClass(/is-avatar/);
+  await expect(panel.locator(".pet-identity-head img")).toBeVisible();
+
+  // Vaccinations: rabies is listed but edited where it lives; others are ordinary records.
+  const vaccinations = panel.getByTestId("pet-vaccinations");
+  await expect(vaccinations.getByTestId("pet-vaccination-rabies")).toContainText("Rabies");
+
+  // One dialog for every vaccine, opening on Rabies because that is the one that decides
+  // whether an appointment can go ahead.
+  await panel.getByTestId("pet-vaccination-add").click();
+  await expect(page.locator('#stacked-dialog [name="vaccine"]')).toHaveValue("Rabies");
+  await page.locator('#stacked-dialog [name="expiresOn"]').fill("2031-03-02");
+  await page.locator('#stacked-dialog [name="document"]').setInputFiles({
+    name: "rabies.pdf", mimeType: "application/pdf",
+    buffer: Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n")
+  });
+  await page.getByTestId("stacked-dialog-confirm").click();
+  // Rabies lands on the care record rather than becoming a free row, so the table still has
+  // exactly one rabies line and it now carries the certificate.
+  await expect(vaccinations.getByTestId("pet-vaccination-rabies")).toContainText("View document");
+  await expect(vaccinations.locator("tbody tr")).toHaveCount(1);
+
+  // Anything else is an ordinary record with its own attachment.
+  await panel.getByTestId("pet-vaccination-add").click();
+  await page.locator('#stacked-dialog [name="vaccine"]').selectOption("Bordetella");
+  await page.locator('#stacked-dialog [name="expiresOn"]').fill("2030-04-01");
+  await page.locator('#stacked-dialog [name="document"]').setInputFiles({
+    name: "bordetella.png", mimeType: "image/png", buffer: decodablePng(200, 200)
+  });
+  await page.getByTestId("stacked-dialog-confirm").click();
+  await expect(vaccinations).toContainText("Bordetella");
+  await expect(vaccinations.locator("tbody tr")).toHaveCount(2);
+  await expect(vaccinations.locator("tbody tr").nth(1).getByRole("link", { name: "View document" }))
+    .toBeVisible();
+
+  // Both fields are required: a vaccine with no expiry cannot answer the only question anybody
+  // asks of it.
+  await panel.getByTestId("pet-vaccination-add").click();
+  await page.locator('#stacked-dialog [name="vaccine"]').selectOption("Lyme");
+  await page.getByTestId("stacked-dialog-confirm").click();
+  await expect(page.getByTestId("stacked-dialog")).toBeVisible();
+  await page.getByTestId("stacked-dialog-dismiss").click();
+
+  // Vet info saves on its own.
+  await panel.getByTestId("field-vetName").fill("Bayview Animal Hospital");
+  await panel.getByTestId("pet-vet-save").click();
+  await expect(panel.getByTestId("field-vetName")).toHaveValue("Bayview Animal Hospital");
+
+  // Named so the idea is on the record, and honest that it does nothing.
+  await expect(panel.getByTestId("pet-pricing")).toContainText("Customized price and duration");
+  await expect(panel.getByTestId("pet-pricing")).toContainText("Not available");
+  await expect(panel.getByTestId("pet-pricing").locator("input")).toHaveCount(0);
+});
+
+// A client is rarely one address and one phone number: the house and the second home, the owner
+// and the dog walker who actually does the pick-up.
+test("@regression-crm-history client editor keeps several addresses and contacts with one primary", async ({ page, tenant }) => {
+  await login(page, tenant.ownerEmail);
+  await page.getByTestId("nav-customers").click();
+  await page.getByTestId("customer-card").filter({ hasText: "Emma Johnson" })
+    .getByRole("button", { name: "Emma Johnson" }).click();
+  await page.getByRole("button", { name: "Edit" }).first().click();
+  const panel = page.getByTestId("client-edit-dialog");
+  await expect(panel).toBeVisible();
+
+  const addAddress = async (address: string) => {
+    await panel.getByTestId("client-address-add").click();
+    await page.locator('#stacked-dialog [name="address"]').fill(address);
+    await page.getByTestId("stacked-dialog-confirm").click();
+  };
+  await addAddress("12 Chestnut Street, Philadelphia, PA");
+  const addresses = panel.getByTestId("client-addresses");
+  // The first one is primary without anybody saying so.
+  await expect(addresses.locator('input[name="primaryAddress"]:checked')).toHaveCount(1);
+  await addAddress("88 Shore Road, Margate, NJ");
+  await expect(addresses.locator("tbody tr")).toHaveCount(2);
+  await expect(addresses.locator('input[name="primaryAddress"]:checked')).toHaveCount(1);
+
+  // Promoting the second demotes the first; there is never more than one answer to
+  // "where do we go?".
+  await addresses.locator("tbody tr").nth(1).locator('input[name="primaryAddress"]').check();
+  await expect(addresses.locator('input[name="primaryAddress"]:checked')).toHaveCount(1);
+  await expect(addresses.locator("tbody tr").first()).toContainText("88 Shore Road");
+
+  await panel.getByTestId("client-contact-add").click();
+  await page.locator('#stacked-dialog [name="name"]').fill("Dana Reeve");
+  await page.locator('#stacked-dialog [name="phone"]').fill("(267) 555-0142");
+  await page.locator('#stacked-dialog [name="title"]').fill("Dog walker");
+  await page.getByTestId("stacked-dialog-confirm").click();
+  const contacts = panel.getByTestId("client-contacts");
+  await expect(contacts).toContainText("Dana Reeve");
+  await expect(contacts).toContainText("Dog walker");
+  await expect(panel).toContainText("Contacts (1)");
+
+  // The flag is stored and plainly labelled as driving nothing.
+  await expect(panel).toContainText("recorded but not acted on");
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await contacts.locator("tbody tr").first().getByRole("button", { name: "Delete" }).click();
+  await expect(panel).toContainText("No contacts on file.");
 });

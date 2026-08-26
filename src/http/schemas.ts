@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { passwordSchema } from "../security/passwords.js";
 import { rabiesVerificationMethods, rabiesVerificationStatuses } from "../domain/rabies.js";
+import { petHealthIssues } from "../domain/pet-care.js";
 import {pricingClasses,weightTiers} from "../domain/pricing.js";
 
 export const idParams = z.object({ id: z.string().uuid() });
@@ -140,6 +141,43 @@ export const customerPreferencesSchema = z.object({
 );
 
 // ---------------------------------------------------------------------------
+// Client addresses and contacts
+//
+// Both lists carry exactly one primary. A record that says it is primary makes the one that
+// was primary step down, done in the same transaction rather than left to the caller.
+// ---------------------------------------------------------------------------
+
+export const customerChildParams = z.object({
+  id: z.string().uuid(),
+  childId: z.string().uuid()
+});
+
+export const customerAddressCreateSchema = z.object({
+  address: z.string().trim().min(1).max(500),
+  label: z.preprocess(blankToNull, z.string().trim().min(1).max(60).nullish()),
+  isPrimary: z.boolean().default(false)
+}).strict();
+
+export const customerAddressUpdateSchema = customerAddressCreateSchema.partial().refine(
+  (value) => Object.keys(value).length > 0,
+  { message: "At least one address change is required" }
+);
+
+export const customerContactCreateSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  phone: z.string().trim().min(1).max(40),
+  title: z.preprocess(blankToNull, z.string().trim().min(1).max(80).nullish()),
+  // Recorded now so the salon is not asked again once something reads it. Nothing does today.
+  receivesAutomatedMessages: z.boolean().default(true),
+  isPrimary: z.boolean().default(false)
+}).strict();
+
+export const customerContactUpdateSchema = customerContactCreateSchema.partial().refine(
+  (value) => Object.keys(value).length > 0,
+  { message: "At least one contact change is required" }
+);
+
+// ---------------------------------------------------------------------------
 // Client agreements
 // ---------------------------------------------------------------------------
 
@@ -265,7 +303,29 @@ const petBaseSchema = z.object({
   rabiesVerificationStatus: z.enum(rabiesVerificationStatuses).optional(),
   rabiesVerificationMethod: z.enum(rabiesVerificationMethods).nullish(),
   rabiesVerificationDate: z.string().date().nullish(),
-  photoPermission: z.boolean().nullish()
+  photoPermission: z.boolean().nullish(),
+
+  // Unknown and "not a mix" are different answers, so this stays nullable.
+  mixedBreed: z.boolean().nullish(),
+  hairLength: z.string().trim().max(60).nullish(),
+  coatColor: z.string().trim().max(60).nullish(),
+  // Spayed and neutered also say which sex the pet is; a boolean would lose that.
+  fixedStatus: z.enum(["spayed", "neutered", "intact"]).nullish(),
+  preferredShampoo: z.string().trim().max(120).nullish(),
+  // An estimate the salon was told, kept beside `dateOfBirth` rather than collapsed into a
+  // fabricated birthday that would be indistinguishable from one the owner actually stated.
+  approximateAgeYears: z.number().int().min(0).max(60).nullish(),
+  approximateAgeMonths: z.number().int().min(0).max(11).nullish(),
+
+  // Absent means nobody has been asked; an empty list means somebody was asked and there is
+  // nothing to report. Rabies is deliberately not in the vocabulary — it has an authoritative
+  // home already, and a second unverified answer is the one thing compliance cannot afford.
+  healthIssues: z.array(z.enum(petHealthIssues)).max(petHealthIssues.length).nullish(),
+  vetName: z.string().trim().max(120).nullish(),
+  vetPhone: z.string().trim().max(40).nullish(),
+  vetContactName: z.string().trim().max(120).nullish(),
+  vetContactPhone: z.string().trim().max(40).nullish(),
+  vetAddress: z.string().trim().max(500).nullish()
 });
 
 function validateRabiesDates(value: {
@@ -282,6 +342,12 @@ function validateRabiesDates(value: {
 export const petSchema = petBaseSchema.superRefine(validateRabiesDates);
 
 export const petProfileUpdateSchema = petBaseSchema.omit({
+  healthIssues: true,
+  vetName: true,
+  vetPhone: true,
+  vetContactName: true,
+  vetContactPhone: true,
+  vetAddress: true,
   safetyAlerts: true,
   medicalNotes: true,
   behaviorNotes: true,
@@ -293,7 +359,53 @@ export const petProfileUpdateSchema = petBaseSchema.omit({
   version: z.number().int().positive()
 });
 
+export const petNoteParams = z.object({
+  id: z.string().uuid(),
+  noteId: z.string().uuid()
+});
+
+export const petPhotoUploadMetadataSchema = z.object({
+  uploadRequestId: z.string().uuid(),
+  // A photograph taken specifically to be the portrait says so; otherwise only the first one
+  // promotes itself, so a gallery never quietly changes the face on the profile.
+  useAsAvatar: z.boolean().default(false)
+}).strict();
+
+export const petAvatarSchema = z.object({
+  photoId: z.string().uuid().nullable()
+}).strict();
+
+/**
+ * Vaccinations other than rabies.
+ *
+ * Rabies is refused by both this schema's handler and a database constraint. It is recorded on
+ * the pet and in its documents, where the expiry drives appointment eligibility; a second record
+ * claiming a different date would make the compliance answer ambiguous.
+ */
+export const petVaccinationCreateSchema = z.object({
+  vaccine: z.string().trim().min(1).max(80),
+  expiresOn: z.string().date().nullish(),
+  notes: z.string().trim().max(2000).nullish()
+}).strict();
+
+export const petVaccinationUpdateSchema = z.object({
+  vaccine: z.string().trim().min(1).max(80).optional(),
+  expiresOn: z.string().date().nullish(),
+  notes: z.string().trim().max(2000).nullish(),
+  version: z.number().int().positive()
+}).strict();
+
+export const petDeceasedSchema = z.object({
+  deceased: z.boolean()
+}).strict();
+
 export const petCareUpdateSchema = petBaseSchema.pick({
+  healthIssues: true,
+  vetName: true,
+  vetPhone: true,
+  vetContactName: true,
+  vetContactPhone: true,
+  vetAddress: true,
   safetyAlerts: true,
   medicalNotes: true,
   behaviorNotes: true,

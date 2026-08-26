@@ -73,10 +73,14 @@ test("local pilot client profile, pet profile, preferred groomer, and Book New",
   expect((await (await request.get(`/api/customers/${tenant.customerId}/history`)).json()).customer.preferredEmployeeId)
     .toBe(tenant.employeeId);
 
+  // The pet profile is its own panel now, not the shared dialog.
   await page.locator(`[data-pet-profile="${tenant.petId}"]`).click();
-  await expect(page.getByTestId("modal")).toContainText("Charlie · Pet Profile");
-  await expect(page.getByTestId("modal")).toContainText("Golden Retriever");
-  await page.locator("#modal .modal-actions .close").click();
+  const petPanel = page.getByTestId("pet-profile-dialog");
+  await expect(petPanel).toBeVisible();
+  await expect(page.locator("#pet-profile-title")).toHaveText("Charlie · Pet profile");
+  await expect(petPanel.getByTestId("field-breed")).toHaveValue("Golden Retriever");
+  await petPanel.getByRole("button", { name: "Close pet profile" }).click();
+  await expect(petPanel).toBeHidden();
 
   // Book New arrives with the client and pet already resolved, so the workspace opens past
   // the client search rather than asking who the booking is for.

@@ -1,4 +1,5 @@
 import { expect, login, test } from "./fixtures/tenant.js";
+import { chooseBookingClient } from "./helpers/booking.js";
 
 test("local pilot + New menu is compact, honest, keyboard accessible, and canonical", async ({ page, tenant }) => {
   await login(page, tenant.ownerEmail);
@@ -24,16 +25,19 @@ test("local pilot + New menu is compact, honest, keyboard accessible, and canoni
   await trigger.press("ArrowDown");
   await expect(menu.getByRole("menuitem", { name: "New Appointment" })).toBeFocused();
   await page.keyboard.press("Enter");
-  await expect(page.getByTestId("modal")).toContainText("New appointment");
-  await expect(page.locator('#modal select[name="employeeId"]')).toHaveCount(1);
-  await expect(page.locator('#modal [name="employeeIds"]')).toHaveCount(0);
-  await expect(page.getByTestId("modal")).not.toContainText("Add Another Groomer");
-  await page.locator("#modal .modal-actions .close").click();
+  await expect(page.getByTestId("booking-dialog")).toContainText("Create Appointment");
+  await chooseBookingClient(page, tenant.customerId);
+  await expect(page.locator('#booking-dialog select[name="employeeId"]')).toHaveCount(1);
+  await expect(page.locator('#booking-dialog [name="employeeIds"]')).toHaveCount(0);
+  await expect(page.getByTestId("booking-dialog")).not.toContainText("Add Another Groomer");
+  await page.locator("#booking-dialog .booking-actions .close").click();
+  await expect(page.getByTestId("booking-dialog")).toBeHidden();
 
   await trigger.click();
   await menu.getByRole("menuitem", { name: "Quick Appointment — existing client" }).click();
-  await expect(page.locator('#modal select[name="customerId"]')).toBeFocused();
-  await page.locator("#modal .modal-actions .close").click();
+  await expect(page.getByTestId("booking-client-search")).toBeFocused();
+  await page.locator("#booking-dialog .booking-actions .close").click();
+  await expect(page.getByTestId("booking-dialog")).toBeHidden();
   await trigger.click();
   await menu.getByRole("menuitem", { name: "New Block Time" }).click();
   await expect(page.getByTestId("modal")).toContainText("Block team time");
@@ -74,10 +78,13 @@ test("local pilot client profile, pet profile, preferred groomer, and Book New",
   await expect(page.getByTestId("modal")).toContainText("Golden Retriever");
   await page.locator("#modal .modal-actions .close").click();
 
+  // Book New arrives with the client and pet already resolved, so the workspace opens past
+  // the client search rather than asking who the booking is for.
   await page.getByRole("button", { name: "Book New" }).click();
-  await expect(page.locator('#modal select[name="customerId"]')).toHaveValue(tenant.customerId);
-  await expect(page.locator('#modal select[name="petId"]')).toHaveValue(tenant.petId);
-  await expect(page.locator('#modal select[name="employeeId"]')).toHaveValue(tenant.employeeId);
+  await expect(page.getByTestId("booking-client-name")).toHaveText("Emma Johnson");
+  await expect(page.getByTestId("booking-pet-name")).toHaveText("Charlie");
+  await expect(page.locator('#booking-dialog [name="petId"]')).toHaveValue(tenant.petId);
+  await expect(page.locator('#booking-dialog select[name="employeeId"]')).toHaveValue(tenant.employeeId);
 });
 
 test("local pilot reminders expose supported and deferred tabs honestly", async ({ page, tenant }) => {
@@ -144,4 +151,43 @@ test("local pilot Charts and Report share authoritative totals and groomer query
   await page.locator("#report-table-mode").click();
   await expect(page.locator("#report-table")).toBeVisible();
   expect(await page.locator("#report-table-body tr td:last-child").allTextContents()).toEqual(chartTotals);
+});
+
+// The document is the thing being attested to, so it has to be readable before signing and
+// afterwards. The name is a button carrying its own affordance rather than plain heading text.
+test("local pilot agreement name opens the document and its recorded state", async ({ page, request, tenant }) => {
+  const template = await (await request.post("/api/agreement-templates", { data: {
+    name: "Cancellation Policy",
+    body: "Please give 24 hours notice to cancel or reschedule.",
+    required: true
+  }})).json() as { id: string };
+
+  await login(page, tenant.ownerEmail);
+  await page.getByTestId("nav-customers").click();
+  await page.getByTestId("customer-card").filter({ hasText: "Emma Johnson" })
+    .getByRole("button", { name: "Emma Johnson" }).click();
+  await expect(page.getByTestId("client-profile-view")).toBeVisible();
+
+  const name = page.getByRole("button", { name: "Open Cancellation Policy" });
+  await expect(name).toBeVisible();
+  await name.click();
+  await expect(page.locator("#modal-title")).toHaveText("Cancellation Policy");
+  await expect(page.getByTestId("modal")).toContainText("Please give 24 hours notice");
+  await expect(page.getByTestId("modal")).toContainText("Not signed");
+  await expect(page.getByTestId("modal")).toContainText("Never sent to this client");
+  // Pawsh records staff-entered signatures only, and the dialog says so rather than implying
+  // a client signing page exists.
+  await expect(page.getByTestId("modal")).toContainText("no client signing page");
+
+  // Having read it, the operator can act without reopening the row.
+  await page.getByTestId("agreement-detail-action").click();
+  await expect(page.locator("#modal-title")).toHaveText("Record a signed agreement");
+  await page.getByTestId("modal-submit").click();
+  await expect(page.getByTestId("modal")).toBeHidden();
+
+  await page.getByRole("button", { name: "Open Cancellation Policy" }).click();
+  await expect(page.getByTestId("modal")).toContainText("Signed");
+  await expect(page.getByTestId("agreement-detail-action")).toHaveText("Correct signature");
+  expect((await (await request.get(`/api/customers/${tenant.customerId}/agreements`)).json())
+    .items.find((item: { templateId: string }) => item.templateId === template.id).status).toBe("signed");
 });

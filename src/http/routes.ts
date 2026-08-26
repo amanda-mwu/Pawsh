@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type postgres from "postgres";
 import { z, type ZodType } from "zod";
@@ -9,6 +9,7 @@ import { canTransition, type AppointmentStatus } from "../domain/appointments.js
 import { calculateInvoice } from "../domain/money.js";
 import { canonicalHash } from "../domain/canonical.js";
 import { safePdfFilename } from "../domain/filenames.js";
+import { maxPhotoBytes, readPhotoShape, safePhotoFilename } from "../domain/images.js";
 import { localDateBounds, localDateForInstant, resolveWallTime, validateTimeZone } from "../domain/time.js";
 import { permissionPresets, permissions } from "../domain/permissions.js";
 import { auth, authentication, issueToken, platformAuthentication, requirePermission, tokenHash } from "./context.js";
@@ -24,7 +25,8 @@ import {
   locationSelectionSchema,customerNoteParams,customerNoteCreateSchema,customerNoteUpdateSchema,
   customerNoteQuerySchema,customerPreferencesSchema,
   agreementTemplateCreateSchema,agreementTemplateUpdateSchema,agreementTemplateQuerySchema,
-  agreementSignatureSchema,agreementSendSchema,customerAgreementParams
+  agreementSignatureSchema,agreementSendSchema,customerAgreementParams,vaccinationReminderSchema,
+  reportCardCreateSchema,reportCardUpdateSchema,reportCardSendSchema
 } from "./schemas.js";
 import { sealSecret } from "../security/secrets.js";
 import { hashPassword, validateNewPassword, verifyPassword } from "../security/passwords.js";
@@ -71,10 +73,20 @@ const reportRangeSchema=z.object({
 }).strict();
 const appointmentHistoryQuerySchema=z.object({
   page:z.coerce.number().int().min(1).max(1000).default(1),
-  pageSize:z.coerce.number().int().min(10).max(100).default(25)
+  // The client profile pages history two or three rows at a time, so the floor is a single row
+  // rather than the ten a full-page listing needs.
+  pageSize:z.coerce.number().int().min(1).max(100).default(25),
+  direction:z.enum(["upcoming","past"]).optional()
 }).strict();
 // Client and pet profiles read a bounded first page; the paginated history routes serve the tail.
 const profileHistoryLimit=100;
+// Upcoming is a short list by nature — the next few visits, not a log — and the profile shows
+// it in full rather than paging it.
+const profileUpcomingLimit=25;
+// History opens as a preview rather than a log. A few rows beyond what the profile shows first
+// means growing the visible window costs no round trip, while a client with years of visits
+// never ships years of rows to render two of them.
+const profileHistoryPreviewLimit=5;
 const preferredGroomerSchema=z.object({employeeId:z.string().uuid().nullable()}).strict();
 const reminderQuerySchema=z.object({type:z.enum(["appointment_reminder","secondary_reminder","same_day_reminder","rebook_reminder","vaccination_reminder","birthday_reminder"])}).strict();
 
@@ -114,6 +126,38 @@ const documentUploadMetadataSchema = z.object({
 });
 
 type DocumentUploadMetadata = z.infer<typeof documentUploadMetadataSchema>;
+
+const photoUploadMetadataSchema = z.object({
+  petId: z.string().uuid(),
+  phase: z.enum(["before", "after"]),
+  uploadRequestId: z.string().uuid(),
+  claimedDigest: z.string().regex(/^[0-9a-f]{64}$/).optional()
+}).strict();
+
+// A groomer photographing one dog produces a handful of shots per phase, not an album. The cap
+// exists so a stuck retry loop cannot fill the bucket, and it is reported rather than silently
+// dropping the extra.
+const maxPhotosPerPhase = 12;
+
+/**
+ * Escape a value for interpolation into the report card preview page.
+ *
+ * That page is the only HTML this server composes, and every value in it comes from tenant data
+ * that a person typed. Quotes are escaped along with the angle brackets so the same function is
+ * safe in an attribute as well as in text.
+ */
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"
+  }[character] ?? character));
+}
+
+// The storage key and digest stay server-side: neither tells the interface anything, and the key
+// is the one field that would let a caller reason about the object layout of the bucket.
+interface PhotoApiRow {
+  id: string; petId: string; phase: string; width: number | null; height: number | null;
+  sizeBytes: string | null; originalFilename: string; contentType: string; createdAt: Date;
+}
 
 function documentRequestFingerprint(input: DocumentUploadMetadata): string {
   return sha256(new TextEncoder().encode(JSON.stringify({
@@ -408,11 +452,31 @@ function assignedToEmployees(db: Database, employeeIds: readonly string[] | unde
 
 // Bounded appointment history projection carrying the service snapshots the profile views render,
 // so the client never has to fan out one request per appointment.
+/**
+ * One page of a client's or pet's appointments.
+ *
+ * `direction` splits the same list the way the profile reads it. "upcoming" is work still
+ * ahead — a future start that has not reached a terminal state — and reads forwards, because
+ * the next visit is the one being looked for. "past" is everything else, including a cancelled
+ * or no-show appointment whose date has not arrived yet: it is settled, so it belongs in
+ * history rather than in a list of what is still going to happen. Omitting `direction` keeps
+ * the undivided newest-first list the pet profile uses.
+ */
 async function appointmentHistoryPage(
   db: Database,
-  input: { businessId: string; scope: "customer" | "pet"; id: string; limit: number; offset: number }
+  input: {
+    businessId: string; scope: "customer" | "pet"; id: string; limit: number; offset: number;
+    direction?: "upcoming" | "past";
+  }
 ): Promise<{ items: Record<string, unknown>[]; total: number }> {
   const scope = input.scope === "customer" ? db`a.customer_id=${input.id}` : db`a.pet_id=${input.id}`;
+  const pending = db`a.start_at >= now() and a.status not in ('completed','cancelled','no_show')`;
+  const window = input.direction === "upcoming" ? pending
+    : input.direction === "past" ? db`not (${pending})`
+    : db`true`;
+  const ordering = input.direction === "upcoming"
+    ? db`order by a.start_at asc,a.id asc`
+    : db`order by a.start_at desc,a.id desc`;
   const [items, totals] = await Promise.all([
     db<Record<string, unknown>[]>`
       select a.*, p.name as pet_name, e.display_name as employee_name,
@@ -430,15 +494,75 @@ async function appointmentHistoryPage(
       from appointments a
       join pets p on p.business_id=a.business_id and p.id=a.pet_id
       join employees e on e.business_id=a.business_id and e.id=a.employee_id
-      where a.business_id=${input.businessId} and ${scope}
-      order by a.start_at desc,a.id desc limit ${input.limit} offset ${input.offset}
+      where a.business_id=${input.businessId} and ${scope} and ${window}
+      ${ordering} limit ${input.limit} offset ${input.offset}
     `,
     db<{ count: number }[]>`
       select count(*)::int count from appointments a
-      where a.business_id=${input.businessId} and ${scope}
+      where a.business_id=${input.businessId} and ${scope} and ${window}
     `
   ]);
   return { items, total: totals[0]?.count ?? 0 };
+}
+
+/**
+ * The figures the client profile leads with.
+ *
+ * Money is counted from invoices rather than appointments, because an appointment carries a
+ * quoted price and an invoice carries what was actually charged. `unclosed` is the honest gap
+ * between the two: a completed appointment with no invoice has been worked but never billed,
+ * and it is neither revenue nor outstanding until somebody closes it out.
+ *
+ * Pawsh sells no retail, so no retail figure is reported. Rendering a zero there would read as
+ * "no retail sold to this client" rather than "Pawsh does not do retail".
+ */
+async function customerSalesSummary(
+  db: Database,
+  input: { businessId: string; customerId: string }
+): Promise<Record<string, unknown>> {
+  const [[money], statuses, [unclosed]] = await Promise.all([
+    db<{ invoicedMinor: number; outstandingMinor: number; paidMinor: number; invoiceCount: number }[]>`
+      select coalesce(sum(total_minor),0)::int invoiced_minor,
+        coalesce(sum(balance_minor),0)::int outstanding_minor,
+        coalesce(sum(total_minor-balance_minor),0)::int paid_minor,
+        count(*)::int invoice_count
+      from invoices
+      where business_id=${input.businessId} and customer_id=${input.customerId} and status<>'void'
+    `,
+    db<{ status: string; count: number }[]>`
+      select status,count(*)::int count from appointments
+      where business_id=${input.businessId} and customer_id=${input.customerId}
+      group by status
+    `,
+    db<{ count: number }[]>`
+      select count(*)::int count from appointments appointment
+      where appointment.business_id=${input.businessId} and appointment.customer_id=${input.customerId}
+        and appointment.status='completed'
+        and not exists (
+          select 1 from invoices invoice
+          where invoice.business_id=appointment.business_id
+            and invoice.appointment_id=appointment.id and invoice.status<>'void'
+        )
+    `
+  ]);
+  const counts = Object.fromEntries(statuses.map((row) => [row.status, row.count]));
+  const appointmentTotal = statuses.reduce((sum, row) => sum + row.count, 0);
+  return {
+    invoicedMinor: money?.invoicedMinor ?? 0,
+    paidMinor: money?.paidMinor ?? 0,
+    outstandingMinor: money?.outstandingMinor ?? 0,
+    invoiceCount: money?.invoiceCount ?? 0,
+    appointmentTotal,
+    statusCounts: {
+      scheduled: counts.scheduled ?? 0,
+      checkedIn: counts.checked_in ?? 0,
+      inService: counts.in_service ?? 0,
+      completed: counts.completed ?? 0,
+      cancelled: counts.cancelled ?? 0,
+      noShow: counts.no_show ?? 0
+    },
+    unclosedTotal: unclosed?.count ?? 0
+  };
 }
 
 async function setTenant(tx: Transaction, businessId: string): Promise<void> {
@@ -1853,7 +1977,7 @@ export function registerRoutes(
           (business_id, first_name, last_name, phone, normalized_phone, email, normalized_email,
            address, preferred_contact_method, email_allowed, created_by, updated_by)
         values
-          (${context.businessId}, ${input.firstName}, ${input.lastName}, ${input.phone ?? null},
+          (${context.businessId}, ${input.firstName ?? null}, ${input.lastName ?? null}, ${input.phone ?? null},
            ${normalizePhone(input.phone)}, ${input.email ?? null},
            ${input.email ? normalizeEmail(input.email) : null}, ${input.address ?? null},
            ${input.preferredContactMethod}, ${input.emailAllowed},
@@ -1915,7 +2039,7 @@ export function registerRoutes(
         actorId: context.userId, value: input.notes
       });
       const [row] = await tx<(Record<string, unknown> & { id: string })[]>`
-        update customers set first_name=${input.firstName},last_name=${input.lastName},
+        update customers set first_name=${input.firstName ?? null},last_name=${input.lastName ?? null},
           phone=${input.phone ?? null},normalized_phone=${normalizePhone(input.phone)},
           email=${input.email ?? null},normalized_email=${input.email ? normalizeEmail(input.email) : null},
           address=${input.address ?? null},preferred_contact_method=${input.preferredContactMethod},
@@ -2531,6 +2655,122 @@ export function registerRoutes(
     };
   });
 
+  /**
+   * Queue a rabies reminder for a pet whose record lapses before a date being booked.
+   *
+   * This runs while the appointment is still being composed, so there is no appointment row
+   * to attach the intent to. The reminder therefore hangs off the customer and carries its own
+   * sealed body: the worker's generated copy reads the appointment for the pet name and dates,
+   * and would render empty here. `material_key` supplies idempotency through
+   * `unique_notification_material_recipient`, so pressing Send Reminder twice for the same pet,
+   * expiration, and target date queues one message rather than two.
+   *
+   * `reconcileRabiesNotifications` only ever touches intents scoped to an appointment id, so a
+   * reminder queued here is never cancelled or superseded by the booking that follows it. If the
+   * appointment is then created with the record still lapsed, reconciliation queues its own
+   * appointment-scoped intent; that is a second, differently-worded message and is intended.
+   */
+  app.post("/api/pets/:id/vaccination-reminder", {
+    preHandler: [authenticate, requirePermission("appointments.create")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(vaccinationReminderSchema, request.body);
+    if (input.channel !== "email") {
+      return reply.code(409).send({
+        code: "VACCINATION_REMINDER_CHANNEL_UNSUPPORTED",
+        error: "Pawsh has no SMS delivery. Vaccination reminders can only be sent by email.",
+        channel: input.channel,
+        supportedChannels: ["email"]
+      });
+    }
+    const result = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [pet] = await tx<{
+        id: string; name: string; expirationDate: string | null; customerId: string;
+        firstName: string; lastName: string; email: string | null;
+        emailAllowed: boolean; blockMessages: boolean;
+      }[]>`
+        select pet.id,pet.name,pet.vaccination_expires_on::text as expiration_date,
+          customer.id as customer_id,customer.first_name,customer.last_name,
+          customer.email,customer.email_allowed,customer.block_messages
+        from pets pet
+        join customers customer on customer.business_id=pet.business_id and customer.id=pet.customer_id
+        where pet.business_id=${context.businessId} and pet.id=${id}
+          and pet.archived_at is null and customer.archived_at is null
+      `;
+      if (!pet) return { missingPet: true } as const;
+      // A pet whose record is already current for the date is not a reminder the client should
+      // receive. Refusing is more useful than sending a message contradicted by the record.
+      if (!pet.expirationDate || pet.expirationDate >= input.appointmentLocalDate) {
+        return { notRequired: true, expirationDate: pet.expirationDate } as const;
+      }
+      const recipient = {
+        id: pet.customerId, firstName: pet.firstName, lastName: pet.lastName,
+        email: pet.email, emailAllowed: pet.emailAllowed, blockMessages: pet.blockMessages
+      } satisfies AgreementRecipient;
+      const reason = agreementEmailReason(recipient);
+      if (reason !== "ok") return { undeliverable: reason, recipient } as const;
+      const [business] = await tx<{ name: string; phone: string | null; email: string | null }[]>`
+        select name,phone,email from businesses where id=${context.businessId}
+      `;
+      const contact = business?.phone ?? business?.email ?? business?.name ?? "the business";
+      const message = [
+        `${business?.name ?? "Your salon"} is booking ${pet.name} for ${input.appointmentLocalDate}.`,
+        `The rabies vaccination information on file expires on ${pet.expirationDate}, so it will not be current for that visit.`,
+        `Please send updated rabies information before the appointment, or contact ${contact}.`
+      ].join("\n\n");
+      const key = `rabies:${createHash("sha256").update(JSON.stringify([
+        context.businessId, pet.customerId, pet.id, "rabies_expiration_customer",
+        input.appointmentLocalDate, pet.expirationDate, "email", pet.email
+      ])).digest("hex")}`;
+      const [intent] = await tx<{ id: string }[]>`
+        insert into notification_intents
+          (business_id,customer_id,notification_type,scheduled_occurrence,channel,
+           destination,status,recipient_kind,material_key,encrypted_body)
+        values (${context.businessId},${pet.customerId},'rabies_expiration_customer',now(),'email',
+          ${pet.email},'pending','customer',${key},${sealSecret(message, config.SESSION_SECRET)})
+        on conflict do nothing returning id
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "pet.vaccination_reminder.send", resourceType: "pet", resourceId: id,
+        after: {
+          channel: "email", customerId: pet.customerId,
+          appointmentLocalDate: input.appointmentLocalDate, expirationDate: pet.expirationDate,
+          outcome: intent ? "queued" : "already_queued"
+        }
+      });
+      return { queued: Boolean(intent), intentId: intent?.id ?? null, pet, recipient } as const;
+    });
+    if ("missingPet" in result) return reply.code(404).send({ error: "Active pet not found" });
+    if ("notRequired" in result) {
+      return reply.code(409).send({
+        code: "VACCINATION_REMINDER_NOT_REQUIRED",
+        error: result.expirationDate
+          ? "The rabies record on file is current for this date, so no reminder was sent."
+          : "No rabies expiration is on file for this pet, so there is nothing to remind about.",
+        expirationDate: result.expirationDate ?? null
+      });
+    }
+    if ("undeliverable" in result) {
+      return reply.code(409).send({
+        code: "VACCINATION_REMINDER_UNDELIVERABLE",
+        error: agreementEmailDetail[result.undeliverable] ?? "This client cannot be emailed",
+        channel: "email",
+        reason: result.undeliverable,
+        supportedChannels: ["email"]
+      });
+    }
+    return reply.code(202).send({
+      channel: "email",
+      queued: result.queued,
+      outcome: result.queued ? "queued" : "already_queued",
+      intentId: result.intentId,
+      destination: result.recipient.email
+    });
+  });
+
   app.get("/api/customers/:id/history", {
     preHandler: [authenticate, requirePermission("customers.view")]
   }, async (request, reply) => {
@@ -2543,24 +2783,38 @@ export function registerRoutes(
     if (!customer) return reply.code(404).send({ error: "Customer not found" });
     const mayViewCare = mayViewPetCare(context);
     const mayViewPayments = context.isOwner || context.permissions.includes("payments.view");
-    const [pets, history, invoices] = await Promise.all([
+    const [pets, upcoming, history, invoices, summary] = await Promise.all([
       db`select * from pets where business_id=${context.businessId} and customer_id=${id} order by name,id`,
       appointmentHistoryPage(db, {
-        businessId: context.businessId, scope: "customer", id, limit: profileHistoryLimit, offset: 0
+        businessId: context.businessId, scope: "customer", id,
+        limit: profileUpcomingLimit, offset: 0, direction: "upcoming"
+      }),
+      appointmentHistoryPage(db, {
+        businessId: context.businessId, scope: "customer", id,
+        limit: profileHistoryPreviewLimit, offset: 0, direction: "past"
       }),
       mayViewPayments
         ? db`select id,invoice_number,status,subtotal_minor,discount_minor,tax_minor,tip_minor,
               total_minor,balance_minor,created_at
              from invoices where business_id=${context.businessId} and customer_id=${id}
              order by created_at desc,id desc limit ${profileHistoryLimit}`
-        : Promise.resolve([])
+        : Promise.resolve([]),
+      mayViewPayments
+        ? customerSalesSummary(db, { businessId: context.businessId, customerId: id })
+        : Promise.resolve(null)
     ]);
+    const appointmentTotal = upcoming.total + history.total;
     return {
       customer,
       pets: mayViewCare ? pets : pets.map((pet) => redactPetCare(pet)),
-      appointments: history.items,
-      appointmentTotal: history.total,
-      appointmentsTruncated: history.total > history.items.length,
+      upcoming: { items: upcoming.items, total: upcoming.total },
+      history: { items: history.items, total: history.total },
+      appointmentTotal,
+      appointmentsTruncated:
+        upcoming.total > upcoming.items.length || history.total > history.items.length,
+      // Money is withheld rather than zeroed for staff without `payments.view`, so an empty
+      // summary is never mistaken for a client who has never spent anything.
+      summary,
       invoices
     };
   });
@@ -2577,7 +2831,8 @@ export function registerRoutes(
     if (!customer) return reply.code(404).send({ error: "Customer not found" });
     const { items, total } = await appointmentHistoryPage(db, {
       businessId: context.businessId, scope: "customer", id,
-      limit: query.pageSize, offset: (query.page - 1) * query.pageSize
+      limit: query.pageSize, offset: (query.page - 1) * query.pageSize,
+      ...(query.direction ? { direction: query.direction } : {})
     });
     return { items, total, page: query.page, pageSize: query.pageSize };
   });
@@ -2744,7 +2999,7 @@ export function registerRoutes(
            rabies_verification_status,rabies_verification_method,rabies_verified_at,
            rabies_verified_by_membership_id,photo_permission, created_by, updated_by)
         values
-          (${context.businessId}, ${input.customerId}, ${input.name}, ${input.species},
+          (${context.businessId}, ${input.customerId}, ${input.name ?? null}, ${input.species},
            ${input.breed ? catalogBreedName(input.breed) ?? input.breed : null}, ${input.dateOfBirth ?? null}, ${input.approximateAge ?? null},
            ${input.weightOunces ?? null}, ${input.sex ?? null}, ${input.coatNotes ?? null},
            ${input.groomingPreferences ?? null}, ${input.behaviorNotes ?? null},
@@ -2839,7 +3094,7 @@ export function registerRoutes(
       `;
       if (!customer?.available) return { kind: "invalidCustomer" } as const;
       const [pet] = await tx`
-        update pets set customer_id=${input.customerId},name=${input.name},species=${input.species},
+        update pets set customer_id=${input.customerId},name=${input.name ?? null},species=${input.species},
           breed=${input.breed ? catalogBreedName(input.breed) ?? input.breed : null},date_of_birth=${input.dateOfBirth ?? null},
           approximate_age=${input.approximateAge ?? null},weight_ounces=${input.weightOunces ?? null},
           sex=${input.sex ?? null},coat_notes=${input.coatNotes ?? null},
@@ -3149,7 +3404,7 @@ export function registerRoutes(
     `;
     let uploaded = false;
     try {
-      await documentStorage.put(storageKey, bytes);
+      await documentStorage.put(storageKey, bytes, "application/pdf");
       uploaded = true;
       await db`
         update pet_documents set size_bytes=${bytes.byteLength},sha256=${digest},
@@ -3302,22 +3557,765 @@ export function registerRoutes(
       from pets pet join customers customer on customer.business_id=pet.business_id and customer.id=pet.customer_id
       where pet.business_id=${context.businessId} and pet.id=${id} and pet.archived_at is null and customer.archived_at is null`;
     if(!pet)return reply.code(404).send({error:"Pet not found"});
+    // The last groomer and the default services answer two different questions and so read
+    // from two different visits. "Who saw this pet last" is the most recent visit that was not
+    // cancelled. "What does this pet normally get" is the last visit the customer actually paid
+    // for, because an unpaid or abandoned visit is not evidence of a settled service selection.
     const [recent]=await db<{id:string}[]>`
       select id from appointments where business_id=${context.businessId} and pet_id=${id}
         and status<>'cancelled' order by start_at desc,id desc limit 1`;
-    if(!recent){const groomers=pet.preferredEmployeeId?await db`select id,display_name from employees
-      where business_id=${context.businessId} and id=${pet.preferredEmployeeId} and active`:[];return {groomers,services:[]};}
-    const groomers=await db`
-      select employee.id,employee.display_name from appointment_employees assignment
-      join employees employee on employee.id=assignment.employee_id and employee.business_id=assignment.business_id
-      where assignment.business_id=${context.businessId} and assignment.appointment_id=${recent.id} and employee.active
-      order by employee.display_name`;
-    const services=await db`
-      select service.id,service.name,service.base_duration_minutes,service.base_price_minor
-      from appointment_services history join services service on service.id=history.service_id and service.business_id=history.business_id
-      where history.business_id=${context.businessId} and history.appointment_id=${recent.id} and service.active
-      order by history.id`;
-    return {groomers,services};
+    const [lastPaid]=await db<{id:string;startAt:Date}[]>`
+      select appointment.id,appointment.start_at from appointments appointment
+      join invoices invoice on invoice.business_id=appointment.business_id
+        and invoice.appointment_id=appointment.id and invoice.status='paid'
+      where appointment.business_id=${context.businessId} and appointment.pet_id=${id}
+        and appointment.status<>'cancelled'
+      order by appointment.start_at desc,appointment.id desc limit 1`;
+    const groomers=recent
+      ? await db`
+        select employee.id,employee.display_name from appointment_employees assignment
+        join employees employee on employee.id=assignment.employee_id and employee.business_id=assignment.business_id
+        where assignment.business_id=${context.businessId} and assignment.appointment_id=${recent.id} and employee.active
+        order by employee.display_name`
+      : pet.preferredEmployeeId
+        ? await db`select id,display_name from employees
+          where business_id=${context.businessId} and id=${pet.preferredEmployeeId} and active`
+        : [];
+    const services=lastPaid
+      ? await db`
+        select service.id,service.name,service.base_duration_minutes,service.base_price_minor
+        from appointment_services history join services service on service.id=history.service_id and service.business_id=history.business_id
+        where history.business_id=${context.businessId} and history.appointment_id=${lastPaid.id} and service.active
+        order by history.id`
+      : [];
+    // The source is reported rather than inferred from an empty list, so the interface can say
+    // "no paid visit yet" instead of silently presenting an empty selection as a considered default.
+    return {
+      groomers,
+      services,
+      serviceSource: !lastPaid ? "none" : services.length ? "last_paid_visit" : "last_paid_visit_unavailable",
+      lastPaidVisitAt: lastPaid?.startAt ?? null,
+      groomerSource: recent ? "last_visit" : pet.preferredEmployeeId ? "preferred_staff" : "none"
+    };
+  });
+
+  /**
+   * What has happened to one appointment, oldest last.
+   *
+   * The feed is read from `audit_events` rather than reconstructed from current state, so it
+   * reports what was actually recorded and by whom. Money moves are audited against the invoice
+   * and payment rather than the appointment, so those are pulled in through the appointment's
+   * own invoices; without that the feed would show a visit being completed and never paid.
+   *
+   * Only whitelisted scalars leave the audit payload. `after_data` is free-form JSON written by
+   * many call sites, and shipping it whole would make every future field an accidental
+   * disclosure decision.
+   */
+  /**
+   * Before-and-after photographs for one appointment, grouped the way the detail view reads them.
+   *
+   * Gated on `appointments.view` rather than pet care: a grooming photograph is a record of the
+   * work, not medical or safety information, and every operational role that can see the
+   * appointment can see what the pet looked like.
+   */
+  app.get("/api/appointments/:id/photos", {
+    preHandler: [authenticate, requirePermission("appointments.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [appointment] = await db<{ id: string; petId: string; petName: string }[]>`
+      select appointment.id,appointment.pet_id,pet.name as pet_name
+      from appointments appointment
+      join pets pet on pet.business_id=appointment.business_id and pet.id=appointment.pet_id
+      where appointment.business_id=${context.businessId} and appointment.id=${id}
+    `;
+    if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
+    const photos = await db<{
+      id: string; petId: string; phase: string; width: number | null; height: number | null;
+      sizeBytes: string | null; originalFilename: string; contentType: string; createdAt: Date;
+      uploadedByName: string | null;
+    }[]>`
+      select photo.id,photo.pet_id,photo.phase,photo.width,photo.height,photo.size_bytes,
+        photo.original_filename,photo.content_type,photo.created_at,
+        coalesce(uploader_employee.display_name,uploader.display_name,uploader.email) as uploaded_by_name
+      from appointment_photos photo
+      left join users uploader on uploader.id=photo.uploaded_by
+      left join business_memberships uploader_membership
+        on uploader_membership.business_id=photo.business_id and uploader_membership.user_id=photo.uploaded_by
+      left join employees uploader_employee
+        on uploader_employee.business_id=uploader_membership.business_id
+        and uploader_employee.membership_id=uploader_membership.id
+      where photo.business_id=${context.businessId} and photo.appointment_id=${id}
+        and photo.state='stored'
+      order by photo.created_at,photo.id
+    `;
+    // The pet is reported even with no photographs so the interface can offer somewhere to add
+    // them rather than showing an empty panel with no affordance.
+    return {
+      appointmentId: id,
+      // One pet per appointment today; the shape is a list so a multi-pet appointment would not
+      // need every consumer rewritten.
+      pets: [{
+        petId: appointment.petId,
+        petName: appointment.petName,
+        before: photos.filter((photo) => photo.petId === appointment.petId && photo.phase === "before"),
+        after: photos.filter((photo) => photo.petId === appointment.petId && photo.phase === "after")
+      }],
+      total: photos.length,
+      maxPerPhase: maxPhotosPerPhase,
+      canEdit: context.isOwner || context.permissions.includes("operations.perform_service")
+    };
+  });
+
+  /**
+   * Attach one photograph to an appointment.
+   *
+   * `operations.perform_service` is the gate: the person doing the groom is the person taking
+   * the pictures. Reception can see them and cannot add them.
+   *
+   * The declared multipart mimetype is ignored. What is stored is what the bytes actually parse
+   * as, because these are served back inline to a browser and a client-declared type is not a
+   * fact. Nothing here is a malware scan and nothing claims to be.
+   */
+  app.post("/api/appointments/:id/photos", {
+    preHandler: [authenticate, requirePermission("operations.perform_service")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    if (!request.isMultipart()) return reply.code(400).send({ error: "Multipart upload required" });
+    const iterator = request.parts()[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    if (first.done || first.value.type !== "field" || first.value.fieldname !== "metadata") {
+      return reply.code(400).send({ error: "Metadata must be the first multipart field" });
+    }
+    let metadataValue: unknown;
+    try { metadataValue = JSON.parse(String(first.value.value)); }
+    catch { return reply.code(400).send({ error: "Invalid upload metadata" }); }
+    const parsed = photoUploadMetadataSchema.safeParse(metadataValue);
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid upload metadata" });
+    const metadata = parsed.data;
+
+    const [appointment] = await db<{ id: string; petId: string }[]>`
+      select id,pet_id from appointments
+      where business_id=${context.businessId} and id=${id} and status<>'cancelled'
+    `;
+    if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
+    if (appointment.petId !== metadata.petId) {
+      return reply.code(400).send({ error: "That pet is not on this appointment" });
+    }
+
+    // A retry of an upload that already landed returns the row it created rather than storing the
+    // same photograph twice. Checked before reading the body so a repeat costs nothing.
+    const [duplicate] = await db<{ id: string; state: string }[]>`
+      select id,state from appointment_photos
+      where business_id=${context.businessId} and appointment_id=${id}
+        and upload_request_id=${metadata.uploadRequestId}
+    `;
+    if (duplicate?.state === "stored") {
+      const [existing] = await db<PhotoApiRow[]>`
+        select id,pet_id,phase,width,height,size_bytes,original_filename,content_type,created_at
+        from appointment_photos where business_id=${context.businessId} and id=${duplicate.id}
+      `;
+      return reply.code(200).send(existing);
+    }
+
+    const second = await iterator.next();
+    if (second.done || second.value.type !== "file") {
+      return reply.code(400).send({ error: "Exactly one image file is required" });
+    }
+    let bytes: Buffer;
+    try { bytes = await second.value.toBuffer(); }
+    catch { return reply.code(413).send({ error: "Photos must be 8 MB or smaller" }); }
+    const extra = await iterator.next();
+    if (!extra.done) {
+      if (extra.value.type === "file") extra.value.file.resume();
+      return reply.code(400).send({ error: "Duplicate upload fields are not allowed" });
+    }
+    if (bytes.byteLength > maxPhotoBytes) {
+      return reply.code(413).send({ error: "Photos must be 8 MB or smaller" });
+    }
+    const shape = readPhotoShape(bytes);
+    if (!shape) {
+      return reply.code(400).send({
+        error: "That file is not a readable JPEG, PNG, or WebP image",
+        supportedTypes: ["image/jpeg", "image/png", "image/webp"]
+      });
+    }
+    const digest = sha256(bytes);
+    if (metadata.claimedDigest && metadata.claimedDigest !== digest) {
+      return reply.code(400).send({ error: "The uploaded file digest did not match" });
+    }
+
+    const [existingCount] = await db<{ count: number }[]>`
+      select count(*)::int count from appointment_photos
+      where business_id=${context.businessId} and appointment_id=${id}
+        and pet_id=${metadata.petId} and phase=${metadata.phase} and state='stored'
+    `;
+    if ((existingCount?.count ?? 0) >= maxPhotosPerPhase) {
+      return reply.code(409).send({
+        code: "PHOTO_LIMIT_REACHED",
+        error: `Up to ${maxPhotosPerPhase} ${metadata.phase} photos can be kept for one pet on one appointment.`
+      });
+    }
+
+    const photoId = randomUUID();
+    const storageKey = `business/${context.businessId}/appointments/${id}/photos/${photoId}`;
+    const filename = safePhotoFilename(second.value.filename || "photo", shape.contentType);
+    const [reserved] = await db<{ id: string }[]>`
+      insert into appointment_photos
+        (id,business_id,appointment_id,pet_id,phase,state,storage_key,content_type,
+         width,height,original_filename,upload_request_id,uploaded_by)
+      values (${photoId},${context.businessId},${id},${metadata.petId},${metadata.phase},'pending',
+        ${storageKey},${shape.contentType},${shape.width},${shape.height},${filename},
+        ${metadata.uploadRequestId},${context.userId})
+      on conflict (business_id,appointment_id,upload_request_id) do nothing
+      returning id
+    `;
+    // Another request for the same upload id won the race between the check above and this
+    // insert. Losing that race is not an error; the winner's row is the answer.
+    if (!reserved) return reply.code(409).send({ error: "That upload is already in progress" });
+
+    let uploaded = false;
+    try {
+      await documentStorage.put(storageKey, bytes, shape.contentType);
+      uploaded = true;
+      await db.begin(async (tx) => {
+        await setTenant(tx, context.businessId);
+        await tx`
+          update appointment_photos
+          set state='stored',size_bytes=${bytes.byteLength},sha256=${digest},updated_at=now()
+          where business_id=${context.businessId} and id=${photoId} and state='pending'
+        `;
+        await record(tx, {
+          businessId: context.businessId, actorId: context.userId,
+          action: "appointment.photo.add", resourceType: "appointment", resourceId: id,
+          after: { photoId, petId: metadata.petId, phase: metadata.phase, contentType: shape.contentType }
+        });
+      });
+      const [stored] = await db<PhotoApiRow[]>`
+        select id,pet_id,phase,width,height,size_bytes,original_filename,content_type,created_at
+        from appointment_photos where business_id=${context.businessId} and id=${photoId}
+      `;
+      return reply.code(201).send(stored);
+    } catch (error) {
+      // A reserved row with no object behind it is worse than no row: the list would show a
+      // broken thumbnail forever. Both sides are unwound.
+      await db`delete from appointment_photos
+        where business_id=${context.businessId} and id=${photoId} and state='pending'`;
+      if (uploaded) await documentStorage.delete(storageKey).catch(() => undefined);
+      request.log.warn({ appointmentId: id, errorName: (error as Error).name }, "appointment photo upload failed");
+      return reply.code(503).send({ error: "The photo could not be stored" });
+    }
+  });
+
+  /**
+   * Serve one photograph.
+   *
+   * Inline, because the point is to render it in the appointment detail. That makes the response
+   * headers load-bearing: the stored content type is echoed from a column the schema constrains
+   * to three image types, `nosniff` stops the browser reconsidering it, and a `default-src 'none'`
+   * policy means even a response that somehow carried markup could not fetch or execute anything.
+   */
+  app.get("/api/appointment-photos/:id/content", {
+    preHandler: [authenticate, requirePermission("appointments.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [photo] = await db<{
+      storageKey: string; sizeBytes: string; contentType: string; originalFilename: string;
+    }[]>`
+      select storage_key,size_bytes,content_type,original_filename
+      from appointment_photos
+      where business_id=${context.businessId} and id=${id} and state='stored'
+    `;
+    if (!photo) return reply.code(404).send({ error: "Photo not found" });
+    try {
+      const object = await documentStorage.get(photo.storageKey);
+      if (object.size !== Number(photo.sizeBytes)) {
+        request.log.error({ photoId: id }, "appointment photo storage size mismatch");
+        return reply.code(503).send({ error: "Photo is temporarily unavailable" });
+      }
+      const encoded = encodeURIComponent(photo.originalFilename).replace(/['()]/g, escape);
+      return reply
+        .header("Content-Type", photo.contentType)
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Content-Security-Policy", "default-src 'none'; sandbox")
+        .header("Content-Disposition", `inline; filename*=UTF-8''${encoded}`)
+        .header("Cache-Control", "private, max-age=300")
+        .header("Content-Length", object.size)
+        .code(200).send(Buffer.from(object.bytes));
+    } catch (error) {
+      request.log.warn({ photoId: id, errorName: (error as Error).name }, "appointment photo unavailable");
+      return reply.code(503).send({ error: "Photo is temporarily unavailable" });
+    }
+  });
+
+  /**
+   * Remove a photograph.
+   *
+   * Unlike rabies evidence, a grooming photo carries no attestation, so a bad shot is deleted
+   * rather than superseded. The row goes first and the object follows: a stored object with no
+   * row is unreachable and reclaimable, whereas a row with no object is a permanent broken image.
+   */
+  app.delete("/api/appointment-photos/:id", {
+    preHandler: [authenticate, requirePermission("operations.perform_service")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const result = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [photo] = await tx<{
+        id: string; storageKey: string; appointmentId: string; petId: string; phase: string;
+      }[]>`
+        select id,storage_key,appointment_id,pet_id,phase from appointment_photos
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!photo) return null;
+      await tx`delete from appointment_photos where business_id=${context.businessId} and id=${id}`;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "appointment.photo.remove", resourceType: "appointment",
+        resourceId: photo.appointmentId,
+        before: { photoId: id, petId: photo.petId, phase: photo.phase }
+      });
+      return photo;
+    });
+    if (!result) return reply.code(404).send({ error: "Photo not found" });
+    await documentStorage.delete(result.storageKey).catch(() => undefined);
+    return reply.code(204).send();
+  });
+
+  /**
+   * Everything a report card renders, gathered from the appointment rather than copied into the
+   * card when it was made. See the migration for why the card stores only what a person wrote.
+   */
+  async function reportCardView(cardId: string, businessId: string) {
+    const [card] = await db<{
+      id: string; appointmentId: string; petId: string; customerId: string; note: string | null;
+      version: number; lastSentAt: Date | null; sendCount: number; createdAt: Date; updatedAt: Date;
+      petName: string; breed: string | null; customerFirstName: string; customerLastName: string;
+      customerEmail: string | null; customerEmailAllowed: boolean; customerBlockMessages: boolean;
+      startAt: Date; schedulingTimezone: string; employeeName: string; businessName: string;
+      businessPhone: string | null; businessEmail: string | null; authorName: string | null;
+    }[]>`
+      select card.id,card.appointment_id,card.pet_id,card.customer_id,card.note,card.version,
+        card.last_sent_at,card.send_count,card.created_at,card.updated_at,
+        pet.name as pet_name,pet.breed,
+        customer.first_name as customer_first_name,customer.last_name as customer_last_name,
+        customer.email as customer_email,customer.email_allowed as customer_email_allowed,
+        customer.block_messages as customer_block_messages,
+        appointment.start_at,appointment.scheduling_timezone,
+        employee.display_name as employee_name,
+        business.name as business_name,business.phone as business_phone,business.email as business_email,
+        coalesce(author_employee.display_name,author_user.display_name,author_user.email) as author_name
+      from appointment_report_cards card
+      join appointments appointment
+        on appointment.business_id=card.business_id and appointment.id=card.appointment_id
+      join pets pet on pet.business_id=card.business_id and pet.id=card.pet_id
+      join customers customer on customer.business_id=card.business_id and customer.id=card.customer_id
+      join employees employee on employee.business_id=appointment.business_id and employee.id=appointment.employee_id
+      join businesses business on business.id=card.business_id
+      left join users author_user on author_user.id=card.updated_by
+      left join business_memberships author_membership
+        on author_membership.business_id=card.business_id and author_membership.user_id=card.updated_by
+      left join employees author_employee
+        on author_employee.business_id=author_membership.business_id
+        and author_employee.membership_id=author_membership.id
+      where card.business_id=${businessId} and card.id=${cardId}
+    `;
+    if (!card) return null;
+    const [services, photos] = await Promise.all([
+      db<{ name: string; durationMinutes: number; priceMinor: number }[]>`
+        select service_name_snapshot as name,duration_minutes_snapshot as duration_minutes,
+          price_minor_snapshot as price_minor
+        from appointment_services
+        where business_id=${businessId} and appointment_id=${card.appointmentId}
+        order by id
+      `,
+      db<{ id: string; phase: string; width: number | null; height: number | null }[]>`
+        select id,phase,width,height from appointment_photos
+        where business_id=${businessId} and appointment_id=${card.appointmentId}
+          and pet_id=${card.petId} and state='stored'
+        order by created_at,id
+      `
+    ]);
+    return { card, services, photos };
+  }
+
+  function reportCardRow(view: NonNullable<Awaited<ReturnType<typeof reportCardView>>>) {
+    const { card } = view;
+    return {
+      id: card.id,
+      appointmentId: card.appointmentId,
+      petId: card.petId,
+      petName: card.petName,
+      customerName: `${card.customerFirstName} ${card.customerLastName}`.trim(),
+      note: card.note,
+      version: card.version,
+      appointmentDate: card.startAt,
+      lastEditedAt: card.updatedAt,
+      lastEditedBy: card.authorName,
+      lastSentAt: card.lastSentAt,
+      sendCount: card.sendCount,
+      photoCount: view.photos.length
+    };
+  }
+
+  app.get("/api/appointments/:id/report-cards", {
+    preHandler: [authenticate, requirePermission("appointments.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [appointment] = await db<{ id: string; petId: string; customerId: string }[]>`
+      select id,pet_id,customer_id from appointments
+      where business_id=${context.businessId} and id=${id}
+    `;
+    if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
+    const cards = await db<{ id: string }[]>`
+      select id from appointment_report_cards
+      where business_id=${context.businessId} and appointment_id=${id}
+      order by created_at,id
+    `;
+    const views = await Promise.all(cards.map((row) => reportCardView(row.id, context.businessId)));
+    return {
+      items: views.filter(Boolean).map((view) => reportCardRow(view!)),
+      // The interface offers "+ Add" only while a pet on this appointment has no card yet, so it
+      // needs to know which pets are still available rather than inferring it from the list.
+      availablePetIds: cards.length ? [] : [appointment.petId],
+      canEdit: context.isOwner || context.permissions.includes("operations.perform_service"),
+      canSend: context.isOwner || context.permissions.includes("customers.edit")
+    };
+  });
+
+  app.post("/api/appointments/:id/report-cards", {
+    preHandler: [authenticate, requirePermission("operations.perform_service")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(reportCardCreateSchema, request.body);
+    const [appointment] = await db<{ id: string; petId: string; customerId: string }[]>`
+      select id,pet_id,customer_id from appointments
+      where business_id=${context.businessId} and id=${id} and status<>'cancelled'
+    `;
+    if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
+    if (appointment.petId !== input.petId) {
+      return reply.code(400).send({ error: "That pet is not on this appointment" });
+    }
+    const created = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [row] = await tx<{ id: string }[]>`
+        insert into appointment_report_cards
+          (business_id,appointment_id,pet_id,customer_id,note,created_by,updated_by)
+        values (${context.businessId},${id},${input.petId},${appointment.customerId},
+          ${input.note ?? null},${context.userId},${context.userId})
+        on conflict (business_id,appointment_id,pet_id) do nothing
+        returning id
+      `;
+      if (!row) return null;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "appointment.report_card.create", resourceType: "appointment", resourceId: id,
+        after: { reportCardId: row.id, petId: input.petId }
+      });
+      return row;
+    });
+    if (!created) {
+      return reply.code(409).send({
+        code: "REPORT_CARD_EXISTS",
+        error: "This pet already has a report card for this appointment."
+      });
+    }
+    const view = await reportCardView(created.id, context.businessId);
+    return reply.code(201).send(reportCardRow(view!));
+  });
+
+  app.patch("/api/report-cards/:id", {
+    preHandler: [authenticate, requirePermission("operations.perform_service")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(reportCardUpdateSchema, request.body);
+    const result = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [current] = await tx<{ id: string; version: number; note: string | null; appointmentId: string }[]>`
+        select id,version,note,appointment_id from appointment_report_cards
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!current) return { missing: true } as const;
+      if (current.version !== input.version) return { stale: true } as const;
+      await tx`
+        update appointment_report_cards
+        set note=${input.note ?? null},version=version+1,updated_by=${context.userId},updated_at=now()
+        where business_id=${context.businessId} and id=${id}
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "appointment.report_card.edit", resourceType: "appointment",
+        resourceId: current.appointmentId,
+        before: { note: current.note }, after: { reportCardId: id, note: input.note ?? null }
+      });
+      return { updated: true } as const;
+    });
+    if ("missing" in result) return reply.code(404).send({ error: "Report card not found" });
+    if ("stale" in result) {
+      return reply.code(409).send({ error: "The report card changed; refresh and try again" });
+    }
+    const view = await reportCardView(id, context.businessId);
+    return reportCardRow(view!);
+  });
+
+  app.delete("/api/report-cards/:id", {
+    preHandler: [authenticate, requirePermission("operations.perform_service")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const removed = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [current] = await tx<{ id: string; appointmentId: string; petId: string; sendCount: number }[]>`
+        select id,appointment_id,pet_id,send_count from appointment_report_cards
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!current) return null;
+      await tx`delete from appointment_report_cards where business_id=${context.businessId} and id=${id}`;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "appointment.report_card.delete", resourceType: "appointment",
+        resourceId: current.appointmentId,
+        // Whether it had already reached the client is the part that matters afterwards.
+        before: { reportCardId: id, petId: current.petId, sendCount: current.sendCount }
+      });
+      return current;
+    });
+    if (!removed) return reply.code(404).send({ error: "Report card not found" });
+    return reply.code(204).send();
+  });
+
+  /**
+   * The staff preview, as a standalone page.
+   *
+   * This is a page rather than JSON because it is opened in its own window: what the operator
+   * checks before sending is the card as a card, not a form describing one. It is not a
+   * client-facing surface — it needs the same session as the rest of the application, and there
+   * is no token, no public URL, and nothing to hand a client.
+   *
+   * Every value is escaped, and the response carries a policy allowing nothing but same-origin
+   * images and the inline stylesheet: no script can run here even if a stored value one day
+   * arrived containing one.
+   */
+  app.get("/api/report-cards/:id/preview", {
+    preHandler: [authenticate, requirePermission("appointments.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const view = await reportCardView(id, context.businessId);
+    if (!view) return reply.code(404).send({ error: "Report card not found" });
+    const { card, services, photos } = view;
+    const when = new Intl.DateTimeFormat("en-US", {
+      timeZone: card.schedulingTimezone, dateStyle: "full", timeStyle: "short"
+    }).format(card.startAt);
+    const strip = (phase: string) => {
+      const set = photos.filter((photo) => photo.phase === phase);
+      if (!set.length) return "";
+      return `<p class="phase ${escapeHtml(phase)}">${phase === "before" ? "Before" : "After"}</p>`
+        + `<div class="strip">${set.map((photo) =>
+          `<img src="/api/appointment-photos/${encodeURIComponent(photo.id)}/content" alt="${escapeHtml(card.petName)} ${escapeHtml(phase)}"${
+            photo.width ? ` width="${photo.width}"` : ""}${photo.height ? ` height="${photo.height}"` : ""}>`
+        ).join("")}</div>`;
+    };
+    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">`
+      + `<meta name="viewport" content="width=device-width,initial-scale=1">`
+      + `<title>${escapeHtml(card.petName)} · Report card</title><style>`
+      + `body{margin:0;padding:28px 20px;background:#f1f3f1;color:#202522;`
+      + `font:15px/1.6 Ubuntu,"Segoe UI",system-ui,-apple-system,sans-serif}`
+      + `main{max-width:720px;margin:0 auto}`
+      + `header{display:flex;align-items:center;gap:14px;margin-bottom:6px}`
+      + `.avatar{display:grid;place-items:center;width:52px;height:52px;border-radius:50%;`
+      + `background:#202522;color:#fff;font-size:23px}`
+      + `h1{margin:0;font-size:24px}h2{margin:0 0 10px;font-size:14px;letter-spacing:.6px;`
+      + `text-transform:uppercase;color:#68706b}`
+      + `.meta{margin:0 0 22px;color:#68706b;font-size:13px}`
+      + `.phase{display:inline-block;margin:16px 0 8px;padding:3px 12px;border-radius:999px;`
+      + `background:#202522;color:#fff;font-size:12px;font-weight:700}`
+      + `.phase.after{background:#2f6f62}`
+      + `.strip{display:flex;flex-wrap:wrap;gap:10px}`
+      + `.strip img{width:190px;height:auto;border-radius:12px;background:#fff}`
+      + `section{margin-top:22px;padding:18px;border-radius:14px;background:#fff}`
+      + `ul{margin:0;padding-left:18px}li{margin-bottom:4px}`
+      + `.note{white-space:pre-wrap;margin:0}`
+      + `.stamp{margin:22px 0 0;color:#868f89;font-size:12px}`
+      + `</style></head><body><main>`
+      + `<header><span class="avatar" aria-hidden="true">${escapeHtml([...card.petName][0]?.toUpperCase() ?? "P")}</span>`
+      + `<div><h1>${escapeHtml(card.petName)}</h1>`
+      + `<p class="meta">${escapeHtml(card.breed || "")}${card.breed ? " · " : ""}`
+      + `${escapeHtml(`${card.customerFirstName} ${card.customerLastName}`.trim())}</p></div></header>`
+      + `<p class="meta">${escapeHtml(when)} · with ${escapeHtml(card.employeeName)}</p>`
+      + strip("before") + strip("after")
+      + (services.length
+        ? `<section><h2>Services</h2><ul>${services.map((service) =>
+          `<li>${escapeHtml(service.name)}</li>`).join("")}</ul></section>`
+        : "")
+      + (card.note
+        ? `<section><h2>From your groomer</h2><p class="note">${escapeHtml(card.note)}</p></section>`
+        : "")
+      + `<p class="stamp">${escapeHtml(card.businessName)}`
+      + `${card.businessPhone ? ` · ${escapeHtml(card.businessPhone)}` : ""}`
+      + `${card.sendCount ? ` · sent to the client ${escapeHtml(card.lastSentAt!.toISOString().slice(0, 10))}` : " · not yet sent"}`
+      + `</p></main></body></html>`;
+    return reply
+      .header("Content-Type", "text/html; charset=utf-8")
+      .header("X-Content-Type-Options", "nosniff")
+      .header("Content-Security-Policy",
+        "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'none'; frame-ancestors 'none'")
+      .header("Referrer-Policy", "no-referrer")
+      .header("Cache-Control", "private, no-store")
+      .code(200).send(html);
+  });
+
+  /**
+   * Email the report card to the client.
+   *
+   * The message carries the written card — the visit, the services, and the groomer's note. It
+   * does not carry the photographs: the transport sends text, and Pawsh has no client-facing page
+   * to link to. Rather than quietly sending a "report card" the client would find photoless and
+   * confusing, the message says the photographs are held at the salon, and the interface says the
+   * same thing before anyone presses send.
+   */
+  app.post("/api/report-cards/:id/send", {
+    preHandler: [authenticate, requirePermission("customers.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(reportCardSendSchema, request.body);
+    if (input.channel !== "email") {
+      return reply.code(409).send({
+        code: "REPORT_CARD_CHANNEL_UNSUPPORTED",
+        error: "Pawsh has no SMS delivery. Report cards can only be sent by email.",
+        channel: input.channel,
+        supportedChannels: ["email"]
+      });
+    }
+    const view = await reportCardView(id, context.businessId);
+    if (!view) return reply.code(404).send({ error: "Report card not found" });
+    const { card, services, photos } = view;
+    const recipient = {
+      id: card.customerId, firstName: card.customerFirstName, lastName: card.customerLastName,
+      email: card.customerEmail, emailAllowed: card.customerEmailAllowed,
+      blockMessages: card.customerBlockMessages
+    } satisfies AgreementRecipient;
+    const reason = agreementEmailReason(recipient);
+    if (reason !== "ok") {
+      return reply.code(409).send({
+        code: "REPORT_CARD_UNDELIVERABLE",
+        error: agreementEmailDetail[reason] ?? "This client cannot be emailed",
+        channel: "email", reason, supportedChannels: ["email"]
+      });
+    }
+    const when = new Intl.DateTimeFormat("en-US", {
+      timeZone: card.schedulingTimezone, dateStyle: "full", timeStyle: "short"
+    }).format(card.startAt);
+    const contact = card.businessPhone ?? card.businessEmail ?? card.businessName;
+    const message = [
+      `${card.petName}'s visit to ${card.businessName} on ${when}, with ${card.employeeName}.`,
+      services.length ? `Services: ${services.map((service) => service.name).join(", ")}.` : null,
+      card.note,
+      photos.length
+        ? `We took ${photos.length} photo${photos.length === 1 ? "" : "s"} of ${card.petName}. They are kept on your record at the salon — ask us and we will show you.`
+        : null,
+      `Questions? Contact ${contact}.`
+    ].filter(Boolean).join("\n\n");
+    const sent = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [intent] = await tx<{ id: string }[]>`
+        insert into notification_intents
+          (business_id,customer_id,appointment_id,notification_type,scheduled_occurrence,channel,
+           destination,status,recipient_kind,encrypted_body)
+        values (${context.businessId},${card.customerId},${card.appointmentId},'report_card',now(),'email',
+          ${card.customerEmail},'pending','customer',${sealSecret(message, config.SESSION_SECRET)})
+        returning id
+      `;
+      await tx`
+        update appointment_report_cards
+        set last_sent_at=now(),send_count=send_count+1,last_sent_channel='email',updated_at=now()
+        where business_id=${context.businessId} and id=${id}
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "appointment.report_card.send", resourceType: "appointment",
+        resourceId: card.appointmentId,
+        after: { reportCardId: id, channel: "email", photosIncluded: false }
+      });
+      return intent;
+    });
+    const refreshed = await reportCardView(id, context.businessId);
+    return reply.code(202).send({
+      channel: "email",
+      queued: true,
+      intentId: sent?.id ?? null,
+      destination: card.customerEmail,
+      // Named explicitly so a caller cannot read a queued send as "the client got the photos".
+      photosIncluded: false,
+      card: reportCardRow(refreshed!)
+    });
+  });
+
+  app.get("/api/appointments/:id/activity", {
+    preHandler: [authenticate, requirePermission("appointments.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [appointment] = await db<{ id: string }[]>`
+      select id from appointments where business_id=${context.businessId} and id=${id}
+    `;
+    if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
+    const mayViewPayments = context.isOwner || context.permissions.includes("payments.view");
+    const rows = await db<{
+      id: string; action: string; createdAt: Date; reason: string | null;
+      actorName: string | null; beforeData: Record<string, unknown> | null;
+      afterData: Record<string, unknown> | null;
+    }[]>`
+      select event.id,event.action,event.created_at,event.reason,
+        event.before_data,event.after_data,
+        coalesce(actor_employee.display_name,actor_user.display_name,actor_user.email) as actor_name
+      from audit_events event
+      left join users actor_user on actor_user.id=event.actor_id
+      left join business_memberships actor_membership
+        on actor_membership.business_id=event.business_id and actor_membership.user_id=event.actor_id
+      left join employees actor_employee
+        on actor_employee.business_id=actor_membership.business_id
+        and actor_employee.membership_id=actor_membership.id
+      where event.business_id=${context.businessId}
+        and (
+          (event.resource_type='appointment' and event.resource_id=${id})
+          or (${mayViewPayments} and event.resource_type='invoice' and event.resource_id in (
+            select invoice.id from invoices invoice
+            where invoice.business_id=${context.businessId} and invoice.appointment_id=${id}
+          ))
+          or (${mayViewPayments} and event.resource_type='payment' and event.resource_id in (
+            select payment.id from payments payment
+            join invoices invoice on invoice.business_id=payment.business_id and invoice.id=payment.invoice_id
+            where payment.business_id=${context.businessId} and invoice.appointment_id=${id}
+          ))
+        )
+      order by event.created_at desc,event.id desc limit 200
+    `;
+    const scalar = (value: unknown): string | number | null =>
+      typeof value === "string" || typeof value === "number" ? value : null;
+    return {
+      items: rows.map((row) => ({
+        id: row.id,
+        action: row.action,
+        createdAt: row.createdAt,
+        actorName: row.actorName,
+        reason: row.reason,
+        fromStatus: scalar(row.beforeData?.status),
+        toStatus: scalar(row.afterData?.status),
+        fromStartAt: scalar(row.beforeData?.startAt),
+        toStartAt: scalar(row.afterData?.startAt),
+        amountMinor: scalar(row.afterData?.amountMinor),
+        method: scalar(row.afterData?.method),
+        totalMinor: scalar(row.afterData?.totalMinor)
+      }))
+    };
   });
 
   app.post("/api/appointments", {

@@ -359,7 +359,10 @@ describeDatabase("canonical Pawsh workflow", () => {
     const profile=await app.inject({method:"GET",url:`/api/customers/${customerId}/history`,headers:{cookie:ownerCookie}});
     expect(profile.statusCode).toBe(200);
     expect(profile.json()).toMatchObject({appointmentsTruncated:false,appointmentTotal:expect.any(Number)});
-    const booked=profile.json().appointments.find((item:{id:string})=>item.id===appointmentId);
+    // The profile splits the client's appointments into what is still ahead and what is settled,
+    // so a booking is found across both lists rather than in one undivided array.
+    const booked=[...profile.json().upcoming.items,...profile.json().history.items]
+      .find((item:{id:string})=>item.id===appointmentId);
     expect(booked.services).toEqual([expect.objectContaining({name:"Full Groom",durationMinutes:60,priceMinor:8500})]);
     expect(booked.groomers).toEqual([expect.objectContaining({id:employeeId,displayName:"Jamie"})]);
 

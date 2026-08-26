@@ -2,11 +2,13 @@ import { createAppointment, test, expect, login } from "./fixtures/tenant.js";
 import type { Page } from "@playwright/test";
 import {
   expectAuthenticatedSurface,
+  expectBookingControlsReachable,
   expectCriticalTarget,
   expectDialogControlsReachable,
   expectNoDocumentOverflow,
   expectUnauthenticatedSurface,
 } from "./helpers/responsive.js";
+import { bookAppointment, chooseBookingClient, openBooking } from "./helpers/booking.js";
 async function openNavigation(page:Page){if(await page.locator("#mobile-nav-toggle").isVisible()&&await page.getByTestId("nav-calendar").isHidden())await page.locator("#mobile-nav-toggle").click();}
 
 test("@responsive auth navigation reload and logout remain coherent",async({page,tenant},testInfo)=>{
@@ -60,10 +62,11 @@ test("@responsive customer and pet creation remains customer scoped",async({page
   await expect(customer).toContainText(petName);
 
   await openNavigation(page);await page.getByTestId("nav-calendar").click();
-  await page.getByTestId("calendar-add-appointment").click();
-  await page.getByTestId("field-customerId").selectOption(customerId!);
-  await expect(page.getByTestId("field-petId").locator("option",{hasText:petName})).toHaveCount(1);
-  await expect(page.getByTestId("field-petId").locator(`option[value="${tenant.petId}"]`)).toHaveCount(0);
+  await openBooking(page);
+  await chooseBookingClient(page,customerId!);
+  await page.getByTestId("booking-add-pet").click();
+  await expect(page.getByTestId("booking-pet-options").getByText(petName,{exact:true})).toHaveCount(1);
+  await expect(page.locator(`input[name="bookingPet"][value="${tenant.petId}"]`)).toHaveCount(0);
 });
 
 test("@responsive calendar booking remains usable and persistent",async({page,tenant},testInfo)=>{
@@ -72,14 +75,10 @@ test("@responsive calendar booking remains usable and persistent",async({page,te
   await page.getByTestId("nav-calendar").click();
   await expectNoDocumentOverflow(page,testInfo);
   await expectCriticalTarget(page.getByTestId("calendar-add-appointment"));
-  await page.getByTestId("calendar-add-appointment").click();
-  await page.getByTestId("field-customerId").selectOption(tenant.customerId);
-  await page.getByTestId("field-petId").selectOption(tenant.petId);
-  await page.locator('select[name="employeeId"]').selectOption(tenant.employeeId);
-  await page.getByRole("checkbox",{name:/Full Groom/}).check();
-  await page.getByTestId("field-startAt").fill(`${tenant.anchor}T09:00`);
-  await page.getByTestId("modal-submit").scrollIntoViewIfNeeded();
-  await page.getByTestId("modal-submit").click();
+  await bookAppointment(page,{
+    customerId:tenant.customerId,petId:tenant.petId,employeeId:tenant.employeeId,
+    startAt:`${tenant.anchor}T09:00`
+  });
   await expect(page.getByTestId("calendar-list")).toContainText("Charlie");
 
   await page.reload();
@@ -118,10 +117,11 @@ test("@responsive navigation forms dialogs and calendar controls remain reachabl
   await expect(page.getByTestId("modal")).toBeHidden();
 
   await openNavigation(page);await page.getByTestId("nav-calendar").click();
-  await page.getByTestId("calendar-add-appointment").click();
-  await expectDialogControlsReachable(page);
-  await expect(page.getByTestId("field-startAt")).toBeVisible();
-  await page.getByTestId("modal").getByRole("button",{name:"Close"}).click();
-  await expect(page.getByTestId("modal")).toBeHidden();
+  await openBooking(page);
+  await expectBookingControlsReachable(page);
+  await chooseBookingClient(page,tenant.customerId);
+  await expect(page.locator('#booking-dialog [name="startAt"]')).toBeVisible();
+  await page.getByTestId("booking-dialog").getByRole("button",{name:"Close"}).click();
+  await expect(page.getByTestId("booking-dialog")).toBeHidden();
   await expectNoDocumentOverflow(page,testInfo);
 });

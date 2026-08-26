@@ -9,6 +9,15 @@ test("@smoke operations expose safety context and enforce the state machine",asy
   const row=page.locator(`[data-appointment-id="${appointment.id}"]`);
   await expect(row.getByTestId("safety-context")).toContainText("May snap during nail handling.");
   await expect(row.getByTestId("safety-context")).toContainText("Mild hip stiffness.");
+  // Only the safety alert is an alarm. When every care note was red the one line meaning "this
+  // dog may bite" looked exactly like a note about coat length, so the colour is spent on it
+  // alone and the other notes render in ordinary ink.
+  const alarm=row.locator(".care-alarm");
+  await expect(alarm).toHaveCount(1);
+  await expect(alarm).toContainText("May snap during nail handling.");
+  await expect(alarm).toHaveCSS("color","rgb(179, 38, 30)");
+  const plain=row.locator(".care-note:not(.care-alarm)").first();
+  await expect(plain).not.toHaveCSS("color","rgb(179, 38, 30)");
   await (await appointmentAction(row,"appointment-scheduled")).click();
   await expect(page.getByTestId("modal")).toContainText("May snap during nail handling.");
   await page.getByTestId("modal-submit").click();

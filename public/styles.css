@@ -865,3 +865,250 @@ label:has(> input[type="checkbox"]),label:has(> input[type="radio"]){
   .agreement-row-action,.agreement-row-action .primary,.agreement-row-action .text-button{width:100%}
   .agreements-panel .panel-head{align-items:flex-start;flex-direction:column;gap:var(--space-2)}
 }
+
+/* ---------------------------------------------------------------------------
+   Slot actions and the Create Appointment workspace.
+
+   Clicking an empty calendar slot used to open the booking form immediately, which
+   made blocking time out reachable only from elsewhere in the interface even though
+   it is the same gesture on the same empty slot. The slot now offers both, and the
+   booking path opens a workspace wide enough to show the client beside the booking
+   rather than a column of fields with no context.
+   --------------------------------------------------------------------------- */
+.slot-menu{position:fixed;right:auto;min-width:150px;padding:6px}
+.slot-menu button{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border:0;border-radius:6px;background:none;color:var(--ink);font-size:14px;text-align:left}
+.slot-menu button:hover,.slot-menu button:focus-visible{background:var(--surface-2)}
+.slot-menu-icon{color:var(--muted);font-size:15px;line-height:1}
+
+.booking-dialog{width:min(1180px,calc(100vw - 24px));max-height:calc(100dvh - 24px)}
+.booking-dialog #booking-form{display:flex;flex-direction:column;max-height:calc(100dvh - 24px);padding:0}
+.booking-head{display:flex;justify-content:space-between;align-items:center;gap:var(--space-3);padding:16px 20px;border-bottom:1px solid var(--line)}
+.booking-head h3{margin:0}
+.booking-head .close{border:0;background:none;color:var(--muted);font-size:20px;line-height:1}
+.booking-body{display:grid;grid-template-columns:minmax(280px,340px) 1fr;flex:1;min-height:0;overflow:hidden}
+.booking-client{padding:18px 20px;border-right:1px solid var(--line);background:var(--cream);overflow:auto}
+.booking-detail{padding:18px 20px;overflow:auto}
+.booking-error:empty{display:none}
+#booking-error{margin:0;padding:0 20px}
+#booking-error:empty{display:none}
+.booking-actions{display:flex;justify-content:flex-end;gap:10px;padding:14px 20px;border-top:1px solid var(--line)}
+
+/* The right pane before a client is chosen. Screenshot-grey is deliberate: there is genuinely
+   nothing to configure until a client exists, so the pane says so rather than showing dead fields. */
+.booking-empty{display:flex;align-items:center;justify-content:center;min-height:320px;border-radius:var(--radius-lg);background:var(--surface-2);color:var(--muted);font-size:13px;text-align:center;padding:24px}
+
+.booking-client-search{display:grid;gap:8px}
+.booking-client-search input{width:100%;min-height:var(--control-h);padding:0 10px;border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--paper)}
+.booking-client-results{display:grid;gap:2px;max-height:340px;overflow:auto}
+.booking-client-results button{padding:8px 10px;border:1px solid transparent;border-radius:6px;background:none;text-align:left;font-size:13px}
+.booking-client-results button:hover,.booking-client-results button:focus-visible{border-color:var(--line);background:var(--paper)}
+.booking-client-results small{display:block;color:var(--muted);font-size:11px}
+.booking-client-empty{color:var(--muted);font-size:12px}
+
+.booking-client-back{align-self:start;padding:0;border:0;background:none;color:var(--link);font-size:12px;font-weight:600}
+.booking-client-identity{margin:12px 0 6px;font:600 15px/1.3 var(--font-sans)}
+.booking-client-contact{display:grid;gap:3px;margin-bottom:12px;color:var(--muted);font-size:12px}
+.booking-client-section{margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+.booking-client-section h5{margin:0 0 8px;font:700 11px/1 var(--font-sans);letter-spacing:1.4px;text-transform:uppercase;color:var(--muted)}
+.booking-client-note{margin:0 0 10px;font-size:12px;line-height:1.5}
+.booking-client-note small{display:block;color:var(--muted);font-size:11px}
+.booking-client-banner{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--warning);border-radius:var(--radius-lg);background:var(--warning-tint);color:var(--warning);font-size:12px;font-weight:600}
+
+.booking-field-row{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
+.booking-field-row .wide{grid-column:1/-1}
+.booking-pet{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:var(--space-3)}
+.booking-pet-name{font-size:13px;font-weight:600}
+.booking-pet-empty{color:var(--muted);font-size:12px}
+.booking-defaults-note{margin:0 0 var(--space-3);color:var(--muted);font-size:12px}
+
+.stacked-dialog{width:min(430px,calc(100vw - 28px));padding:20px}
+.stacked-dialog h4{display:flex;align-items:center;gap:8px;margin:0 0 8px;font:600 15px/1.3 var(--font-sans)}
+.stacked-dialog p{margin:0 0 6px;font-size:13px;line-height:1.5}
+.stacked-dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
+.stacked-dialog-options{display:grid;gap:4px;margin-top:10px}
+.stacked-dialog-options label{display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:6px;font-size:13px}
+.stacked-dialog-options label:hover{background:var(--surface-2)}
+.stacked-dialog-options input{width:auto;margin:0;flex:none}
+.stacked-field{display:grid;gap:5px;margin-bottom:var(--space-3);font-size:12px;font-weight:600}
+.stacked-field textarea{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--paper);font:inherit;font-weight:400;resize:vertical}
+.stacked-dialog .fine{margin:0 0 6px;line-height:1.5}
+
+@media(max-width:900px){
+  .booking-body{grid-template-columns:1fr;overflow:auto}
+  .booking-client{border-right:0;border-bottom:1px solid var(--line);overflow:visible}
+  .booking-detail{overflow:visible}
+  .booking-field-row{grid-template-columns:1fr}
+}
+
+/* ---------------------------------------------------------------------------
+   Booking service picker.
+
+   Same collapsing as the catalog, tuned for a picker rather than an editor: shorter
+   headers, a checkbox grid for the body, and a count that reports how many of the
+   section's services are selected once any of them are.
+   --------------------------------------------------------------------------- */
+.booking-service-category{margin-bottom:8px;border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--paper);overflow:hidden}
+.booking-service-category>details>summary{display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:10px;min-height:44px;padding:9px 12px;background:var(--cream);cursor:pointer;list-style:none}
+.booking-service-category>details>summary::-webkit-details-marker{display:none}
+.booking-service-category>details>summary:hover{box-shadow:inset 3px 0 0 var(--brand)}
+.booking-service-category>details>summary:focus-visible{outline:2px solid var(--ink);outline-offset:-3px}
+.booking-service-category>details[open]>summary{border-bottom:1px solid var(--line)}
+.booking-service-category>details>summary small{color:var(--muted);font-size:11px;font-weight:600;white-space:nowrap}
+.booking-service-category>details[open]>summary .service-section-chevron{transform:rotate(90deg)}
+.booking-service-category>details>summary:hover .service-section-chevron,.booking-service-category>details>summary:focus-visible .service-section-chevron{color:var(--brand)}
+.booking-service-category .service-section-title{font-size:12px;letter-spacing:.6px;text-transform:uppercase}
+.booking-service-category .service-section-body{padding:10px 12px}
+
+/* ---------------------------------------------------------------------------
+   Agreement name as an affordance.
+
+   The document has to look openable before anyone will try opening it, so the name
+   carries a page icon and a dotted underline that firms up on hover. A plain link
+   colour was rejected: the row already uses colour to carry signed/unsigned status,
+   and a second coloured element competes with the thing that matters more.
+   --------------------------------------------------------------------------- */
+.agreement-name-open{display:inline-flex;align-items:center;gap:6px;min-height:0;padding:1px 0;border:0;background:none;color:var(--ink);font:inherit;text-align:left}
+.agreement-name-label{border-bottom:1px dotted var(--muted)}
+.agreement-name-open:hover .agreement-name-label,.agreement-name-open:focus-visible .agreement-name-label{border-bottom-style:solid;border-bottom-color:var(--brand);color:var(--brand)}
+.agreement-name-open:hover .agreement-name-icon,.agreement-name-open:focus-visible .agreement-name-icon{color:var(--brand)}
+.agreement-name-open:focus-visible{outline:2px solid var(--ink);outline-offset:2px;border-radius:3px}
+.agreement-name-icon{display:grid;place-items:center;width:14px;height:14px;flex:none;color:var(--muted)}
+.agreement-name-icon svg{display:block;width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+
+.agreement-detail-head{margin-bottom:var(--space-3);padding-bottom:var(--space-3);border-bottom:1px solid var(--line)}
+.agreement-detail-status{margin:0;font-size:13px;font-weight:700}
+.agreement-detail-status.signed{color:var(--success)}
+.agreement-detail-status.unsigned{color:var(--danger)}
+.agreement-detail-drift{margin:0 0 var(--space-3);padding:9px 11px;border:1px solid var(--warning);border-radius:var(--radius-lg);background:var(--warning-tint);color:var(--warning);font-size:12px;line-height:1.5}
+.agreement-detail-body{max-height:min(46vh,420px);overflow:auto;padding:12px 14px;border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--cream)}
+.agreement-detail-body p{margin:0;font-size:13px;line-height:1.65;white-space:pre-wrap}
+.agreement-detail-foot{margin:var(--space-3) 0 0;color:var(--muted);font-size:11px;line-height:1.5}
+
+/* ---------------------------------------------------------------------------
+   Client profile summary tiles and history paging.
+
+   The tiles were three bare numbers; each now carries the breakdown that makes it
+   checkable — what the total is made of, what is unclosed rather than merely unpaid,
+   and how the appointment count splits by outcome.
+   --------------------------------------------------------------------------- */
+.profile-summary>.summary-tile{display:grid;align-content:start;gap:4px;padding:12px;border:1px solid var(--line);border-radius:9px;background:var(--surface-2)}
+.summary-label{margin:0;color:var(--muted);font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase}
+.summary-figure{margin:0;font-size:24px;font-weight:600;line-height:1.15}
+.summary-figure.owing{color:var(--danger)}
+.summary-detail{display:flex;flex-wrap:wrap;gap:2px 12px;margin:2px 0 0;color:var(--muted);font-size:11px;line-height:1.5}
+.summary-detail .owing{color:var(--danger);font-weight:600}
+
+.panel-head.history-head{align-items:center;margin-top:var(--space-4)}
+.history-pager{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:11px;font-weight:600}
+.history-step{min-width:30px;min-height:30px;padding:0;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--paper);color:var(--ink);font-size:15px;line-height:1}
+.history-step:hover:not(:disabled){border-color:var(--brand);color:var(--brand)}
+.history-step:disabled{opacity:.4;cursor:not-allowed}
+
+@media(max-width:700px){
+  .summary-figure{font-size:20px}
+  .summary-detail{flex-direction:column;gap:1px}
+}
+
+/* ---------------------------------------------------------------------------
+   Appointment detail: reference, billing state, lifecycle times, activity feed.
+
+   The billing chip reports the invoice rather than the appointment, so "not invoiced"
+   stays visibly different from "unpaid" — one is work nobody has closed out, the other
+   is money owed, and they call for different actions.
+   --------------------------------------------------------------------------- */
+.appointment-reference{display:flex;align-items:center;gap:8px;margin:0 0 4px!important;font-size:12px;font-weight:600;color:var(--muted)}
+.appointment-billing{padding:1px 7px;border-radius:999px;font-size:11px;font-weight:700;text-transform:capitalize}
+.appointment-billing.paid{background:var(--success-tint);color:var(--success)}
+.appointment-billing.owing{background:var(--danger-tint);color:var(--danger)}
+.appointment-billing.muted{background:var(--surface-2);color:var(--muted)}
+
+.appointment-detail>.appointment-lifecycle{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px 22px;padding:9px 11px;border:1px solid var(--line);border-radius:9px;background:var(--cream);color:var(--muted);font-size:12px}
+.appointment-lifecycle strong{color:var(--ink);font-weight:600}
+
+.appointment-detail>.appointment-activity{grid-column:1/-1;border:1px solid var(--line);border-radius:9px;background:var(--paper);overflow:hidden}
+.appointment-activity>summary{display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:10px;min-height:44px;padding:9px 12px;background:var(--cream);cursor:pointer;font-size:13px;font-weight:700;list-style:none}
+.appointment-activity>summary::-webkit-details-marker{display:none}
+.appointment-activity>summary:hover{box-shadow:inset 3px 0 0 var(--brand)}
+.appointment-activity>summary:focus-visible{outline:2px solid var(--ink);outline-offset:-3px}
+.appointment-activity>summary small{color:var(--muted);font-size:12px;font-weight:600}
+.appointment-activity[open]>summary{border-bottom:1px solid var(--line)}
+.appointment-activity[open]>summary .service-section-chevron{transform:rotate(90deg)}
+.appointment-activity-body{padding:10px 12px}
+.activity-feed{display:grid;gap:7px;margin:0;padding:0;list-style:none}
+.activity-feed li{padding-left:12px;border-left:2px solid var(--line);color:var(--ink);font-size:12px;line-height:1.55}
+.activity-empty{margin:0;color:var(--muted);font-size:12px}
+
+/* ---------------------------------------------------------------------------
+   Appointment photos.
+
+   Tiles publish their intrinsic aspect ratio so the strip reserves the right box
+   before the bytes arrive — a set of five photos otherwise reflows the dialog five
+   times as each one decodes.
+   --------------------------------------------------------------------------- */
+.appointment-detail>.appointment-photos{grid-column:1/-1;display:grid;gap:8px}
+.appointment-photos>h4{margin:0}
+.photo-pet{border:1px solid var(--line);border-radius:9px;background:var(--paper);overflow:hidden}
+.photo-pet>summary{display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:10px;min-height:40px;padding:8px 12px;background:var(--cream);cursor:pointer;font-size:13px;font-weight:700;list-style:none}
+.photo-pet>summary::-webkit-details-marker{display:none}
+.photo-pet>summary:hover{box-shadow:inset 3px 0 0 var(--brand)}
+.photo-pet>summary:focus-visible{outline:2px solid var(--ink);outline-offset:-3px}
+.photo-pet>summary small{color:var(--muted);font-size:12px;font-weight:600}
+.photo-pet[open]>summary{border-bottom:1px solid var(--line)}
+.photo-pet[open]>summary .service-section-chevron{transform:rotate(90deg)}
+.photo-pet-body{display:grid;gap:10px;padding:10px 12px}
+.photo-phase{display:grid;gap:6px;padding:9px;border-radius:var(--radius-sm);background:var(--surface-2)}
+.photo-phase-label{margin:0;color:var(--muted);font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase}
+.photo-strip{display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px}
+.photo-tile{position:relative;width:118px;max-width:100%;margin:0;border-radius:var(--radius-sm);background:var(--paper);overflow:hidden}
+.photo-tile img{display:block;width:100%;height:100%;object-fit:cover}
+.photo-remove{position:absolute;top:4px;right:4px;width:24px;height:24px;padding:0;border:0;border-radius:50%;background:rgba(32,37,34,.72);color:#fff;font-size:15px;line-height:1}
+.photo-remove:hover:not(:disabled){background:var(--danger)}
+.photo-add{display:grid;place-content:center;gap:2px;width:118px;aspect-ratio:4 / 3;border:1px dashed var(--line);border-radius:var(--radius-sm);background:var(--paper);color:var(--link);font-size:20px}
+.photo-add small{font-size:11px;font-weight:600}
+.photo-add:hover:not(:disabled){border-color:var(--brand);color:var(--brand)}
+.photo-add:disabled{color:var(--muted)}
+.photo-empty{margin:0;color:var(--muted);font-size:12px}
+
+@media(max-width:580px){
+  .photo-tile,.photo-add{width:calc(50% - 4px)}
+}
+
+/* ---------------------------------------------------------------------------
+   Report cards.
+
+   A compact table with four icon actions. The icons carry both a title and an
+   aria-label: the tooltip is for the mouse, the label is the only name a screen
+   reader gets, and an icon-only control with neither is unusable.
+   --------------------------------------------------------------------------- */
+.appointment-detail>.appointment-report-cards{grid-column:1/-1;display:grid;gap:8px}
+.report-card-head{display:flex;justify-content:space-between;align-items:center;gap:var(--space-3)}
+.report-card-head h4{margin:0}
+.report-card-empty{margin:0;color:var(--muted);font-size:12px}
+.report-card-table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:9px;background:var(--paper)}
+.report-card-table{width:100%;min-width:560px;border-collapse:collapse;font-size:12px}
+.report-card-table th{padding:8px 10px;background:var(--cream);color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.5px;text-align:left;text-transform:uppercase}
+.report-card-table td{padding:9px 10px;border-top:1px solid var(--line);vertical-align:top}
+.report-card-table td small{display:block;color:var(--muted);font-size:11px}
+.report-card-unsent{color:var(--muted)}
+.report-card-actions{display:flex;gap:4px}
+.report-card-action{display:grid;place-items:center;width:28px;height:28px;padding:0;border:1px solid transparent;border-radius:6px;background:none;color:var(--link)}
+.report-card-action:hover:not(:disabled){border-color:var(--line);background:var(--surface-2)}
+.report-card-action:focus-visible{outline:2px solid var(--ink);outline-offset:1px}
+.report-card-action svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.report-card-action[data-report-card-action="delete"]{color:var(--danger)}
+
+/* ---------------------------------------------------------------------------
+   Pet care notes.
+
+   The panel used to be entirely red — border, background, and every line of text —
+   which meant a note about coat length was styled identically to "this dog bites".
+   When everything is an alarm nothing is, so the panel is now neutral and the red is
+   spent only on the safety alert. A panel that carries one is outlined so it still
+   catches the eye across a full calendar.
+   --------------------------------------------------------------------------- */
+.safety-context{border:1px solid var(--line);background:var(--surface-2);color:var(--ink)}
+.safety-context strong{color:var(--muted)}
+.safety-context.has-alarm{border-color:var(--danger-line);background:var(--danger-tint)}
+.safety-context .care-note{margin:3px 0;font-size:12px;line-height:1.4}
+.safety-context .care-alarm{color:var(--danger);font-weight:600}
+.safety-context .care-alarm strong{color:var(--danger)}

@@ -231,7 +231,7 @@ describeDatabase("D3.2 rabies vaccination documents", () => {
       readonly started = new Promise<void>((resolve) => { this.entered = resolve; });
       readonly continue = new Promise<void>((resolve) => { this.release = resolve; });
       override async put(key: string, bytes: Uint8Array) {
-        this.entered(); await this.continue; return super.put(key, bytes);
+        this.entered(); await this.continue; return super.put(key, bytes, "application/pdf");
       }
     }
     const blocking = new BlockingStorage();

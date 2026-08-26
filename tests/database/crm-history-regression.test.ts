@@ -338,7 +338,10 @@ describeDatabase("D3 customer, pet, and history regression", () => {
       headers: { cookie: ownerCookie }
     });
     expect(preservedHistory.statusCode).toBe(200);
-    expect(preservedHistory.json().appointments[0].id).toBe(appointmentId);
+    // The profile splits appointments into what is still ahead and what is settled, so the
+    // preserved booking is looked for across both rather than in one undivided array.
+    expect([...preservedHistory.json().upcoming.items, ...preservedHistory.json().history.items]
+      .map((item: { id: string }) => item.id)).toContain(appointmentId);
   });
 
   it("records bounded D3 search and customer-scoped history diagnostics at the pilot envelope", async () => {
@@ -399,7 +402,7 @@ describeDatabase("D3 customer, pet, and history regression", () => {
         expect(response.statusCode).toBe(200);
         bytes = Buffer.byteLength(response.body);
         const value = response.json();
-        count = Array.isArray(value) ? value.length : value.appointments.length;
+        count = Array.isArray(value) ? value.length : value.history.items.length;
       }
       samples.sort((a, b) => a - b);
       return { medianMs: Number(samples[1]!.toFixed(2)), bytes, count };
@@ -417,8 +420,9 @@ describeDatabase("D3 customer, pet, and history regression", () => {
     console.info("D3_QUERY_DIAGNOSTICS", JSON.stringify(evidence));
     expect(evidence.customerSearch.count).toBe(100);
     expect(evidence.petSearch.count).toBe(100);
-    // The client profile projection is bounded; the paginated history route serves the tail.
-    expect(evidence.highFrequencyHistory.count).toBe(100);
+    // The client profile opens on a preview of settled history rather than the whole log; the
+    // paginated history route serves the rest as the operator asks for it.
+    expect(evidence.highFrequencyHistory.count).toBe(5);
     const profile = await app.inject({
       method: "GET", url: `/api/customers/${frequentCustomer!.id}/history`,
       headers: { cookie: ownerCookie }
@@ -432,7 +436,9 @@ describeDatabase("D3 customer, pet, and history regression", () => {
     expect(secondPage.statusCode).toBe(200);
     expect(secondPage.json()).toMatchObject({ total: 300, page: 2, pageSize: 100 });
     expect(secondPage.json().items).toHaveLength(100);
-    const firstPageIds = new Set(profile.json().appointments.map((item: { id: string }) => item.id));
+    const firstPageIds = new Set([
+      ...profile.json().upcoming.items, ...profile.json().history.items
+    ].map((item: { id: string }) => item.id));
     expect(secondPage.json().items.every((item: { id: string }) => !firstPageIds.has(item.id))).toBe(true);
   }, 30_000);
 });

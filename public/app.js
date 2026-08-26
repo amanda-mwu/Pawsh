@@ -67,6 +67,25 @@ async function reconcilePermissions() {
   renderAppointments();
 }
 
+/**
+ * How a client is named on screen when the record is only partly filled in.
+ *
+ * An enquiry taken over the phone may have a number and nothing else. The database stores that
+ * as null rather than a placeholder, so the fallback lives here, in the one place that decides
+ * how absence reads. `${first} ${last}` interpolation would have produced "undefined undefined".
+ */
+function clientName(record, fallback = "Not set") {
+  if (!record) return fallback;
+  const name = [record.firstName, record.lastName].filter(Boolean).join(" ").trim();
+  return name || fallback;
+}
+
+/** The same, for a pet whose name was never given. */
+function petName(record, fallback = "Unnamed pet") {
+  const name = String(record?.name ?? record?.petName ?? "").trim();
+  return name || fallback;
+}
+
 function money(value = 0) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: state.me?.business?.currency || "USD" }).format(Number(value) / 100);
 }
@@ -204,22 +223,26 @@ function safetyContext(item) {
   const rabies=item.rabiesAppointmentStatus?`<span class="rabies-status rabies-${escape(item.rabiesAppointmentStatus)}" role="status" data-testid="rabies-appointment-status"><strong>Rabies:</strong> ${escape(rabiesLabels[item.rabiesAppointmentStatus]||item.rabiesAppointmentStatus)}${item.vaccinationExpiresOn?` · Expires ${new Date(`${String(item.vaccinationExpiresOn).slice(0,10)}T12:00:00Z`).toLocaleDateString()}`:""}${item.rabiesAppointmentStatus==="expires_before_appointment"?` · Appointment ${new Date(`${String(item.scheduledLocalStart).slice(0,10)}T12:00:00Z`).toLocaleDateString()} · Update required`:""}${item.rabiesCustomerNotificationStatus&&item.rabiesCustomerNotificationStatus!=="not_required"?` · Customer notice ${escape(item.rabiesCustomerNotificationStatus)}`:""}</span>`:"";
   const rabiesNeeded=["expires_before_appointment","expired","unverified","not_provided"].includes(item.rabiesAppointmentStatus);
   const compactRabies=rabiesNeeded?`<span class="rabies-status rabies-needed" role="status" data-testid="rabies-appointment-status"><strong>Rabies needed</strong></span>`:"";
-  const details = [
-    compactRabies||rabies,
-    item.safetyAlerts ? `<strong>Safety alert:</strong> ${escape(item.safetyAlerts)}` : "",
-    item.behaviorNotes ? `<strong>Behavior:</strong> ${escape(item.behaviorNotes)}` : "",
-    item.medicalNotes ? `<strong>Medical:</strong> ${escape(item.medicalNotes)}` : "",
-    item.groomingPreferences ? `<strong>Grooming:</strong> ${escape(item.groomingPreferences)}` : ""
+  // Only the safety alert is an alarm. Behaviour, medical, and grooming notes are things the
+  // groomer needs to have read, and colouring all four red made none of them stand out — the
+  // one line that means "this dog may bite" looked exactly like a note about coat length.
+  const careDetails = [
+    item.safetyAlerts ? `<p class="care-note care-alarm"><strong>Safety alert:</strong> ${escape(item.safetyAlerts)}</p>` : "",
+    item.behaviorNotes ? `<p class="care-note"><strong>Behavior:</strong> ${escape(item.behaviorNotes)}</p>` : "",
+    item.medicalNotes ? `<p class="care-note"><strong>Medical:</strong> ${escape(item.medicalNotes)}</p>` : "",
+    item.groomingPreferences ? `<p class="care-note"><strong>Grooming:</strong> ${escape(item.groomingPreferences)}</p>` : ""
   ].filter(Boolean);
-  if(!details.length)return "";
-  const careDetails=details.filter(detail=>detail!==compactRabies&&detail!==rabies);
-  return `${compactRabies||rabies}${careDetails.length?`<div class="safety-context" role="note" aria-label="Pet safety and care information" data-testid="safety-context">${careDetails.map(detail=>`<p>${detail}</p>`).join("")}</div>`:""}`;
+  if(!compactRabies&&!rabies&&!careDetails.length)return "";
+  // The box itself is flagged only when it carries the alarm, so a card with nothing but a
+  // grooming preference no longer reads as a warning at a glance.
+  const flagged=item.safetyAlerts?" has-alarm":"";
+  return `${compactRabies||rabies}${careDetails.length?`<div class="safety-context${flagged}" role="note" aria-label="Pet safety and care information" data-testid="safety-context">${careDetails.join("")}</div>`:""}`;
 }
 function appointmentHtml(item) {
   const time = schedulingTime(item);
-  const customer = `${item.firstName} ${item.lastName}`;
+  const customer = `${clientName(item)}`;
   const conflictOverride=item.conflictOverridden?`<small class="conflict-override" data-testid="conflict-override">Intentional overlap</small>`:"";
-  return `<article class="appointment" data-testid="appointment" data-appointment-id="${item.id}"><time>${time}</time><div><span class="pet">${escape(item.petName)}</span><small>${escape(customer)} · ${escape(item.employeeName)}</small>${conflictOverride}${safetyContext(item)}</div><div class="appointment-actions"><span class="badge ${item.status}">${item.status.replace("_"," ")}</span>${calendarAction(item)}</div></article>`;
+  return `<article class="appointment" data-testid="appointment" data-appointment-id="${item.id}"><time>${time}</time><div><span class="pet">${escape(petName({petName:item.petName}))}</span><small>${escape(customer)} · ${escape(item.employeeName)}</small>${conflictOverride}${safetyContext(item)}</div><div class="appointment-actions"><span class="badge ${item.status}">${item.status.replace("_"," ")}</span>${calendarAction(item)}</div></article>`;
 }
 function renderAppointments() {
   renderCalendar();
@@ -282,10 +305,10 @@ function appointmentNoteEntries(item){
 }
 function appointmentPresentation(item){
   const start=new Date(item.startAt),end=new Date(item.endAt),zone=item.schedulingTimezone||schedulingZone(),formatTime=value=>new Intl.DateTimeFormat([],{hour:"numeric",minute:"2-digit",timeZone:zone}).format(value),serviceSnapshots=item.services||[],services=serviceSnapshots.map(service=>service.name),groomers=(item.groomers||[]).map(groomer=>groomer.displayName),prices=serviceSnapshots.map(service=>service.priceMinor).filter(value=>value!==null&&value!==undefined);
-  return {id:item.id,date:appointmentLocalValue(item).slice(0,10),dateLabel:new Intl.DateTimeFormat([],{weekday:"long",month:"long",day:"numeric",timeZone:zone}).format(start),timeRange:`${formatTime(start)}–${formatTime(end)}`,timeRangeCompact:compactTimeRange(start,end,zone),petName:item.petName,breed:item.breed||"",customerName:`${item.firstName} ${item.lastName}`,services,serviceSnapshots,groomer:groomers[0]||item.employeeName,status:item.status.replace("_"," "),conflictOverridden:Boolean(item.conflictOverridden),rabiesNeeded:["not_provided","expires_before_appointment"].includes(item.rabiesAppointmentStatus),warning:item.safetyAlerts||item.behaviorNotes||item.medicalNotes||item.groomingPreferences||item.coatNotes||"",durationMinutes:Math.max(1,Math.round((end-start)/60000)),totalPriceMinor:prices.length===serviceSnapshots.length?prices.reduce((sum,value)=>sum+Number(value),0):null};
+  return {id:item.id,date:appointmentLocalValue(item).slice(0,10),dateLabel:new Intl.DateTimeFormat([],{weekday:"long",month:"long",day:"numeric",timeZone:zone}).format(start),timeRange:`${formatTime(start)}–${formatTime(end)}`,timeRangeCompact:compactTimeRange(start,end,zone),petName:item.petName,breed:item.breed||"",customerName:`${clientName(item)}`,services,serviceSnapshots,groomer:groomers[0]||item.employeeName,status:item.status.replace("_"," "),conflictOverridden:Boolean(item.conflictOverridden),rabiesNeeded:["not_provided","expires_before_appointment"].includes(item.rabiesAppointmentStatus),warning:item.safetyAlerts||item.behaviorNotes||item.medicalNotes||item.groomingPreferences||item.coatNotes||"",durationMinutes:Math.max(1,Math.round((end-start)/60000)),totalPriceMinor:prices.length===serviceSnapshots.length?prices.reduce((sum,value)=>sum+Number(value),0):null};
 }
 function appointmentAccessibleName(model){return `${model.timeRange}, ${model.petName}${model.breed?`, ${model.breed}`:""}, ${model.customerName}, ${model.services.join(", ")}, ${model.status}`;}
-function appointmentHoverDetails(model){return `<div><span>Status</span><strong>${escape(model.status)}</strong></div><p><strong>${escape(model.dateLabel)}</strong><br>${escape(model.timeRange)}</p><dl><div><dt>Client</dt><dd>${escape(model.customerName)}</dd></div><div><dt>Pet</dt><dd>${escape(model.petName)}${model.breed?` · ${escape(model.breed)}`:""}</dd></div><div><dt>Services</dt><dd>${model.services.map(escape).join("<br>")}</dd></div><div><dt>Groomer</dt><dd>${escape(model.groomer)}</dd></div></dl><p class="hover-summary"><strong>${model.durationMinutes} min${model.totalPriceMinor!==null?` · ${money(model.totalPriceMinor)}`:""}</strong></p>`;}
+function appointmentHoverDetails(model){return `<div><span>Status</span><strong>${escape(model.status)}</strong></div><p><strong>${escape(model.dateLabel)}</strong><br>${escape(model.timeRange)}</p><dl><div><dt>Client</dt><dd>${escape(model.customerName)}</dd></div><div><dt>Pet</dt><dd>${escape(petName({petName:model.petName}))}${model.breed?` · ${escape(model.breed)}`:""}</dd></div><div><dt>Services</dt><dd>${model.services.map(escape).join("<br>")}</dd></div><div><dt>Groomer</dt><dd>${escape(model.groomer)}</dd></div></dl><p class="hover-summary"><strong>${model.durationMinutes} min${model.totalPriceMinor!==null?` · ${money(model.totalPriceMinor)}`:""}</strong></p>`;}
 function calendarAction(item){
   const definition={scheduled:["Check in","operations.check_in"],checked_in:["Start service","operations.perform_service"],in_service:["Complete","operations.complete"],completed:["Checkout","checkout.perform"]}[item.status];
   const controls=[`<button type="button" role="menuitem" class="calendar-action view-appointment-action" data-id="${item.id}">View / Edit</button>`];
@@ -293,7 +316,7 @@ function calendarAction(item){
   if(item.status==="scheduled"&&allowed("appointments.edit"))controls.push(`<button type="button" role="menuitem" class="calendar-action move-action" data-id="${item.id}">Move</button>`);
   if(item.status==="scheduled"&&allowed("appointments.cancel")){controls.push(`<button type="button" role="menuitem" class="calendar-action terminal-action destructive" data-id="${item.id}" data-status="cancelled">Cancel appointment</button>`);controls.push(`<button type="button" role="menuitem" class="calendar-action terminal-action" data-id="${item.id}" data-status="no_show">No show</button>`);}
   if(["checked_in","in_service"].includes(item.status)&&allowed("appointments.edit"))controls.push(`<button type="button" role="menuitem" class="calendar-action service-action" data-id="${item.id}">Adjust services</button>`);
-  return `<div class="calendar-actions-menu"><button type="button" class="calendar-action-trigger" aria-label="Appointment actions for ${escape(item.petName)}" aria-haspopup="menu" aria-expanded="false" data-appointment-menu="${item.id}">&#8943;</button><div class="calendar-action-popover" role="menu" hidden>${controls.join("")}</div></div>`;
+  return `<div class="calendar-actions-menu"><button type="button" class="calendar-action-trigger" aria-label="Appointment actions for ${escape(petName({petName:item.petName}))}" aria-haspopup="menu" aria-expanded="false" data-appointment-menu="${item.id}">&#8943;</button><div class="calendar-action-popover" role="menu" hidden>${controls.join("")}</div></div>`;
 }
 function groomerSlot(id){if(!id)return"";let hash=0;const key=String(id);for(let index=0;index<key.length;index++)hash=(hash*31+key.charCodeAt(index))>>>0;return hash%5;}
 // Card anatomy: a white header strip (compact time, notes button, status badge, safety flags)
@@ -307,13 +330,13 @@ function appointmentCard(item,{day=false,style="",groomerId="",overlap=false}={}
   const split=appointmentServiceSplit(model),addOnLimit=density==="long"?3:density==="medium"?2:1,addOns=split.addOns.slice(0,addOnLimit),extra=split.addOns.length-addOns.length;
   const badge=appointmentBadge(item),notes=appointmentNoteEntries(item);
   const alerted=Boolean(item.safetyAlerts&&String(item.safetyAlerts).trim());
-  const notesButton=notes.length?`<button type="button" class="appointment-notes-trigger" data-appointment-notes="${item.id}" data-testid="appointment-notes-trigger" ${alerted?'data-alert="true" ':""}aria-haspopup="dialog" aria-label="${alerted?"Safety alert and notes":"Notes"} for ${escape(model.petName)}"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 3h8l4 4v14H7z"/><path d="M15 3v4h4"/><path d="M10 12.5h6"/><path d="M10 16.5h4"/></svg></button>`:"";
+  const notesButton=notes.length?`<button type="button" class="appointment-notes-trigger" data-appointment-notes="${item.id}" data-testid="appointment-notes-trigger" ${alerted?'data-alert="true" ':""}aria-haspopup="dialog" aria-label="${alerted?"Safety alert and notes":"Notes"} for ${escape(petName({petName:model.petName}))}"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 3h8l4 4v14H7z"/><path d="M15 3v4h4"/><path d="M10 12.5h6"/><path d="M10 16.5h4"/></svg></button>`:"";
   // .appointment-status stays as the machine-readable full status the calendar suite reads; the
   // visible badge is a separate element so the assertion and the design never fight each other.
   const badges=`<span class="appointment-badges"><small class="appointment-status" aria-hidden="true">${escape(model.status)}</small>${badge?`<span class="appointment-badge badge-${escape(badge.variant)}" role="img" aria-label="${escape(badge.label)}">${badge.code}</span>`:""}${model.rabiesNeeded?`<small class="card-warning" aria-label="Rabies needed">!</small>`:""}</span>`;
   const head=`<div class="appointment-head"><time class="appointment-time">${escape(model.timeRangeCompact)}</time>${notesButton}${badges}</div>`;
   const services=`<span class="appointment-services">${split.primary?`<span class="service-primary">${escape(split.primary)}</span>`:""}${addOns.map(name=>`<span class="service-addon">${escape(name)}</span>`).join("")}${extra>0?`<small>+${extra} more</small>`:""}</span>`;
-  const body=`<button type="button" class="calendar-open" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><span class="appointment-identity"><strong class="appointment-pet">${escape(model.petName)}</strong>${model.breed?`<span class="appointment-breed">${escape(model.breed)}</span>`:""}</span>${services}${model.conflictOverridden?`<small class="conflict-override" data-testid="conflict-override">Intentional overlap</small>`:""}<span class="appointment-client">${escape(model.customerName)}</span></button>`;
+  const body=`<button type="button" class="calendar-open" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><span class="appointment-identity"><strong class="appointment-pet">${escape(petName({petName:model.petName}))}</strong>${model.breed?`<span class="appointment-breed">${escape(model.breed)}</span>`:""}</span>${services}${model.conflictOverridden?`<small class="conflict-override" data-testid="conflict-override">Intentional overlap</small>`:""}<span class="appointment-client">${escape(model.customerName)}</span></button>`;
   return `<article class="${day?"day-appointment ":""}week-appointment appointment-block density-${density} status-${escape(item.status)} ${overlap?"overlap":""}" data-appointment-id="${item.id}" ${draggable?'data-draggable="true" ':""}${groomerId?`data-groomer-id="${groomerId}" data-groomer-slot="${groomerSlot(groomerId)}"`:""} style="${style}">${head}${body}<div class="sr-only appointment-accessible-safety">${safetyContext(item)}</div><div class="appointment-quick-actions">${calendarAction(item)}</div></article>`;
 }
 function activeGroomers(){return state.employees.filter(employee=>employee.active).sort((a,b)=>a.displayName.localeCompare(b.displayName));}
@@ -329,13 +352,20 @@ function reconcileGroomerFilter(){
 function renderGroomerFilter(){
   const groomers=activeGroomers(),selected=state.calendar.pendingGroomerIds??new Set(groomers.map(item=>item.id));
   $("#groomer-filter-options").innerHTML=groomers.map(item=>`<label data-groomer-slot="${groomerSlot(item.id)}"><input type="checkbox" value="${item.id}" ${selected.has(item.id)?"checked":""}> ${escape(item.displayName)}</label>`).join("")||"<p>No active groomers.</p>";
+  // The trigger always carries the count, including when nothing is filtered out. "All groomers"
+  // read as a state rather than a number, so the one case where you most want to know how many
+  // columns you are looking at was the case that would not tell you.
   const applied=state.calendar.selectedGroomerIds,count=applied===null?groomers.length:applied.size;
-  $("#groomer-filter-trigger").firstChild.textContent=count===groomers.length?"All groomers ":`${count} groomer${count===1?"":"s"} `;
+  $("#groomer-filter-trigger").firstChild.textContent=`${count} groomer${count===1?"":"s"} `;
+  $("#groomer-filter-trigger").setAttribute("aria-label",
+    count===groomers.length
+      ? `Filter calendar by groomer. All ${count} groomers shown.`
+      : `Filter calendar by groomer. ${count} of ${groomers.length} groomers shown.`);
 }
 function renderCalendar(){if(state.calendar.displayMode==="agenda")renderAgendaCalendar();else if(state.calendar.view==="month")renderMonthCalendar();else if(state.calendar.view==="day")renderDayCalendar();else renderWeekCalendar();}
 function renderAgendaCalendar(){
   const target=$("#calendar-list"),items=filteredAppointments().slice().sort((a,b)=>new Date(a.startAt)-new Date(b.startAt));
-  const groups=items.reduce((map,item)=>{const date=appointmentPresentation(item).date,mapItems=map.get(date)||[];mapItems.push(item);map.set(date,mapItems);return map;},new Map());target.className="calendar-agenda";target.style.removeProperty("min-width");target.style.removeProperty("--groomer-count");target.innerHTML=items.length?[...groups].map(([date,group])=>`<section class="agenda-day"><h3>${new Intl.DateTimeFormat([],{weekday:"long",month:"long",day:"numeric"}).format(dateAt(date))}</h3>${group.map(item=>{const model=appointmentPresentation(item);return `<article class="agenda-entry" data-appointment-id="${item.id}"><time datetime="${escape(item.startAt)}">${escape(model.timeRange)}</time><button type="button" class="agenda-appointment" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><strong>${escape(model.petName)}${model.breed?` <span>(${escape(model.breed)})</span>`:""}</strong><span>${escape(model.customerName)}</span><span>${model.services.map(escape).join(", ")}</span><small>${escape(model.groomer)}</small></button><div class="agenda-indicators"><span class="appointment-status">${escape(model.status)}</span>${model.rabiesNeeded?`<span class="rabies-needed">Rabies needed</span>`:""}${model.warning?`<span class="agenda-warning">⚠ ${escape(model.warning)}</span>`:""}</div></article>`;}).join("")}</section>`).join(""):"<p class=\"empty\">No appointments in this period.</p>";
+  const groups=items.reduce((map,item)=>{const date=appointmentPresentation(item).date,mapItems=map.get(date)||[];mapItems.push(item);map.set(date,mapItems);return map;},new Map());target.className="calendar-agenda";target.style.removeProperty("min-width");target.style.removeProperty("--groomer-count");target.innerHTML=items.length?[...groups].map(([date,group])=>`<section class="agenda-day"><h3>${new Intl.DateTimeFormat([],{weekday:"long",month:"long",day:"numeric"}).format(dateAt(date))}</h3>${group.map(item=>{const model=appointmentPresentation(item);return `<article class="agenda-entry" data-appointment-id="${item.id}"><time datetime="${escape(item.startAt)}">${escape(model.timeRange)}</time><button type="button" class="agenda-appointment" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><strong>${escape(petName({petName:model.petName}))}${model.breed?` <span>(${escape(model.breed)})</span>`:""}</strong><span>${escape(model.customerName)}</span><span>${model.services.map(escape).join(", ")}</span><small>${escape(model.groomer)}</small></button><div class="agenda-indicators"><span class="appointment-status">${escape(model.status)}</span>${model.rabiesNeeded?`<span class="rabies-needed">Rabies needed</span>`:""}${model.warning?`<span class="agenda-warning">⚠ ${escape(model.warning)}</span>`:""}</div></article>`;}).join("")}</section>`).join(""):"<p class=\"empty\">No appointments in this period.</p>";
   const days=state.calendar.view==="day"?1:state.calendar.view==="month"?42:7,start=state.calendar.view==="day"?state.calendar.selectedDate:state.calendar.view==="month"?dateShift(`${state.calendar.month}-01`,-dateAt(`${state.calendar.month}-01`).getUTCDay()):state.calendar.weekStart,end=dateShift(start,days-1);$("#calendar-range").textContent=days===1?new Intl.DateTimeFormat([],{dateStyle:"full"}).format(dateAt(start)):`${new Intl.DateTimeFormat([],{month:"short",day:"numeric"}).format(dateAt(start))} – ${new Intl.DateTimeFormat([],{month:"short",day:"numeric",year:"numeric"}).format(dateAt(end))}`;bindCalendarInteractions(target);
 }
 // Month cells are a fixed height so all six week rows stay uniform; MONTH_EVENT_LIMIT is the
@@ -387,8 +417,11 @@ function renderDayCalendar(){
   for(const item of filteredAppointments().filter(appointment=>appointmentLocalValue(appointment).slice(0,10)===state.calendar.selectedDate)){const local=appointmentLocalValue(item),minutes=Number(local.slice(11,13))*60+Number(local.slice(14,16)),duration=Math.max(30,Math.round((new Date(item.endAt)-new Date(item.startAt))/60000)),row=Math.floor((minutes-start)/30)+2;if(row<2||row>slots+1)continue;for(const assigned of item.groomers||[]){const column=groomers.findIndex(groomer=>groomer.id===assigned.id);if(column<0)continue;content+=appointmentCard(item,{day:true,groomerId:assigned.id,style:`grid-column:${column+2};grid-row:${row}/span ${Math.max(1,Math.ceil(duration/30))}`});}}
   const now=currentBusinessMinutes(),nowRow=Math.floor((now-start)/30)+2;if(state.calendar.selectedDate===businessDate()&&now>=start&&now<end)content+=`<div class="calendar-now-line" role="status" aria-label="Current business time" style="grid-column:2/-1;grid-row:${nowRow}"></div>`;target.innerHTML=content;$("#calendar-range").textContent=new Intl.DateTimeFormat([],{dateStyle:"full"}).format(dateAt(state.calendar.selectedDate));bindCalendarInteractions();
 }
-function closeCalendarMenus({restoreFocus=false}={}){$$(".calendar-action-popover:not([hidden])").forEach(popover=>{popover.hidden=true;const trigger=popover.previousElementSibling;trigger.setAttribute("aria-expanded","false");if(restoreFocus)trigger.focus();});}
-function bindCalendarInteractions(root=document){const find=selector=>[...root.querySelectorAll(selector)];find('[data-slot]').forEach(button=>button.addEventListener("click",()=>{closeCalendarMenus();state.calendar.bookingPreset=button.dataset.slot;state.calendar.bookingGroomerId=button.dataset.slotGroomer||null;actions["new-appointment"]();}));find('[data-calendar-appointment]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();closeCalendarMenus();openCalendarAppointment(button.dataset.calendarAppointment,event.currentTarget);}));find('[data-appointment-notes]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openAppointmentNotes(button.dataset.appointmentNotes,event.currentTarget);}));find('[data-appointment-menu]').forEach(trigger=>trigger.addEventListener("click",event=>{event.stopPropagation();const popover=trigger.nextElementSibling,opening=popover.hidden;closeCalendarMenus();popover.hidden=!opening;trigger.setAttribute("aria-expanded",String(opening));if(opening)popover.querySelector("button")?.focus();}));find('.calendar-action-popover').forEach(popover=>popover.addEventListener("keydown",event=>{if(!["ArrowDown","ArrowUp","Home","End"].includes(event.key))return;event.preventDefault();const items=[...popover.querySelectorAll('[role="menuitem"]')],index=items.indexOf(document.activeElement),next=event.key==="Home"?0:event.key==="End"?items.length-1:(index+(event.key==="ArrowDown"?1:-1)+items.length)%items.length;items[next]?.focus();}));find('.view-appointment-action').forEach(button=>button.addEventListener("click",event=>{closeCalendarMenus();openCalendarAppointment(button.dataset.id,event.currentTarget);}));}
+// The slot menu shares the popover styling but is anchored to the pointer rather than parked
+// beside a trigger, so it has no expanded sibling to reset. Guarding on the attribute keeps this
+// from writing aria-expanded onto whatever element happens to precede a floating popover.
+function closeCalendarMenus({restoreFocus=false}={}){$$(".calendar-action-popover:not([hidden])").forEach(popover=>{popover.hidden=true;const trigger=popover.previousElementSibling;if(!trigger?.hasAttribute("aria-expanded"))return;trigger.setAttribute("aria-expanded","false");if(restoreFocus)trigger.focus();});}
+function bindCalendarInteractions(root=document){const find=selector=>[...root.querySelectorAll(selector)];find('[data-slot]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openSlotMenu(button);}));find('[data-calendar-appointment]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();closeCalendarMenus();openCalendarAppointment(button.dataset.calendarAppointment,event.currentTarget);}));find('[data-appointment-notes]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openAppointmentNotes(button.dataset.appointmentNotes,event.currentTarget);}));find('[data-appointment-menu]').forEach(trigger=>trigger.addEventListener("click",event=>{event.stopPropagation();const popover=trigger.nextElementSibling,opening=popover.hidden;closeCalendarMenus();popover.hidden=!opening;trigger.setAttribute("aria-expanded",String(opening));if(opening)popover.querySelector("button")?.focus();}));find('.calendar-action-popover').forEach(popover=>popover.addEventListener("keydown",event=>{if(!["ArrowDown","ArrowUp","Home","End"].includes(event.key))return;event.preventDefault();const items=[...popover.querySelectorAll('[role="menuitem"]')],index=items.indexOf(document.activeElement),next=event.key==="Home"?0:event.key==="End"?items.length-1:(index+(event.key==="ArrowDown"?1:-1)+items.length)%items.length;items[next]?.focus();}));find('.view-appointment-action').forEach(button=>button.addEventListener("click",event=>{closeCalendarMenus();openCalendarAppointment(button.dataset.id,event.currentTarget);}));}
 // Small notes dialog. Reuses the shared <dialog>, so Escape closes it and focus returns to the
 // card button through the existing #modal close handler.
 function openAppointmentNotes(id,origin=null){
@@ -548,7 +581,7 @@ async function loadCalendarWeek(start=state.calendar.weekStart){
 async function openCalendarView(){await loadCalendarWeek();if(!state.calendar.opened&&!state.appointments.length&&state.calendar.selectedGroomerIds===null){const upcoming=await api(`/api/appointments?localDate=${businessDate()}&days=31`);if(upcoming.length){const date=appointmentLocalValue(upcoming[0]).slice(0,10);state.calendar.opened=true;return selectCalendarDate(date);}}state.calendar.opened=true;}
 async function loadCalendarMonth(month=state.calendar.month){const start=weekStart(`${month}-01`),appointments=await loadAppointmentRange(start,42);state.calendar.monthAppointments=appointments;return appointments;}
 async function selectCalendarDate(date){const changedMonth=state.calendar.month!==date.slice(0,7);state.calendar.selectedDate=date;state.calendar.weekStart=weekStart(date);state.calendar.month=date.slice(0,7);if(changedMonth)await loadCalendarMonth(state.calendar.month,false);await loadCalendarWeek();}
-async function openCalendarAppointmentLegacy(id){const item=state.appointments.find(appointment=>appointment.id===id);if(!item)return;try{const data=await api(`/api/customers/${item.customerId}/history`),pet=data.pets.find(candidate=>candidate.id===item.petId),groomers=(item.groomers||[]).map(groomer=>groomer.displayName).join(", ")||item.employeeName,services=item.services.map(service=>service.name).join(", ");openModal(`${data.customer.firstName} ${data.customer.lastName}`,`<div class="wide calendar-customer-context"><section><p class="eyebrow">Customer</p><h3>${escape(data.customer.firstName)} ${escape(data.customer.lastName)}</h3><p>${escape(data.customer.phone||"No phone")} · ${escape(data.customer.email||"No email")}</p></section><section><p class="eyebrow">Pet</p><h4>${escape(item.petName)}</h4><p>${escape(pet?.breed||"Breed not provided")}${pet?.weightOunces?` · ${Number(pet.weightOunces)/16} lb`:""}</p>${pet?.safetyAlerts?`<p><strong>Safety:</strong> ${escape(pet.safetyAlerts)}</p>`:""}</section><section><p class="eyebrow">Appointment</p><h4>${new Intl.DateTimeFormat([],{dateStyle:"full",timeStyle:"short",timeZone:item.schedulingTimezone||schedulingZone()}).format(new Date(item.startAt))}</h4><p>${escape(groomers)}</p><p>${escape(services)}</p>${safetyContext(item)}<span class="appointment-status">${escape(item.status.replace("_"," "))}</span></section><div class="customer-context-actions"><button type="button" class="secondary compact context-full-profile">View full customer profile</button>${item.status==="scheduled"&&allowed("appointments.edit")?`<button type="button" class="secondary compact calendar-move-detail">Move</button><button type="button" class="primary compact context-edit-appointment">Edit appointment</button>`:""}</div></div>`,null,{cancelLabel:"Close"});const next=callback=>{$("#modal").close();setTimeout(callback,50);};$(".context-full-profile")?.addEventListener("click",()=>next(()=>showCustomerDetail(item.customerId)));$(".calendar-move-detail")?.addEventListener("click",()=>next(()=>moveAppointment(id)));$(".context-edit-appointment")?.addEventListener("click",()=>next(()=>adjustServices(id)));}catch(error){toast(error.message);}}
+async function openCalendarAppointmentLegacy(id){const item=state.appointments.find(appointment=>appointment.id===id);if(!item)return;try{const data=await api(`/api/customers/${item.customerId}/history`),pet=data.pets.find(candidate=>candidate.id===item.petId),groomers=(item.groomers||[]).map(groomer=>groomer.displayName).join(", ")||item.employeeName,services=item.services.map(service=>service.name).join(", ");openModal(`${clientName(data.customer)}`,`<div class="wide calendar-customer-context"><section><p class="eyebrow">Customer</p><h3>${escape(clientName(data.customer))}</h3><p>${escape(data.customer.phone||"No phone")} · ${escape(data.customer.email||"No email")}</p></section><section><p class="eyebrow">Pet</p><h4>${escape(petName({petName:item.petName}))}</h4><p>${escape(pet?.breed||"Breed not provided")}${pet?.weightOunces?` · ${Number(pet.weightOunces)/16} lb`:""}</p>${pet?.safetyAlerts?`<p><strong>Safety:</strong> ${escape(pet.safetyAlerts)}</p>`:""}</section><section><p class="eyebrow">Appointment</p><h4>${new Intl.DateTimeFormat([],{dateStyle:"full",timeStyle:"short",timeZone:item.schedulingTimezone||schedulingZone()}).format(new Date(item.startAt))}</h4><p>${escape(groomers)}</p><p>${escape(services)}</p>${safetyContext(item)}<span class="appointment-status">${escape(item.status.replace("_"," "))}</span></section><div class="customer-context-actions"><button type="button" class="secondary compact context-full-profile">View full customer profile</button>${item.status==="scheduled"&&allowed("appointments.edit")?`<button type="button" class="secondary compact calendar-move-detail">Move</button><button type="button" class="primary compact context-edit-appointment">Edit appointment</button>`:""}</div></div>`,null,{cancelLabel:"Close"});const next=callback=>{$("#modal").close();setTimeout(callback,50);};$(".context-full-profile")?.addEventListener("click",()=>next(()=>showCustomerDetail(item.customerId)));$(".calendar-move-detail")?.addEventListener("click",()=>next(()=>moveAppointment(id)));$(".context-edit-appointment")?.addEventListener("click",()=>next(()=>adjustServices(id)));}catch(error){toast(error.message);}}
 void openCalendarAppointmentLegacy;
 function adjustServices(id) {
   const appointment=state.appointments.find(item=>item.id===id);
@@ -637,7 +670,7 @@ function checkout(id) {
 function showReceipt(receipt) {
   const invoice=receipt.invoice;
   const payments=receipt.payments.map(payment=>`<div><span>${escape(payment.method.replace("_"," "))} · ${escape(payment.status)}</span><strong>${money(payment.amountMinor)}</strong>${payment.status==="recorded"&&allowed("checkout.perform")?`<button type="button" class="text-button void-payment" data-payment-id="${payment.id}">Void record</button>`:""}</div>`).join("");
-  openModal(`Receipt #${invoice.invoiceNumber}`,`<div class="wide receipt" data-testid="receipt"><p><strong>${escape(invoice.businessName)}</strong></p><p>${escape(invoice.firstName)} ${escape(invoice.lastName)}</p>${receipt.items.map(item=>`<div><span>${escape(item.description)}</span><strong>${money(item.amountMinor)}</strong></div>`).join("")}<div><span>Subtotal</span><strong>${money(invoice.subtotalMinor)}</strong></div><div><span>Discount</span><strong>-${money(invoice.discountMinor)}</strong></div><div><span>Tax</span><strong>${money(invoice.taxMinor)}</strong></div><div><span>Tip</span><strong>${money(invoice.tipMinor)}</strong></div><div class="receipt-total"><span>Total</span><strong>${money(invoice.totalMinor)}</strong></div><div><span>Balance</span><strong>${money(invoice.balanceMinor)}</strong></div><h4>Payment records</h4>${payments||"<p>No payment recorded.</p>"}</div>`,async()=>{});
+  openModal(`Receipt #${invoice.invoiceNumber}`,`<div class="wide receipt" data-testid="receipt"><p><strong>${escape(invoice.businessName)}</strong></p><p>${escape(clientName(invoice))}</p>${receipt.items.map(item=>`<div><span>${escape(item.description)}</span><strong>${money(item.amountMinor)}</strong></div>`).join("")}<div><span>Subtotal</span><strong>${money(invoice.subtotalMinor)}</strong></div><div><span>Discount</span><strong>-${money(invoice.discountMinor)}</strong></div><div><span>Tax</span><strong>${money(invoice.taxMinor)}</strong></div><div><span>Tip</span><strong>${money(invoice.tipMinor)}</strong></div><div class="receipt-total"><span>Total</span><strong>${money(invoice.totalMinor)}</strong></div><div><span>Balance</span><strong>${money(invoice.balanceMinor)}</strong></div><h4>Payment records</h4>${payments||"<p>No payment recorded.</p>"}</div>`,async()=>{});
   $$(".void-payment").forEach(button=>button.addEventListener("click",()=>voidPayment(button.dataset.paymentId,invoice.id)));
 }
 async function voidPayment(paymentId,invoiceId) {
@@ -698,16 +731,16 @@ function renderCustomersEnhanced() {
     cell=(value,className)=>{const text=value||"—",tooltip=text==="—"?"":` title="${attr(text)}"`;return `<td class="${className}"${tooltip}>${escape(text)}</td>`;};
   $("#customer-grid").innerHTML=directory.items.length?directory.items.map(customer=>{
     const pets=customer.pets||[],shown=pets.slice(0,2),extra=pets.length-shown.length,
-      label=pet=>`${pet.name}${pet.breed?` (${pet.breed})`:""}`,
-      name=`${customer.firstName} ${customer.lastName}`,
+      label=pet=>pet.name?`${pet.name}${pet.breed?` (${pet.breed})`:""}`:(pet.breed||"Unnamed pet"),
+      name=`${clientName(customer)}`,
       petText=pets.length?shown.map(label).join(", ")+(extra>0?` +${extra}`:""):"No active pets",
       petTitle=pets.length?pets.map(label).join(", "):"No active pets",
       alerted=pets.filter(pet=>pet.safetyAlerts),
       isNew=!customer.lastVisit&&!customer.nextAppointment,
-      petActions=pets.map(pet=>`<p class="row-menu-label">${escape(pet.name)}</p>${allowed("pets.edit")?`<button type="button" class="row-menu-item row-pet-action" data-customer-id="${customer.id}" data-id="${pet.id}" data-action-name="profile">Pet profile</button>`:""}${allowed("pets.care.view")&&allowed("pets.care.edit")?`<button type="button" class="row-menu-item row-pet-action" data-customer-id="${customer.id}" data-id="${pet.id}" data-action-name="care">Pet care</button>`:""}${allowed("pets.care.view")?`<button type="button" class="row-menu-item row-pet-action" data-customer-id="${customer.id}" data-id="${pet.id}" data-action-name="documents">Documents</button>`:""}`).join("");
+      petActions=pets.map(pet=>`<p class="row-menu-label">${escape(petName(pet))}</p>${allowed("pets.edit")?`<button type="button" class="row-menu-item row-pet-action" data-customer-id="${customer.id}" data-id="${pet.id}" data-action-name="profile">Pet profile</button>`:""}${allowed("pets.care.view")&&allowed("pets.care.edit")?`<button type="button" class="row-menu-item row-pet-action" data-customer-id="${customer.id}" data-id="${pet.id}" data-action-name="care">Pet care</button>`:""}${allowed("pets.care.view")?`<button type="button" class="row-menu-item row-pet-action" data-customer-id="${customer.id}" data-id="${pet.id}" data-action-name="documents">Documents</button>`:""}`).join("");
     return `<tr class="directory-row customer-card" tabindex="0" data-testid="customer-card" data-customer-id="${customer.id}" aria-label="Open ${attr(name)}">`
       +`<td class="clients-name"><button type="button" class="text-button customer-detail" data-id="${customer.id}">${escape(name)}</button>${isNew?`<span class="client-chip">New</span>`:""}</td>`
-      +`<td class="clients-pets" title="${attr(petTitle)}">${escape(petText)}${alerted.length?`<span class="pet-alert"><span aria-hidden="true">!</span><span class="visually-hidden">Safety alert on ${escape(alerted.map(pet=>pet.name).join(", "))}</span></span>`:""}</td>`
+      +`<td class="clients-pets" title="${attr(petTitle)}">${escape(petText)}${alerted.length?`<span class="pet-alert"><span aria-hidden="true">!</span><span class="visually-hidden">Safety alert on ${escape(alerted.map(pet=>petName(pet)).join(", "))}</span></span>`:""}</td>`
       +cell(customer.preferredEmployeeName,"clients-groomer")
       +cell(customer.phone,"clients-phone")
       +cell(customer.email,"clients-email")
@@ -730,7 +763,7 @@ function renderCustomersEnhanced() {
   bindClientRowMenus();
 }
 async function loadCustomerDirectory(page=1){const params=new URLSearchParams({paged:"true",page:String(page),pageSize:"25",q:$("#customer-search").value,status:$("#customer-status").value,upcoming:$("#customer-upcoming").value,sort:$("#customer-sort").value});const result=await api(`/api/customers?${params}`);state.customerDirectory=result;state.customers=result.items;renderCustomersEnhanced();}
-async function showCustomerDetail(id){try{const data=await api(`/api/customers/${id}/history`);state.pets=[...state.pets.filter(pet=>pet.customerId!==id),...data.pets];if(!state.customers.some(customer=>customer.id===id))state.customers.push(data.customer);const pets=data.pets.map(pet=>`<div class="customer-pet-row"><span><strong>${escape(pet.name)}</strong><small>${escape(pet.breed||"Breed not provided")} · ${pet.weightOunces?`${Number(pet.weightOunces)/16} lb`:"Weight not provided"}</small><small>${pet.vaccinationExpiresOn?`Rabies expires ${String(pet.vaccinationExpiresOn).slice(0,10)}`:"Rabies expiration not provided"}${pet.safetyAlerts?` · Safety: ${escape(pet.safetyAlerts)}`:""}</small></span><span>${allowed("pets.edit")?`<button type="button" class="text-button detail-edit-pet" data-id="${pet.id}">Profile</button>`:""}${allowed("pets.care.view")?`<button type="button" class="text-button detail-care" data-id="${pet.id}">Care & history</button>`:""}</span></div>`).join("")||"<p>No pets yet.</p>";openModal(`${data.customer.firstName} ${data.customer.lastName}`,`<div class="wide customer-detail"><p><strong>${escape(data.customer.phone||"No phone")}</strong> · ${escape(data.customer.email||"No email")}</p><div class="customer-detail-actions">${allowed("customers.edit")?`<button type="button" class="text-button detail-edit-customer">Edit customer</button><button type="button" class="text-button detail-archive-customer">Archive</button>`:""}<button type="button" class="text-button detail-history">Full history</button></div><h4>Pets</h4>${pets}</div>`,async()=>{});const next=callback=>{$("#modal").close();setTimeout(callback,50);};$(".detail-edit-customer")?.addEventListener("click",()=>next(()=>editCustomer(id)));$(".detail-archive-customer")?.addEventListener("click",()=>next(()=>archiveCustomer(id)));$(".detail-history")?.addEventListener("click",()=>next(()=>showCustomerHistory(id)));$$(".detail-edit-pet").forEach(button=>button.addEventListener("click",()=>next(()=>editPet(button.dataset.id))));$$(".detail-care").forEach(button=>button.addEventListener("click",()=>next(()=>editPetCare(button.dataset.id))));}catch(error){toast(error.message);}}
+async function showCustomerDetail(id){try{const data=await api(`/api/customers/${id}/history`);state.pets=[...state.pets.filter(pet=>pet.customerId!==id),...data.pets];if(!state.customers.some(customer=>customer.id===id))state.customers.push(data.customer);const pets=data.pets.map(pet=>`<div class="customer-pet-row"><span><strong>${escape(petName(pet))}</strong><small>${escape(pet.breed||"Breed not provided")} · ${pet.weightOunces?`${Number(pet.weightOunces)/16} lb`:"Weight not provided"}</small><small>${pet.vaccinationExpiresOn?`Rabies expires ${String(pet.vaccinationExpiresOn).slice(0,10)}`:"Rabies expiration not provided"}${pet.safetyAlerts?` · Safety: ${escape(pet.safetyAlerts)}`:""}</small></span><span>${allowed("pets.edit")?`<button type="button" class="text-button detail-edit-pet" data-id="${pet.id}">Profile</button>`:""}${allowed("pets.care.view")?`<button type="button" class="text-button detail-care" data-id="${pet.id}">Care & history</button>`:""}</span></div>`).join("")||"<p>No pets yet.</p>";openModal(`${clientName(data.customer)}`,`<div class="wide customer-detail"><p><strong>${escape(data.customer.phone||"No phone")}</strong> · ${escape(data.customer.email||"No email")}</p><div class="customer-detail-actions">${allowed("customers.edit")?`<button type="button" class="text-button detail-edit-customer">Edit customer</button><button type="button" class="text-button detail-archive-customer">Archive</button>`:""}<button type="button" class="text-button detail-history">Full history</button></div><h4>Pets</h4>${pets}</div>`,async()=>{});const next=callback=>{$("#modal").close();setTimeout(callback,50);};$(".detail-edit-customer")?.addEventListener("click",()=>next(()=>editCustomer(id)));$(".detail-archive-customer")?.addEventListener("click",()=>next(()=>archiveCustomer(id)));$(".detail-history")?.addEventListener("click",()=>next(()=>showCustomerHistory(id)));$$(".detail-edit-pet").forEach(button=>button.addEventListener("click",()=>next(()=>editPet(button.dataset.id))));$$(".detail-care").forEach(button=>button.addEventListener("click",()=>next(()=>editPetCare(button.dataset.id))));}catch(error){toast(error.message);}}
 function renderSetupEnhanced() {
   renderSetup();
   $("#employee-list").innerHTML = state.employees.length ? state.employees.map((employee) => `<div><span><strong>${escape(employee.displayName)}</strong><small>${employee.active ? "Active" : "Inactive"}</small></span>${employee.active?`<span><button type="button" class="text-button edit-employee" data-id="${employee.id}">Edit</button> <button type="button" class="text-button deactivate-employee" data-id="${employee.id}">Deactivate</button></span>`:""}</div>`).join("") : `<p class="empty">No team members yet.</p>`;
@@ -749,10 +782,14 @@ function pricingMatrix(service){
 const serviceCategoryOrder=["DOG_BASE","DOG_ADDON","A_LA_CARTE","CAT","GENERAL"];
 // Which sections are collapsed is a view preference, like the calendar ones above: per
 // account, per business, local to the browser, and never part of the catalog data.
-function serviceSectionKey(){return `pawsh:service-sections:${state.me?.account?.id||state.me?.account?.email||"anonymous"}:${state.me?.business?.id||"none"}`;}
-let serviceSectionStore=null;
-function serviceSectionStorage(){
-  const key=serviceSectionKey();
+// The catalog page and the booking picker collapse independently. They show the same
+// categories for different reasons — maintaining the price book versus choosing today's
+// work — so a section closed while editing prices should not be closed while booking.
+function serviceSectionKey(scope){return `pawsh:service-sections:${scope}:${state.me?.account?.id||state.me?.account?.email||"anonymous"}:${state.me?.business?.id||"none"}`;}
+const serviceSectionStores=new Map();
+function serviceSectionStorage(scope="catalog"){
+  const key=serviceSectionKey(scope);
+  const serviceSectionStore=serviceSectionStores.get(scope);
   if(serviceSectionStore?.key===key)return serviceSectionStore;
   let saved={};
   try{const parsed=JSON.parse(globalThis.localStorage.getItem(key)||"null");if(parsed&&typeof parsed==="object")saved=parsed;}
@@ -761,16 +798,20 @@ function serviceSectionStorage(){
   // that surfaced a section keeps it open for the rest of the visit - clearing the search
   // must not slam shut the thing the user was just reading - but the next load starts from
   // the stored preference again.
-  serviceSectionStore={key,saved,revealed:new Set()};
-  return serviceSectionStore;
+  const created={key,saved,revealed:new Set()};
+  serviceSectionStores.set(scope,created);
+  return created;
 }
-function serviceSectionOpen(category){
-  const store=serviceSectionStorage();
+// `fallback` is what an account that has never touched this section should see. It defaults to
+// the core grooming section, but a salon whose catalog has no DOG_BASE at all would then open
+// to nothing but headers, so callers pass the leading section instead.
+function serviceSectionOpen(category,scope="catalog",fallback=category==="DOG_BASE"){
+  const store=serviceSectionStorage(scope);
   if(store.revealed.has(category))return true;
-  return typeof store.saved[category]==="boolean"?store.saved[category]:category==="DOG_BASE";
+  return typeof store.saved[category]==="boolean"?store.saved[category]:fallback;
 }
-function saveServiceSection(category,open){
-  const store=serviceSectionStorage();
+function saveServiceSection(category,open,scope="catalog"){
+  const store=serviceSectionStorage(scope);
   store.saved[category]=open;
   if(open)store.revealed.add(category);else store.revealed.delete(category);
   try{globalThis.localStorage.setItem(store.key,JSON.stringify(store.saved));}
@@ -991,10 +1032,75 @@ async function removeMember(id) {
 function groomerCheckboxes(selected=[]) {
   return select("employeeId","Groomer",state.employees.filter(employee=>employee.active).map(employee=>[employee.id,employee.displayName]),true,selected[0]||"");
 }
+// The booking picker uses the catalog's own category order and collapsing, so core grooming
+// leads and the long tail of add-ons and cat services stays folded away. Before this the
+// groups came out in whatever order the rows arrived in, which routinely pushed the services
+// booked most often below a screenful of ones booked rarely.
 function bookingServiceCheckboxes(selected=[]) {
   const labels={DOG_BASE:"Core grooming",DOG_ADDON:"Add-ons",A_LA_CARTE:"Care & finishing",CAT:"Cat",GENERAL:"Other"};
-  const active=state.services.filter(service=>service.active),groups=[...new Set(active.map(service=>service.category))];
-  return `<fieldset id="appointment-service-options" class="wide service-options"><legend>Services</legend>${groups.map(category=>`<section><h4>${labels[category]||escape(category)}</h4><div class="compact-options">${active.filter(service=>service.category===category).map(service=>`<label><input type="checkbox" name="serviceIds" value="${service.id}" ${selected.includes(service.id)?"checked":""}> <span>${escape(service.name)}<small>${money(service.basePriceMinor)} · ${service.baseDurationMinutes} min</small></span></label>`).join("")}</div></section>`).join("")||"<p>Add a service first.</p>"}</fieldset>`;
+  const active=state.services.filter(service=>service.active);
+  const groups=[...new Set(active.map(service=>service.category))].sort((left,right)=>{
+    const rank=value=>{const index=serviceCategoryOrder.indexOf(value);return index<0?serviceCategoryOrder.length:index;};
+    return rank(left)-rank(right)||left.localeCompare(right);
+  });
+  const sections=groups.map((category,index)=>{
+    const services=active.filter(service=>service.category===category);
+    // A section holding an already-ticked service opens regardless of the stored preference:
+    // a selection the operator cannot see is worse than a section they have to fold again.
+    const open=services.some(service=>selected.includes(service.id))
+      ||serviceSectionOpen(category,"booking",index===0);
+    const chosen=services.filter(service=>selected.includes(service.id)).length;
+    const options=services.map(service=>`<label><input type="checkbox" name="serviceIds" value="${service.id}" ${selected.includes(service.id)?"checked":""}> <span>${escape(service.name)}<small>${money(service.basePriceMinor)} · ${service.baseDurationMinutes} min</small></span></label>`).join("");
+    return `<section class="booking-service-category"><details class="service-section" data-category="${escape(category)}" data-rendered-open="${open?"true":"false"}"${open?" open":""}>`
+      +`<summary class="service-section-summary" aria-expanded="${open?"true":"false"}">`
+      +`<span class="service-section-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></span>`
+      +`<span class="service-section-title">${escape(labels[category]||category.replaceAll("_"," "))}</span>`
+      +`<small data-section-count>${chosen?`${chosen} of ${services.length} selected`:`${services.length} ${services.length===1?"service":"services"}`}</small>`
+      +`</summary><div class="service-section-body compact-options">${options}</div></details></section>`;
+  }).join("");
+  return `<fieldset id="appointment-service-options" class="wide service-options"><legend>Services</legend>${sections||"<p>Add a service first.</p>"}</fieldset>`;
+}
+// Keeps the summary counts truthful as boxes are ticked, and remembers what the operator
+// folded. Re-reads the DOM rather than tracking state because `applyBookingDefaults` also
+// checks boxes directly.
+function syncBookingServiceCount(section) {
+  const inputs=[...section.querySelectorAll('input[name="serviceIds"]')];
+  const chosen=inputs.filter(input=>input.checked).length;
+  const count=section.querySelector("[data-section-count]");
+  if(count)count.textContent=chosen
+    ?`${chosen} of ${inputs.length} selected`
+    :`${inputs.length} ${inputs.length===1?"service":"services"}`;
+}
+function syncBookingServiceCounts() {
+  bqa("#appointment-service-options .service-section").forEach(syncBookingServiceCount);
+}
+function bindBookingServiceSections() {
+  const syncCount=syncBookingServiceCount;
+  bqa("#appointment-service-options .service-section").forEach(section=>{
+    const summary=section.querySelector("summary");
+    section.addEventListener("toggle",()=>{
+      summary?.setAttribute("aria-expanded",section.open?"true":"false");
+      // Chromium fires toggle for a `<details open>` that innerHTML just parsed, so only a
+      // state differing from what was rendered came from the operator.
+      const rendered=section.dataset.renderedOpen==="true";
+      section.dataset.renderedOpen=section.open?"true":"false";
+      if(section.open===rendered)return;
+      saveServiceSection(section.dataset.category,section.open,"booking");
+    });
+    section.querySelectorAll('input[name="serviceIds"]').forEach(input=>
+      input.addEventListener("change",()=>syncCount(section)));
+    syncCount(section);
+  });
+}
+// Opens whichever sections hold a ticked service. Called after defaults land, because the
+// markup was rendered before the pet's last paid visit was known.
+function revealCheckedBookingServices() {
+  bqa("#appointment-service-options .service-section").forEach(section=>{
+    if(section.open||!section.querySelector('input[name="serviceIds"]:checked'))return;
+    section.dataset.renderedOpen="true";
+    section.open=true;
+    section.querySelector("summary")?.setAttribute("aria-expanded","true");
+  });
 }
 function weeklyHoursFields(hours=[]) {
   const byDay=new Map(hours.map(period=>[Number(period.weekday),period]));
@@ -1040,27 +1146,37 @@ function editCustomer(id) {
   const customer=state.customers.find(item=>item.id===id);
   const contactOptions=["email","phone","none"].map(value=>`<option value="${value}" ${customer.preferredContactMethod===value?"selected":""}>${value}</option>`).join("");
   openModal("Edit customer",
-    field("firstName","First name","text",`required value="${escape(customer.firstName)}"`)+
-    field("lastName","Last name","text",`required value="${escape(customer.lastName)}"`)+
+    field("firstName","First name","text",`value="${escape(customer.firstName||"")}"`)+
+    field("lastName","Last name","text",`value="${escape(customer.lastName||"")}"`)+
     field("email","Email","email",`value="${escape(customer.email||"")}"`)+
     field("phone","Phone","tel",`value="${escape(customer.phone||"")}"`)+
     field("address","Address","text",`value="${escape(customer.address||"")}"`,true)+
     `<label>Preferred contact<select data-testid="field-preferredContactMethod" name="preferredContactMethod">${contactOptions}</select></label>`+
     `<label><input data-testid="field-emailAllowed" name="emailAllowed" type="checkbox" ${customer.emailAllowed?"checked":""}> Email allowed</label>`+
     field("notes","Notes","text",`value="${escape(customer.notes||"")}"`,true),
-    form=>api(`/api/customers/${id}`,{method:"PUT",body:JSON.stringify({
-      ...Object.fromEntries(form),
-      emailAllowed:form.has("emailAllowed")
-    })})
+    async form=>{
+      await api(`/api/customers/${id}`,{method:"PUT",body:JSON.stringify({
+        ...Object.fromEntries(form),
+        emailAllowed:form.has("emailAllowed")
+      })});
+      // The shared refresh reloads directories, not the open profile, so renaming a client from
+      // their own profile used to leave the old name on screen until you navigated away.
+      if(state.clientProfile?.data.customer.id===id)return reloadClientProfile;
+      return undefined;
+    }
   );
 }
 async function showCustomerHistory(id) {
   try{
     const historyData=await api(`/api/customers/${id}/history`);
-    const appointments=historyData.appointments.map(item=>`<div><span>${new Intl.DateTimeFormat([],{timeZone:item.schedulingTimezone||schedulingZone()}).format(new Date(item.startAt))} / ${escape(item.petName)}</span><strong>${escape(item.status.replace("_"," "))}</strong></div>`).join("")||"<p>No appointments yet.</p>";
+    // The profile projection splits appointments into what is still ahead and what is settled.
+    // This summary reads both, newest first, because it is a single "what has happened" list.
+    const combined=[...(historyData.upcoming?.items||[]),...(historyData.history?.items||[])]
+      .sort((left,right)=>new Date(right.startAt)-new Date(left.startAt));
+    const appointments=combined.map(item=>`<div><span>${new Intl.DateTimeFormat([],{timeZone:item.schedulingTimezone||schedulingZone()}).format(new Date(item.startAt))} / ${escape(petName({petName:item.petName}))}</span><strong>${escape(item.status.replace("_"," "))}</strong></div>`).join("")||"<p>No appointments yet.</p>";
     const invoices=historyData.invoices.map(item=>`<div><span>Invoice ${escape(item.invoiceNumber)}</span><span><strong>${money(item.totalMinor)} / ${escape(item.status)}</strong><button type="button" class="text-button history-receipt" data-invoice-id="${item.id}">Receipt</button></span></div>`).join("")||`<p>${allowed("payments.view")?"No invoices yet.":"Financial history requires payment access."}</p>`;
-    const petDocuments=allowed("pets.care.view")?historyData.pets.map(pet=>`<div><span>${escape(pet.name)}${pet.archivedAt?" (archived)":""}</span><button type="button" class="text-button history-pet-documents" data-pet-id="${pet.id}">Documents</button></div>`).join(""):"";
-    openModal(`${historyData.customer.firstName} ${historyData.customer.lastName} history`,`<div class="wide history-list">${petDocuments?`<h4>Pet Care documents</h4>${petDocuments}`:""}<h4>Appointments</h4>${appointments}<h4>Transactions</h4>${invoices}</div>`,async()=>{});
+    const petDocuments=allowed("pets.care.view")?historyData.pets.map(pet=>`<div><span>${escape(petName(pet))}${pet.archivedAt?" (archived)":""}</span><button type="button" class="text-button history-pet-documents" data-pet-id="${pet.id}">Documents</button></div>`).join(""):"";
+    openModal(`${clientName(historyData.customer)} history`,`<div class="wide history-list">${petDocuments?`<h4>Pet Care documents</h4>${petDocuments}`:""}<h4>Appointments</h4>${appointments}<h4>Transactions</h4>${invoices}</div>`,async()=>{});
     $$(".history-pet-documents").forEach(button=>button.addEventListener("click",()=>showPetDocuments(button.dataset.petId)));
     $$(".history-receipt").forEach(button=>button.addEventListener("click",async()=>{
       const receipt=await api(`/api/invoices/${button.dataset.invoiceId}/receipt`);
@@ -1072,7 +1188,7 @@ async function showCustomerHistory(id) {
 async function showArchivedCareRecords(){
   try{
     const records=await api("/api/customers/archived");
-    const rows=records.map(record=>`<div><span>${escape(record.firstName)} ${escape(record.lastName)} / ${escape(record.petName)}${record.petArchivedAt?" (pet archived)":""}</span><button type="button" class="text-button archived-pet-documents" data-pet-id="${record.petId}">Documents</button></div>`).join("");
+    const rows=records.map(record=>`<div><span>${escape(clientName(record))} / ${escape(petName({petName:record.petName}))}${record.petArchivedAt?" (pet archived)":""}</span><button type="button" class="text-button archived-pet-documents" data-pet-id="${record.petId}">Documents</button></div>`).join("");
     openModal("Archived Pet Care records",`<div class="wide history-list">${rows||"<p>No archived Pet Care records.</p>"}</div>`,async()=>{});
     $$(".archived-pet-documents").forEach(button=>button.addEventListener("click",()=>showPetDocuments(button.dataset.petId,true)));
   }catch(error){toast(error.message);}
@@ -1158,7 +1274,7 @@ function editPet(id) {
 }
 
 function petProfileFields(pet){
-  return field("name","Pet name","text",`required value="${escape(pet.name)}"`)+
+  return field("name","Pet name","text",`value="${escape(pet.name||"")}"`)+
     field("species","Species","text",`required value="${escape(pet.species)}"`)+
     breedField(pet.breed||"")+
     field("dateOfBirth","Date of birth","date",`value="${pet.dateOfBirth?String(pet.dateOfBirth).slice(0,10):""}"`)+
@@ -1276,8 +1392,9 @@ function schedulingMutation(path,payload,operationLabel){
   });
 }
 
-function renderConflictOverride(error){
-  const container=$("#modal-error");
+// The booking workspace and the shared dialog both raise overlap conflicts, so the override
+// prompt is told which error region to draw into and which dialog to close on success.
+function renderConflictOverride(error,{container=$("#modal-error"),dialog=$("#modal"),afterClose=null}={}){
   container.textContent="";
   const conflicts=error.data.conflicts||[];
   const proposed=error.proposedStart;
@@ -1294,8 +1411,9 @@ function renderConflictOverride(error){
     try{
       await error.retryConflictOverride();
       await refresh();
-      $("#modal").close();
+      dialog.close();
       toast(`${error.operationLabel} saved with intentional overlap`);
+      if(afterClose)runDetached(afterClose);
     }catch(retryError){
       if(retryError.status===403)await reconcilePermissions();
       container.textContent=retryError.message;
@@ -1304,12 +1422,381 @@ function renderConflictOverride(error){
   container.append(message,button);
 }
 
+/* ---------------------------------------------------------------------------
+   Create Appointment workspace.
+
+   Booking used to be the same narrow field list every other dialog uses, which meant
+   the person taking the call could not see who they were booking for. This opens a
+   two-pane workspace instead: the client on the left, the appointment on the right.
+   The order deliberately mirrors how the call goes — find the client, deal with any
+   vaccination problem before committing to a date, then pick the pet and the work.
+   --------------------------------------------------------------------------- */
+const bookingScope = () => $("#booking-dialog");
+const bq = (selector) => bookingScope().querySelector(selector);
+const bqa = (selector) => [...bookingScope().querySelectorAll(selector)];
+
+function resetBookingState({preset=null,groomerId=null,customerId=null,petId=null}={}) {
+  state.booking={preset,groomerId,customerId,petId,client:null,agreements:null,
+    defaults:null,vaccinationPrompted:false,clientQuery:""};
+}
+resetBookingState();
+
+function bookingLocalDate() {
+  return String(bq('[name="startAt"]')?.value||state.booking.preset||"").slice(0,10)||null;
+}
+function bookingClientPets() {
+  return (state.booking.client?.pets||[]).filter((pet)=>!pet.archivedAt);
+}
+function bookingSelectedPet() {
+  return bookingClientPets().find((pet)=>pet.id===state.booking.petId)||null;
+}
+
+// An empty slot can become either an appointment or blocked time. Both are the same
+// gesture on the same empty space, so the slot offers both rather than assuming one.
+function closeSlotMenu() {
+  const menu=$("#slot-menu");
+  if(menu&&!menu.hidden){menu.hidden=true;delete menu.dataset.slot;delete menu.dataset.slotGroomer;}
+}
+function openSlotMenu(slot) {
+  const menu=$("#slot-menu");
+  closeCalendarMenus();
+  menu.dataset.slot=slot.dataset.slot;
+  menu.dataset.slotGroomer=slot.dataset.slotGroomer||"";
+  menu.hidden=false;
+  const anchor=slot.getBoundingClientRect(),size=menu.getBoundingClientRect();
+  const left=Math.max(8,Math.min(anchor.left,globalThis.innerWidth-size.width-8));
+  const below=anchor.bottom+4;
+  const top=below+size.height>globalThis.innerHeight-8
+    ? Math.max(8,anchor.top-size.height-4) : below;
+  menu.style.left=`${left}px`;menu.style.top=`${top}px`;
+  menu.querySelector("button")?.focus();
+}
+
+function renderBookingClientPane() {
+  const pane=$("#booking-client");
+  if(!state.booking.client){
+    const query=state.booking.clientQuery.trim().toLowerCase();
+    const matches=state.customers.filter((customer)=>!query
+      ||`${clientName(customer)} ${customer.email??""} ${customer.phone??""}`
+        .toLowerCase().includes(query)).slice(0,50);
+    pane.innerHTML=`<div class="booking-client-search">
+      <label class="wide">Client<input type="search" data-testid="booking-client-search" autocomplete="off"
+        placeholder="Click to select client"></label>
+      <div class="booking-client-results" data-testid="booking-client-results">${
+        matches.length
+          ? matches.map((customer)=>`<button type="button" data-booking-client="${customer.id}">${
+            escape(`${clientName(customer)}`)
+          }<small>${escape(customer.phone||customer.email||"No contact on file")}</small></button>`).join("")
+          : `<p class="booking-client-empty">No client matches that search.</p>`
+      }</div></div>`;
+    const search=pane.querySelector('[data-testid="booking-client-search"]');
+    // Assigned rather than rendered into the attribute: escape() leaves quotes intact, and the
+    // query is whatever the user typed.
+    search.value=state.booking.clientQuery;
+    // The search sits inside the booking form, so Enter would otherwise submit an appointment
+    // that has no pet or services yet.
+    search.addEventListener("keydown",event=>{if(event.key==="Enter")event.preventDefault();});
+    search.addEventListener("input",()=>{
+      state.booking.clientQuery=search.value;
+      const caret=search.selectionStart;
+      renderBookingClientPane();
+      const next=$("#booking-client").querySelector('[data-testid="booking-client-search"]');
+      next.focus();next.setSelectionRange(caret,caret);
+    });
+    pane.querySelectorAll("[data-booking-client]").forEach((button)=>
+      button.addEventListener("click",()=>selectBookingClient(button.dataset.bookingClient)));
+    return;
+  }
+  const client=state.booking.client.customer;
+  const unsigned=(state.booking.agreements?.items||[]).filter((item)=>item.required&&item.status!=="signed");
+  const notes=(state.booking.client.notes||[]).slice(0,3);
+  pane.innerHTML=
+    `<button type="button" class="booking-client-back" data-testid="booking-client-back">&lt;Select another client</button>`+
+    (unsigned.length
+      ? `<div class="booking-client-banner" data-testid="booking-client-agreement-banner">Client has ${unsigned.length} unsigned required agreement${unsigned.length===1?"":"s"}</div>`
+      : "")+
+    `<p class="booking-client-identity" data-testid="booking-client-name">${escape(`${clientName(client)}`)}</p>`+
+    `<div class="booking-client-contact">`+
+      (client.phone?`<span>${escape(client.phone)}</span>`:"")+
+      (client.email?`<span>${escape(client.email)}</span>`:"")+
+      `<span>Preferred staff: ${escape(client.preferredEmployeeName||"Not set")}</span>`+
+    `</div>`+
+    `<div class="booking-client-section"><h5>Notes</h5>${
+      notes.length
+        ? notes.map((note)=>`<p class="booking-client-note">${escape(note.body)}<small>${escape(note.authorName||"Unknown author")}</small></p>`).join("")
+        : `<p class="booking-client-note booking-client-empty">No notes on this client.</p>`
+    }</div>`+
+    `<div class="booking-client-section"><h5>Pets</h5>${
+      bookingClientPets().length
+        ? bookingClientPets().map((pet)=>`<p class="booking-client-note">${escape(petName(pet))}<small>${escape(pet.breed||pet.species||"")}</small></p>`).join("")
+        : `<p class="booking-client-note booking-client-empty">No active pets on this client.</p>`
+    }</div>`;
+  pane.querySelector('[data-testid="booking-client-back"]').addEventListener("click",()=>{
+    state.booking.client=null;state.booking.agreements=null;state.booking.petId=null;
+    state.booking.defaults=null;state.booking.vaccinationPrompted=false;
+    renderBookingClientPane();renderBookingDetailPane();
+  });
+}
+
+async function selectBookingClient(customerId) {
+  state.booking.customerId=customerId;
+  const [client,agreements]=await Promise.all([
+    api(`/api/customers/${customerId}/history`),
+    api(`/api/customers/${customerId}/agreements`).catch(()=>null)
+  ]);
+  if(state.booking.customerId!==customerId)return;
+  state.booking.client=client;state.booking.agreements=agreements;
+  const pets=bookingClientPets();
+  state.booking.petId=pets.length===1?pets[0].id:null;
+  state.booking.vaccinationPrompted=false;
+  renderBookingClientPane();renderBookingDetailPane();
+  promptBookingVaccination();
+  if(state.booking.petId)await applyBookingDefaults();
+}
+
+function bookingPetRow() {
+  const pet=bookingSelectedPet();
+  return pet
+    ? `<span class="booking-pet-name" data-testid="booking-pet-name">${escape(petName(pet))}</span>`
+      +`<button type="button" class="secondary compact" data-testid="booking-add-pet">Change pet</button>`
+    : `<span class="booking-pet-empty">No pet selected for this appointment.</span>`
+      +`<button type="button" class="secondary compact" data-testid="booking-add-pet">+ Add pet</button>`;
+}
+
+// Says where the pre-ticked services came from. A pet with no paid visit gets nothing
+// ticked and is told so, rather than an empty selection being passed off as a default.
+function bookingDefaultsNote() {
+  const defaults=state.booking.defaults;
+  if(!bookingSelectedPet())return "Choose a pet to load its usual services.";
+  if(!defaults)return "Loading this pet's usual services…";
+  if(defaults.serviceSource==="last_paid_visit"){
+    const when=defaults.lastPaidVisitAt
+      ? ` on ${new Intl.DateTimeFormat([],{timeZone:schedulingZone(),dateStyle:"medium"}).format(new Date(defaults.lastPaidVisitAt))}`
+      : "";
+    return `Services carried over from this pet's last paid visit${when}.`;
+  }
+  if(defaults.serviceSource==="last_paid_visit_unavailable")
+    return "This pet's last paid visit used services that are no longer active, so nothing was pre-selected.";
+  return "This pet has no paid visit yet, so no services were pre-selected.";
+}
+
+function bookingDefaultGroomerId() {
+  return state.booking.groomerId
+    ||state.booking.defaults?.groomers?.[0]?.id
+    ||state.booking.client?.customer?.preferredEmployeeId
+    ||"";
+}
+
+function renderBookingDetailPane() {
+  const detail=$("#booking-detail");
+  if(!state.booking.client){
+    detail.innerHTML=`<div class="booking-empty" data-testid="booking-detail-empty">Select a client to build the appointment.</div>`;
+    return;
+  }
+  detail.innerHTML=
+    `<div class="booking-field-row">`+
+      select("employeeId","Groomer",state.employees.filter((employee)=>employee.active)
+        .map((employee)=>[employee.id,employee.displayName]),false,bookingDefaultGroomerId())+
+      field("startAt","Start time","datetime-local",`required value="${escape(state.booking.preset||"")}"`)+
+    `</div>`+
+    `<div class="booking-pet" data-testid="booking-pet-row">${bookingPetRow()}</div>`+
+    `<input type="hidden" name="petId" value="${escape(state.booking.petId||"")}">`+
+    `<p class="booking-defaults-note" data-testid="booking-defaults-note">${escape(bookingDefaultsNote())}</p>`+
+    bookingServiceCheckboxes((state.booking.defaults?.services||[]).map((service)=>service.id))+
+    disambiguationField()+
+    `<div class="pricing-preview" role="status" aria-live="polite" data-testid="booking-price-status">Choose a pet and service to calculate pricing.</div>`+
+    `<p role="status" aria-live="polite" data-testid="booking-rabies-status">Choose a pet and appointment time to evaluate rabies information.</p>`+
+    field("notes","Appointment notes","text","",true);
+  bindBookingDetail();
+  updateBookingRabiesPreview();updateBookingPricePreview();
+}
+
+function bindBookingPetControl() {
+  bq('[data-testid="booking-add-pet"]')?.addEventListener("click",openBookingPetPicker);
+}
+
+function bindBookingDetail() {
+  bindBookingPetControl();
+  bq('[name="startAt"]')?.addEventListener("change",()=>{
+    state.booking.preset=bq('[name="startAt"]').value;
+    state.booking.vaccinationPrompted=false;
+    updateBookingRabiesPreview();promptBookingVaccination();
+  });
+  bqa('input[name="serviceIds"]').forEach((input)=>
+    input.addEventListener("change",updateBookingPricePreview));
+  bindBookingServiceSections();
+}
+
+let bookingPriceSequence=0;
+async function updateBookingPricePreview() {
+  const status=bq('[data-testid="booking-price-status"]');if(!status)return;
+  const sequence=++bookingPriceSequence;
+  const serviceIds=bqa('input[name="serviceIds"]:checked').map((input)=>input.value);
+  if(!state.booking.petId||!serviceIds.length){
+    status.textContent="Choose a pet and service to calculate pricing.";return;
+  }
+  status.textContent="Calculating authoritative price…";
+  try{
+    const prices=await api("/api/pricing/resolve",{method:"POST",
+      body:JSON.stringify({petId:state.booking.petId,serviceIds})});
+    if(sequence!==bookingPriceSequence)return;
+    const resolved=prices.filter((price)=>price.status==="resolved");
+    const summary=resolved.length===prices.length
+      ? `<p class="booking-service-summary"><strong>${prices.length} service${prices.length===1?"":"s"} · ${resolved.reduce((sum,price)=>sum+Number(price.durationMinutes),0)} min · ${money(resolved.reduce((sum,price)=>sum+Number(price.priceMinor),0))}</strong></p>`
+      : "";
+    status.innerHTML=prices.map((price)=>price.status==="resolved"
+      ? `<p><strong>${escape(price.name)}</strong> · ${money(price.priceMinor)} · ${price.durationMinutes} min${price.weightTierLabel?` · ${escape(price.weightTierLabel)}`:""}</p>`
+      : `<p><strong>${escape(price.name)}</strong><br>${price.status==="weight_required"?"Weight required to determine pricing.":price.status==="quote_required"?"Quote required.":"Admin price confirmation required."}</p>`
+    ).join("")+summary;
+  }catch(error){if(sequence===bookingPriceSequence)status.textContent=error.message;}
+}
+
+function updateBookingRabiesPreview() {
+  const status=bq('[data-testid="booking-rabies-status"]');if(!status)return;
+  if(!allowed("pets.care.view")){
+    status.textContent="Rabies information is not visible with your permissions.";return;
+  }
+  const pet=bookingSelectedPet(),date=bookingLocalDate();
+  if(!pet||!date){
+    status.textContent="Choose a pet and appointment time to evaluate rabies information.";return;
+  }
+  const expiration=pet.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):null;
+  const verdict=!expiration?"Not provided"
+    :expiration<date?"Expires before appointment — updated rabies information is required"
+    :"Valid for appointment";
+  status.textContent=`Rabies: ${verdict}${expiration?`. Expiration ${expiration}. Appointment ${date}.`:""}`;
+}
+
+async function applyBookingDefaults() {
+  const petId=state.booking.petId;if(!petId)return;
+  state.booking.defaults=null;
+  const note=bq('[data-testid="booking-defaults-note"]');
+  if(note)note.textContent=bookingDefaultsNote();
+  let defaults;
+  try{defaults=await api(`/api/pets/${petId}/booking-defaults`);}
+  catch(error){if(note)note.textContent=error.message;return;}
+  if(state.booking.petId!==petId)return;
+  state.booking.defaults=defaults;
+  const currentNote=bq('[data-testid="booking-defaults-note"]');
+  if(currentNote)currentNote.textContent=bookingDefaultsNote();
+  const groomer=bq('[name="employeeId"]');
+  if(groomer&&!state.booking.groomerId&&defaults.groomers?.[0])groomer.value=defaults.groomers[0].id;
+  const selected=new Set((defaults.services||[]).map((service)=>service.id));
+  bqa('input[name="serviceIds"]').forEach((input)=>{input.checked=selected.has(input.value);});
+  syncBookingServiceCounts();
+  revealCheckedBookingServices();
+  updateBookingPricePreview();
+}
+
+function openStackedDialog({title,body,confirmLabel,dismissLabel,onConfirm,onDismiss}) {
+  const dialog=$("#stacked-dialog");
+  $("#stacked-dialog-title").textContent=title;
+  $("#stacked-dialog-body").innerHTML=body;
+  const confirm=$('[data-testid="stacked-dialog-confirm"]');
+  const dismiss=$('[data-testid="stacked-dialog-dismiss"]');
+  confirm.hidden=!confirmLabel;confirm.textContent=confirmLabel||"";
+  dismiss.textContent=dismissLabel||"Cancel";
+  confirm.onclick=async()=>{
+    confirm.disabled=true;
+    try{if(await onConfirm?.($("#stacked-dialog-body"))!==false)dialog.close();}
+    catch(error){toast(error.message);}
+    finally{confirm.disabled=false;}
+  };
+  dismiss.onclick=()=>{dialog.close();onDismiss?.();};
+  dialog.showModal();
+  return dialog;
+}
+
+// Pets whose rabies record has already lapsed by the date being booked. Staff without
+// pet-care visibility see nothing here because the expiration is redacted for them, so
+// there is no half-informed warning for them to act on.
+function bookingLapsedPets() {
+  if(!allowed("pets.care.view"))return [];
+  const date=bookingLocalDate();if(!date)return [];
+  return bookingClientPets().filter((pet)=>{
+    const expiration=pet.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):null;
+    return expiration!==null&&expiration<date;
+  });
+}
+
+function promptBookingVaccination() {
+  if(state.booking.vaccinationPrompted)return;
+  const lapsed=bookingLapsedPets(),date=bookingLocalDate();
+  if(!lapsed.length||!date)return;
+  state.booking.vaccinationPrompted=true;
+  openStackedDialog({
+    title:"Required vaccine",
+    body:`<p data-testid="booking-vaccination-pets">Updated vaccination records needed for: ${
+      escape(lapsed.map((pet)=>pet.name).join(", "))}</p>`
+      +`<p class="fine">Rabies information on file expires before ${escape(date)}.</p>`,
+    dismissLabel:"Not Now",
+    confirmLabel:allowed("appointments.create")?"Send Reminder":"",
+    onConfirm:async()=>{
+      const outcomes=await Promise.allSettled(lapsed.map((pet)=>
+        api(`/api/pets/${pet.id}/vaccination-reminder`,{method:"POST",
+          body:JSON.stringify({appointmentLocalDate:date,channel:"email"})})));
+      const failed=outcomes.filter((outcome)=>outcome.status==="rejected");
+      // Reporting the first refusal verbatim keeps an undeliverable client — no address,
+      // opted out, messages blocked — from being reported as a message that went out.
+      toast(failed.length
+        ? `${outcomes.length-failed.length} of ${outcomes.length} reminders queued. ${failed[0].reason.message}`
+        : `Vaccination reminder queued for ${lapsed.map((pet)=>pet.name).join(", ")}.`);
+    }
+  });
+}
+
+function openBookingPetPicker() {
+  const pets=bookingClientPets();
+  if(!pets.length){toast("This client has no active pets. Add a pet first.");return;}
+  openStackedDialog({
+    title:"Select pet for appointment",
+    body:`<div class="stacked-dialog-options" data-testid="booking-pet-options">${
+      pets.map((pet)=>`<label><input type="radio" name="bookingPet" value="${pet.id}" ${
+        pet.id===state.booking.petId?"checked":""}> <span>${escape(petName(pet))}</span></label>`).join("")
+    }</div>`,
+    dismissLabel:"Cancel",
+    confirmLabel:"OK",
+    onConfirm:(body)=>{
+      const chosen=body.querySelector('input[name="bookingPet"]:checked');
+      if(!chosen){toast("Choose a pet to continue.");return false;}
+      applyBookingPet(chosen.value);
+      return true;
+    }
+  });
+}
+
+function applyBookingPet(petId) {
+  state.booking.petId=petId;
+  bq('[name="petId"]').value=petId;
+  bq('[data-testid="booking-pet-row"]').innerHTML=bookingPetRow();
+  bindBookingPetControl();
+  updateBookingRabiesPreview();
+  return applyBookingDefaults();
+}
+
+function openBookingDialog(options={}) {
+  return runOnce("open:booking-dialog",async()=>{
+    const [customers,pets,employees,services]=await Promise.all([
+      api("/api/customers"),api("/api/pets"),api("/api/employees"),api("/api/services")
+    ]);
+    Object.assign(state,{customers,pets,employees,services});
+    resetBookingState(options);
+    $("#booking-error").textContent="";
+    renderBookingClientPane();renderBookingDetailPane();
+    bookingScope().showModal();
+    if(options.customerId)await selectBookingClient(options.customerId);
+    if(options.petId&&bookingClientPets().some((pet)=>pet.id===options.petId))await applyBookingPet(options.petId);
+    bq('[data-testid="booking-client-search"]')?.focus();
+  });
+}
+
 const actions = {
   "new-customer": () => openModal("New customer",
-    field("firstName","First name","text","required")+field("lastName","Last name","text","required")+field("email","Email","email")+field("phone","Phone","tel")+field("notes","Notes","text","",true),
+    field("firstName","First name","text","")+field("lastName","Last name","text","")+field("email","Email","email")+field("phone","Phone","tel")+field("notes","Notes","text","",true)
+    +`<p class="wide fine">Enough to find them again is enough to save: a name, a phone number, or an email. Take what an enquiry gives you and fill the rest in later.</p>`,
     (form) => api("/api/customers",{method:"POST",body:JSON.stringify(Object.fromEntries(form))})),
   "new-pet": () => { openModal("New pet",
-    select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]),true)+field("name","Pet name","text","required")+breedField()+field("weightPounds","Weight (lb)","number",'min="0.0625" step="0.0625"')+field("species","Species","text",'value="dog"')+field("groomingPreferences","Grooming preferences","text","",true)+(allowed("pets.care.edit")?field("behaviorNotes","Behavior notes","text","",true)+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true):""),
+    select("customerId","Customer",state.customers.map(c=>[c.id,`${clientName(c)}`]),true)+field("name","Pet name","text","")+breedField()+field("weightPounds","Weight (lb)","number",'min="0.0625" step="0.0625"')+field("species","Species","text",'value="dog"')+field("groomingPreferences","Grooming preferences","text","",true)+(allowed("pets.care.edit")?field("behaviorNotes","Behavior notes","text","",true)+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true):""),
     (form) => {const values=Object.fromEntries(form);values.weightOunces=values.weightPounds===""?null:Math.round(Number(values.weightPounds)*16);delete values.weightPounds;return api("/api/pets",{method:"POST",body:JSON.stringify(values)});}); setupBreedAutocomplete(); },
   "new-service": () => openModal("New service",
     field("name","Service name","text","required")+field("baseDurationMinutes","Duration (minutes)","number",'required min="1"')+field("basePrice","Fixed price ($)","number",'required min="0" step=".01"')+select("category","Category",[["GENERAL","General"],["DOG_ADDON","Dog add-on"],["A_LA_CARTE","À la carte"],["CAT","Cat"]],true,"GENERAL")+field("description","Description","text","",true),
@@ -1346,51 +1833,25 @@ const actions = {
   "business-hours": () => openModal("Business hours",
     `<fieldset class="wide hours-grid"><legend>Weekly schedule</legend>${["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"].map((day,index)=>`<div><label><input type="checkbox" name="day${index}" ${index>0&&index<6?"checked":""}> ${day}</label><input type="time" name="start${index}" value="09:00"><input type="time" name="end${index}" value="17:00"></div>`).join("")}</fieldset>`,
     form=>api("/api/business/working-hours",{method:"PUT",body:JSON.stringify({hours:[0,1,2,3,4,5,6].filter(index=>form.get(`day${index}`)).map(index=>({weekday:index,startTime:form.get(`start${index}`),endTime:form.get(`end${index}`)}))})})),
-  "new-appointment": () => runOnce("open:new-appointment", async () => {
-    const [customers, pets, employees, services] = await Promise.all([
-      api("/api/customers"),
-      api("/api/pets"),
-      api("/api/employees"),
-      api("/api/services")
-    ]);
-    Object.assign(state, { customers, pets, employees, services });
-    const explicitGroomerId=state.calendar.bookingGroomerId,presetCustomerId=state.calendar.bookingCustomerId,presetPetId=state.calendar.bookingPetId;
-    openModal("New appointment",
-      select("customerId","Customer",state.customers.map(c=>[c.id,`${c.firstName} ${c.lastName}`]))+
-      select("petId","Pet",[])+
-      groomerCheckboxes(explicitGroomerId?[explicitGroomerId]:[])+bookingServiceCheckboxes()+
-      field("startAt","Start time","datetime-local",`required value="${state.calendar.bookingPreset||""}"`,true)+disambiguationField()+
-      `<div class="wide pricing-preview" role="status" aria-live="polite" data-testid="booking-price-status">Choose a pet and service to calculate pricing.</div>`+
-      `<p class="wide" role="status" aria-live="polite" data-testid="booking-rabies-status">Choose a pet and appointment time to evaluate rabies information.</p>`+
-      field("notes","Appointment notes","text","",true),
-      async (form) => { const o=Object.fromEntries(form); await schedulingMutation("/api/appointments",{locationId:state.me.business.locationId,customerId:o.customerId,petId:o.petId,employeeId:o.employeeId,serviceIds:form.getAll("serviceIds"),localStart:o.startAt,disambiguation:o.disambiguation||undefined,expectedLocationVersion:state.me.business.locationVersion,notes:o.notes||null},"Booking");return ()=>selectCalendarDate(String(o.startAt).slice(0,10)); });
-    const customerSelect=$('[name="customerId"]');const petSelect=$('[name="petId"]');
-    state.calendar.bookingPreset=null;state.calendar.bookingGroomerId=null;state.calendar.bookingCustomerId=null;state.calendar.bookingPetId=null;
-    const startInput=$('[name="startAt"]');const rabiesStatus=$('[data-testid="booking-rabies-status"]');
-    const priceStatus=$('[data-testid="booking-price-status"]');let priceSequence=0;
-    const updatePricePreview=async()=>{const sequence=++priceSequence;const serviceIds=$$('input[name="serviceIds"]:checked').map(input=>input.value);if(!petSelect.value||!serviceIds.length){priceStatus.textContent="Choose a pet and service to calculate pricing.";return;}priceStatus.textContent="Calculating authoritative price…";try{const prices=await api("/api/pricing/resolve",{method:"POST",body:JSON.stringify({petId:petSelect.value,serviceIds})});if(sequence!==priceSequence)return;const resolved=prices.filter(price=>price.status==="resolved"),summary=resolved.length===prices.length?`<p class="booking-service-summary"><strong>${prices.length} service${prices.length===1?"":"s"} · ${resolved.reduce((sum,price)=>sum+Number(price.durationMinutes),0)} min · ${money(resolved.reduce((sum,price)=>sum+Number(price.priceMinor),0))}</strong></p>`:"";priceStatus.innerHTML=prices.map(price=>price.status==="resolved"?`<p><strong>${escape(price.name)}</strong> · ${money(price.priceMinor)} · ${price.durationMinutes} min${price.weightTierLabel?` · ${escape(price.weightTierLabel)}`:""}</p>`:`<p><strong>${escape(price.name)}</strong><br>${price.status==="weight_required"?"Weight required to determine pricing.":price.status==="quote_required"?"Quote required.":"Admin price confirmation required."}</p>`).join("")+summary;}catch(error){if(sequence===priceSequence)priceStatus.textContent=error.message;}};
-    const updateRabiesPreview=()=>{
-      const pet=state.pets.find(item=>item.id===petSelect.value),appointmentDate=String(startInput.value||"").slice(0,10);
-      if(!pet||!appointmentDate){rabiesStatus.textContent="Choose a pet and appointment time to evaluate rabies information.";return;}
-      const expiration=pet.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):null;
-      const status=!expiration?"Not provided"
-        :expiration<appointmentDate?"Expires before appointment — updated rabies information is required"
-        :"Valid for appointment";
-      rabiesStatus.textContent=`Rabies: ${status}${expiration?`. Expiration ${expiration}. Appointment ${appointmentDate}.`:""}`;
+  // Every entry point into booking — the slot menu, the month view's add button, the New menu,
+  // and "book again" from a client — funnels through the same workspace. The calendar's preset
+  // fields are read once and cleared, so a preset left over from one entry point cannot leak
+  // into the next opening.
+  "new-appointment": () => {
+    const options={
+      preset:state.calendar.bookingPreset,groomerId:state.calendar.bookingGroomerId,
+      customerId:state.calendar.bookingCustomerId,petId:state.calendar.bookingPetId
     };
-    customerSelect.addEventListener("change",()=>{
-      const pets=state.pets.filter(pet=>pet.customerId===customerSelect.value);
-      petSelect.innerHTML=`<option value="">Choose…</option>${pets.map(pet=>`<option value="${pet.id}">${escape(pet.name)}</option>`).join("")}`;
-      updateRabiesPreview();updatePricePreview();
-    });
-    const bindServicePreview=()=>$$('input[name="serviceIds"]').forEach(input=>input.addEventListener("change",updatePricePreview));
-    const applyBookingDefaults=async()=>{const petId=petSelect.value;if(!petId)return;const defaults=await api(`/api/pets/${petId}/booking-defaults`);if(petSelect.value!==petId)return;const serviceIds=new Set(defaults.services.map(item=>item.id));if(!explicitGroomerId&&defaults.groomers[0])$('[name="employeeId"]').value=defaults.groomers[0].id;$$('input[name="serviceIds"]').forEach(input=>input.checked=serviceIds.has(input.value));updatePricePreview();};
-    petSelect.addEventListener("change",()=>{updateRabiesPreview();applyBookingDefaults();});startInput.addEventListener("change",updateRabiesPreview);bindServicePreview();
-    if(presetCustomerId){customerSelect.value=presetCustomerId;customerSelect.dispatchEvent(new globalThis.Event("change"));if(presetPetId){petSelect.value=presetPetId;petSelect.dispatchEvent(new globalThis.Event("change"));}}
-  }),
-  "blocked-time": () => openModal("Block team time",
-    select("employeeId","Team member",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]))+
-    field("startAt","Start","datetime-local","required")+field("endAt","End","datetime-local","required")+
+    state.calendar.bookingPreset=null;state.calendar.bookingGroomerId=null;
+    state.calendar.bookingCustomerId=null;state.calendar.bookingPetId=null;
+    return openBookingDialog(options);
+  },
+  // Blocking accepts the slot it was opened from so the Block choice on an empty slot lands on
+  // that slot rather than making someone retype the time they just clicked.
+  "blocked-time": ({preset=null,groomerId=null}={}) => openModal("Block team time",
+    select("employeeId","Team member",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]),false,groomerId||"")+
+    field("startAt","Start","datetime-local",`required value="${escape(preset||"")}"`)+
+    field("endAt","End","datetime-local","required")+
     field("reason","Reason","text","required",true),
     form=>api("/api/blocked-times",{method:"POST",body:JSON.stringify({employeeId:form.get("employeeId"),locationId:state.me.business.locationId,localStart:form.get("startAt"),localEnd:form.get("endAt"),expectedLocationVersion:state.me.business.locationVersion,reason:form.get("reason")})}))
 };
@@ -1448,7 +1909,61 @@ accountTrigger.addEventListener("keydown",event=>{if(["ArrowDown","ArrowUp"].inc
 accountMenu.addEventListener("keydown",event=>{const items=[...accountMenu.querySelectorAll("[role=menuitem]:not(:disabled)")],index=items.indexOf(document.activeElement);if(event.key==="Escape"){event.preventDefault();closeAccountMenu({restoreFocus:true});}else if(["ArrowDown","ArrowUp","Home","End"].includes(event.key)){event.preventDefault();const next=event.key==="Home"?0:event.key==="End"?items.length-1:(index+(event.key==="ArrowDown"?1:-1)+items.length)%items.length;items[next]?.focus();}});
 $("#account-change-password").addEventListener("click",()=>{closeAccountMenu();showView("profile-account");setTimeout(()=>$("#password-form input[name=currentPassword]")?.focus(),50);});
 document.addEventListener("click",event=>{if(!accountMenu.hidden&&!$(".account-control").contains(event.target))closeAccountMenu();});
-document.addEventListener("click",event=>{if(!event.target.closest(".calendar-actions-menu"))closeCalendarMenus();});
+document.addEventListener("click",event=>{if(!event.target.closest(".calendar-actions-menu")&&!event.target.closest("#slot-menu"))closeCalendarMenus();});
+$("#slot-menu").addEventListener("click",event=>{
+  const action=event.target.closest("[data-slot-action]");if(!action)return;
+  const menu=$("#slot-menu"),preset=menu.dataset.slot||null,groomerId=menu.dataset.slotGroomer||null;
+  closeSlotMenu();
+  if(action.dataset.slotAction==="add")openBookingDialog({preset,groomerId});
+  else actions["blocked-time"]({preset,groomerId});
+});
+bookingScope().querySelectorAll(".close").forEach(button=>
+  button.addEventListener("click",()=>bookingScope().close()));
+// Emptying the panes on close matters beyond tidiness: the workspace is built from the same
+// field helpers the shared dialog uses, so a closed-but-populated booking form leaves a second
+// element carrying test ids and ids like `startAt` and `appointment-service-options` in the
+// document, and the next dialog's lookups become ambiguous.
+bookingScope().addEventListener("close",()=>{
+  $("#stacked-dialog").close();
+  resetBookingState();
+  $("#booking-client").innerHTML="";
+  $("#booking-detail").innerHTML="";
+  $("#booking-error").textContent="";
+});
+
+$("#booking-form").addEventListener("submit",async event=>{
+  event.preventDefault();
+  const form=event.currentTarget,error=$("#booking-error");
+  error.textContent="";
+  const data=new FormData(form),values=Object.fromEntries(data),serviceIds=data.getAll("serviceIds");
+  // The pet is chosen through a sub-dialog rather than a required control, so the form cannot
+  // rely on native validation to catch a missing one.
+  if(!values.petId){error.textContent="Choose a pet for this appointment.";return;}
+  if(!serviceIds.length){error.textContent="Choose at least one service.";return;}
+  const button=bq('[data-testid="booking-submit"]'),original=button.textContent;
+  button.disabled=true;button.textContent="Booking…";form.setAttribute("aria-busy","true");
+  const landOnDate=()=>selectCalendarDate(String(values.startAt).slice(0,10));
+  try{
+    await schedulingMutation("/api/appointments",{
+      locationId:state.me.business.locationId,customerId:state.booking.customerId,
+      petId:values.petId,employeeId:values.employeeId,serviceIds,
+      localStart:values.startAt,disambiguation:values.disambiguation||undefined,
+      expectedLocationVersion:state.me.business.locationVersion,notes:values.notes||null
+    },"Booking");
+    await refresh();
+    bookingScope().close();
+    toast("Appointment booked");
+    runDetached(landOnDate);
+  }catch(problem){
+    if(problem.retryConflictOverride)
+      renderConflictOverride(problem,{container:error,dialog:bookingScope(),afterClose:landOnDate});
+    else{
+      error.textContent=problem.message;
+      if(problem.reconcileLifecycle||problem.reconcileFinancial)
+        await refresh().catch(failure=>toast(failure.message));
+    }
+  }finally{button.disabled=false;button.textContent=original;form.removeAttribute("aria-busy");}
+});
 // Location switcher. business.locationId, locationVersion and timezone are read by every scheduling
 // write (booking, blocked time, and business settings' expectedLocationVersion), so the shop in play
 // belongs in the header rather than behind a menu, and a switch has to land in state before anything
@@ -1535,7 +2050,7 @@ function openNewActionMenu({focus="none"}={}){closeAccountMenu();closeLocationMe
 newActionTrigger.addEventListener("click",()=>newActionMenu.hidden?openNewActionMenu():closeNewActionMenu({restoreFocus:true}));
 newActionTrigger.addEventListener("keydown",event=>{if(["ArrowDown","ArrowUp"].includes(event.key)){event.preventDefault();openNewActionMenu({focus:event.key==="ArrowDown"?"first":"last"});}});
 newActionMenu.addEventListener("keydown",event=>{const items=newActionItems(),index=items.indexOf(document.activeElement);if(event.key==="Escape"){event.preventDefault();closeNewActionMenu({restoreFocus:true});}else if(["ArrowDown","ArrowUp","Home","End"].includes(event.key)){event.preventDefault();const next=event.key==="Home"?0:event.key==="End"?items.length-1:(index+(event.key==="ArrowDown"?1:-1)+items.length)%items.length;items[next]?.focus();}});
-newActionMenu.addEventListener("click",async event=>{const item=event.target.closest?.("[data-new-action]");if(!item||item.disabled)return;const action=item.dataset.newAction;closeNewActionMenu();if(action==="quick-existing"){await actions["new-appointment"]();setTimeout(()=>$('#modal [name="customerId"]')?.focus(),0);}else await actions[action]?.();});
+newActionMenu.addEventListener("click",async event=>{const item=event.target.closest?.("[data-new-action]");if(!item||item.disabled)return;const action=item.dataset.newAction;closeNewActionMenu();if(action==="quick-existing"){await actions["new-appointment"]();setTimeout(()=>$('[data-testid="booking-client-search"]')?.focus(),0);}else await actions[action]?.();});
 document.addEventListener("click",event=>{if(!newActionMenu.hidden&&!$(".new-action-control").contains(event.target))closeNewActionMenu();});
 document.addEventListener("keydown",event=>{if(event.key==="Escape"){if(!newActionMenu.hidden){event.preventDefault();closeNewActionMenu({restoreFocus:true});}else if(locationMenu&&!locationMenu.hidden){event.preventDefault();closeLocationMenu({restoreFocus:true});}else if(!accountMenu.hidden){event.preventDefault();closeAccountMenu({restoreFocus:true});}else if($(".calendar-action-popover:not([hidden])")){event.preventDefault();closeCalendarMenus({restoreFocus:true});}}});
 $("#profile-form").addEventListener("submit",async event=>{event.preventDefault();const form=event.currentTarget,error=$("#profile-error"),button=form.querySelector("button[type=submit]");error.textContent="";button.disabled=true;try{await api("/api/me",{method:"PATCH",body:JSON.stringify({displayName:new FormData(form).get("displayName")})});state.me=await api("/api/me");renderAccountIdentity();toast("Profile updated");}catch(problem){error.textContent=problem.message;}finally{button.disabled=false;}});
@@ -1555,26 +2070,73 @@ async function openClientProfile(customerId,{petId=null,appointmentId=null,retur
   if(returnView)state.clientProfileReturnView=returnView;
   const previous=state.clientProfile?.data.customer.id===customerId?state.clientProfile:null;
   const [data,notes,agreements]=await Promise.all([api(`/api/customers/${customerId}/history`),loadClientNotes(customerId),loadClientAgreements(customerId)]);
-  state.clientProfile={data,notes,agreements,notesExpanded:previous?.notesExpanded||false,tab:previous?.tab||"pets",petId:petId||data.pets[0]?.id||null,appointmentId};
+  // The history window resets with the profile: the response carries the opening preview, so a
+  // page the operator had stepped to for a different client would show rows that are not loaded.
+  state.clientProfile={data,notes,agreements,notesExpanded:previous?.notesExpanded||false,tab:previous?.tab||"pets",petId:petId||data.pets[0]?.id||null,appointmentId,historyView:{page:1,pageSize:HISTORY_INITIAL_ROWS},historyLoading:false};
   state.pets=[...state.pets.filter(pet=>pet.customerId!==customerId),...data.pets];activateView("client-profile");renderClientProfile();
 }
 function petProfileDetails(pet){const values=[["Species",pet.species],["Breed",pet.breed],["Gender",pet.sex],["Weight",pet.weightOunces?`${Number(pet.weightOunces)/16} lb`:null],["Birthday",pet.dateOfBirth?new Date(`${String(pet.dateOfBirth).slice(0,10)}T12:00:00Z`).toLocaleDateString():null],["Age",pet.approximateAge],["Coat",pet.coatNotes],["Behavior",pet.behaviorNotes],["Grooming preferences",pet.groomingPreferences],["Medical",pet.medicalNotes],["Safety",pet.safetyAlerts],["Rabies",pet.vaccinationExpiresOn?`Expires ${new Date(`${String(pet.vaccinationExpiresOn).slice(0,10)}T12:00:00Z`).toLocaleDateString()}`:"Rabies needed"]].filter(([,value])=>value);return values.map(([label,value])=>`<div><dt>${escape(label)}</dt><dd>${escape(value)}</dd></div>`).join("");}
-function openPetProfile(petId){const pet=state.clientProfile?.data.pets.find(item=>item.id===petId);if(!pet)return;openModal(`${pet.name} · Pet Profile`,`<div class="wide pet-profile-modal"><div class="pet-avatar" aria-hidden="true">${escape(Array.from(pet.name)[0]?.toUpperCase()||"P")}</div><div><p class="eyebrow">Pet profile</p><h3>${escape(pet.name)}</h3></div><dl class="pet-profile-facts">${petProfileDetails(pet)}</dl>${allowed("pets.edit")?`<button type="button" class="secondary compact pet-profile-edit">Edit pet</button>`:""}${allowed("pets.care.view")?`<button type="button" class="secondary compact pet-profile-documents">Rabies documents</button>`:""}</div>`,null,{cancelLabel:"Close"});$(".pet-profile-edit")?.addEventListener("click",()=>{$("#modal").close();setTimeout(()=>editPet(pet.id),50);});$(".pet-profile-documents")?.addEventListener("click",()=>{$("#modal").close();setTimeout(()=>showPetDocuments(pet.id),50);});}
+function openPetProfile(petId){const pet=state.clientProfile?.data.pets.find(item=>item.id===petId);if(!pet)return;openModal(`${pet.name} · Pet Profile`,`<div class="wide pet-profile-modal"><div class="pet-avatar" aria-hidden="true">${escape(Array.from(pet.name)[0]?.toUpperCase()||"P")}</div><div><p class="eyebrow">Pet profile</p><h3>${escape(petName(pet))}</h3></div><dl class="pet-profile-facts">${petProfileDetails(pet)}</dl>${allowed("pets.edit")?`<button type="button" class="secondary compact pet-profile-edit">Edit pet</button>`:""}${allowed("pets.care.view")?`<button type="button" class="secondary compact pet-profile-documents">Rabies documents</button>`:""}</div>`,null,{cancelLabel:"Close"});$(".pet-profile-edit")?.addEventListener("click",()=>{$("#modal").close();setTimeout(()=>editPet(pet.id),50);});$(".pet-profile-documents")?.addEventListener("click",()=>{$("#modal").close();setTimeout(()=>showPetDocuments(pet.id),50);});}
 function openPreferredGroomer(){const {customer}=state.clientProfile.data,active=state.employees.filter(employee=>employee.active);openModal("Set preferred groomer",`<label class="wide">Preferred groomer<select name="employeeId"><option value="">Not set</option>${active.map(employee=>`<option value="${employee.id}" ${customer.preferredEmployeeId===employee.id?"selected":""}>${escape(employee.displayName)}</option>`).join("")}</select></label>`,async form=>{await api(`/api/customers/${customer.id}/preferred-groomer`,{method:"PATCH",body:JSON.stringify({employeeId:form.get("employeeId")||null})});const data=await api(`/api/customers/${customer.id}/history`);state.clientProfile.data=data;renderClientProfile();},{cancelLabel:"Cancel",submitLabel:"Save"});}
-// The profile projection is bounded at 100 appointments; the paginated route supplies the rest
-// so the first page is never presented as the client's complete history.
-async function loadMoreClientAppointments(){
+// History opens at two rows and grows three at a time, with arrows stepping through pages of
+// whatever size it has grown to. A client with years of visits would otherwise push the rest of
+// the profile off the screen, and the two most recent grooms are what anyone actually reads.
+const HISTORY_INITIAL_ROWS=2;
+const HISTORY_ROW_STEP=3;
+function historyView(){
+  const view=state.clientProfile?.historyView;
+  return view||{page:1,pageSize:HISTORY_INITIAL_ROWS};
+}
+function historyPageCount(){
+  const total=Number(state.clientProfile?.data?.history?.total||0);
+  return Math.max(1,Math.ceil(total/historyView().pageSize));
+}
+// The profile projection is bounded, and every change of page or page size re-reads rather than
+// slicing what is already loaded, so the rows on screen always match the server's ordering.
+async function loadClientHistoryPage({page,pageSize}){
   const profile=state.clientProfile;if(!profile)return;
-  const button=$(".history-view-all");if(button)button.disabled=true;
+  const customerId=profile.data.customer.id;
+  profile.historyLoading=true;renderClientProfile();
   try{
-    const pageSize=100,page=Math.floor(profile.data.appointments.length/pageSize)+1;
-    const next=await api(`/api/customers/${profile.data.customer.id}/appointments?page=${page}&pageSize=${pageSize}`);
-    const seen=new Set(profile.data.appointments.map(item=>item.id));
-    profile.data.appointments=[...profile.data.appointments,...next.items.filter(item=>!seen.has(item.id))];
-    profile.data.appointmentTotal=next.total;
-    profile.data.appointmentsTruncated=profile.data.appointments.length<next.total;
+    const next=await api(`/api/customers/${customerId}/appointments?page=${page}&pageSize=${pageSize}&direction=past`);
+    if(state.clientProfile?.data.customer.id!==customerId)return;
+    // A deletion elsewhere can leave the requested page past the end. Step back rather than
+    // showing an empty table under a non-zero count.
+    if(!next.items.length&&page>1&&next.total>0){
+      return loadClientHistoryPage({page:Math.max(1,Math.ceil(next.total/pageSize)),pageSize});
+    }
+    profile.data.history={items:next.items,total:next.total};
+    profile.historyView={page,pageSize};
+  }catch(error){toast(error.message);}
+  finally{
+    if(state.clientProfile?.data.customer.id===customerId){
+      state.clientProfile.historyLoading=false;renderClientProfile();
+    }
+  }
+}
+function loadMoreClientHistory(){
+  const profile=state.clientProfile;if(!profile)return Promise.resolve();
+  const {page,pageSize}=historyView();
+  const total=Number(profile.data?.history?.total||0);
+  const nextSize=Math.min(total||pageSize+HISTORY_ROW_STEP,pageSize+HISTORY_ROW_STEP);
+  const loaded=profile.data?.history?.items?.length||0;
+  // The opening preview runs ahead of the visible window, so the first growth usually needs no
+  // request at all — widen the window over rows already in hand.
+  if(page===1&&loaded>=Math.min(nextSize,total)){
+    profile.historyView={page,pageSize:nextSize};
     renderClientProfile();
-  }catch(error){toast(error.message);if(button)button.disabled=false;}
+    return Promise.resolve();
+  }
+  // Growing the page keeps the first row on screen where it was, so "load more" reads as more
+  // rows appended rather than the list jumping to a different slice.
+  const firstRow=(page-1)*pageSize;
+  return loadClientHistoryPage({page:Math.floor(firstRow/nextSize)+1,pageSize:nextSize});
+}
+function stepClientHistory(delta){
+  const {page,pageSize}=historyView();
+  const next=Math.min(historyPageCount(),Math.max(1,page+delta));
+  if(next===page)return Promise.resolve();
+  return loadClientHistoryPage({page:next,pageSize});
 }
 // ---------------------------------------------------------------------------
 // Client profile
@@ -1733,7 +2295,7 @@ function petNotesMarkup(pet){
 function petCardMarkup(pet){
   const weight=pet.weightOunces?`${Number(pet.weightOunces)/16} lb`:null;
   const detail=[pet.breed||pet.species||"Pet",weight].filter(Boolean).join(" - ");
-  return `<article class="pet-card"><div class="pet-card-head"><span class="pet-avatar" aria-hidden="true">${escape(Array.from(pet.name||"P")[0]?.toUpperCase()||"P")}</span><button type="button" class="pet-card-name" data-pet-profile="${clientAttr(pet.id)}"><strong>${escape(pet.name)}</strong> <span>(${escape(detail)})</span></button></div><dl class="pet-fact-grid">${petFactCells(pet)}</dl>${petNotesMarkup(pet)}</article>`;
+  return `<article class="pet-card"><div class="pet-card-head"><span class="pet-avatar" aria-hidden="true">${escape(Array.from(pet.name||"P")[0]?.toUpperCase()||"P")}</span><button type="button" class="pet-card-name" data-pet-profile="${clientAttr(pet.id)}"><strong>${escape(petName(pet))}</strong> <span>(${escape(detail)})</span></button></div><dl class="pet-fact-grid">${petFactCells(pet)}</dl>${petNotesMarkup(pet)}</article>`;
 }
 
 // History table. Duration reads `1 h 30 mins`, matching how the salon quotes an appointment.
@@ -1819,9 +2381,68 @@ function agreementRowMarkup(item,editable){
   const action=item.status==="signed"
     ? (editable?`<button type="button" class="text-button agreement-correct" data-agreement-template="${clientAttr(item.templateId)}">Correct</button>`:"")
     : (editable?`<button type="button" class="primary compact agreement-sign" data-agreement-template="${clientAttr(item.templateId)}">Sign Agreement</button>`:"");
+  // The name is a button, not a heading. Staff are asked to attest to a document they have to
+  // be able to read first, and the document was previously only reachable from inside the
+  // signing dialog — after the decision to sign had effectively been made.
   return `<li class="agreement-row">`
-    +`<div class="agreement-row-main"><p class="agreement-name">${escape(item.name)}${item.required?` <span class="agreement-tag">Required</span>`:""}${item.active?"":` <span class="agreement-tag archived">Archived</span>`}</p>${agreementStateMarkup(item)}</div>`
+    +`<div class="agreement-row-main"><p class="agreement-name">`
+      +`<button type="button" class="agreement-name-open" data-agreement-template="${clientAttr(item.templateId)}" aria-label="Open ${clientAttr(item.name)}">`
+      +`<span class="agreement-name-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg></span>`
+      +`<span class="agreement-name-label">${escape(item.name)}</span></button>`
+      +`${item.required?` <span class="agreement-tag">Required</span>`:""}${item.active?"":` <span class="agreement-tag archived">Archived</span>`}</p>`
+      +`${agreementStateMarkup(item)}</div>`
     +`<div class="agreement-row-action">${action}</div></li>`;
+}
+
+// The agreement itself: what it says, whether it was sent, and what was recorded against it.
+// Screenshot-equivalent of a "sent history" popup, except the history and the document are one
+// dialog rather than two, because there is only ever one send record per template per client.
+function openAgreementDetail(customerId,templateId){
+  const agreements=state.clientProfile?.agreements;
+  const item=agreements?.items.find(entry=>entry.templateId===templateId);
+  if(!item)return;
+  const editable=agreementsEditable(agreements);
+  const status=item.status==="signed"
+    ? `<p class="agreement-detail-status signed">Signed ${escape(agreementStamp(item.signedAt))}</p>`
+      +`<p class="agreement-audit">${escape([
+        item.signedName?`Signed by ${item.signedName}`:null,
+        item.recordedByName?`recorded by ${item.recordedByName}`:null,
+        item.signedTemplateVersion?`version ${item.signedTemplateVersion}`:null
+      ].filter(Boolean).join(" · ")||"No signature detail was recorded.")}</p>`
+      +(item.signatureNote?`<p class="agreement-audit">${escape(`“${item.signatureNote}”`)}</p>`:"")
+    : `<p class="agreement-detail-status unsigned">Not signed</p>`;
+  const sent=item.sentAt
+    ? `<p class="agreement-audit">Emailed ${escape(agreementStamp(item.sentAt))}${item.sendCount>1?` · sent ${escape(String(item.sendCount))} times`:""}${item.lastSentChannel?` · by ${escape(item.lastSentChannel)}`:""}</p>`
+    : `<p class="agreement-audit">Never sent to this client.</p>`;
+  // The signed version is a snapshot. Saying so here is the point of showing the text at all:
+  // the document below is the current wording, which may not be the wording that was agreed to.
+  const drift=item.status==="signed"&&item.signedTemplateVersion&&item.templateVersion
+    &&String(item.signedTemplateVersion)!==String(item.templateVersion)
+    ? `<p class="agreement-detail-drift">This document has been edited since it was signed. The signature records version ${escape(String(item.signedTemplateVersion))}; the text below is version ${escape(String(item.templateVersion))}.</p>`
+    : "";
+  const fields=`<div class="wide agreement-detail">`
+    +`<div class="agreement-detail-head">${status}${sent}</div>`
+    +drift
+    +`<div class="agreement-detail-body"><p>${escape(item.body||"This agreement has no text.")}</p></div>`
+    +`<p class="agreement-detail-foot">Pawsh has no client signing page. A signature here is recorded by salon staff from a paper or in-person signature.</p>`
+    +`</div>`;
+  openModal(item.name,fields,null,{cancelLabel:"Close"});
+  if(!editable)return;
+  // The action belongs beside Close rather than in the body: having read the document, the
+  // next thing the operator wants is to act on it without reopening the row.
+  const actions=$("#modal .modal-actions");
+  const act=document.createElement("button");
+  act.type="button";
+  act.className=item.status==="signed"?"secondary":"primary";
+  act.dataset.testid="agreement-detail-action";
+  act.textContent=item.status==="signed"?"Correct signature":"Sign Agreement";
+  act.addEventListener("click",()=>{
+    $("#modal").close();
+    if(item.status==="signed")openAgreementCorrection(customerId,templateId);
+    else openAgreementSignature(customerId,templateId);
+  });
+  actions.append(act);
+  $("#modal").addEventListener("close",()=>act.remove(),{once:true});
 }
 function clientAgreementsMarkup(agreements){
   if(!agreements)return `<p class="note-empty">Loading agreements…</p>`;
@@ -1924,7 +2545,7 @@ function openAgreementSignature(customerId,templateId){
   const fields=`<div class="wide agreement-signature">`
     +`<p class="agreement-signature-intro">You are recording a signature the client already gave on paper or in person. Pawsh does not collect electronic signatures, and the record is stored under your name as the staff member who entered it.</p>`
     +`<details class="agreement-signature-text"><summary>${escape(item.name)} — read the agreement text</summary><p>${escape(item.body||"This agreement has no text.")}</p></details>`
-    +`<label class="wide">Name the client signed<input name="signedName" type="text" maxlength="120" required autocomplete="off" value="${clientAttr(`${customer.firstName} ${customer.lastName}`.trim())}"></label>`
+    +`<label class="wide">Name the client signed<input name="signedName" type="text" maxlength="120" required autocomplete="off" value="${clientAttr(`${clientName(customer)}`.trim())}"></label>`
     +`<label class="wide">Date signed<input name="signedAt" type="datetime-local" max="${clientAttr(now)}" value="${clientAttr(now)}"></label>`
     +`<label class="wide">Note (optional)<textarea name="note" maxlength="500" placeholder="Where or how the signature was collected"></textarea></label>`
     +`</div>`;
@@ -1964,30 +2585,67 @@ function bindClientAgreements(customerId){
   $(".agreements-send")?.addEventListener("click",()=>openAgreementSend(customerId));
   $(".agreement-banner-open")?.addEventListener("click",()=>openAgreementSend(customerId,{preselect:agreements?.summary?.unsignedRequiredTemplateIds||[]}));
   $(".agreement-banner-dismiss")?.addEventListener("click",()=>{dismissedAgreementBanners.add(customerId);renderClientProfile();});
+  $$(".agreement-name-open").forEach(button=>button.addEventListener("click",()=>openAgreementDetail(customerId,button.dataset.agreementTemplate)));
   $$(".agreement-sign").forEach(button=>button.addEventListener("click",()=>openAgreementSignature(customerId,button.dataset.agreementTemplate)));
   $$(".agreement-correct").forEach(button=>button.addEventListener("click",()=>openAgreementCorrection(customerId,button.dataset.agreementTemplate)));
+}
+
+/**
+ * The figures the profile opens with.
+ *
+ * Total is what has been invoiced, split into what was paid and what is still owed, so the two
+ * tiles reconcile rather than being separate numbers a reader has to trust. Unclosed is called
+ * out because it is neither: work that was done and never billed. There is no retail tile —
+ * Pawsh sells no retail, and a zero would read as a fact about the client instead of a fact
+ * about the product.
+ */
+function clientSalesSummaryMarkup(data){
+  const summary=data.summary;
+  if(!summary){
+    return `<div class="profile-summary" data-testid="client-summary">`
+      +`<article class="summary-tile"><p class="summary-label">Appointments</p><p class="summary-figure">${escape(String(data.appointmentTotal??0))}</p>`
+      +`<p class="summary-detail">Sales figures need the payments permission.</p></article></div>`;
+  }
+  const counts=summary.statusCounts||{};
+  const line=(label,value,tone="")=>`<span class="${tone}">${escape(label)}: ${escape(String(value))}</span>`;
+  return `<div class="profile-summary" data-testid="client-summary">`
+    +`<article class="summary-tile"><p class="summary-label">Total</p>`
+      +`<p class="summary-figure" data-testid="summary-total">${money(summary.invoicedMinor)}</p>`
+      +`<p class="summary-detail">${line("Paid",money(summary.paidMinor))}${line("Invoices",summary.invoiceCount)}</p></article>`
+    +`<article class="summary-tile"><p class="summary-label">Outstanding</p>`
+      +`<p class="summary-figure${summary.outstandingMinor?" owing":""}" data-testid="summary-outstanding">${money(summary.outstandingMinor)}</p>`
+      +`<p class="summary-detail">${line("Unclosed appointments",summary.unclosedTotal,summary.unclosedTotal?"owing":"")}</p></article>`
+    +`<article class="summary-tile"><p class="summary-label">Appointments</p>`
+      +`<p class="summary-figure" data-testid="summary-appointments">${escape(String(summary.appointmentTotal))}</p>`
+      +`<p class="summary-detail">${line("Completed",counts.completed)}${line("Scheduled",counts.scheduled)}`
+      +`${line("Cancelled",counts.cancelled,counts.cancelled?"owing":"")}${line("No show",counts.noShow,counts.noShow?"owing":"")}</p></article>`
+    +`</div>`;
 }
 
 function renderClientProfile(){
   const profile=state.clientProfile;if(!profile)return;
   const {data}=profile,customer=data.customer;
   const pet=data.pets.find(item=>item.id===profile.petId)||data.pets[0];
-  // The table carries a Pets column and the counts are client-scoped, so history is no longer
-  // narrowed to the selected pet: the heading, the table and `Load N more` now agree.
-  const appointments=data.appointments;
-  const selected=appointments.find(item=>item.id===profile.appointmentId)||null;
-  const paid=data.invoices.reduce((sum,item)=>sum+Number(item.totalMinor)-Number(item.balanceMinor),0);
-  const outstanding=data.invoices.reduce((sum,item)=>sum+Number(item.balanceMinor),0);
+  // The table carries a Pets column and the counts are client-scoped, so neither list is
+  // narrowed to the selected pet: the headings, the tables and the paging all agree.
+  const upcoming=data.upcoming?.items||[];
+  const history=data.history?.items||[];
+  const selected=[...upcoming,...history].find(item=>item.id===profile.appointmentId)||null;
   const tab=profile.tab==="preference"?"preference":"pets";
   const payments=appointmentPaymentIndex();
-  const remaining=Math.max(0,Number(data.appointmentTotal||0)-appointments.length);
-  const name=`${customer.firstName} ${customer.lastName}`;
+  const name=`${clientName(customer)}`;
+  const view=historyView(),historyTotal=Number(data.history?.total||0);
+  // The profile arrives with a few rows beyond the opening window so growing it costs no round
+  // trip. Only the first page can hold that surplus; every other page came from a targeted
+  // request and is already exactly the window.
+  const historyRows=view.page===1?history.slice(0,view.pageSize):history;
+  const shown=view.pageSize*(view.page-1)+historyRows.length;
 
   const left=`<section class="client-profile-left">`
     +`<button type="button" class="text-button client-profile-back">← Back</button>`
     +(customer.archivedAt?`<p class="profile-banner">This client is marked inactive. History is kept and new bookings are blocked.</p>`:"")
     +agreementBannerMarkup(profile.agreements,customer.id)
-    +`<div class="client-identity"><span class="client-avatar" aria-hidden="true">${escape(Array.from(customer.firstName||"C")[0]?.toUpperCase()||"C")}</span><div><p class="eyebrow">Basic Info</p><h2>${escape(customer.firstName)} ${escape(customer.lastName)}</h2></div>${allowed("customers.edit")?`<button type="button" class="secondary compact client-edit">Edit</button>`:""}</div>`
+    +`<div class="client-identity"><span class="client-avatar" aria-hidden="true">${escape(Array.from(clientName(customer,"?"))[0]?.toUpperCase()||"?")}</span><div><p class="eyebrow">Basic Info</p><h2>${escape(clientName(customer))}</h2></div>${allowed("customers.edit")?`<button type="button" class="secondary compact client-edit">Edit</button>`:""}</div>`
     +`<dl class="profile-facts"><div><dt>Phone</dt><dd>${escape(customer.phone||"Not provided")}</dd></div><div><dt>Email</dt><dd>${escape(customer.email||"Not provided")}</dd></div><div><dt>Preferred groomer</dt><dd><button type="button" class="text-button preferred-groomer"${allowed("customers.edit")?"":" disabled"}>${escape(customer.preferredEmployeeName||"Not set")}</button></dd></div><div><dt>Client since</dt><dd>${escape(new Date(customer.createdAt).toLocaleDateString())}</dd></div></dl>`
     +`<div class="profile-section-head"><h3>Notes</h3>${allowed("customers.edit")&&!customer.archivedAt?`<button type="button" class="text-button note-add">Add</button>`:""}</div>`
     +`<div class="client-notes">${clientNotesMarkup(profile)}</div>`
@@ -2000,13 +2658,31 @@ function renderClientProfile(){
     +`<div class="profile-panel" role="tabpanel" id="client-panel-preference" aria-labelledby="client-tab-preference" tabindex="0"${tab==="preference"?"":" hidden"}>${clientPreferenceMarkup(customer)}</div>`
     +`</section>`;
 
+  const appointmentTable=(rows,caption)=>`<div class="history-table-wrap" data-allow-horizontal-scroll><table class="history-table"><caption class="visually-hidden">${escape(caption)}</caption><thead><tr><th scope="col">ID</th><th scope="col">Status</th><th scope="col">Date</th><th scope="col">Pets</th><th scope="col">Items</th><th scope="col">Total Sales</th><th scope="col">Duration</th><th scope="col">Groomer</th></tr></thead><tbody>${rows.map(item=>historyRowMarkup(item,{pets:data.pets,payments,selectedId:selected?.id})).join("")}</tbody></table></div>`;
+
   const right=`<section class="client-profile-right">`
-    +`<div class="profile-summary"><div><span>Appointments</span><strong>${escape(String(data.appointmentTotal??appointments.length))}</strong></div>${allowed("payments.view")?`<div><span>Paid sales</span><strong>${money(paid)}</strong></div><div><span>Outstanding</span><strong>${money(outstanding)}</strong></div>`:""}</div>`
-    +`<div class="panel-head"><div><p class="eyebrow">Appointment history</p><h3>History (${escape(String(data.appointmentTotal??appointments.length))})</h3></div><button type="button" class="primary compact profile-book-new">Book New</button></div>`
-    +(appointments.length
-      ? `<div class="history-table-wrap" data-allow-horizontal-scroll><table class="history-table"><caption class="visually-hidden">Appointment history for ${escape(name)}</caption><thead><tr><th scope="col">ID</th><th scope="col">Status</th><th scope="col">Date</th><th scope="col">Pets</th><th scope="col">Items</th><th scope="col">Total Sales</th><th scope="col">Duration</th><th scope="col">Groomer</th></tr></thead><tbody>${appointments.map(item=>historyRowMarkup(item,{pets:data.pets,payments,selectedId:selected?.id})).join("")}</tbody></table></div>`
-      : `<p class="note-empty">No appointments recorded for this client.</p>`)
-    +(remaining?`<div class="history-more"><span>Showing ${escape(String(appointments.length))} of ${escape(String(data.appointmentTotal))}</span><button type="button" class="secondary compact history-view-all">Load ${escape(String(remaining))} more</button></div>`:"")
+    +clientSalesSummaryMarkup(data)
+    +`<div class="panel-head"><div><p class="eyebrow">Appointments</p><h3>Upcoming (${escape(String(data.upcoming?.total??upcoming.length))})</h3></div><button type="button" class="primary compact profile-book-new">Book New</button></div>`
+    +(upcoming.length
+      ? appointmentTable(upcoming,`Upcoming appointments for ${name}`)
+      : `<p class="note-empty">No upcoming appointments for this client.</p>`)
+    +`<div class="panel-head history-head"><h3>History (${escape(String(historyTotal))})</h3>${
+      historyTotal>view.pageSize
+        ? `<div class="history-pager"><button type="button" class="history-step" data-history-step="-1" aria-label="Newer appointments"${view.page<=1?" disabled":""}>‹</button>`
+          +`<span data-testid="history-page">Page ${escape(String(view.page))} of ${escape(String(historyPageCount()))}</span>`
+          +`<button type="button" class="history-step" data-history-step="1" aria-label="Older appointments"${view.page>=historyPageCount()?" disabled":""}>›</button></div>`
+        : ""
+    }</div>`
+    +(historyRows.length
+      ? appointmentTable(historyRows,`Appointment history for ${name}`)
+      : `<p class="note-empty">No past appointments recorded for this client.</p>`)
+    +(historyTotal>view.pageSize
+      ? `<div class="history-more"><span data-testid="history-shown">Showing ${escape(String(Math.min(shown,historyTotal)))} of ${escape(String(historyTotal))}</span>`
+        +(view.pageSize<historyTotal
+          ? `<button type="button" class="secondary compact history-view-all"${profile.historyLoading?" disabled":""}>Load ${escape(String(Math.min(HISTORY_ROW_STEP,historyTotal-view.pageSize)))} more</button>`
+          : "")
+        +`</div>`
+      : "")
     +(selected?`<article class="profile-appointment-detail"><h4>Selected appointment</h4><p><strong>Groomer:</strong> ${escape(selected.employeeName)}</p>${selected.notes?`<p><strong>Notes:</strong> ${escape(selected.notes)}</p>`:""}</article>`:"")
     +(allowed("payments.view")&&data.invoices.length?`<section class="profile-invoices"><h4>Invoices</h4>${data.invoices.slice(0,20).map(invoice=>`<div><span>${escape(invoice.invoiceNumber)} · ${escape(new Date(invoice.createdAt).toLocaleDateString())}</span><strong>${money(invoice.totalMinor)} · ${escape(invoice.status)}</strong></div>`).join("")}</section>`:"")
     +clientAgreementsPanelMarkup(profile.agreements)
@@ -2020,7 +2696,9 @@ function renderClientProfile(){
   $(".client-edit")?.addEventListener("click",()=>editCustomer(customer.id));
   $(".preferred-groomer")?.addEventListener("click",openPreferredGroomer);
   $(".profile-book-new").addEventListener("click",()=>{state.calendar.bookingCustomerId=customer.id;state.calendar.bookingPetId=pet?.id||null;actions["new-appointment"]();});
-  $(".history-view-all")?.addEventListener("click",loadMoreClientAppointments);
+  $(".history-view-all")?.addEventListener("click",()=>runDetached(loadMoreClientHistory));
+  $$(".history-step").forEach(button=>button.addEventListener("click",()=>
+    runDetached(()=>stepClientHistory(Number(button.dataset.historyStep)))));
   $$('[data-profile-appointment]').forEach(button=>button.addEventListener("click",()=>{
     profile.appointmentId=profile.appointmentId===button.dataset.profileAppointment?null:button.dataset.profileAppointment;renderClientProfile();
   }));
@@ -2072,9 +2750,367 @@ function renderClientProfile(){
     runDetached(()=>saveClientPreference({bookingFrequencyWeeks:weeks},"Booking frequency"));
   });
 }
-async function openCalendarAppointment(id,origin=null){const item=calendarAppointmentById(id);if(!item)return;calendarDetailOrigin=origin||document.activeElement;hideCalendarHover();const model=appointmentPresentation(item),serviceRows=model.serviceSnapshots.map(service=>`<div><span><strong>${escape(service.name)}</strong><small>${Number(service.durationMinutes)} min</small></span><strong>${service.priceMinor===null||service.priceMinor===undefined?"Price unavailable":money(service.priceMinor)}</strong></div>`).join("");openModal("Appointment",`<article class="wide appointment-detail" data-testid="appointment-detail"><header><div><span class="appointment-status">${escape(model.status)}</span><h3>${escape(model.dateLabel)}</h3><p>${escape(model.timeRange)} · ${model.durationMinutes} min</p></div></header><section><h4>Client</h4><button type="button" class="text-button appointment-detail-client">${escape(model.customerName)}</button>${item.customerPhone?`<p>${escape(item.customerPhone)}</p>`:""}</section><section><h4>Pet</h4><p><strong>${escape(model.petName)}</strong>${model.breed?` · ${escape(model.breed)}`:""}</p>${model.rabiesNeeded?`<p class="rabies-needed">Rabies needed</p>`:""}${model.warning?`<p class="detail-warning">${escape(model.warning)}</p>`:""}</section><section><h4>Groomer</h4><p>${escape(model.groomer)}</p></section><section class="appointment-detail-services"><h4>Services</h4>${serviceRows}</section><section class="appointment-detail-summary"><span>Total</span><strong>${model.durationMinutes} min${model.totalPriceMinor!==null?` · ${money(model.totalPriceMinor)}`:""}</strong></section>${item.notes?`<section><h4>Notes</h4><p>${escape(item.notes)}</p></section>`:""}<footer><button type="button" class="secondary compact appointment-detail-client">View client</button>${item.status==="scheduled"&&allowed("appointments.edit")?`<button type="button" class="secondary compact appointment-detail-move">Move</button>`:""}${["checked_in","in_service"].includes(item.status)&&allowed("appointments.edit")?`<button type="button" class="secondary compact appointment-detail-services-action">Adjust services</button>`:""}</footer></article>`,null,{cancelLabel:"Close"});const dialog=$("#modal");dialog.classList.add("appointment-detail-dialog");dialog.querySelector(".modal-head .close").setAttribute("aria-label","Close appointment details");dialog.querySelector(".modal-head .close").focus();const next=callback=>{dialog.close();setTimeout(callback,50);};dialog.querySelectorAll(".appointment-detail-client").forEach(button=>button.addEventListener("click",()=>next(()=>openClientProfile(item.customerId,{petId:item.petId,appointmentId:item.id,returnView:"calendar"}))));dialog.querySelector(".appointment-detail-move")?.addEventListener("click",()=>next(()=>moveAppointment(id)));dialog.querySelector(".appointment-detail-services-action")?.addEventListener("click",()=>next(()=>adjustServices(id)));}
-function renderMessages(){const query=($("#message-search")?.value||"").trim().toLowerCase(),clients=state.customerDirectory.items.filter(item=>`${item.firstName} ${item.lastName} ${item.phone||""} ${item.email||""}`.toLowerCase().includes(query));$("#message-client-list").innerHTML=clients.map(item=>`<button type="button" class="message-client ${item.id===state.messageClientId?"active":""}" data-message-client="${item.id}"><span><strong>${escape(item.firstName)} ${escape(item.lastName)}</strong><small>${escape(item.phone||item.email||"No contact details")}</small></span></button>`).join("")||`<p class="empty">No clients match.</p>`;$$('[data-message-client]').forEach(button=>button.addEventListener("click",()=>selectMessageClient(button.dataset.messageClient)));}
-async function selectMessageClient(id){const data=await api(`/api/customers/${id}/history`);state.messageClientId=id;renderMessages();const name=`${data.customer.firstName} ${data.customer.lastName}`;$("#message-thread").innerHTML=`<header><a class="message-client-link" href="/clients/${id}" target="_blank" rel="noopener">${escape(name)}</a></header><div class="message-disabled-state"><h3>Messaging is not connected</h3><p>No conversation history, inbound webhook, SMS provider, delivery status, or scheduler is configured.</p></div><footer><textarea disabled aria-label="Message composer" placeholder="Messaging unavailable"></textarea><button type="button" class="primary" disabled>Send</button></footer>`;$("#message-client-context").innerHTML=`<p class="eyebrow">Client</p><h3>${escape(name)}</h3><dl class="profile-facts"><div><dt>Phone</dt><dd>${escape(data.customer.phone||"Not provided")}</dd></div><div><dt>Email</dt><dd>${escape(data.customer.email||"Not provided")}</dd></div></dl><h4>Pets</h4>${data.pets.map(pet=>`<button type="button" class="context-pet" data-context-pet="${pet.id}"><strong>${escape(pet.name)}</strong><span>${escape(pet.breed||"Breed not provided")}</span></button>`).join("")||"<p>No pets.</p>"}<button type="button" class="secondary compact open-context-profile">Open full profile</button>`;$(".open-context-profile").addEventListener("click",()=>openClientProfile(id,{returnView:"messages"}));}
+// ---------------------------------------------------------------------------
+// Appointment photos
+//
+// Before-and-after shots of the pet, grouped by phase. The tiles render straight from
+// `/api/appointment-photos/:id/content`, which is same-origin and cookie-authenticated, so
+// nothing here needs a signed URL or a second credential path.
+// ---------------------------------------------------------------------------
+const PHOTO_ACCEPT="image/jpeg,image/png,image/webp";
+
+function photoTileMarkup(photo,canEdit){
+  // The intrinsic size is published so the strip reserves the right box before the bytes
+  // arrive; without it a set of photos reflows the dialog as each one loads.
+  const ratio=photo.width&&photo.height?`${photo.width} / ${photo.height}`:"4 / 3";
+  return `<figure class="photo-tile" style="aspect-ratio:${ratio}" data-photo-id="${escape(photo.id)}">`
+    +`<img src="/api/appointment-photos/${encodeURIComponent(photo.id)}/content" alt="${escape(photo.originalFilename)}" loading="lazy"${photo.width?` width="${Number(photo.width)}"`:""}${photo.height?` height="${Number(photo.height)}"`:""}>`
+    +(canEdit?`<button type="button" class="photo-remove" data-photo-remove="${escape(photo.id)}" aria-label="Remove ${escape(photo.originalFilename)}">×</button>`:"")
+    +`</figure>`;
+}
+
+function photoPhaseMarkup(pet,phase,label,canEdit,limit){
+  const photos=pet[phase]||[];
+  const full=photos.length>=limit;
+  return `<div class="photo-phase"><p class="photo-phase-label">${escape(label)}</p><div class="photo-strip">`
+    +(canEdit
+      ? `<button type="button" class="photo-add" data-photo-pet="${escape(pet.petId)}" data-photo-phase="${escape(phase)}"${full?" disabled":""} aria-label="Add ${escape(label.toLowerCase())} photo for ${escape(petName({petName:pet.petName}))}">`
+        +`<span aria-hidden="true">+</span><small>${full?"Limit reached":"Add"}</small></button>`
+      : "")
+    +photos.map(photo=>photoTileMarkup(photo,canEdit)).join("")
+    +(!photos.length&&!canEdit?`<p class="photo-empty">No ${escape(label.toLowerCase())} photos.</p>`:"")
+    +`</div></div>`;
+}
+
+function appointmentPhotosMarkup(state){
+  if(state.failed)return `<p class="photo-empty">Photos could not be loaded.</p>`;
+  if(!state.data)return `<p class="photo-empty">Loading photos…</p>`;
+  const {pets,canEdit,maxPerPhase}=state.data;
+  if(!pets?.length)return `<p class="photo-empty">No pet is attached to this appointment.</p>`;
+  return pets.map(pet=>{
+    const count=(pet.before?.length||0)+(pet.after?.length||0);
+    return `<details class="photo-pet" data-photo-pet-section="${escape(pet.petId)}" open>`
+      +`<summary><span class="service-section-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></span>`
+      +`<span>${escape(petName({petName:pet.petName}))}</span><small>${count}</small></summary>`
+      +`<div class="photo-pet-body">`
+        +photoPhaseMarkup(pet,"before","Before",canEdit,maxPerPhase)
+        +photoPhaseMarkup(pet,"after","After",canEdit,maxPerPhase)
+      +`</div></details>`;
+  }).join("");
+}
+
+async function uploadAppointmentPhoto(appointmentId,petId,phase,file){
+  const body=new FormData();
+  // Metadata must be the first part: the route reads it before it will touch the file, so a
+  // request that streams bytes ahead of its own description is refused rather than buffered.
+  body.append("metadata",JSON.stringify({petId,phase,uploadRequestId:globalThis.crypto.randomUUID()}));
+  body.append("file",file,file.name||"photo");
+  return api(`/api/appointments/${appointmentId}/photos`,{method:"POST",body});
+}
+
+function bindAppointmentPhotos(dialog,appointmentId,photos,rerender){
+  const container=dialog.querySelector('[data-testid="appointment-photos"]');
+  if(!container)return;
+  const reload=async()=>{
+    try{photos.data=await api(`/api/appointments/${appointmentId}/photos`);photos.failed=false;}
+    catch{photos.failed=true;}
+    rerender();
+  };
+  container.querySelectorAll(".photo-add").forEach(button=>button.addEventListener("click",()=>{
+    const input=document.createElement("input");
+    input.type="file";input.accept=PHOTO_ACCEPT;
+    input.addEventListener("change",async()=>{
+      const file=input.files?.[0];if(!file)return;
+      button.disabled=true;
+      try{
+        await uploadAppointmentPhoto(appointmentId,button.dataset.photoPet,button.dataset.photoPhase,file);
+        await reload();
+      }catch(error){toast(error.message);button.disabled=false;}
+    },{once:true});
+    input.click();
+  }));
+  container.querySelectorAll(".photo-remove").forEach(button=>button.addEventListener("click",async()=>{
+    if(!confirm("Remove this photo?"))return;
+    button.disabled=true;
+    try{await api(`/api/appointment-photos/${button.dataset.photoRemove}`,{method:"DELETE"});await reload();}
+    catch(error){toast(error.message);button.disabled=false;}
+  }));
+}
+// ---------------------------------------------------------------------------
+// Report cards
+//
+// A short write-up of the visit, previewed in its own window. The preview is a staff view:
+// it needs the same session as the rest of Pawsh, and there is no link to hand a client.
+// ---------------------------------------------------------------------------
+function reportCardStamp(value){
+  if(!value)return null;
+  const when=new Date(value);
+  return `${new Intl.DateTimeFormat([],{dateStyle:"medium"}).format(when)} ${new Intl.DateTimeFormat([],{timeStyle:"short"}).format(when)}`;
+}
+
+function reportCardActionsMarkup(card,canEdit,canSend){
+  const action=(key,label,icon,enabled)=>enabled
+    ? `<button type="button" class="report-card-action" data-report-card-action="${key}" data-report-card="${escape(card.id)}" title="${escape(label)}" aria-label="${escape(label)}">${icon}</button>`
+    : "";
+  return `<div class="report-card-actions">`
+    +action("preview","Preview report card",`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>`,true)
+    +action("edit","Edit report card",`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17Z"/></svg>`,canEdit)
+    +action("delete","Delete report card",`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg>`,canEdit)
+    +action("send","Send report card",`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3 3 10l7 3 3 7Z"/></svg>`,canSend)
+    +`</div>`;
+}
+
+function appointmentReportCardsMarkup(state){
+  if(state.failed)return `<p class="report-card-empty">Report cards could not be loaded.</p>`;
+  if(!state.data)return `<p class="report-card-empty">Loading report cards…</p>`;
+  const {items,canEdit,canSend}=state.data;
+  if(!items.length){
+    return `<p class="report-card-empty">No report card for this visit yet.</p>`;
+  }
+  return `<div class="report-card-table-wrap" data-allow-horizontal-scroll><table class="report-card-table">`
+    +`<thead><tr><th scope="col">Date</th><th scope="col">Pet</th><th scope="col">Client</th>`
+    +`<th scope="col">Last edited</th><th scope="col">Last sent</th><th scope="col">Actions</th></tr></thead><tbody>`
+    +items.map(card=>`<tr>`
+      +`<td>${escape(new Intl.DateTimeFormat([],{dateStyle:"medium"}).format(new Date(card.appointmentDate)))}</td>`
+      +`<td>${escape(petName({petName:card.petName}))}</td>`
+      +`<td>${escape(card.customerName)}</td>`
+      +`<td>${escape(reportCardStamp(card.lastEditedAt)||"—")}<small>${escape(card.lastEditedBy||"")}</small></td>`
+      // A card that has never been sent says so rather than showing a blank cell that could be
+      // read either way.
+      +`<td>${card.lastSentAt?escape(reportCardStamp(card.lastSentAt)):`<span class="report-card-unsent">Not sent</span>`}</td>`
+      +`<td>${reportCardActionsMarkup(card,canEdit,canSend)}</td></tr>`).join("")
+    +`</tbody></table></div>`;
+}
+
+function openReportCardPreview(cardId){
+  // A named window so repeated previews reuse one tab instead of piling up.
+  globalThis.open(`/api/report-cards/${encodeURIComponent(cardId)}/preview`,"pawsh-report-card","noopener");
+}
+
+// The appointment detail already occupies the shared dialog, so the editor and the send
+// confirmation stack on top of it instead of replacing it. Calling openModal here would throw:
+// showModal() on an already-open dialog is an error, and the operator would lose the detail
+// they were working in.
+function openReportCardEditor(card,{appointmentId,petId,onSaved}){
+  const existing=Boolean(card);
+  openStackedDialog({
+    title:existing?"Edit report card":"New report card",
+    body:`<label class="stacked-field">Note for the client`
+      +`<textarea name="note" maxlength="4000" rows="6" placeholder="How the visit went, anything the client should know.">${escape(card?.note||"")}</textarea></label>`
+      +`<p class="fine">The visit, services, groomer, and photos are read from the appointment when the card is shown, so they stay correct without being copied in here.</p>`,
+    dismissLabel:"Cancel",
+    confirmLabel:existing?"Save":"Create",
+    onConfirm:async body=>{
+      const note=String(body.querySelector('[name="note"]').value||"").trim()||null;
+      if(existing)await api(`/api/report-cards/${card.id}`,{method:"PATCH",body:JSON.stringify({note,version:card.version})});
+      else await api(`/api/appointments/${appointmentId}/report-cards`,{method:"POST",body:JSON.stringify({petId,note})});
+      toast(existing?"Report card saved":"Report card created");
+      runDetached(onSaved);
+    }
+  });
+}
+
+function openReportCardSend(card,onSent){
+  openStackedDialog({
+    title:"Send report card",
+    body:`<p>Email ${escape(petName({petName:card.petName}))}'s report card to ${escape(card.customerName)}?</p>`
+      // Said before the send, not discovered after it.
+      +`<p class="fine">The message carries the visit, the services, and your note. It does not carry the photos: Pawsh sends plain email and has no client-facing page to link to, so the message tells the client the photos are held on their record at the salon.</p>`
+      +(card.sendCount?`<p class="fine">Already sent ${escape(String(card.sendCount))} time${card.sendCount===1?"":"s"}, most recently ${escape(reportCardStamp(card.lastSentAt))}.</p>`:""),
+    dismissLabel:"Cancel",
+    confirmLabel:"Send",
+    onConfirm:async()=>{
+      const result=await api(`/api/report-cards/${card.id}/send`,{method:"POST",body:JSON.stringify({channel:"email"})});
+      toast(`Report card queued by email to ${result.destination}`);
+      runDetached(onSent);
+    }
+  });
+}
+
+function bindAppointmentReportCards(dialog,appointmentId,cards,rerender){
+  const container=dialog.querySelector('[data-testid="appointment-report-cards"]');
+  if(!container)return;
+  const reload=async()=>{
+    try{cards.data=await api(`/api/appointments/${appointmentId}/report-cards`);cards.failed=false;}
+    catch{cards.failed=true;}
+    rerender();
+  };
+  const byId=id=>(cards.data?.items||[]).find(card=>card.id===id);
+  container.querySelectorAll("[data-report-card-action]").forEach(button=>button.addEventListener("click",async()=>{
+    const card=byId(button.dataset.reportCard);if(!card)return;
+    const action=button.dataset.reportCardAction;
+    if(action==="preview")return openReportCardPreview(card.id);
+    if(action==="edit")return openReportCardEditor(card,{onSaved:reload});
+    if(action==="send")return openReportCardSend(card,reload);
+    if(!confirm(`Delete ${card.petName}'s report card?${card.sendCount?" It has already been sent to the client." : ""}`))return;
+    button.disabled=true;
+    try{await api(`/api/report-cards/${card.id}`,{method:"DELETE"});await reload();}
+    catch(error){toast(error.message);button.disabled=false;}
+  }));
+  // Add sits in the section header beside the heading, not inside the table container, so it is
+  // looked up from the dialog rather than from `container`.
+  dialog.querySelector("[data-report-card-add]")?.addEventListener("click",event=>{
+    openReportCardEditor(null,{
+      appointmentId,petId:event.currentTarget.dataset.reportCardAdd,onSaved:reload
+    });
+  });
+}
+// Phrasing for the audit feed. Every line names what happened, who recorded it, and when,
+// because an activity log whose entries cannot be attributed is not evidence of anything.
+const APPOINTMENT_ACTIVITY_LABELS={
+  "appointment.create":"Appointment created",
+  "appointment.move":"Appointment rescheduled",
+  "appointment.services.update":"Services changed",
+  "appointment.conflict_override":"Overlap booked deliberately",
+  "appointment.checked_in":"Checked in",
+  "appointment.in_service":"Service started",
+  "appointment.completed":"Marked completed",
+  "appointment.cancelled":"Appointment cancelled",
+  "appointment.no_show":"Marked no show",
+  "invoice.create":"Checked out and invoiced",
+  "payment.record":"Payment recorded",
+  "payment.void":"Payment record voided"
+};
+function activityStamp(value){
+  const when=new Date(value);
+  return `${new Intl.DateTimeFormat([],{dateStyle:"medium"}).format(when)} ${new Intl.DateTimeFormat([],{timeStyle:"short"}).format(when)}`;
+}
+function appointmentActivityLine(entry){
+  const label=APPOINTMENT_ACTIVITY_LABELS[entry.action]||entry.action.replaceAll("."," ").replaceAll("_"," ");
+  const parts=[label];
+  if(entry.action==="payment.record"&&entry.amountMinor!==null)parts.push(`${money(entry.amountMinor)}${entry.method?` by ${entry.method}`:""}`);
+  if(entry.action==="invoice.create"&&entry.totalMinor!==null)parts.push(money(entry.totalMinor));
+  if(entry.action==="appointment.move"&&entry.fromStartAt&&entry.toStartAt)parts.push(`${activityStamp(entry.fromStartAt)} → ${activityStamp(entry.toStartAt)}`);
+  return `${parts.join(" · ")} by ${entry.actorName||"an unknown account"} at ${activityStamp(entry.createdAt)}${entry.reason?` — ${entry.reason}`:""}`;
+}
+// Pawsh stores no dedicated check-in or check-out timestamp; the QA registry records that as an
+// open gap. The audit trail does hold the moment each transition was recorded, so the times are
+// derived from it and labelled as recorded events rather than presented as stored fields.
+function appointmentLifecycleTimes(activity){
+  const at=action=>activity.find(entry=>entry.action===action)?.createdAt||null;
+  const checkedIn=at("appointment.checked_in");
+  const finished=at("appointment.completed")||at("appointment.cancelled")||at("appointment.no_show");
+  const minutes=checkedIn&&finished
+    ? Math.max(0,Math.round((new Date(finished)-new Date(checkedIn))/60000))
+    : null;
+  return {checkedIn,finished,minutes};
+}
+function appointmentActivityMarkup(state){
+  if(state.failed)return `<p class="activity-empty">Appointment activity could not be loaded.</p>`;
+  if(!state.items)return `<p class="activity-empty">Loading activity…</p>`;
+  if(!state.items.length)return `<p class="activity-empty">No recorded activity for this appointment.</p>`;
+  return `<ol class="activity-feed">${state.items.map(entry=>
+    `<li>${escape(appointmentActivityLine(entry))}</li>`).join("")}</ol>`;
+}
+
+async function openCalendarAppointment(id,origin=null){
+  const item=calendarAppointmentById(id);if(!item)return;
+  calendarDetailOrigin=origin||document.activeElement;hideCalendarHover();
+  const model=appointmentPresentation(item);
+  const serviceRows=model.serviceSnapshots.map(service=>`<div><span><strong>${escape(service.name)}</strong><small>${Number(service.durationMinutes)} min</small></span><strong>${service.priceMinor===null||service.priceMinor===undefined?"Price unavailable":money(service.priceMinor)}</strong></div>`).join("");
+  // The invoice state is the honest paid badge: an appointment with no invoice is unbilled
+  // rather than unpaid, and the two read very differently to whoever is looking at the row.
+  const billing=!item.invoiceStatus?{label:"Not invoiced",tone:"muted"}
+    :item.invoiceStatus==="paid"?{label:"Paid",tone:"paid"}
+    :{label:`${String(item.invoiceStatus).replaceAll("_"," ")}${item.invoiceBalanceMinor?` · ${money(item.invoiceBalanceMinor)} due`:""}`,tone:"owing"};
+  // A UUID is not a counter, so this is presented as a reference rather than an invented number.
+  const reference=String(item.id).slice(0,8);
+  const activity={items:null,failed:false};
+  const photos={data:null,failed:false};
+  const cards={data:null,failed:false};
+  const lifecycleMarkup=()=>{
+    const {checkedIn,finished,minutes}=appointmentLifecycleTimes(activity.items||[]);
+    if(!activity.items)return `<span>Checked in: …</span><span>Checked out: …</span><span>Actual: …</span>`;
+    return `<span>Checked in: <strong>${checkedIn?escape(activityStamp(checkedIn)):"not recorded"}</strong></span>`
+      +`<span>Checked out: <strong>${finished?escape(activityStamp(finished)):"not recorded"}</strong></span>`
+      +`<span>Actual: <strong>${minutes===null?"not recorded":`${minutes} min`}</strong></span>`;
+  };
+
+  openModal("Appointment",
+    `<article class="wide appointment-detail" data-testid="appointment-detail">`
+    +`<header><div><p class="appointment-reference" data-testid="appointment-reference">Appointment #${escape(reference)} <span class="appointment-billing ${billing.tone}" data-testid="appointment-billing">${escape(billing.label)}</span></p>`
+      +`<span class="appointment-status">${escape(model.status)}</span><h3>${escape(model.dateLabel)}</h3><p>${escape(model.timeRange)} · scheduled ${model.durationMinutes} min</p></div></header>`
+    +`<div class="appointment-lifecycle" data-testid="appointment-lifecycle">${lifecycleMarkup()}</div>`
+    +`<section><h4>Client</h4><button type="button" class="text-button appointment-detail-client">${escape(model.customerName)}</button>`
+      +`${item.customerPhone?`<p>${escape(item.customerPhone)}</p>`:""}</section>`
+    +`<section><h4>Pet</h4><p><strong>${escape(petName({petName:model.petName}))}</strong>${model.breed?` · ${escape(model.breed)}`:""}</p>${model.rabiesNeeded?`<p class="rabies-needed">Rabies needed</p>`:""}${model.warning?`<p class="detail-warning">${escape(model.warning)}</p>`:""}</section>`
+    +`<section><h4>Groomer</h4><p>${escape(model.groomer)}</p></section>`
+    +`<section class="appointment-detail-services"><h4>Services</h4>${serviceRows}</section>`
+    +`<section class="appointment-detail-summary"><span>Total</span><strong>${model.durationMinutes} min${model.totalPriceMinor!==null?` · ${money(model.totalPriceMinor)}`:""}</strong></section>`
+    +(item.notes?`<section><h4>Notes</h4><p>${escape(item.notes)}</p></section>`:"")
+    +`<details class="appointment-activity" data-testid="appointment-activity"><summary><span class="service-section-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></span><span>Appointment Activities</span><small data-activity-count>…</small></summary>`
+      +`<div class="appointment-activity-body">${appointmentActivityMarkup(activity)}</div></details>`
+    +`<section class="appointment-photos"><h4>Photos</h4><div data-testid="appointment-photos">${appointmentPhotosMarkup(photos)}</div></section>`
+    +`<section class="appointment-report-cards"><div class="report-card-head"><h4>Report Card</h4><span data-testid="report-card-add-slot"></span></div>`
+      +`<div data-testid="appointment-report-cards">${appointmentReportCardsMarkup(cards)}</div></section>`
+    +`<footer><button type="button" class="secondary compact appointment-detail-client">View client</button>${item.status==="scheduled"&&allowed("appointments.edit")?`<button type="button" class="secondary compact appointment-detail-move">Move</button>`:""}${["checked_in","in_service"].includes(item.status)&&allowed("appointments.edit")?`<button type="button" class="secondary compact appointment-detail-services-action">Adjust services</button>`:""}</footer>`
+    +`</article>`,
+    null,{cancelLabel:"Close"});
+
+  const dialog=$("#modal");
+  dialog.classList.add("appointment-detail-dialog");
+  dialog.querySelector(".modal-head .close").setAttribute("aria-label","Close appointment details");
+  dialog.querySelector(".modal-head .close").focus();
+  const next=callback=>{dialog.close();setTimeout(callback,50);};
+  dialog.querySelectorAll(".appointment-detail-client").forEach(button=>button.addEventListener("click",()=>next(()=>openClientProfile(item.customerId,{petId:item.petId,appointmentId:item.id,returnView:"calendar"}))));
+  dialog.querySelector(".appointment-detail-move")?.addEventListener("click",()=>next(()=>moveAppointment(id)));
+  dialog.querySelector(".appointment-detail-services-action")?.addEventListener("click",()=>next(()=>adjustServices(id)));
+
+  // Photos re-render on their own after an upload or removal, without reopening the dialog or
+  // disturbing anything else in it.
+  const renderPhotos=()=>{
+    const target=dialog.querySelector('[data-testid="appointment-photos"]');
+    if(!target)return;
+    target.innerHTML=appointmentPhotosMarkup(photos);
+    bindAppointmentPhotos(dialog,id,photos,renderPhotos);
+  };
+
+  // Both loads happen after the dialog is on screen and in parallel. They are supporting detail,
+  // and blocking the whole dialog on them would make opening an appointment slower for the
+  // common case where nobody looks at either.
+  // Add is rendered from the loaded data rather than the markup above, because whether a pet
+  // still needs a card is only known once the cards are back.
+  const renderCards=()=>{
+    const target=dialog.querySelector('[data-testid="appointment-report-cards"]');
+    const slot=dialog.querySelector('[data-testid="report-card-add-slot"]');
+    if(!target)return;
+    target.innerHTML=appointmentReportCardsMarkup(cards);
+    if(slot){
+      const pending=cards.data?.canEdit?(cards.data.availablePetIds||[]):[];
+      // The photo strips also offer an "+ Add", so this one carries an explicit label rather
+      // than relying on its visible text to tell the two apart.
+      slot.innerHTML=pending.length
+        ? `<button type="button" class="secondary compact" data-testid="report-card-add" data-report-card-add="${escape(pending[0])}" aria-label="Add report card">+ Add</button>`
+        : "";
+    }
+    bindAppointmentReportCards(dialog,id,cards,renderCards);
+  };
+
+  const [activityResult,photoResult,cardResult]=await Promise.allSettled([
+    api(`/api/appointments/${id}/activity`),
+    api(`/api/appointments/${id}/photos`),
+    api(`/api/appointments/${id}/report-cards`)
+  ]);
+  if(activityResult.status==="fulfilled")activity.items=activityResult.value.items||[];
+  else activity.failed=true;
+  if(photoResult.status==="fulfilled")photos.data=photoResult.value;
+  else photos.failed=true;
+  if(cardResult.status==="fulfilled")cards.data=cardResult.value;
+  else cards.failed=true;
+  // The dialog is shared, so it may have been closed and reused for something else while these
+  // were in flight. Writing into it then would put an appointment's photos inside another dialog.
+  if(!dialog.open||!dialog.contains(dialog.querySelector('[data-testid="appointment-activity"]')))return;
+  const body=dialog.querySelector(".appointment-activity-body");
+  if(body)body.innerHTML=appointmentActivityMarkup(activity);
+  const count=dialog.querySelector("[data-activity-count]");
+  if(count)count.textContent=activity.failed?"unavailable":`(${activity.items.length})`;
+  const lifecycle=dialog.querySelector('[data-testid="appointment-lifecycle"]');
+  if(lifecycle)lifecycle.innerHTML=lifecycleMarkup();
+  renderPhotos();
+  renderCards();
+}
+function renderMessages(){const query=($("#message-search")?.value||"").trim().toLowerCase(),clients=state.customerDirectory.items.filter(item=>`${clientName(item)} ${item.phone||""} ${item.email||""}`.toLowerCase().includes(query));$("#message-client-list").innerHTML=clients.map(item=>`<button type="button" class="message-client ${item.id===state.messageClientId?"active":""}" data-message-client="${item.id}"><span><strong>${escape(clientName(item))}</strong><small>${escape(item.phone||item.email||"No contact details")}</small></span></button>`).join("")||`<p class="empty">No clients match.</p>`;$$('[data-message-client]').forEach(button=>button.addEventListener("click",()=>selectMessageClient(button.dataset.messageClient)));}
+async function selectMessageClient(id){const data=await api(`/api/customers/${id}/history`);state.messageClientId=id;renderMessages();const name=`${clientName(data.customer)}`;$("#message-thread").innerHTML=`<header><a class="message-client-link" href="/clients/${id}" target="_blank" rel="noopener">${escape(name)}</a></header><div class="message-disabled-state"><h3>Messaging is not connected</h3><p>No conversation history, inbound webhook, SMS provider, delivery status, or scheduler is configured.</p></div><footer><textarea disabled aria-label="Message composer" placeholder="Messaging unavailable"></textarea><button type="button" class="primary" disabled>Send</button></footer>`;$("#message-client-context").innerHTML=`<p class="eyebrow">Client</p><h3>${escape(name)}</h3><dl class="profile-facts"><div><dt>Phone</dt><dd>${escape(data.customer.phone||"Not provided")}</dd></div><div><dt>Email</dt><dd>${escape(data.customer.email||"Not provided")}</dd></div></dl><h4>Pets</h4>${data.pets.map(pet=>`<button type="button" class="context-pet" data-context-pet="${pet.id}"><strong>${escape(petName(pet))}</strong><span>${escape(pet.breed||"Breed not provided")}</span></button>`).join("")||"<p>No pets.</p>"}<button type="button" class="secondary compact open-context-profile">Open full profile</button>`;$(".open-context-profile").addEventListener("click",()=>openClientProfile(id,{returnView:"messages"}));}
 const reminderTabs=[["appointment_reminder","Appointment Reminder","supported"],["secondary_reminder","Secondary Reminder","deferred"],["same_day_reminder","Same-Day Reminder","deferred"],["rebook_reminder","Rebook Reminder","deferred"],["vaccination_reminder","Vaccination Reminder","supported"],["birthday_reminder","Pet Birthday Reminder","deferred"]];
 async function loadReminders(type=state.reminders.type){state.reminders.type=type;const result=await api(`/api/reminders?type=${encodeURIComponent(type)}`);state.reminders={type,items:result.items,supported:result.supported};renderReminders();}
 function renderReminders(){const {type,items,supported}=state.reminders;$("#reminder-tabs").innerHTML=reminderTabs.map(([id,label])=>`<button type="button" role="tab" data-reminder-tab="${id}" aria-selected="${id===type}">${escape(label)}</button>`).join("");$$('[data-reminder-tab]').forEach(button=>button.addEventListener("click",()=>loadReminders(button.dataset.reminderTab)));if(!supported){$("#reminder-content").innerHTML=`<div class="reminder-empty"><p class="eyebrow">Deferred</p><h3>${escape(reminderTabs.find(([id])=>id===type)?.[1]||"Reminder")}</h3><p>This reminder type has no Pawsh scheduling or delivery backend yet. No records or actions are fabricated.</p></div>`;return;}$("#reminder-content").innerHTML=`<div class="reminder-table-wrap"><table class="reminder-table"><thead><tr><th>Record ID</th><th>Status</th><th>Time</th><th>Client</th><th>Reminder Status</th><th>Action</th><th>Logs</th></tr></thead><tbody>${items.map(item=>`<tr><td><code>${escape(String(item.appointmentId||item.id).slice(0,8))}</code></td><td><span class="status-dot">${escape(item.appointmentStatus||"Scheduled")}</span></td><td>${new Intl.DateTimeFormat([],{dateStyle:"medium",timeStyle:"short"}).format(new Date(item.scheduledOccurrence))}</td><td>${escape([item.firstName,item.lastName].filter(Boolean).join(" ")||"Staff notification")}</td><td><span class="badge ${escape(item.reminderStatus)}">${escape(item.reminderStatus.replace("_"," "))}</span></td><td>${["pending","failed"].includes(item.reminderStatus)&&allowed("appointments.edit")?`<button type="button" class="secondary compact reminder-send" data-reminder-id="${item.id}">${item.reminderStatus==="failed"?"Retry":"Send"}</button>`:"—"}</td><td><button type="button" class="icon-action reminder-logs" data-reminder-id="${item.id}" aria-label="Show reminder logs" aria-expanded="false">+</button></td></tr><tr class="reminder-log-row" data-reminder-logs="${item.id}" hidden><td colspan="7">${item.logs.length?item.logs.map(log=>`<div class="reminder-log"><time>${new Date(log.createdAt).toLocaleString()}</time><span>${escape(item.channel)} · ${escape(item.destination)}</span><strong>${escape(log.outcome)}</strong>${log.safeFailureReason?`<small>${escape(log.safeFailureReason)}</small>`:""}</div>`).join(""):`<span class="empty">No delivery attempts yet.</span>`}</td></tr>`).join("")||`<tr><td colspan="7" class="empty">No reminders in this workspace.</td></tr>`}</tbody></table></div>`;$$('.reminder-logs').forEach(button=>button.addEventListener("click",()=>{const row=$(`[data-reminder-logs="${button.dataset.reminderId}"]`),open=row.hidden;row.hidden=!open;button.textContent=open?"−":"+";button.setAttribute("aria-expanded",String(open));}));$$('.reminder-send').forEach(button=>button.addEventListener("click",async()=>{button.disabled=true;try{await api(`/api/reminders/${button.dataset.reminderId}/send`,{method:"POST"});toast("Reminder queued for delivery");await loadReminders();}catch(error){toast(error.message);button.disabled=false;}}));}
@@ -2142,7 +3178,7 @@ $("#breed-show-inactive")?.addEventListener("change",event=>{state.breedCatalog.
 $("#breed-sort-name")?.addEventListener("click",()=>{state.breedCatalog.sortDirection*=-1;$("#breed-sort-name span").textContent=state.breedCatalog.sortDirection===1?"A–Z":"Z–A";renderBreedCatalog();});
 $("#breed-add-form")?.addEventListener("submit",async event=>{event.preventDefault();const form=event.currentTarget,errorBox=$("#breed-add-error");errorBox.textContent="";form.elements.name.removeAttribute("aria-invalid");try{const values=Object.fromEntries(new FormData(form));await api("/api/dog-breeds",{method:"POST",body:JSON.stringify(values)});form.reset();await reloadBreeds();toast("Breed added");}catch(error){errorBox.textContent=error.message;if(error.status===409&&error.data?.existing&&!error.data.existing.active){const button=document.createElement("button");button.type="button";button.className="text-button";button.textContent=`Reactivate ${error.data.existing.name}`;button.addEventListener("click",()=>toggleBreed(error.data.existing.id,true));errorBox.append(" ",button);}form.elements.name.setAttribute("aria-invalid","true");}});
 function printRangeDefaults(){if(state.calendar.view==="day"||state.calendar.view==="month")return [state.calendar.selectedDate,state.calendar.selectedDate];return [state.calendar.weekStart,dateShift(state.calendar.weekStart,6)];}
-function printableAgenda(items){const sorted=items.slice().sort((a,b)=>new Date(a.startAt)-new Date(b.startAt));return sorted.length?sorted.map(item=>{const model=appointmentPresentation(item);return `<article class="print-appointment"><header><strong>${escape(model.groomer)}</strong><span>${escape(model.dateLabel)} · ${escape(model.timeRange)}</span></header><div><p><b>Pet:</b> ${escape(model.petName)}${model.breed?` · ${escape(model.breed)}`:""}</p><p><b>Services:</b> ${model.services.map(escape).join(", ")}</p><p><b>Client:</b> ${escape(model.customerName)}${item.customerPhone?` · ${escape(item.customerPhone)}`:""}</p>${item.notes?`<p><b>Appointment note:</b> ${escape(item.notes)}</p>`:""}</div></article>`;}).join(""):`<p>No appointments in this print range.</p>`;}
+function printableAgenda(items){const sorted=items.slice().sort((a,b)=>new Date(a.startAt)-new Date(b.startAt));return sorted.length?sorted.map(item=>{const model=appointmentPresentation(item);return `<article class="print-appointment"><header><strong>${escape(model.groomer)}</strong><span>${escape(model.dateLabel)} · ${escape(model.timeRange)}</span></header><div><p><b>Pet:</b> ${escape(petName({petName:model.petName}))}${model.breed?` · ${escape(model.breed)}`:""}</p><p><b>Services:</b> ${model.services.map(escape).join(", ")}</p><p><b>Client:</b> ${escape(model.customerName)}${item.customerPhone?` · ${escape(item.customerPhone)}`:""}</p>${item.notes?`<p><b>Appointment note:</b> ${escape(item.notes)}</p>`:""}</div></article>`;}).join(""):`<p>No appointments in this print range.</p>`;}
 async function printAgendaItems(form){const start=String(form.get("printStart")),end=String(form.get("printEnd")),days=Math.round((dateAt(end)-dateAt(start))/86400000)+1;if(!start||!end||days<1||days>31)throw new Error("Choose a print range from 1 to 31 days.");const groomerId=String(form.get("printGroomer")||""),items=filteredAppointments(await loadAppointmentRange(start,days));return groomerId?items.filter(item=>(item.groomers||[]).some(groomer=>groomer.id===groomerId)):items;}
 async function openPrintAgenda(){const [start,end]=printRangeDefaults(),groomers=selectedGroomers();openModal("Print agenda",`<div class="wide print-controls"><label>From<input type="date" name="printStart" value="${start}" required></label><label>To<input type="date" name="printEnd" value="${end}" required></label><label>Groomer<select name="printGroomer"><option value="">All selected groomers</option>${groomers.map(item=>`<option value="${item.id}">${escape(item.displayName)}</option>`).join("")}</select></label><button type="button" class="secondary compact" id="print-preview-update">Update preview</button></div><section id="print-agenda-preview" class="wide print-agenda-preview" aria-live="polite">Loading preview…</section>`,async form=>{const items=await printAgendaItems(form),printRoot=document.createElement("section");printRoot.className="print-root";printRoot.innerHTML=`<h1>Pawsh agenda</h1>${printableAgenda(items)}`;document.body.append(printRoot);globalThis.print();setTimeout(()=>printRoot.remove(),1000);},{cancelLabel:"Close",submitLabel:"Print"});const refreshPreview=async()=>{try{$("#print-agenda-preview").innerHTML=printableAgenda(await printAgendaItems(new FormData($("#modal-form"))));}catch(error){$("#modal-error").textContent=error.message;}};$("#print-preview-update").addEventListener("click",refreshPreview);await refreshPreview();}
 function openCalendarSettings(){const preferences=calendarPreferences(),derived=state.businessHours.flatMap(period=>[String(period.startTime).slice(0,5),String(period.endTime).slice(0,5)]).map(value=>Number(value.slice(0,2))*60+Number(value.slice(3,5))),fallback=derived.length?[Math.min(...derived),Math.max(...derived)]:[480,1140],start=preferences.visibleStart??fallback[0],end=preferences.visibleEnd??fallback[1];openModal("Calendar settings",`<p class="wide settings-note">These preferences change only your calendar view. Salon business hours and booking rules remain unchanged.</p><label>Visible from<select name="visibleStart">${Array.from({length:33},(_,i)=>i*30+300).map(value=>`<option value="${value}" ${value===start?"selected":""}>${timeLabel(value)}</option>`).join("")}</select></label><label>Visible until<select name="visibleEnd">${Array.from({length:33},(_,i)=>i*30+480).map(value=>`<option value="${value}" ${value===end?"selected":""}>${timeLabel(value)}</option>`).join("")}</select></label><label>First day of week<select name="firstDay"><option value="sunday" ${preferences.firstDay==="sunday"?"selected":""}>Sunday</option><option value="monday" ${preferences.firstDay==="monday"?"selected":""}>Monday</option></select></label><label>Calendar density<select name="density"><option value="compact" ${preferences.density==="compact"?"selected":""}>Compact</option><option value="comfortable" ${preferences.density==="comfortable"?"selected":""}>Comfortable</option><option value="large" ${preferences.density==="large"?"selected":""}>Large</option></select></label><label class="wide">Appointment detail<select name="detail"><option value="compact" ${preferences.detail==="compact"?"selected":""}>Compact</option><option value="detailed" ${preferences.detail==="detailed"?"selected":""}>Detailed</option></select></label><button type="button" class="text-button wide" id="calendar-settings-reset">Reset to defaults</button>`,form=>{const next={visibleStart:Number(form.get("visibleStart")),visibleEnd:Number(form.get("visibleEnd")),firstDay:String(form.get("firstDay")),density:String(form.get("density")),detail:String(form.get("detail"))};if(next.visibleStart>=next.visibleEnd)throw new Error("Visible start must be before visible end.");state.calendar.preferences=next;globalThis.localStorage.setItem(calendarPreferenceKey(),JSON.stringify(next));state.calendar.weekStart=weekStart(state.calendar.selectedDate);applyCalendarPreferences();return ()=>loadCalendarWeek();},{cancelLabel:"Cancel",submitLabel:"Apply changes"});$("#calendar-settings-reset").addEventListener("click",()=>{globalThis.localStorage.removeItem(calendarPreferenceKey());state.calendar.preferences=null;$("#modal").close();applyCalendarPreferences();state.calendar.weekStart=weekStart(state.calendar.selectedDate);runDetached(loadCalendarWeek);});}

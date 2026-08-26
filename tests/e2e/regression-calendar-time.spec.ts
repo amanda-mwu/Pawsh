@@ -1,4 +1,5 @@
 import { createAppointment, expect, login, test } from "./fixtures/tenant.js";
+import { chooseBookingClient, chooseBookingPet, openSlotAction } from "./helpers/booking.js";
 
 test("@regression-calendar-time keeps Los Angeles scheduling intent in a New York browser", async ({browser,request,tenant}) => {
   const localStart=`${tenant.anchor}T09:00`;
@@ -37,7 +38,20 @@ test("@regression-calendar-time synchronizes week navigation and preselects an e
   await expect(page.locator(".month-sidebar")).toHaveCount(0);await expect(page.locator(".week-day-head")).toHaveCount(7);
   const initial=await page.locator("#calendar-range").textContent();await page.locator("#calendar-next-week").click();await expect(page.locator("#calendar-range")).not.toHaveText(initial??"");
   const nextRange=await page.locator("#calendar-range").textContent();await page.locator("#calendar-today").click();await expect(page.locator("#calendar-range")).not.toHaveText(nextRange??"");
-  const slot=page.locator('.week-slot:not(.closed)').first();const preset=await slot.getAttribute("data-slot");await slot.click();await expect(page.getByTestId("field-startAt")).toHaveValue(preset??"");await page.getByRole("button",{name:"Cancel"}).click();
+  const slot=page.locator('.week-slot:not(.closed)').first();const preset=await slot.getAttribute("data-slot");
+  await slot.click();
+  // The slot offers Add or Block before committing to either; Add carries the slot's own time.
+  await expect(page.getByTestId("slot-menu")).toBeVisible();
+  await page.getByTestId("slot-menu-add").click();
+  await chooseBookingClient(page,tenant.customerId);
+  await expect(page.locator('#booking-dialog [name="startAt"]')).toHaveValue(preset??"");
+  await page.getByTestId("booking-dialog").getByRole("button",{name:"Cancel",exact:true}).click();
+  await expect(page.getByTestId("booking-dialog")).toBeHidden();
+  // Block starts from the same slot rather than making someone retype the time they clicked.
+  await slot.click();
+  await page.getByTestId("slot-menu-block").click();
+  await expect(page.getByTestId("field-startAt")).toHaveValue(preset??"");
+  await page.getByTestId("modal").getByRole("button",{name:"Cancel",exact:true}).click();
 });
 
 test("@cross-browser @regression-calendar-time provides bounded print preview and view-only calendar settings",async({page,request,tenant})=>{
@@ -114,14 +128,19 @@ test("@cross-browser @regression-calendar-time renders groomer day lanes and pre
   await expect(page.locator(`.day-appointment[data-appointment-id="${appointment.id}"]`)).toHaveCount(1);
   await page.locator(`.day-appointment[data-appointment-id="${appointment.id}"] .calendar-open`).first().click();
   await expect(page.getByTestId("appointment-detail")).toBeVisible();await page.getByRole("button",{name:"Close appointment details"}).click();await expect(page.getByTestId("calendar")).toBeVisible();
-  const slot=page.locator(`.day-slot[data-slot="${tenant.anchor}T10:30"][data-slot-groomer="${tenant.employeeId}"]`);
-  await slot.click();
-  await expect(page.getByTestId("field-startAt")).toHaveValue(`${tenant.anchor}T10:30`);
-  await expect(page.locator('select[name="employeeId"]')).toHaveValue(tenant.employeeId);
-  await page.getByRole("button",{name:"Cancel",exact:true}).last().click();
-  await page.locator(`.day-slot[data-slot="${tenant.anchor}T11:00"][data-slot-groomer="${secondEmployee.id}"]`).click({position:{x:185,y:18}});
-  await page.getByTestId("field-customerId").selectOption(tenant.customerId);
-  await page.getByTestId("field-petId").selectOption(tenant.petId);
-  await expect(page.locator('select[name="employeeId"]')).toHaveValue(secondEmployee.id);
-  await expect(page.locator(`input[name="serviceIds"][value="${tenant.serviceId}"]`)).toBeChecked();
+  // An empty slot offers Add or Block before it commits to either, and Add carries the slot's
+  // own time and groomer column into the workspace.
+  await openSlotAction(page,{slot:`${tenant.anchor}T10:30`,groomerId:tenant.employeeId,action:"add"});
+  await chooseBookingClient(page,tenant.customerId);
+  await expect(page.locator('#booking-dialog [name="startAt"]')).toHaveValue(`${tenant.anchor}T10:30`);
+  await expect(page.locator('#booking-dialog select[name="employeeId"]')).toHaveValue(tenant.employeeId);
+  await page.getByTestId("booking-dialog").getByRole("button",{name:"Cancel",exact:true}).click();
+  await expect(page.getByTestId("booking-dialog")).toBeHidden();
+  await openSlotAction(page,{slot:`${tenant.anchor}T11:00`,groomerId:secondEmployee.id,action:"add"});
+  await chooseBookingClient(page,tenant.customerId);
+  await chooseBookingPet(page,tenant.petId);
+  // The slot's own groomer outranks the pet's last groomer, and an unpaid prior visit
+  // contributes no services.
+  await expect(page.locator('#booking-dialog select[name="employeeId"]')).toHaveValue(secondEmployee.id);
+  await expect(page.locator(`#booking-dialog input[name="serviceIds"][value="${tenant.serviceId}"]`)).not.toBeChecked();
 });

@@ -4,20 +4,26 @@ import {
   createMember,
   expect,
   login,
+  prepareReceipt,
   test,
   type TenantFixture
 } from "./fixtures/tenant.js";
 import { zonedIso } from "./helpers/date.js";
+import {
+  chooseBookingClient,
+  chooseBookingPet,
+  fillBooking,
+  openBooking as openBookingWorkspace
+} from "./helpers/booking.js";
 
 async function openBooking(page: Page, tenant: TenantFixture, hour: number): Promise<void> {
-  await page.getByTestId("calendar-add-appointment").click();
-  await page.getByTestId("field-customerId").selectOption(tenant.customerId);
-  const defaults=page.waitForResponse(response=>response.url().includes(`/api/pets/${tenant.petId}/booking-defaults`));
-  await page.getByTestId("field-petId").selectOption(tenant.petId);
-  await defaults;
-  await page.locator('select[name="employeeId"]').selectOption(tenant.employeeId);
-  await page.getByRole("checkbox", { name: /Full Groom/ }).setChecked(true);
-  await page.getByTestId("field-startAt").fill(`${tenant.anchor}T${String(hour).padStart(2,"0")}:00`);
+  await openBookingWorkspace(page);
+  await chooseBookingClient(page, tenant.customerId);
+  await chooseBookingPet(page, tenant.petId);
+  await fillBooking(page, {
+    employeeId: tenant.employeeId,
+    startAt: `${tenant.anchor}T${String(hour).padStart(2,"0")}:00`
+  });
 }
 
 async function openCardAction(card:Locator,name:"Move"|"Cancel appointment"):Promise<void>{
@@ -30,32 +36,48 @@ test("@regression-booking creates a booking and preserves it after reload", asyn
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
   await openBooking(page, tenant, 9);
-  await page.getByTestId("modal-submit").click();
-  await expect(page.getByTestId("modal")).toBeHidden();
+  await page.getByTestId("booking-submit").click();
+  await expect(page.getByTestId("booking-dialog")).toBeHidden();
   await expect(page.getByTestId("calendar-list")).toContainText("Charlie");
   await page.reload();
   await page.getByTestId("nav-calendar").click();
   await expect(page.getByTestId("calendar-list")).toContainText("Charlie");
 });
 
-test("@regression-booking defaults from pet history without service-to-groomer labels and permits overrides", async ({ page, request, tenant }) => {
-  await createAppointment(request, tenant, { startAt: zonedIso(tenant.anchor, 9) });
+test("@regression-booking defaults from the last paid visit without service-to-groomer labels and permits overrides", async ({ page, request, tenant }) => {
+  await prepareReceipt(request, tenant);
   const alternate=await (await request.post("/api/employees",{data:{displayName:"Alternate Groomer",serviceIds:[tenant.serviceId]}})).json() as {id:string};
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
-  await page.getByTestId("calendar-add-appointment").click();
-  await page.getByTestId("field-customerId").selectOption(tenant.customerId);
-  await page.getByTestId("field-petId").selectOption(tenant.petId);
-  const groomer=page.locator('select[name="employeeId"]');
-  const service=page.locator(`input[name="serviceIds"][value="${tenant.serviceId}"]`);
+  await openBookingWorkspace(page);
+  await chooseBookingClient(page, tenant.customerId);
+  await chooseBookingPet(page, tenant.petId);
+  const groomer=page.locator('#booking-dialog select[name="employeeId"]');
+  const service=page.locator(`#booking-dialog input[name="serviceIds"][value="${tenant.serviceId}"]`);
   await expect(groomer).toHaveValue(tenant.employeeId);
   await expect(service).toBeChecked();
-  await expect(page.getByTestId("modal")).not.toContainText("Not assigned to");
+  await expect(page.getByTestId("booking-defaults-note")).toContainText("last paid visit");
+  await expect(page.getByTestId("booking-dialog")).not.toContainText("Not assigned to");
   await groomer.selectOption(alternate.id);
   await service.uncheck();
-  await page.getByTestId("field-startAt").fill(`${tenant.anchor}T11:00`);
+  await page.locator('#booking-dialog [name="startAt"]').fill(`${tenant.anchor}T11:00`);
   await expect(groomer).toHaveValue(alternate.id);
   await expect(service).not.toBeChecked();
+});
+
+// The last groomer and the default services deliberately read from different visits: an
+// unpaid visit still tells you who saw the pet, but it is not evidence of a settled service
+// selection, so nothing is pre-ticked and the workspace says why.
+test("@regression-booking carries the last groomer but no services when the pet has no paid visit", async ({ page, request, tenant }) => {
+  await createAppointment(request, tenant, { startAt: zonedIso(tenant.anchor, 9) });
+  await login(page, tenant.ownerEmail);
+  await page.getByTestId("nav-calendar").click();
+  await openBookingWorkspace(page);
+  await chooseBookingClient(page, tenant.customerId);
+  await chooseBookingPet(page, tenant.petId);
+  await expect(page.locator('#booking-dialog select[name="employeeId"]')).toHaveValue(tenant.employeeId);
+  await expect(page.locator(`#booking-dialog input[name="serviceIds"][value="${tenant.serviceId}"]`)).not.toBeChecked();
+  await expect(page.getByTestId("booking-defaults-note")).toContainText("no paid visit yet");
 });
 
 test("@regression-booking presents normal conflicts and preserves recovery choices", async ({ page, request, tenant }) => {
@@ -63,13 +85,13 @@ test("@regression-booking presents normal conflicts and preserves recovery choic
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
   await openBooking(page, tenant, 9);
-  await page.getByTestId("modal-submit").click();
-  await expect(page.locator("#modal-error")).toContainText("overlapping appointment");
+  await page.getByTestId("booking-submit").click();
+  await expect(page.locator("#booking-error")).toContainText("overlapping appointment");
   await expect(page.getByTestId("confirm-conflict-override")).toBeVisible();
-  await expect(page.getByTestId("field-startAt")).toHaveValue(`${tenant.anchor}T09:00`);
-  await page.getByTestId("field-startAt").fill(`${tenant.anchor}T11:00`);
-  await page.getByTestId("modal-submit").click();
-  await expect(page.getByTestId("modal")).toBeHidden();
+  await expect(page.locator('#booking-dialog [name="startAt"]')).toHaveValue(`${tenant.anchor}T09:00`);
+  await page.locator('#booking-dialog [name="startAt"]').fill(`${tenant.anchor}T11:00`);
+  await page.getByTestId("booking-submit").click();
+  await expect(page.getByTestId("booking-dialog")).toBeHidden();
   await expect(page.getByTestId("calendar-list").locator(".appointment-pet", { hasText: "Charlie" })).toHaveCount(2);
 });
 
@@ -87,10 +109,10 @@ test("@regression-booking disables duplicate UI submission and sends one mutatio
     }
     await route.continue();
   });
-  await page.getByTestId("modal-submit").click();
-  await expect(page.getByTestId("modal-submit")).toBeDisabled();
+  await page.getByTestId("booking-submit").click();
+  await expect(page.getByTestId("booking-submit")).toBeDisabled();
   release();
-  await expect(page.getByTestId("modal")).toBeHidden();
+  await expect(page.getByTestId("booking-dialog")).toBeHidden();
   expect(requests).toBe(1);
   await expect(page.getByTestId("calendar-list").locator(".appointment-pet", { hasText: "Charlie" })).toHaveCount(1);
 });
@@ -100,10 +122,10 @@ test("@regression-booking explicitly overrides a detected conflict and renders b
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
   await openBooking(page, tenant, 9);
-  await page.getByTestId("modal-submit").click();
+  await page.getByTestId("booking-submit").click();
   await expect(page.getByTestId("confirm-conflict-override")).toHaveText("Book anyway");
   await page.getByTestId("confirm-conflict-override").click();
-  await expect(page.getByTestId("modal")).toBeHidden();
+  await expect(page.getByTestId("booking-dialog")).toBeHidden();
   await expect(page.getByTestId("calendar-list").locator(".appointment-pet", { hasText: "Charlie" })).toHaveCount(2);
   await expect(page.getByTestId("conflict-override")).toHaveCount(1);
   await page.reload();
@@ -124,8 +146,8 @@ test("@regression-booking hides override UX and denies direct intent without per
   await login(page, member.email);
   await page.getByTestId("nav-calendar").click();
   await openBooking(page, tenant, 9);
-  await page.getByTestId("modal-submit").click();
-  await expect(page.locator("#modal-error")).toContainText("overlapping appointment");
+  await page.getByTestId("booking-submit").click();
+  await expect(page.locator("#booking-error")).toContainText("overlapping appointment");
   await expect(page.getByTestId("confirm-conflict-override")).toHaveCount(0);
 
   const status = await page.evaluate(async (payload) => {
@@ -161,7 +183,7 @@ test("@regression-booking reconciles stale override permission without committin
   await login(page, member.email);
   await page.getByTestId("nav-calendar").click();
   await openBooking(page, tenant, 9);
-  await page.getByTestId("modal-submit").click();
+  await page.getByTestId("booking-submit").click();
   await expect(page.getByTestId("confirm-conflict-override")).toBeVisible();
 
   const revoked = await request.patch(`/api/members/${member.membershipId}/permissions`, {
@@ -169,7 +191,7 @@ test("@regression-booking reconciles stale override permission without committin
   });
   expect(revoked.status()).toBe(200);
   await page.getByTestId("confirm-conflict-override").click();
-  await expect(page.locator("#modal-error")).toContainText("Missing permission: appointments.override_conflict");
+  await expect(page.locator("#booking-error")).toContainText("Missing permission: appointments.override_conflict");
   await expect(page.getByTestId("confirm-conflict-override")).toHaveCount(0);
   const me = await page.evaluate(async () => {
     const response = await fetch("/api/me", { credentials: "include" });
@@ -219,6 +241,56 @@ test("@regression-booking cancels persistently and releases employee capacity", 
   await page.getByTestId("nav-calendar").click();
   await expect(page.locator(`[data-appointment-id="${appointment.id}"]`)).toContainText("cancelled");
   await openBooking(page, tenant, 9);
-  await page.getByTestId("modal-submit").click();
-  await expect(page.getByTestId("modal")).toBeHidden();
+  await page.getByTestId("booking-submit").click();
+  await expect(page.getByTestId("booking-dialog")).toBeHidden();
+});
+
+// Category order and collapsing come from the catalog, so the work a salon books every day
+// leads and the long tail stays folded until it is wanted.
+test("@regression-booking leads the service picker with core grooming and folds the rest", async ({ page, request, tenant }) => {
+  // Names carry the run id because the tenant fixture already seeds a starter catalog and an
+  // active duplicate name is refused.
+  const polish = `Nail Polish ${tenant.runId.slice(-6)}`;
+  for (const [name, category] of [
+    [`Bath + Brush ${tenant.runId.slice(-6)}`,"DOG_BASE"],
+    [polish,"DOG_ADDON"],
+    [`Cat Sanitary ${tenant.runId.slice(-6)}`,"CAT"]
+  ] as const) {
+    expect((await request.post("/api/services", { data: {
+      name, category, baseDurationMinutes: 60, basePriceMinor: 2500, pricingMode: "FIXED", active: true
+    }})).status()).toBe(201);
+  }
+  await login(page, tenant.ownerEmail);
+  await page.getByTestId("nav-calendar").click();
+  await openBookingWorkspace(page);
+  await chooseBookingClient(page, tenant.customerId);
+
+  const sections = page.locator("#appointment-service-options .service-section");
+  expect(await sections.locator(".service-section-title").allTextContents())
+    .toEqual(["Core grooming","Add-ons","Care & finishing","Cat","Other"]);
+  await expect(sections.first()).toHaveAttribute("open", "");
+  await expect(sections.nth(1)).not.toHaveAttribute("open", "");
+  await expect(page.getByRole("checkbox", { name: polish })).toHaveCount(0);
+
+  const addons = sections.nth(1);
+  await addons.locator("summary").click();
+  await expect(addons).toHaveAttribute("open", "");
+  await page.getByRole("checkbox", { name: polish }).check();
+  // The header reports the selection so a folded section never hides what is booked.
+  await expect(addons.locator("[data-section-count]")).toHaveText(/^1 of \d+ selected$/);
+});
+
+// A default carried over from the last paid visit lands in a section the operator would
+// otherwise have to guess was holding it.
+test("@regression-booking opens the section holding a service carried from the last paid visit", async ({ page, request, tenant }) => {
+  await prepareReceipt(request, tenant);
+  await login(page, tenant.ownerEmail);
+  await page.getByTestId("nav-calendar").click();
+  await openBookingWorkspace(page);
+  await chooseBookingClient(page, tenant.customerId);
+  await chooseBookingPet(page, tenant.petId);
+  const holding = page.locator("#appointment-service-options .service-section")
+    .filter({ has: page.locator(`input[value="${tenant.serviceId}"]`) });
+  await expect(holding).toHaveAttribute("open", "");
+  await expect(page.getByRole("checkbox", { name: /Full Groom/ })).toBeChecked();
 });

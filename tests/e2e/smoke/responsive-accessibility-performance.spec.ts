@@ -1,4 +1,5 @@
 import { test,expect,login,createAppointment } from "../fixtures/tenant.js";
+import { chooseBookingClient, openBooking } from "../helpers/booking.js";
 
 test("@smoke responsive operational shell remains usable at critical viewports",async({page,tenant})=>{
   for(const viewport of [{width:390,height:844},{width:412,height:915},{width:768,height:1024},{width:1366,height:768}]){
@@ -20,9 +21,11 @@ test("@smoke critical controls expose keyboard focus, labels, status, and safety
   const row=page.locator(`[data-appointment-id="${appointment.id}"]`);
   await expect(row.getByRole("note",{name:"Pet safety and care information"})).toContainText("Safety alert:");
   await expect(row.locator(".appointment-status")).toContainText("scheduled");
-  await page.getByTestId("calendar-add-appointment").click();
-  await expect(page.getByTestId("field-customerId")).toHaveAccessibleName("Customer");
-  await expect(page.getByTestId("modal-submit")).toHaveAccessibleName("Save");
+  await openBooking(page);
+  await expect(page.getByTestId("booking-client-search")).toHaveAccessibleName("Client");
+  await expect(page.getByTestId("booking-submit")).toHaveAccessibleName("Book appointment");
+  await chooseBookingClient(page,tenant.customerId);
+  await expect(page.locator('#booking-dialog select[name="employeeId"]')).toHaveAccessibleName("Groomer");
 });
 
 test("@smoke primary browser reads remain within generous QA regression budgets",async({page,tenant})=>{

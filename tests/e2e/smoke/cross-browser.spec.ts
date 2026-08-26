@@ -4,6 +4,7 @@ import {
   login,
   prepareReceipt,
 } from "../fixtures/tenant.js";
+import { bookAppointment, chooseBookingClient, openBooking } from "../helpers/booking.js";
 
 test("@cross-browser auth lifecycle preserves and revokes the browser session",async({page,tenant})=>{
   await login(page,tenant.ownerEmail);
@@ -30,13 +31,10 @@ test("@cross-browser auth lifecycle preserves and revokes the browser session",a
 test("@cross-browser calendar booking remains visible after reload",async({page,tenant})=>{
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
-  await page.getByTestId("calendar-add-appointment").click();
-  await page.getByTestId("field-customerId").selectOption(tenant.customerId);
-  await page.getByTestId("field-petId").selectOption(tenant.petId);
-  await page.locator('select[name="employeeId"]').selectOption(tenant.employeeId);
-  await page.getByRole("checkbox",{name:/Full Groom/}).check();
-  await page.getByTestId("field-startAt").fill(`${tenant.anchor}T09:00`);
-  await page.getByTestId("modal-submit").click();
+  await bookAppointment(page,{
+    customerId:tenant.customerId,petId:tenant.petId,employeeId:tenant.employeeId,
+    startAt:`${tenant.anchor}T09:00`
+  });
 
   await expect(page.getByTestId("calendar-list")).toContainText("Charlie");
   await page.reload();
@@ -67,10 +65,11 @@ test("@cross-browser customer and pet creation remains customer-scoped",async({p
   await expect(page.getByTestId("customer-card").filter({hasText:customerName})).toContainText(petName);
 
   await page.getByTestId("nav-calendar").click();
-  await page.getByTestId("calendar-add-appointment").click();
-  await page.getByTestId("field-customerId").selectOption(customerId!);
-  await expect(page.getByTestId("field-petId").locator("option",{hasText:petName})).toHaveCount(1);
-  await expect(page.getByTestId("field-petId").locator(`option[value="${tenant.petId}"]`)).toHaveCount(0);
+  await openBooking(page);
+  await chooseBookingClient(page,customerId!);
+  await page.getByTestId("booking-add-pet").click();
+  await expect(page.getByTestId("booking-pet-options").getByText(petName,{exact:true})).toHaveCount(1);
+  await expect(page.locator(`input[name="bookingPet"][value="${tenant.petId}"]`)).toHaveCount(0);
 });
 
 test("@cross-browser completed checkout receipt renders prepared totals",async({page,request,tenant})=>{

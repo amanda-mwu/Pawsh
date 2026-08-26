@@ -319,6 +319,7 @@ export async function deliverNotifications(
           : intent.notificationType === RABIES_CUSTOMER ? "Updated rabies information needed"
           : intent.notificationType === RABIES_STAFF ? "Rabies information needs attention"
           : intent.notificationType === "agreement_signature_request" ? "Please review your agreement"
+          : intent.notificationType === "report_card" ? `How ${intent.petName ?? "your pet"} got on today`
           : intent.notificationType === "appointment_reminder" ? "Upcoming Pawsh appointment"
           : intent.notificationType === "appointment_cancellation" ? "Pawsh appointment cancelled"
           : "Pawsh appointment confirmation",

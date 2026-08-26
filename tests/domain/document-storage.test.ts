@@ -11,8 +11,8 @@ describe("pet document storage adapters", () => {
   it("keeps memory objects immutable and isolated", async () => {
     const storage = new MemoryDocumentStorage();
     const bytes = new TextEncoder().encode("%PDF-1.4\n%%EOF\n");
-    await storage.put("business/a/document/1", bytes);
-    await expect(storage.put("business/a/document/1", bytes)).rejects.toMatchObject({
+    await storage.put("business/a/document/1", bytes, "application/pdf");
+    await expect(storage.put("business/a/document/1", bytes, "application/pdf")).rejects.toMatchObject({
       code: "storage_conflict"
     });
     const loaded = await storage.get("business/a/document/1");
@@ -25,7 +25,7 @@ describe("pet document storage adapters", () => {
     const commands: unknown[] = [];
     const client = { send: async (command: unknown) => { commands.push(command); return {}; } } as unknown as S3Client;
     const storage = new S3DocumentStorage("private-bucket", { region: "us-west-2", sse: "AES256" }, client);
-    await storage.put("business/a/document/1", new Uint8Array([1,2,3]));
+    await storage.put("business/a/document/1", new Uint8Array([1,2,3]), "application/pdf");
     expect(commands[0]).toBeInstanceOf(PutObjectCommand);
     expect((commands[0] as PutObjectCommand).input).toMatchObject({
       Bucket: "private-bucket", Key: "business/a/document/1", IfNoneMatch: "*",
@@ -36,16 +36,16 @@ describe("pet document storage adapters", () => {
       send: async () => { throw { name: "PreconditionFailed", $metadata: { httpStatusCode: 412 } }; }
     } as unknown as S3Client;
     await expect(new S3DocumentStorage("private-bucket", { region: "us-west-2", sse: "AES256" }, conflictClient)
-      .put("key", new Uint8Array([1]))).rejects.toMatchObject({ code: "storage_conflict" });
+      .put("key", new Uint8Array([1]), "application/pdf")).rejects.toMatchObject({ code: "storage_conflict" });
   });
 
   it("atomically creates filesystem objects without filename path authority", async () => {
     const root = await mkdtemp(join(tmpdir(), "pawsh-documents-"));
     const storage = new FilesystemDocumentStorage(root);
     const bytes = new TextEncoder().encode("private evidence");
-    await storage.put("business/a/document/1", bytes);
+    await storage.put("business/a/document/1", bytes, "application/pdf");
     expect(await readFile(join(root, "business", "a", "document", "1"), "utf8")).toBe("private evidence");
-    await expect(storage.put("business/a/document/1", bytes)).rejects.toBeInstanceOf(DocumentStorageError);
-    await expect(storage.put("../../escape", bytes)).rejects.toMatchObject({ code: "storage_rejected" });
+    await expect(storage.put("business/a/document/1", bytes, "application/pdf")).rejects.toBeInstanceOf(DocumentStorageError);
+    await expect(storage.put("../../escape", bytes, "application/pdf")).rejects.toMatchObject({ code: "storage_rejected" });
   });
 });

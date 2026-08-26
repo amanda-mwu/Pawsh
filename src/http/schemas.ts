@@ -68,15 +68,36 @@ export const workspaceAccessRequestSchema=z.object({
 export const workspaceSelectionSchema=z.object({businessId:z.string().uuid()}).strict();
 export const locationSelectionSchema=z.object({locationId:z.string().uuid()}).strict();
 
+/**
+ * A client record, which may be only partly known.
+ *
+ * Somebody who rings to enquire and does not book can be written down with whatever they gave —
+ * often just a phone number. Names are therefore optional, and a blank one is normalised to
+ * absent so the database never has to distinguish "" from unknown.
+ *
+ * What is required is one way to identify or reach them. A record with no name, no phone, and
+ * no email cannot be found again, so saving it helps nobody.
+ */
+const blankToNull = (value: unknown) =>
+  typeof value === "string" && value.trim() === "" ? null : value;
+
 export const customerSchema = z.object({
-  firstName: z.string().trim().min(1).max(80),
-  lastName: z.string().trim().min(1).max(80),
-  phone: z.string().trim().max(40).nullish(),
-  email: z.string().email().max(320).nullish(),
+  firstName: z.preprocess(blankToNull, z.string().trim().min(1).max(80).nullish()),
+  lastName: z.preprocess(blankToNull, z.string().trim().min(1).max(80).nullish()),
+  phone: z.preprocess(blankToNull, z.string().trim().max(40).nullish()),
+  email: z.preprocess(blankToNull, z.string().email().max(320).nullish()),
   address: z.string().trim().max(500).nullish(),
   preferredContactMethod: z.enum(["email", "phone", "none"]).default("email"),
   emailAllowed: z.boolean().default(true),
   notes: z.string().max(5000).nullish()
+}).superRefine((value, context) => {
+  if (!value.firstName && !value.lastName && !value.phone && !value.email) {
+    context.addIssue({
+      code: "custom",
+      path: ["firstName"],
+      message: "Enter at least a name, a phone number, or an email address"
+    });
+  }
 });
 
 export const customerNoteParams = z.object({
@@ -180,9 +201,50 @@ export const agreementSendSchema = z.object({
   channel: z.enum(["email", "sms"]).default("email")
 }).strict();
 
+/**
+ * Sending a vaccination reminder before the appointment exists.
+ *
+ * The booking flow can tell a client their rabies record will have lapsed by the date
+ * being booked, and that warning is worth sending before the appointment is committed.
+ * There is no appointment row to hang the reminder on at that point, so the caller
+ * supplies the date it is warning about. `channel` accepts "sms" for the same reason
+ * the agreement send does: the handler answers with a named, explained refusal rather
+ * than a generic schema failure.
+ */
+export const vaccinationReminderSchema = z.object({
+  appointmentLocalDate: z.string().date(),
+  channel: z.enum(["email", "sms"]).default("email")
+}).strict();
+
+/**
+ * Report cards.
+ *
+ * A card stores only the note somebody wrote; the visit, services, groomer, and photographs are
+ * read from the appointment when the card is rendered. `version` is required on update for the
+ * same reason it is on appointments and pets: two people with the card open must not silently
+ * overwrite each other.
+ */
+export const reportCardCreateSchema = z.object({
+  petId: z.string().uuid(),
+  note: z.string().trim().max(4000).nullish()
+}).strict();
+
+export const reportCardUpdateSchema = z.object({
+  note: z.string().trim().max(4000).nullish(),
+  version: z.number().int().positive()
+}).strict();
+
+// "sms" is accepted so the handler can refuse it by name with a reason, exactly as the agreement
+// send does, instead of failing schema validation with something generic.
+export const reportCardSendSchema = z.object({
+  channel: z.enum(["email", "sms"]).default("email")
+}).strict();
+
 const petBaseSchema = z.object({
   customerId: z.string().uuid(),
-  name: z.string().trim().min(1).max(80),
+  // Optional for the same reason a client's name is: an enquiry often gives the breed and not
+  // the pet's name, and a record saying "a Goldendoodle" is more use than one saying "?".
+  name: z.preprocess(blankToNull, z.string().trim().min(1).max(80).nullish()),
   species: z.string().trim().min(1).max(60).default("dog"),
   breed: z.string().trim().max(100).nullish(),
   dateOfBirth: z.string().date().nullish(),

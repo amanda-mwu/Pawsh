@@ -188,6 +188,32 @@
   </div>
 
   <aside id="calendar-hover-preview" class="appointment-hover" role="tooltip" hidden></aside>
+  <div id="slot-menu" class="calendar-action-popover slot-menu" role="menu" aria-label="Calendar slot actions" data-testid="slot-menu" hidden>
+    <button type="button" role="menuitem" data-slot-action="add" data-testid="slot-menu-add"><span class="slot-menu-icon" aria-hidden="true">&#8853;</span> Add</button>
+    <button type="button" role="menuitem" data-slot-action="block" data-testid="slot-menu-block"><span class="slot-menu-icon" aria-hidden="true">&#8856;</span> Block</button>
+  </div>
+  <dialog id="booking-dialog" class="booking-dialog" data-testid="booking-dialog">
+    <form id="booking-form">
+      <div class="booking-head"><h3 id="booking-title">Create Appointment</h3><button type="button" class="close" aria-label="Close">×</button></div>
+      <div class="booking-body">
+        <aside id="booking-client" class="booking-client" aria-label="Client" data-testid="booking-client"></aside>
+        <div id="booking-detail" class="booking-detail" data-testid="booking-detail"></div>
+      </div>
+      <p id="booking-error" class="error" role="alert"></p>
+      <div class="booking-actions">
+        <button type="button" class="secondary close">Cancel</button>
+        <button data-testid="booking-submit" class="primary" type="submit">Book appointment</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="stacked-dialog" class="stacked-dialog" aria-labelledby="stacked-dialog-title" data-testid="stacked-dialog">
+    <h4 id="stacked-dialog-title">Details</h4>
+    <div id="stacked-dialog-body"></div>
+    <div class="stacked-dialog-actions">
+      <button type="button" class="secondary" data-testid="stacked-dialog-dismiss">Cancel</button>
+      <button type="button" class="primary" data-testid="stacked-dialog-confirm">OK</button>
+    </div>
+  </dialog>
   <dialog id="modal" data-testid="modal">
     <form id="modal-form">
       <div class="modal-head"><div><p class="eyebrow">Pawsh workflow</p><h3 id="modal-title">Dialog</h3></div><button type="button" class="close" aria-label="Close">×</button></div>

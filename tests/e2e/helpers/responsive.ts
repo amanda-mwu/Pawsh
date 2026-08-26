@@ -80,6 +80,23 @@ export async function expectCriticalTarget(locator: Locator): Promise<void> {
   expect(box!.height,"Critical target height").toBeGreaterThanOrEqual(44);
 }
 
+/**
+ * The Create Appointment workspace is its own dialog with its own header and action bar, so
+ * the same reachability guarantee has to be checked against those controls rather than the
+ * shared dialog's.
+ */
+export async function expectBookingControlsReachable(page: Page): Promise<void> {
+  const dialog=page.getByTestId("booking-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator("#booking-title")).toBeVisible();
+  const close=dialog.getByRole("button",{name:"Close"});
+  const submit=dialog.getByTestId("booking-submit");
+  await close.scrollIntoViewIfNeeded();
+  await expectCriticalTarget(close);
+  await submit.scrollIntoViewIfNeeded();
+  await expectCriticalTarget(submit);
+}
+
 export async function expectDialogControlsReachable(page: Page): Promise<void> {
   const dialog=page.getByTestId("modal");
   await expect(dialog).toBeVisible();

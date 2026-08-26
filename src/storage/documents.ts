@@ -24,8 +24,15 @@ export interface StoredObject {
   size: number;
 }
 
+/**
+ * `contentType` is carried through to the object store rather than assumed.
+ * The store originally held one kind of file, so the S3 adapter stamped every object
+ * `application/pdf`. Appointment photographs are served back to a browser inline, and an
+ * object whose stored type disagrees with its bytes is exactly the mismatch `nosniff`
+ * cannot save you from.
+ */
 export interface DocumentStorage {
-  put(key: string, bytes: Uint8Array): Promise<void>;
+  put(key: string, bytes: Uint8Array, contentType: string): Promise<void>;
   get(key: string): Promise<StoredObject>;
   head(key: string): Promise<{ size: number }>;
   delete(key: string): Promise<void>;
@@ -33,9 +40,11 @@ export interface DocumentStorage {
 
 export class MemoryDocumentStorage implements DocumentStorage {
   readonly objects = new Map<string, Uint8Array>();
-  async put(key: string, bytes: Uint8Array): Promise<void> {
+  readonly contentTypes = new Map<string, string>();
+  async put(key: string, bytes: Uint8Array, contentType: string): Promise<void> {
     if (this.objects.has(key)) throw new DocumentStorageError("storage_conflict", "Object already exists");
     this.objects.set(key, Uint8Array.from(bytes));
+    this.contentTypes.set(key, contentType);
   }
   async get(key: string): Promise<StoredObject> {
     const bytes = this.objects.get(key);
@@ -60,7 +69,10 @@ export class FilesystemDocumentStorage implements DocumentStorage {
     }
     return path;
   }
-  async put(key: string, bytes: Uint8Array): Promise<void> {
+  // The filesystem adapter stores bytes and nothing else; the type is carried by the row that
+  // points at the object, and re-deriving it from the file would be guessing.
+  async put(key: string, bytes: Uint8Array, contentType: string): Promise<void> {
+    void contentType;
     const finalPath = this.path(key);
     await mkdir(dirname(finalPath), { recursive: true });
     const temporary = `${finalPath}.${crypto.randomUUID()}.tmp`;
@@ -112,10 +124,10 @@ export class S3DocumentStorage implements DocumentStorage {
     }
     this.client = client ?? new S3Client(clientConfig);
   }
-  async put(key: string, bytes: Uint8Array): Promise<void> {
+  async put(key: string, bytes: Uint8Array, contentType: string): Promise<void> {
     try {
       await this.client.send(new PutObjectCommand({
-        Bucket: this.bucket, Key: key, Body: bytes, ContentType: "application/pdf", IfNoneMatch: "*"
+        Bucket: this.bucket, Key: key, Body: bytes, ContentType: contentType, IfNoneMatch: "*"
         ,ServerSideEncryption: this.sse
       }));
     } catch (error) { throw normalizeStorageError(error); }

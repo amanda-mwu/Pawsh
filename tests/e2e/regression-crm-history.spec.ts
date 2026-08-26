@@ -151,3 +151,98 @@ test("@regression-crm-history shows current names and terminal history while per
   await expect(restrictedPage.getByTestId("modal")).not.toContainText("Invoice ");
   await restrictedContext.close();
 });
+
+// The profile leads with figures that reconcile, then splits appointments into what is ahead
+// and what is settled. History opens at two rows and grows rather than running the page long.
+test("@regression-crm-history summarises sales and pages client history in small steps", async ({ page, request, tenant }) => {
+  const { invoice } = await prepareReceipt(request, tenant);
+  expect(invoice.id).toBeTruthy();
+  // Full Groom runs 90 minutes and the receipt already holds 09:00, so the rest are spaced to
+  // avoid overlap and spill onto the following day. Each is completed, because "history" means
+  // settled work: a future booking would land in Upcoming instead.
+  const nextDay = new Date(`${tenant.anchor}T12:00:00Z`);
+  nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+  const slots = [
+    `${tenant.anchor}T11:00`, `${tenant.anchor}T12:30`, `${tenant.anchor}T14:00`, `${tenant.anchor}T15:30`,
+    `${nextDay.toISOString().slice(0,10)}T09:00`, `${nextDay.toISOString().slice(0,10)}T10:30`,
+    `${nextDay.toISOString().slice(0,10)}T12:00`
+  ];
+  for (const localStart of slots) {
+    const appointment = await createAppointment(request, tenant, { localStart });
+    let version = appointment.version;
+    for (const status of ["checked_in", "in_service", "completed"]) {
+      const moved = await request.post(`/api/appointments/${appointment.id}/transition`, { data: { status, version } });
+      expect(moved.status(), `${localStart} ${status}`).toBe(200);
+      version = (await moved.json()).version;
+    }
+  }
+  await login(page, tenant.ownerEmail);
+  await page.getByTestId("nav-customers").click();
+  await page.getByTestId("customer-card").filter({ hasText: "Emma Johnson" })
+    .getByRole("button", { name: "Emma Johnson" }).click();
+  await expect(page.getByTestId("client-profile-view")).toBeVisible();
+
+  // Total is what was invoiced; outstanding is what is still owed on it. Paid + outstanding
+  // reconciling against total is the whole point of showing both.
+  const summary = page.getByTestId("client-summary");
+  await expect(summary).toBeVisible();
+  await expect(page.getByTestId("summary-total")).not.toHaveText("$0.00");
+  await expect(page.getByTestId("summary-outstanding")).toHaveText("$0.00");
+  await expect(summary).toContainText("Completed");
+  // Pawsh sells no retail, so no retail figure is invented.
+  await expect(summary).not.toContainText("Retail");
+
+  const historyRows = page.locator(".history-table").last().locator("tbody tr");
+  await expect(historyRows).toHaveCount(2);
+  await expect(page.getByTestId("history-page")).toContainText("Page 1 of");
+
+  await page.getByRole("button", { name: /^Load \d+ more$/ }).click();
+  await expect(historyRows).toHaveCount(5);
+
+  // The arrows move through pages of whatever size history has grown to.
+  await page.getByRole("button", { name: "Older appointments" }).click();
+  await expect(page.getByTestId("history-page")).toContainText("Page 2 of");
+  await expect(historyRows).not.toHaveCount(0);
+  await page.getByRole("button", { name: "Newer appointments" }).click();
+  await expect(page.getByTestId("history-page")).toContainText("Page 1 of");
+  await expect(page.getByRole("button", { name: "Newer appointments" })).toBeDisabled();
+});
+
+// Somebody rings to ask about a groom, gives a number and the breed, and hangs up before
+// booking. That call has to be writable down, and findable afterwards.
+test("@regression-crm-history records a phone enquiry with no name and fills it in later", async ({ page, tenant }) => {
+  const phone = `(704) 957-${tenant.runId.slice(-4).replace(/\D/g, "0").padStart(4, "0")}`;
+  await login(page, tenant.ownerEmail);
+  await page.getByTestId("nav-customers").click();
+  await page.getByTestId("new-customer").click();
+  // Nothing but the phone number: no name is typed at all.
+  await page.getByTestId("field-phone").fill(phone);
+  await page.getByTestId("modal-submit").click();
+  await expect(page.getByTestId("modal")).toBeHidden();
+
+  const card = page.getByTestId("customer-card").filter({ hasText: phone });
+  await expect(card).toHaveCount(1);
+  // Unknown reads as "Not set" rather than a blank cell or a literal placeholder name.
+  await expect(card.getByRole("button", { name: "Not set" })).toBeVisible();
+
+  // A pet whose breed is known but whose name was never given.
+  await page.getByRole("button", { name: /\+ Pet/ }).click();
+  await page.getByTestId("field-customerId").selectOption({ label: "Not set" });
+  await page.getByTestId("field-breed").fill("Goldendoodle");
+  await page.getByTestId("modal-submit").click();
+  await expect(page.getByTestId("modal")).toBeHidden();
+  await expect(card).toContainText("Goldendoodle");
+
+  // The record is findable by the one detail it has.
+  await page.getByTestId("customer-search").fill(phone.replace(/\D/g, ""));
+  await expect(page.getByTestId("customer-card")).toHaveCount(1);
+
+  // And it becomes a full record when they call back, without a second row appearing.
+  await page.getByTestId("customer-card").getByRole("button", { name: "Not set" }).click();
+  await expect(page.getByTestId("client-profile-view")).toBeVisible();
+  await page.getByRole("button", { name: "Edit" }).first().click();
+  await page.getByTestId("field-firstName").fill("Aaron");
+  await page.getByTestId("field-lastName").fill("Cayabyab");
+  await page.getByTestId("modal-submit").click();
+  await expect(page.getByRole("heading", { name: "Aaron Cayabyab" })).toBeVisible();
+});

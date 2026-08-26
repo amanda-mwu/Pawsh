@@ -35,9 +35,9 @@ describe("cross-platform deterministic contracts", () => {
     temporary.push(root);
     const storage = new FilesystemDocumentStorage(join(root, "nested documents"));
     const bytes = new TextEncoder().encode("portable evidence");
-    await storage.put("business/客户/rabies/évidence", bytes);
+    await storage.put("business/客户/rabies/évidence", bytes, "application/pdf");
     expect(new TextDecoder().decode((await storage.get("business/客户/rabies/évidence")).bytes)).toBe("portable evidence");
-    await expect(storage.put("../../escape", bytes)).rejects.toMatchObject({ code: "storage_rejected" });
+    await expect(storage.put("../../escape", bytes, "application/pdf")).rejects.toMatchObject({ code: "storage_rejected" });
     await storage.delete("business/客户/rabies/évidence");
   });
 });

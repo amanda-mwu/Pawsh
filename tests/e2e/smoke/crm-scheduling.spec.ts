@@ -1,4 +1,5 @@
 import { test, expect, login } from "../fixtures/tenant.js";
+import { bookAppointment, chooseBookingClient, openBooking } from "../helpers/booking.js";
 
 test("@smoke CRM search persists and booking filters pets by customer",async({page,tenant})=>{
   await login(page,tenant.ownerEmail);
@@ -18,32 +19,27 @@ test("@smoke CRM search persists and booking filters pets by customer",async({pa
   await expect(page.getByTestId("customer-card")).toContainText("Smoke Searchable");
   await page.reload();
   await page.getByTestId("nav-calendar").click();
-  await page.getByTestId("calendar-add-appointment").click();
-  await page.getByTestId("field-customerId").selectOption(tenant.sophiaCustomerId);
-  await expect(page.getByTestId("field-petId").locator("option",{hasText:"Mochi"})).toHaveCount(1);
-  await expect(page.getByTestId("field-petId").locator("option",{hasText:"Boba"})).toHaveCount(1);
-  await expect(page.getByTestId("field-petId").locator(`option[value="${tenant.petId}"]`)).toHaveCount(0);
+  await openBooking(page);
+  await chooseBookingClient(page,tenant.sophiaCustomerId);
+  await page.getByTestId("booking-add-pet").click();
+  const petOptions=page.getByTestId("booking-pet-options");
+  await expect(petOptions.getByText("Mochi",{exact:true})).toHaveCount(1);
+  await expect(petOptions.getByText("Boba",{exact:true})).toHaveCount(1);
+  await expect(page.locator(`input[name="bookingPet"][value="${tenant.petId}"]`)).toHaveCount(0);
 });
 
 test("@smoke scheduling rejects overlap and blocked time but permits adjacency",async({page,request,tenant})=>{
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
-  const createAt=async(time:string)=>{
-    await page.getByTestId("calendar-add-appointment").click();
-    await page.getByTestId("field-customerId").selectOption(tenant.customerId);
-    const defaults=page.waitForResponse(response=>response.url().includes(`/api/pets/${tenant.petId}/booking-defaults`));
-    await page.getByTestId("field-petId").selectOption(tenant.petId);
-    await defaults;
-    await page.locator('select[name="employeeId"]').selectOption(tenant.employeeId);
-    await page.getByRole("checkbox",{name:/Full Groom/}).setChecked(true);
-    await page.getByTestId("field-startAt").fill(`${tenant.anchor}T${time}`);
-    await page.getByTestId("modal-submit").click();
-  };
+  const createAt=(time:string)=>bookAppointment(page,{
+    customerId:tenant.customerId,petId:tenant.petId,employeeId:tenant.employeeId,
+    startAt:`${tenant.anchor}T${time}`
+  });
   await createAt("09:00");
   await expect(page.getByTestId("calendar-list")).toContainText("Charlie");
   await createAt("09:30");
-  await expect(page.locator("#modal-error")).toContainText("overlapping appointment");
-  await page.getByTestId("modal").getByRole("button",{name:"Cancel"}).click();
+  await expect(page.locator("#booking-error")).toContainText("overlapping appointment");
+  await page.getByTestId("booking-dialog").getByRole("button",{name:"Cancel",exact:true}).click();
   await createAt("10:30");
   await expect(page.getByTestId("calendar-list").getByText("Charlie")).toHaveCount(2);
   await request.post("/api/blocked-times",{data:{
@@ -51,5 +47,5 @@ test("@smoke scheduling rejects overlap and blocked time but permits adjacency",
     localEnd:`${tenant.anchor}T14:00`,expectedLocationVersion:tenant.locationVersion,reason:"Smoke blocked time"
   }});
   await createAt("13:00");
-  await expect(page.locator("#modal-error")).toContainText("explicit override");
+  await expect(page.locator("#booking-error")).toContainText("explicit override");
 });

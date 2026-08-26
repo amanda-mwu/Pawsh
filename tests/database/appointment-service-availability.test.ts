@@ -55,7 +55,11 @@ describeDatabase("appointment service availability",()=>{
     const defaults=await app.inject({method:"GET",url:`/api/pets/${petId}/booking-defaults`,headers:{cookie:ownerCookie}});
     expect(defaults.statusCode).toBe(200);
     expect(defaults.json().groomers.map((item:{id:string})=>item.id)).toEqual([employeeId]);
-    expect(defaults.json().services.map((item:{id:string})=>item.id)).toEqual([primaryId]);
+    // The pet has visits but none of them were paid for, so there is no settled service
+    // selection to carry forward and the endpoint says so instead of guessing.
+    expect(defaults.json().services).toEqual([]);
+    expect(defaults.json().serviceSource).toBe("none");
+    expect(defaults.json().groomerSource).toBe("last_visit");
   });
 
   it("keeps multi-employee report filters while attributing an appointment to one groomer",async()=>{
@@ -131,4 +135,33 @@ describeDatabase("appointment service availability",()=>{
     const response=await send(foreignEmployee.json().id);
     expect(response.statusCode).toBe(400);expect(response.json().error).toBe("One or more selected groomers are unavailable");
   });
+
+  // Declared last on purpose: paying an invoice moves business-wide revenue totals, and the
+  // report assertions above measure exactly those totals for the shared tenant.
+  it("carries default services forward only from the last paid visit",async()=>{
+    const booking=await createAppointment([primaryId],"2034-04-21T09:00");
+    expect(booking.statusCode).toBe(201);
+    const paidId=booking.json().id;
+    for(const status of ["checked_in","in_service","completed"]){
+      const moved=await app.inject({method:"POST",url:`/api/appointments/${paidId}/transition`,headers:{cookie:ownerCookie},payload:{status}});
+      expect(moved.statusCode,status).toBe(200);
+    }
+    const invoice=await app.inject({method:"POST",url:`/api/appointments/${paidId}/checkout`,
+      headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},payload:{discountMinor:0,tipMinor:0}});
+    expect(invoice.statusCode).toBe(201);
+    const totalMinor=invoice.json().totalMinor;
+    const payment=await app.inject({method:"POST",url:`/api/invoices/${invoice.json().id}/payments`,
+      headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},
+      payload:{amountMinor:totalMinor,expectedBalanceMinor:totalMinor,method:"cash"}});
+    expect(payment.statusCode).toBe(201);
+
+    const defaults=await app.inject({method:"GET",url:`/api/pets/${petId}/booking-defaults`,headers:{cookie:ownerCookie}});
+    expect(defaults.statusCode).toBe(200);
+    expect(defaults.json().services.map((item:{id:string})=>item.id)).toEqual([primaryId]);
+    expect(defaults.json().serviceSource).toBe("last_paid_visit");
+    // The groomer still reads from the most recent visit rather than the paid one, so a
+    // later unpaid booking with a different groomer would move the groomer and not the services.
+    expect(defaults.json().groomers.map((item:{id:string})=>item.id)).toEqual([employeeId]);
+  });
+
 });

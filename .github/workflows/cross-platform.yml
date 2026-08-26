@@ -1,9 +1,9 @@
 name: Cross-platform runtime compatibility
 
+# Never automatic. This suite is part of release validation and is launched either directly or
+# by `full-validation.yml`, always against an exact SHA. There is no schedule by policy: an
+# unchanged commit is not re-validated on a timer during pre-live development.
 on:
-  pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       release_candidate:
@@ -13,11 +13,23 @@ on:
       force_full_matrix:
         description: Force the complete supported compatibility matrix
         type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      release_candidate:
+        description: Require exact-SHA beta release-candidate coverage
+        type: boolean
         default: false
+      force_full_matrix:
+        description: Force the complete supported compatibility matrix
+        type: boolean
+        default: true
 
+# Keyed to the commit and never cancelled: a release validation must survive development pushes
+# that land while it is running.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: cross-platform-${{ github.sha }}
+  cancel-in-progress: false
 
 permissions:
   actions: read
@@ -58,7 +70,7 @@ jobs:
       - id: classify
         name: Classify exact-SHA impact
         env:
-          PAWSH_FORCE_FULL_MATRIX: ${{ vars.PAWSH_FORCE_FULL_MATRIX }}
+          PAWSH_FORCE_FULL_MATRIX: ${{ inputs.force_full_matrix && 'true' || vars.PAWSH_FORCE_FULL_MATRIX }}
         run: node scripts/classify-ci-change.mjs
       - name: Summarize classification
         env:
@@ -80,7 +92,7 @@ jobs:
     name: Runtime Compatibility — Ubuntu Node ${{ matrix.node }}
     runs-on: ubuntu-latest
     needs: classify
-    if: ${{ needs.classify.outputs.executable == 'true' }}
+    if: ${{ needs.classify.outputs.executable == 'true' || needs.classify.outputs.full_matrix == 'true' }}
     timeout-minutes: 35
     strategy:
       fail-fast: false

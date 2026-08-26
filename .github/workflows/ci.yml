@@ -1,13 +1,23 @@
-name: CI
+name: Fast CI
+
+# Routine development feedback only: lint, typecheck, unit tests, and the production build.
+#
+# Everything heavier — PostgreSQL and migrations, the Playwright browser and device matrices,
+# security and regression suites, backup/restore, dual Node runtimes, Windows, macOS, and UTC
+# canonicalization — lives in `full-validation.yml` and runs when it is asked for. Nothing was
+# deleted; a release candidate is still validated by dispatching the full suite against its
+# exact SHA before validation is called complete.
 on:
   pull_request:
   push:
     branches: [main]
   workflow_dispatch:
 
+# Keyed on the branch rather than the commit, so pushing again supersedes the run already in
+# flight instead of leaving both to finish. Full validation uses a separate, uncancellable group.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: fast-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   NODE_ENV: test
@@ -15,281 +25,71 @@ env:
   TZ: America/Los_Angeles
   SESSION_SECRET: ci-session-secret-at-least-thirty-two-characters
   APP_ORIGIN: http://127.0.0.1:3000
-  PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
 
 jobs:
-  static-validation:
-    name: Static validation / Node ${{ matrix.node }}
+  fast-validation:
+    name: Fast validation
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node: ["22", "24"]
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
         with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm install --global npm@11.6.0
-      - run: npm ci
-      - name: Confirm npm ci leaves the lockfile unchanged
-        run: git diff --exit-code -- package-lock.json
-      - run: npm audit --omit=dev --audit-level=high
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
+          # The classifier compares this push against its base, so it needs the history.
+          fetch-depth: 0
 
-  backend-runtime:
-    name: Backend and PostgreSQL runtime / Node ${{ matrix.node }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node: ["22", "24"]
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_DB: pawsh
-          POSTGRES_USER: pawsh
-          POSTGRES_PASSWORD: pawsh-ci
-        ports:
-          - 54322:5432
-        options: >-
-          --health-cmd "pg_isready -U pawsh -d pawsh"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-    env:
-      DATABASE_URL: postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm install --global npm@11.6.0
-      - run: npm ci
-      - name: Confirm npm ci leaves the lockfile unchanged
-        run: git diff --exit-code -- package-lock.json
-      - run: npm run validate:runtime
-      - name: Recheck rabies notification intent isolation
-        shell: bash
-        run: |
-          npx vitest run tests/database/rabies-compliance.test.ts
-          npx vitest run tests/database/rabies-compliance.test.ts
-      - name: Validate test-only memory storage safeguard
-        shell: bash
-        run: |
-          set -euo pipefail
-          NODE_ENV=test DOCUMENT_STORAGE_ADAPTER=memory PAWSH_E2E_MODE=disposable \
-            node --import tsx --eval "const { loadConfig } = await import('./src/config.ts'); const { createDocumentStorage } = await import('./src/storage/documents.ts'); createDocumentStorage(loadConfig());"
-          if NODE_ENV=development DOCUMENT_STORAGE_ADAPTER=memory \
-            node --import tsx --eval "const { loadConfig } = await import('./src/config.ts'); const { createDocumentStorage } = await import('./src/storage/documents.ts'); createDocumentStorage(loadConfig());"; then
-            echo "Development unexpectedly accepted memory document storage" >&2
-            exit 1
-          fi
-      - name: Validate development startup
-        shell: bash
-        run: |
-          set -euo pipefail
-          NODE_ENV=development DOCUMENT_STORAGE_ADAPTER=filesystem \
-            DOCUMENT_STORAGE_PATH=.pawsh-ci-documents APP_ORIGIN=http://127.0.0.1:3000 \
-            node --import tsx src/server.ts >development-server.log 2>&1 &
-          SERVER_PID=$!
-          trap 'kill -TERM "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true' EXIT
-          for attempt in $(seq 1 100); do
-            if curl --fail --silent http://127.0.0.1:3000/health >/dev/null; then
-              exit 0
-            fi
-            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-              cat development-server.log
-              exit 1
-            fi
-            sleep 0.1
-          done
-          cat development-server.log
-          exit 1
+      # The repository already owns one definition of "does this change affect the application",
+      # in scripts/ci-change-classifier.mjs. It is reused here rather than restated as a
+      # paths-ignore list so the two can never drift apart. Anything that is not purely
+      # documentation is treated as executable and validated.
+      - id: classify
+        name: Classify change
+        run: node scripts/classify-ci-change.mjs
 
-  browser:
-    name: Browser / ${{ matrix.name }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: chromium-smoke
-            browser: chromium
-            node: "24"
-            command: npm run test:smoke
-          - name: chromium-smoke-node22
-            browser: chromium
-            node: "22"
-            command: npm run test:smoke
-          - name: chromium-cross-browser
-            browser: chromium
-            node: "24"
-            command: npx playwright test --project=chromium --grep @cross-browser
-          - name: firefox-cross-browser
-            browser: firefox
-            node: "24"
-            command: npx playwright test --project=firefox-desktop --grep @cross-browser
-          - name: webkit-cross-browser
-            browser: webkit
-            node: "24"
-            command: npx playwright test --project=webkit-desktop --grep @cross-browser
-          - name: chromium-security
-            browser: chromium
-            node: "24"
-            command: npx playwright test --project=chromium-security
-          - name: chromium-regression
-            browser: chromium
-            node: "24"
-            command: npx playwright test --project=chromium-regression
-          - name: iphone-security
-            browser: webkit
-            node: "24"
-            command: npx playwright test --project=iphone-security
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_DB: pawsh
-          POSTGRES_USER: pawsh
-          POSTGRES_PASSWORD: pawsh-ci
-        ports:
-          - 54322:5432
-        options: >-
-          --health-cmd "pg_isready -U pawsh -d pawsh"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-    env:
-      DATABASE_URL: postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh
-      PAWSH_E2E_MODE: disposable
-    steps:
-      - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
-        with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-      - name: Use supported npm on Node 22
-        if: matrix.node == '22'
-        run: npm install --global npm@11.6.0
-      - run: npm ci
-      - name: Migrate isolated browser database
-        run: npm run db:migrate
-      - name: Install Playwright ${{ matrix.browser }}
-        run: npx playwright install --with-deps ${{ matrix.browser }}
-      - name: Run ${{ matrix.name }}
-        run: ${{ matrix.command }}
-      - name: Upload browser failure artifacts
-        if: ${{ always() && !cancelled() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: playwright-failures-${{ matrix.name }}
-          path: |
-            playwright-report/
-            test-results/
-          if-no-files-found: ignore
-          retention-days: 7
-
-  responsive:
-    name: Responsive / ${{ matrix.project }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - project: iphone-webkit
-            browser: webkit
-          - project: android-chromium
-            browser: chromium
-          - project: ipad-webkit
-            browser: webkit
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_DB: pawsh
-          POSTGRES_USER: pawsh
-          POSTGRES_PASSWORD: pawsh-ci
-        ports:
-          - 54322:5432
-        options: >-
-          --health-cmd "pg_isready -U pawsh -d pawsh"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-    env:
-      DATABASE_URL: postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh
-      PAWSH_E2E_MODE: disposable
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+        if: ${{ steps.classify.outputs.executable == 'true' }}
         with:
           node-version-file: .node-version
           cache: npm
-      - run: npm ci
-      - name: Record Playwright version
-        run: npx playwright --version
-      - name: Migrate isolated responsive database
-        run: npm run db:migrate
-      - name: Install Playwright ${{ matrix.browser }}
-        run: npx playwright install --with-deps ${{ matrix.browser }}
-      - name: Verify ${{ matrix.project }} mapping
-        run: npx playwright test --project=${{ matrix.project }} --list
-      - name: Run ${{ matrix.project }}
-        run: npx playwright test --project=${{ matrix.project }}
-      - name: Upload responsive failure artifacts
-        if: ${{ always() && !cancelled() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: playwright-failures-${{ matrix.project }}
-          path: |
-            playwright-report/
-            test-results/
-          if-no-files-found: ignore
-          retention-days: 7
 
-  backup-restore:
-    name: Backup and restore
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:17-alpine
+      - name: Install dependencies
+        if: ${{ steps.classify.outputs.executable == 'true' }}
+        run: npm ci
+
+      - name: Confirm npm ci leaves the lockfile unchanged
+        if: ${{ steps.classify.outputs.executable == 'true' }}
+        run: git diff --exit-code -- package-lock.json
+
+      - name: Lint
+        if: ${{ steps.classify.outputs.executable == 'true' }}
+        run: npm run lint
+
+      - name: Typecheck
+        if: ${{ steps.classify.outputs.executable == 'true' }}
+        run: npm run typecheck
+
+      - name: Unit tests
+        if: ${{ steps.classify.outputs.executable == 'true' }}
+        run: npm test
+
+      - name: Build
+        if: ${{ steps.classify.outputs.executable == 'true' }}
+        run: npm run build
+
+      - name: Summarize
         env:
-          POSTGRES_DB: pawsh
-          POSTGRES_USER: pawsh
-          POSTGRES_PASSWORD: pawsh-ci
-        ports:
-          - 54322:5432
-        options: >-
-          --health-cmd "pg_isready -U pawsh -d pawsh"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-    env:
-      DATABASE_URL: postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - run: npm ci
-      - run: npm run db:migrate
-      - name: Backup and restore rehearsal
-        shell: bash
+          EXECUTABLE: ${{ steps.classify.outputs.executable }}
+          CHANGE_CLASS: ${{ steps.classify.outputs.change_class }}
         run: |
-          set -euo pipefail
-          POSTGRES_CONTAINER="$(docker ps --filter ancestor=postgres:17-alpine --format '{{.ID}}' | head -n 1)"
-          test -n "$POSTGRES_CONTAINER"
-          docker exec "$POSTGRES_CONTAINER" pg_dump -U pawsh -d pawsh -Fc -f /tmp/pawsh.dump
-          docker exec "$POSTGRES_CONTAINER" createdb -U pawsh pawsh_restore
-          docker exec "$POSTGRES_CONTAINER" pg_restore -U pawsh -d pawsh_restore /tmp/pawsh.dump
-          SOURCE_DATABASE_URL=postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh \
-            DATABASE_URL=postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh_restore \
-            npm run db:verify-restore
+          {
+            echo "## Fast CI"
+            echo
+            echo "- Change class: \`$CHANGE_CLASS\`"
+            if [ "$EXECUTABLE" = "true" ]; then
+              echo "- Ran lint, typecheck, unit tests, and build on the canonical Node runtime."
+            else
+              echo "- Documentation-only change: application validation was skipped."
+            fi
+            echo
+            echo "Fast CI is not release validation. Dispatch **Full validation** against the"
+            echo "exact release SHA before treating a candidate as validated."
+          } >> "$GITHUB_STEP_SUMMARY"

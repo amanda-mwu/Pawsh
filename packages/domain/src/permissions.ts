@@ -1,3 +1,5 @@
+import type { AppointmentStatus } from "./appointments.js";
+
 export const permissions = [
   "calendar.view",
   "appointments.view",
@@ -43,4 +45,21 @@ export function can(
   permission: Permission
 ): boolean {
   return membership.isOwner || membership.permissions.includes(permission);
+}
+
+/**
+ * The permission a status transition requires, derived from the *target* status.
+ *
+ * The server derives it this way in the transition handler, so a client that guesses from the
+ * current status instead will hide an action the caller is allowed to take, or offer one the
+ * server will refuse. Cancel and no-show share `appointments.cancel`.
+ *
+ * This is for deciding what to render. The server checks it again, and that check is the one
+ * that authorizes anything.
+ */
+export function permissionForTransition(status: AppointmentStatus): Permission {
+  if (status === "checked_in") return "operations.check_in";
+  if (status === "in_service") return "operations.perform_service";
+  if (status === "completed") return "operations.complete";
+  return "appointments.cancel";
 }

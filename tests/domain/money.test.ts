@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateInvoice } from "../../src/domain/money.js";
+import { calculateInvoice } from "@pawsh/domain";
 
 describe("invoice calculation", () => {
   it("calculates cents with deterministic rounding", () => {

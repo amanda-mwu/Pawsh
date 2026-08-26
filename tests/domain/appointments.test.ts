@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appointmentStatuses, canTransition, overlaps } from "../../src/domain/appointments.js";
+import { appointmentStatuses, canTransition, overlaps } from "@pawsh/domain";
 
 describe("appointment invariants", () => {
   it("allows the complete lifecycle contract and rejects every other edge", () => {

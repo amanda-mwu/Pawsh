@@ -1,6 +1,6 @@
 import type postgres from "postgres";
-import {normalizeBreedSearch} from "./pets/dog-breeds.js";
-import {resolveTierPrice,type PricingClass,type PriceTier} from "./pricing.js";
+import {normalizeBreedSearch} from "@pawsh/domain";
+import {resolveTierPrice,type PricingClass,type PriceTier} from "@pawsh/domain";
 
 type Sql=postgres.Sql|postgres.TransactionSql;
 export interface ResolvedServicePrice {

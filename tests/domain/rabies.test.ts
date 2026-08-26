@@ -1,5 +1,5 @@
 import {describe,expect,it} from "vitest";
-import {evaluateRabiesForAppointment,evaluateRabiesProfile} from "../../src/domain/rabies.js";
+import {evaluateRabiesForAppointment,evaluateRabiesProfile} from "@pawsh/domain";
 
 describe("appointment-date rabies validity",()=>{
   const base={verificationStatus:"staff_verified" as const,currentBusinessDate:"2032-08-01"};

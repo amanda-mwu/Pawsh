@@ -1,5 +1,5 @@
 import {describe,expect,it} from "vitest";
-import {resolveTierPrice,resolveWeightTier,type PriceTier,type PricingClass} from "../../src/domain/pricing.js";
+import {resolveTierPrice,resolveWeightTier,type PriceTier,type PricingClass} from "@pawsh/domain";
 import {defaultBreedPricingClass,defaultServices} from "../../src/domain/catalog-seed.js";
 const codes=["TIER_1","TIER_2","TIER_3","TIER_4","TIER_5","TIER_6"] as const;
 function prices(key:string,pricingClass:PricingClass):PriceTier[]{const service=defaultServices.find(item=>item.key===key);const values=service?.prices?.[pricingClass];if(!Array.isArray(values))throw new Error("Missing seed matrix");return values.map((priceMinor,index)=>({pricingClass,weightTierCode:codes[index]!,priceMinor}));}

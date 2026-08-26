@@ -1,5 +1,5 @@
 import {describe,expect,it} from "vitest";
-import {catalogBreedName,dogBreeds,normalizeBreedSearch,searchDogBreeds} from "../../src/domain/pets/dog-breeds.js";
+import {catalogBreedName,dogBreeds,normalizeBreedSearch,searchDogBreeds} from "@pawsh/domain";
 
 describe("dog breed catalog",()=>{
   it("is comprehensive and has unique normalized names",()=>{

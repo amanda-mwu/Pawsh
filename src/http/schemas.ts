@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { passwordSchema } from "../security/passwords.js";
-import { rabiesVerificationMethods, rabiesVerificationStatuses } from "../domain/rabies.js";
-import { petHealthIssues } from "../domain/pet-care.js";
-import {pricingClasses,weightTiers} from "../domain/pricing.js";
+import { rabiesVerificationMethods, rabiesVerificationStatuses } from "@pawsh/domain";
+import { petHealthIssues } from "@pawsh/domain";
+import { permissions } from "@pawsh/domain";
+import {pricingClasses,weightTiers} from "@pawsh/domain";
 
 export const idParams = z.object({ id: z.string().uuid() });
 
@@ -38,15 +39,9 @@ export const passwordChangeSchema = z.object({
 
 export const invitationSchema = z.object({
   email: z.string().email().max(320),
-  permissions: z.array(z.enum([
-    "calendar.view", "appointments.view", "appointments.create", "appointments.edit",
-    "appointments.cancel", "appointments.override_conflict",
-    "customers.view", "customers.edit", "pets.view", "pets.edit",
-    "pets.care.view", "pets.care.edit", "operations.check_in",
-    "operations.perform_service", "operations.complete", "checkout.perform",
-    "payments.view", "discounts.apply", "services.manage", "team.manage",
-    "reports.view", "settings.manage"
-  ])).default([])
+  // Read from the domain tuple rather than restated here, so a new permission cannot be grantable
+  // by the authorization layer while silently rejected at the invitation boundary.
+  permissions: z.array(z.enum(permissions)).default([])
 });
 
 export const invitationAcceptSchema = z.object({

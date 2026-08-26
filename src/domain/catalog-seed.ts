@@ -1,6 +1,6 @@
 import type postgres from "postgres";
-import {dogBreeds} from "./pets/dog-breeds.js";
-import type {PricingClass,WeightTierCode} from "./pricing.js";
+import {dogBreeds} from "@pawsh/domain";
+import type {PricingClass,WeightTierCode} from "@pawsh/domain";
 
 type Sql=postgres.Sql|postgres.TransactionSql;
 const smooth=new Set(["Boston Terrier","Boxer","Dalmatian","Doberman Pinscher","French Bulldog","Great Dane","Greyhound","Weimaraner"]);

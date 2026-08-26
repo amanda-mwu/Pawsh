@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { can } from "../../src/domain/permissions.js";
+import { can } from "@pawsh/domain";
 
 describe("permissions", () => {
   it("gives owners protected full access", () => {

@@ -1,18 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import type postgres from "postgres";
 import { z, type ZodType } from "zod";
 import type { Config } from "../config.js";
 import type { Database } from "../db/client.js";
 import { DocumentStorageError, sha256, type DocumentStorage } from "../storage/documents.js";
-import { canTransition, type AppointmentStatus } from "../domain/appointments.js";
-import { calculateInvoice } from "../domain/money.js";
+import { canTransition, type AppointmentStatus } from "@pawsh/domain";
+import { calculateInvoice } from "@pawsh/domain";
 import { canonicalHash } from "../domain/canonical.js";
 import { safePdfFilename } from "../domain/filenames.js";
 import { maxPhotoBytes, readPhotoShape, safePhotoFilename } from "../domain/images.js";
 import { localDateBounds, localDateForInstant, resolveWallTime, validateTimeZone } from "../domain/time.js";
-import { permissionPresets, permissions } from "../domain/permissions.js";
-import { auth, authentication, issueToken, platformAuthentication, requirePermission, tokenHash } from "./context.js";
+import { permissionPresets, permissions } from "@pawsh/domain";
+import { auth, authentication, issueToken, platformAuthentication, requirePermission, sessionToken, tokenHash } from "./context.js";
 import {
   appointmentSchema, checkoutSchema, customerSchema, employeeSchema, idParams, loginSchema,
   normalizeEmail, normalizePhone, paymentSchema, petSchema, serviceSchema, signupSchema,
@@ -41,8 +41,8 @@ import {
   redactPetCare,
   suppliedPetCareFields,
   type PetCareRecord
-} from "../domain/pet-care.js";
-import { catalogBreedName, normalizeBreedSearch } from "../domain/pets/dog-breeds.js";
+} from "@pawsh/domain";
+import { catalogBreedName, normalizeBreedSearch } from "@pawsh/domain";
 import {provisionBusinessCatalog} from "../domain/catalog-seed.js";
 import {resolveServicePrices} from "../domain/service-pricing.js";
 
@@ -454,6 +454,54 @@ function assignedToEmployees(db: Database, employeeIds: readonly string[] | unde
     where scoped_assignment.business_id=a.business_id and scoped_assignment.appointment_id=a.id
       and scoped_assignment.employee_id in ${db(employeeIds as string[])}
   )`;
+}
+
+type SqlFragment = ReturnType<typeof assignedToEmployees>;
+
+/**
+ * The calendar row shape, in one place.
+ *
+ * The list endpoint and the single-appointment endpoint must agree field for field, because a
+ * mobile detail screen refetches one appointment and re-renders the same record the list handed
+ * it. Two hand-written queries would drift the first time a column is added to one of them, so
+ * both callers pass only a `where` fragment and share this projection. The fragment carries the
+ * tenant predicate.
+ */
+function appointmentCalendarRows(db: Database, scope: SqlFragment) {
+  return db`
+    select a.*, c.first_name, c.last_name, c.phone as customer_phone, p.name as pet_name, p.breed, p.safety_alerts,
+      p.behavior_notes, p.medical_notes, p.grooming_preferences, p.coat_notes,
+      p.vaccination_expires_on,p.rabies_verification_status,p.rabies_verification_method,
+      case
+        when p.vaccination_expires_on is null then 'not_provided'
+        when p.vaccination_expires_on < a.scheduled_local_start::date then 'expires_before_appointment'
+        else 'valid_for_appointment'
+      end as rabies_appointment_status,
+      coalesce((select ni.status from notification_intents ni
+        where ni.business_id=a.business_id and ni.appointment_id=a.id
+          and ni.notification_type='rabies_expiration_customer'
+        order by ni.created_at desc limit 1),'not_required') as rabies_customer_notification_status,
+      e.display_name as employee_name,
+      coalesce((select json_agg(json_build_object('id',staff.id,'displayName',staff.display_name) order by staff.display_name)
+        from appointment_employees assignment join employees staff on staff.id=assignment.employee_id
+        where assignment.business_id=a.business_id and assignment.appointment_id=a.id),
+        json_build_array(json_build_object('id',e.id,'displayName',e.display_name))) as groomers,
+      coalesce(json_agg(json_build_object(
+        'id', aps.id, 'name', aps.service_name_snapshot, 'durationMinutes',
+        aps.duration_minutes_snapshot, 'priceMinor', aps.price_minor_snapshot,
+        'serviceId', aps.service_id
+      )) filter (where aps.id is not null), '[]') as services,
+      inv.status as invoice_status, inv.balance_minor as invoice_balance_minor
+    from appointments a
+    join customers c on c.id=a.customer_id
+    join pets p on p.id=a.pet_id
+    join locations l on l.business_id=a.business_id and l.id=a.location_id
+    join employees e on e.id=a.employee_id
+    left join appointment_services aps on aps.appointment_id=a.id
+    left join invoices inv on inv.business_id=a.business_id and inv.appointment_id=a.id and inv.status<>'void'
+    where ${scope}
+    group by a.id,c.id,p.id,e.id,l.id,inv.id order by a.start_at,a.employee_id,a.id
+  `;
 }
 
 // Bounded appointment history projection carrying the service snapshots the profile views render,
@@ -979,6 +1027,12 @@ async function record(
   }
 }
 
+/** A client that holds the session token itself rather than relying on the browser cookie jar. */
+function nativeClient(request: FastifyRequest): boolean {
+  const declared = request.headers["x-pawsh-client"];
+  return (typeof declared === "string" ? declared : declared?.[0] ?? "").trim().toLowerCase() === "native";
+}
+
 function sessionCookie(config: Config) {
   return {
     path: "/",
@@ -1086,11 +1140,18 @@ export function registerRoutes(
       insert into sessions (user_id, business_id, token_hash, expires_at)
       values (${user.id}, ${membership.businessId}, ${tokenHash(token)}, now() + interval '14 days')
     `;
+    // One transport per client. A browser gets the httpOnly cookie and never sees the token;
+    // a native client declares itself and gets the token, with no cookie to be replayed. The
+    // token is disclosed only to a client that asked for it at the moment it authenticated,
+    // so there is no way to trade an existing cookie for a bearer credential.
+    if (nativeClient(request)) return reply.send({ ok: true, token });
     return reply.setCookie("pawsh_session", token, sessionCookie(config)).send({ ok: true });
   });
 
   app.post("/api/auth/logout", { preHandler: authenticate }, async (request, reply) => {
-    const token = request.cookies.pawsh_session;
+    // Read through the shared accessor: a bearer client sends no cookie, and revoking nothing
+    // while answering 204 would leave a live credential behind a "logged out" client.
+    const token = sessionToken(request);
     if (token) await db`update sessions set revoked_at = now() where token_hash = ${tokenHash(token)}`;
     return reply.clearCookie("pawsh_session", { path: "/" }).code(204).send();
   });
@@ -1312,7 +1373,7 @@ export function registerRoutes(
     // Switching workspace must drop the previous workspace's location, otherwise the
     // session would reference a location owned by a different business.
     await db`update sessions set business_id=${input.businessId},location_id=null
-      where token_hash=${tokenHash(request.cookies.pawsh_session??"")} and user_id=${context.userId}`;
+      where token_hash=${tokenHash(sessionToken(request)??"")} and user_id=${context.userId}`;
     return {selected:true};
   });
 
@@ -1328,7 +1389,7 @@ export function registerRoutes(
 
   app.post("/api/me/location",{preHandler:authenticate},async(request,reply)=>{
     const context=auth(request);const input=body(locationSelectionSchema,request.body);
-    const sessionTokenHash=tokenHash(request.cookies.pawsh_session??"");
+    const sessionTokenHash=tokenHash(sessionToken(request)??"");
     const selected=await db.begin(async tx=>{
       await setTenant(tx,context.businessId);
       // Scoped to the caller's business, so an id from another tenant is simply absent.
@@ -1387,7 +1448,9 @@ export function registerRoutes(
     abuse.success(account.email,"password-change");
     await validateNewPassword(input.newPassword,{ email:account.email });
     const passwordHash = await hashPassword(input.newPassword);
-    const currentTokenHash = tokenHash(request.cookies.pawsh_session ?? "");
+    // The caller's own session is the one exempted from the revocation sweep below, so it has
+    // to be resolved from whichever transport the caller actually used.
+    const currentTokenHash = tokenHash(sessionToken(request) ?? "");
     await db.begin(async (tx) => {
       await tx`update users set password_hash=${passwordHash},updated_at=now() where id=${context.userId}`;
       await tx`
@@ -4476,47 +4539,36 @@ export function registerRoutes(
     const endLocal=new Date(Date.UTC(Number(localDate.slice(0,4)),Number(localDate.slice(5,7))-1,Number(localDate.slice(8,10))+days));
     const to=localDateBounds(endLocal.toISOString().slice(0,10),location.timezone).from;
     const overlap=query.mode === "overlap";
-    const rows = await db`
-      select a.*, c.first_name, c.last_name, c.phone as customer_phone, p.name as pet_name, p.breed, p.safety_alerts,
-        p.behavior_notes, p.medical_notes, p.grooming_preferences, p.coat_notes,
-        p.vaccination_expires_on,p.rabies_verification_status,p.rabies_verification_method,
-        case
-          when p.vaccination_expires_on is null then 'not_provided'
-          when p.vaccination_expires_on < a.scheduled_local_start::date then 'expires_before_appointment'
-          else 'valid_for_appointment'
-        end as rabies_appointment_status,
-        coalesce((select ni.status from notification_intents ni
-          where ni.business_id=a.business_id and ni.appointment_id=a.id
-            and ni.notification_type='rabies_expiration_customer'
-          order by ni.created_at desc limit 1),'not_required') as rabies_customer_notification_status,
-        e.display_name as employee_name,
-        coalesce((select json_agg(json_build_object('id',staff.id,'displayName',staff.display_name) order by staff.display_name)
-          from appointment_employees assignment join employees staff on staff.id=assignment.employee_id
-          where assignment.business_id=a.business_id and assignment.appointment_id=a.id),
-          json_build_array(json_build_object('id',e.id,'displayName',e.display_name))) as groomers,
-        coalesce(json_agg(json_build_object(
-          'id', aps.id, 'name', aps.service_name_snapshot, 'durationMinutes',
-          aps.duration_minutes_snapshot, 'priceMinor', aps.price_minor_snapshot,
-          'serviceId', aps.service_id
-        )) filter (where aps.id is not null), '[]') as services,
-        inv.status as invoice_status, inv.balance_minor as invoice_balance_minor
-      from appointments a
-      join customers c on c.id=a.customer_id
-      join pets p on p.id=a.pet_id
-      join locations l on l.business_id=a.business_id and l.id=a.location_id
-      join employees e on e.id=a.employee_id
-      left join appointment_services aps on aps.appointment_id=a.id
-      left join invoices inv on inv.business_id=a.business_id and inv.appointment_id=a.id and inv.status<>'void'
-      where a.business_id=${context.businessId} and a.location_id=${location.id}
+    const rows = await appointmentCalendarRows(db, db`
+      a.business_id=${context.businessId} and a.location_id=${location.id}
         and ${assignedToEmployees(db,query.employeeIds)}
         and ${overlap
           ? db`a.start_at < ${to} and a.end_at > ${from}`
           : db`a.start_at >= ${from} - interval '2 days' and a.start_at < ${to} + interval '2 days'
               and a.scheduled_local_start >= ${localDate}::date and a.scheduled_local_start < ${endLocal.toISOString().slice(0,10)}::date`}
-      group by a.id,c.id,p.id,e.id,l.id,inv.id order by a.start_at,a.employee_id,a.id
-    `;
+    `);
     if (mayViewPetCare(context)) return rows;
     return rows.map((appointment) => redactPetCare(appointment));
+  });
+
+  /**
+   * One appointment, in the calendar row shape.
+   *
+   * A detail view refetching a single visit should not have to pull a whole date window to find
+   * it again, so this returns exactly one element of `GET /api/appointments` from the same
+   * projection. Scoped to the business rather than the session's active location: the row is
+   * addressed by id, and a multi-location salon can legitimately open a visit booked elsewhere.
+   */
+  app.get("/api/appointments/:id", {
+    preHandler: [authenticate, requirePermission("appointments.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [appointment] = await appointmentCalendarRows(db, db`
+      a.business_id=${context.businessId} and a.id=${id}
+    `);
+    if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
+    return mayViewPetCare(context) ? appointment : redactPetCare(appointment);
   });
 
   app.get("/api/pets/:id/booking-defaults",{preHandler:[authenticate,requirePermission("appointments.create")]},async(request,reply)=>{

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Database } from "../db/client.js";
-import { can, type Permission } from "../domain/permissions.js";
+import { can, type Permission } from "@pawsh/domain";
 
 export interface AuthContext {
   userId: string;
@@ -27,9 +27,24 @@ export function issueToken(): string {
   return randomBytes(32).toString("base64url");
 }
 
+/**
+ * The session token for this request, from either transport.
+ *
+ * Browsers send the httpOnly cookie; native clients hold the token themselves and send it as a
+ * bearer credential. The header wins so a native client is never silently authenticated as
+ * whatever cookie happened to ride along. Every read of the session token must go through here:
+ * a handler that reaches for the cookie directly would address the wrong session, or no session
+ * at all, for a bearer caller.
+ */
+export function sessionToken(request: FastifyRequest): string | undefined {
+  const header = request.headers.authorization;
+  if (header?.startsWith("Bearer ")) return header.slice(7).trim() || undefined;
+  return request.cookies.pawsh_session;
+}
+
 export function authentication(db: Database) {
   return async function authenticate(request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    const token = request.cookies.pawsh_session;
+    const token = sessionToken(request);
     if (!token) return reply.code(401).send({ error: "Authentication required" });
     const requestedBusiness = request.headers["x-business-id"];
     const rows = await db<{
@@ -72,7 +87,7 @@ export function authentication(db: Database) {
 
 export function platformAuthentication(db: Database) {
   return async function authenticatePlatform(request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    const token = request.cookies.pawsh_session;
+    const token = sessionToken(request);
     if (!token) return reply.code(401).send({ error: "Authentication required" });
     const [row] = await db<{ userId: string }[]>`
       select s.user_id from sessions s

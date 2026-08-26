@@ -2,7 +2,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { canonicalHash, normalizeLineEndings, withoutVariableFields } from "../dist/domain/canonical.js";
-import { calculateInvoice } from "../dist/domain/money.js";
+import { calculateInvoice } from "@pawsh/domain";
 import { localDateBounds, resolveWallTime } from "../dist/domain/time.js";
 
 const notes = normalizeLineEndings("Calm 🐾\r\nUse café shampoo\rSecond line");

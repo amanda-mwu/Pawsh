@@ -1,6 +1,6 @@
 import {afterAll,beforeAll,describe,expect,it} from "vitest";
 import {createApp} from "../../src/app.js";import {createDatabase,type Database} from "../../src/db/client.js";import type {Config} from "../../src/config.js";
-import {normalizeBreedSearch} from "../../src/domain/pets/dog-breeds.js";
+import {normalizeBreedSearch} from "@pawsh/domain";
 const databaseUrl=process.env.DATABASE_URL;const describeDatabase=databaseUrl?describe:describe.skip;
 const config:Config={NODE_ENV:"test",DOCUMENT_STORAGE_ADAPTER:"memory",PORT:3000,DATABASE_URL:databaseUrl??"postgres://unavailable",SESSION_SECRET:"service-pricing-test-secret-at-least-32-chars",APP_ORIGIN:"http://localhost:3000",SMTP_PORT:587,SMTP_SECURE:false};
 function cookie(response:{headers:Record<string,unknown>}){return String(response.headers["set-cookie"]).split(";",1)[0]!;}

@@ -54,6 +54,30 @@ export function decodablePng(width = 640, height = 480): Buffer {
 }
 
 /**
+ * A structurally complete PNG whose IHDR declares the requested size without carrying pixels
+ * for it.
+ *
+ * Unlike `decodablePng` this is deliberately not decodable, and that is exactly the point: a
+ * decompression bomb is a small file whose header claims an enormous canvas. Pawsh never
+ * inflates IDAT — it reads IHDR and checks the terminator — so the parser is handed precisely
+ * what a real bomb would present, while materializing the declared payload (1.6 GB at
+ * 40000x40000) only makes the test slow enough to time out on a hosted runner.
+ */
+export function pngDeclaringSize(width: number, height: number): Buffer {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;   // bit depth
+  header[9] = 0;   // colour type: greyscale
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", header),
+    pngChunk("IDAT", deflateSync(Buffer.alloc(0))),
+    pngChunk("IEND", Buffer.alloc(0))
+  ]);
+}
+
+/**
  * A JPEG whose frame header declares the requested size and which terminates properly.
  *
  * The entropy-coded data is not a real scan — nothing in Pawsh decodes it — but the marker

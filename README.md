@@ -2,6 +2,11 @@
 
 Pawsh is a multi-tenant grooming-salon operations MVP covering business setup, customers and pets, scheduling, service execution, checkout, manual payment records, engagement intents, reporting, and audit history.
 
+Pawsh runs on the desktop web, iOS, and Android from one backend and one set of domain rules.
+The mobile app lives in `apps/mobile` and the shared rules in `packages/domain`; see
+[mobile clients](docs/architecture/mobile-clients.md) for the architecture and
+[apps/mobile/README.md](apps/mobile/README.md) to run it.
+
 ## Local development
 
 Prerequisites: Node.js 22.x or 24.x, npm 11, and PostgreSQL 17. Node 24 is
@@ -11,10 +16,13 @@ the recommended local runtime and is pinned by `.node-version` and `.nvmrc`.
    following [local database development](docs/development/local-database.md).
 2. Copy `.env.example` to `.env`, replace the local database password, and
    replace the session secret.
-3. Run `npm install`.
-4. Run `npm run db:health`, `npm run db:migrate`, and `npm run db:verify`.
-5. Run `npm run dev`.
-6. Pawsh opens `APP_ORIGIN` in the system default browser after it is ready.
+3. Run `npm install`. This links the `packages/*` workspaces.
+4. Run `npm run build:packages` to compile `@pawsh/domain`, which the server imports. The
+   `typecheck`, `test`, and `build` scripts do this for you; a fresh clone needs it once before
+   anything resolves.
+5. Run `npm run db:health`, `npm run db:migrate`, and `npm run db:verify`.
+6. Run `npm run dev`.
+7. Pawsh opens `APP_ORIGIN` in the system default browser after it is ready.
 
 `npm run dev` is the interactive development runtime and should use
 `NODE_ENV=development`. It reports configuration, PostgreSQL readiness, service

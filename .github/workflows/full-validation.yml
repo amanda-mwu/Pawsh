@@ -310,6 +310,36 @@ jobs:
             DATABASE_URL=postgres://pawsh:pawsh-ci@127.0.0.1:54322/pawsh_restore \
             npm run db:verify-restore
 
+  # Bundling the app for both platforms is the strongest mobile signal available without a
+  # native toolchain: it resolves every import and asset through Metro for each target, which is
+  # where a Node-only module leaking into the shared package would fail. Deliberately Linux-only
+  # and never automatic — native compiles and macOS runners stay manual.
+  mobile:
+    name: Mobile bundle validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Build the shared package the app depends on
+        run: npm ci && npm run build:packages
+      - run: npm ci --prefix apps/mobile
+      - name: Lint
+        run: npx eslint apps/mobile
+      - name: Typecheck
+        run: npx --prefix apps/mobile tsc -p apps/mobile/tsconfig.json --noEmit
+      - name: Tests
+        run: npm test --prefix apps/mobile
+      - name: Expo configuration check
+        run: npx --prefix apps/mobile expo-doctor
+      - name: Bundle for iOS
+        run: npx --prefix apps/mobile expo export --platform ios --output-dir /tmp/pawsh-ios
+      - name: Bundle for Android
+        run: npx --prefix apps/mobile expo export --platform android --output-dir /tmp/pawsh-android
+
   # Windows, macOS, UTC canonicalization, and the Ubuntu runtime matrix. Called with the full
   # matrix forced so that dispatching this workflow always means "validate everything", rather
   # than letting the change classifier narrow a release run.

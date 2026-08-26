@@ -34,6 +34,8 @@ const outputs = {
   browser: String(result.browser),
   workflow: String(result.workflow),
   dependency: String(result.dependency),
+  mobile: String(result.mobile),
+  server: String(result.server),
   full_matrix: String(result.fullMatrix),
   reasons: result.reasons
 };

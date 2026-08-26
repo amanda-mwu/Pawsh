@@ -46,46 +46,63 @@ jobs:
         run: node scripts/classify-ci-change.mjs
 
       - uses: actions/setup-node@v6
-        if: ${{ steps.classify.outputs.executable == 'true' }}
+        if: ${{ steps.classify.outputs.executable == 'true' && steps.classify.outputs.server == 'true' }}
         with:
           node-version-file: .node-version
           cache: npm
 
       - name: Install dependencies
-        if: ${{ steps.classify.outputs.executable == 'true' }}
+        if: ${{ steps.classify.outputs.executable == 'true' && steps.classify.outputs.server == 'true' }}
         run: npm ci
 
       - name: Confirm npm ci leaves the lockfile unchanged
-        if: ${{ steps.classify.outputs.executable == 'true' }}
+        if: ${{ steps.classify.outputs.executable == 'true' && steps.classify.outputs.server == 'true' }}
         run: git diff --exit-code -- package-lock.json
 
       - name: Lint
-        if: ${{ steps.classify.outputs.executable == 'true' }}
+        if: ${{ steps.classify.outputs.executable == 'true' && steps.classify.outputs.server == 'true' }}
         run: npm run lint
 
       - name: Typecheck
-        if: ${{ steps.classify.outputs.executable == 'true' }}
+        if: ${{ steps.classify.outputs.executable == 'true' && steps.classify.outputs.server == 'true' }}
         run: npm run typecheck
 
       - name: Unit tests
-        if: ${{ steps.classify.outputs.executable == 'true' }}
+        if: ${{ steps.classify.outputs.executable == 'true' && steps.classify.outputs.server == 'true' }}
         run: npm test
 
       - name: Build
-        if: ${{ steps.classify.outputs.executable == 'true' }}
+        if: ${{ steps.classify.outputs.executable == 'true' && steps.classify.outputs.server == 'true' }}
         run: npm run build
+
+      # The mobile app carries its own lockfile and is deliberately outside the root npm
+      # workspace, so none of this installs unless the change actually touches it.
+      - name: Install mobile dependencies
+        if: ${{ steps.classify.outputs.executable == 'true' && steps.classify.outputs.mobile == 'true' }}
+        run: npm ci --prefix apps/mobile
+
+      - name: Mobile typecheck
+        if: ${{ steps.classify.outputs.executable == 'true' && steps.classify.outputs.mobile == 'true' }}
+        run: npx --prefix apps/mobile tsc -p apps/mobile/tsconfig.json --noEmit
+
+      - name: Mobile tests
+        if: ${{ steps.classify.outputs.executable == 'true' && steps.classify.outputs.mobile == 'true' }}
+        run: npm test --prefix apps/mobile
 
       - name: Summarize
         env:
           EXECUTABLE: ${{ steps.classify.outputs.executable }}
           CHANGE_CLASS: ${{ steps.classify.outputs.change_class }}
+          SERVER: ${{ steps.classify.outputs.server }}
+          MOBILE: ${{ steps.classify.outputs.mobile }}
         run: |
           {
             echo "## Fast CI"
             echo
             echo "- Change class: \`$CHANGE_CLASS\`"
             if [ "$EXECUTABLE" = "true" ]; then
-              echo "- Ran lint, typecheck, unit tests, and build on the canonical Node runtime."
+              echo "- Server validation: \`$SERVER\` (lint, typecheck, unit tests, build)."
+              echo "- Mobile validation: \`$MOBILE\` (typecheck, tests)."
             else
               echo "- Documentation-only change: application validation was skipped."
             fi

@@ -48,6 +48,9 @@ export function classifyEntries(entries, options = {}) {
   let workflow = false;
   let dependency = false;
   let platformSensitive = false;
+  let mobile = false;
+  // Server work is skipped only when every changed path is mobile-only.
+  let server = false;
 
   for (const entry of entries) {
     for (const path of [entry.oldPath, entry.path].filter(Boolean)) {
@@ -58,6 +61,8 @@ export function classifyEntries(entries, options = {}) {
       workflow ||= category.workflow;
       dependency ||= category.dependency;
       platformSensitive ||= category.platformSensitive;
+      mobile ||= category.mobile;
+      server ||= category.server;
       if (category.reason) reasons.push(category.reason);
     }
   }
@@ -77,6 +82,8 @@ export function classifyEntries(entries, options = {}) {
     browser,
     workflow,
     dependency,
+    mobile,
+    server,
     fullMatrix,
     enforcementLevel: mode.level,
     reasons: trustedReasons(reasons.length ? reasons : [changeClass])
@@ -89,6 +96,13 @@ function classifyPath(path, readFile = safeReadFile) {
   const extension = lower.includes(".") ? lower.slice(lower.lastIndexOf(".")) : "";
   if (documentationExtensions.has(extension) || lower === "agents.md") return named("documentation_only");
   if (lower.startsWith(".github/")) return named("workflow_or_ci", { workflow: true, platformSensitive: true, reason: "workflow_path" });
+  // The mobile app is validated by its own toolchain and cannot affect the server, so a
+  // mobile-only change skips server work. Shared packages are consumed by both, so they set
+   // `mobile` without clearing `server`. Both sit above the dependency, tooling and database
+  // checks below: `apps/mobile/package-lock.json` must not escalate the platform matrix, and a
+  // mobile file named `database.ts` must not read as a migration.
+  if (lower.startsWith("apps/")) return named("mobile_app", { mobile: true, server: false });
+  if (lower.startsWith("packages/")) return named("shared_package", { mobile: true });
   if (lower === "package.json" || /(?:^|\/)(?:package-lock|pnpm-lock|yarn\.lock)/.test(lower)) {
     return named("dependency_change", { dependency: true, platformSensitive: true, reason: "dependency_path" });
   }
@@ -117,7 +131,7 @@ function classifyPath(path, readFile = safeReadFile) {
 }
 
 function named(name, values = {}) {
-  return { name, database: false, browser: false, workflow: false, dependency: false, platformSensitive: false, ...values };
+  return { name, database: false, browser: false, workflow: false, dependency: false, platformSensitive: false, mobile: false, server: true, ...values };
 }
 
 function normalizeMode(value = "beta_development") {
@@ -139,7 +153,7 @@ function normalizeBoolean(value, name, absentConservative = false) {
 function result(changeClass, fullMatrix, reasons) {
   return {
     changeClass, documentationOnly: false, executable: true, platformSensitive: true,
-    database: false, browser: false, workflow: false, dependency: false, fullMatrix,
+    database: false, browser: false, workflow: false, dependency: false, mobile: true, server: true, fullMatrix,
     enforcementLevel: "unknown", reasons: trustedReasons(reasons)
   };
 }

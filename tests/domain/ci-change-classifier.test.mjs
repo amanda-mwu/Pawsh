@@ -18,6 +18,26 @@ describe("cross-platform CI change classifier", () => {
       ]);
   });
 
+  it("routes work to the surfaces a change can actually affect", () => {
+    // Mobile-only work skips server validation; shared packages are consumed by both, so they
+    // must run everything; anything mixed or unknown falls back to running both.
+    const mobileOnly = classify(["apps/mobile/app/index.tsx"]);
+    expect(mobileOnly.mobile).toBe(true);
+    expect(mobileOnly.server).toBe(false);
+
+    const shared = classify(["packages/domain/src/labels.ts"]);
+    expect(shared.mobile).toBe(true);
+    expect(shared.server).toBe(true);
+
+    const serverOnly = classify(["src/http/routes.ts"]);
+    expect(serverOnly.mobile).toBe(false);
+    expect(serverOnly.server).toBe(true);
+
+    const mixed = classify(["apps/mobile/app/index.tsx", "src/http/routes.ts"]);
+    expect(mixed.mobile).toBe(true);
+    expect(mixed.server).toBe(true);
+  });
+
   it.each([
     [["README.md", "docs/architecture/overview.md"], "documentation_only", false],
     [["src/domain/money.ts"], "ordinary_executable", false],
@@ -33,6 +53,13 @@ describe("cross-platform CI change classifier", () => {
     [["src/default-browser.ts"], "platform_sensitive", true],
     [["src/filesystem/storage.ts"], "platform_sensitive", true],
     [["tools/postgres-service.ps1"], "platform_sensitive", true],
+    [["apps/mobile/app/index.tsx"], "mobile_app", false],
+    // A mobile lockfile bump must not escalate the Windows/macOS matrix, and a mobile file
+    // named for a database must not read as a migration. Both are ordering-sensitive:
+    // the apps/ branch has to sit above the dependency and database checks.
+    [["apps/mobile/package-lock.json"], "mobile_app", false],
+    [["apps/mobile/src/api/database.ts"], "mobile_app", false],
+    [["packages/domain/src/labels.ts"], "shared_package", false],
     [["mystery.unclassified"], "unknown_or_mixed", true]
   ])("classifies %j as %s", (paths, expectedClass, expectedFull) => {
     const result = classify(paths);

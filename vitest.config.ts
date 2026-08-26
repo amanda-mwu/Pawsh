@@ -11,7 +11,10 @@ export default defineConfig({
         test: {
           name: "unit",
           include: configDefaults.include,
-          exclude: [...configDefaults.exclude, "tests/e2e/**", "tests/database/**"],
+          // `apps/**` holds the React Native app, which runs its own jest suite from
+          // `apps/mobile`. Picking those files up here would execute them without the native
+          // module mocks and report the failures as product bugs.
+          exclude: [...configDefaults.exclude, "tests/e2e/**", "tests/database/**", "apps/**"],
           globalSetup: ["tests/support/global-unit-setup.ts"]
         }
       },

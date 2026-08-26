@@ -1,0 +1,7 @@
+node_modules/
+.expo/
+dist/
+.expo-export-*/
+web-build/
+expo-env.d.ts
+*.log

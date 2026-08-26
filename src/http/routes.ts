@@ -21,7 +21,10 @@ import {
   invitationAcceptSchema, ownershipTransferSchema, petProfileUpdateSchema, petCareUpdateSchema,
   servicePricingSchema,breedCatalogCreateSchema,breedCatalogUpdateSchema,priceResolutionSchema,
   ownProfileUpdateSchema,passwordChangeSchema,workspaceAccessRequestSchema,workspaceSelectionSchema,
-  locationSelectionSchema
+  locationSelectionSchema,customerNoteParams,customerNoteCreateSchema,customerNoteUpdateSchema,
+  customerNoteQuerySchema,customerPreferencesSchema,
+  agreementTemplateCreateSchema,agreementTemplateUpdateSchema,agreementTemplateQuerySchema,
+  agreementSignatureSchema,agreementSendSchema,customerAgreementParams
 } from "./schemas.js";
 import { sealSecret } from "../security/secrets.js";
 import { hashPassword, validateNewPassword, verifyPassword } from "../security/passwords.js";
@@ -74,6 +77,15 @@ const appointmentHistoryQuerySchema=z.object({
 const profileHistoryLimit=100;
 const preferredGroomerSchema=z.object({employeeId:z.string().uuid().nullable()}).strict();
 const reminderQuerySchema=z.object({type:z.enum(["appointment_reminder","secondary_reminder","same_day_reminder","rebook_reminder","vaccination_reminder","birthday_reminder"])}).strict();
+
+interface CustomerPreferences {
+  id: string;
+  bookingFrequencyWeeks: number | null;
+  blockMessages: boolean;
+  blockOnlineBooking: boolean;
+  marketingSmsAllowed: boolean;
+  emailAllowed: boolean;
+}
 
 interface SchedulingConflict {
   appointmentId: string;
@@ -431,6 +443,239 @@ async function appointmentHistoryPage(
 
 async function setTenant(tx: Transaction, businessId: string): Promise<void> {
   await tx`select set_config('app.business_id', ${businessId}, true)`;
+}
+
+// Client note thread projection. `authorName` always resolves to something renderable: the
+// business-scoped employee name when the author still has one, otherwise their account display
+// name, and never a bare user id. Pinned ("popup") notes float to the top of the thread.
+async function customerNoteRows(
+  db: Database,
+  input: { businessId: string; customerId: string; noteId?: string; limit: number; offset: number }
+): Promise<Record<string, unknown>[]> {
+  const scope = input.noteId ? db`note.id=${input.noteId}` : db`true`;
+  return db<Record<string, unknown>[]>`
+    select note.id,note.customer_id,note.body,note.pinned,note.created_by,
+      note.created_at,note.updated_at,
+      coalesce(author_employee.display_name,author_user.display_name,'Unknown') as author_name
+    from customer_notes note
+    left join users author_user on author_user.id=note.created_by
+    left join business_memberships author_membership
+      on author_membership.business_id=note.business_id and author_membership.user_id=note.created_by
+    left join employees author_employee
+      on author_employee.business_id=note.business_id
+      and author_employee.membership_id=author_membership.id
+    where note.business_id=${input.businessId} and note.customer_id=${input.customerId} and ${scope}
+    order by note.pinned desc,note.created_at desc,note.id desc
+    limit ${input.limit} offset ${input.offset}
+  `;
+}
+
+/**
+ * Bridges the legacy single-field `customers.notes` write path onto the note thread, which is now
+ * the source of truth (a database trigger mirrors the newest note back onto the column, so the
+ * legacy response key can never disagree with the thread).
+ *
+ * An absent value leaves the thread untouched, an explicit empty value removes the note the legacy
+ * field represents, and any other value edits that note in place — matching what editing a single
+ * free-text field always meant. Returns whether the thread changed.
+ */
+async function applyLegacyCustomerNote(
+  tx: Transaction,
+  input: { businessId: string; customerId: string; actorId: string; value: string | null | undefined }
+): Promise<boolean> {
+  if (input.value === undefined) return false;
+  const body = (input.value ?? "").trim();
+  const [latest] = await tx<{ id: string; body: string }[]>`
+    select id,body from customer_notes
+    where business_id=${input.businessId} and customer_id=${input.customerId}
+    order by created_at desc,id desc limit 1
+  `;
+  if (!body) {
+    if (!latest) return false;
+    await tx`delete from customer_notes where business_id=${input.businessId} and id=${latest.id}`;
+    return true;
+  }
+  if (!latest) {
+    await tx`
+      insert into customer_notes (business_id, customer_id, body, created_by)
+      values (${input.businessId}, ${input.customerId}, ${body}, ${input.actorId})
+    `;
+    return true;
+  }
+  if (latest.body === body) return false;
+  await tx`
+    update customer_notes set body=${body},updated_at=now()
+    where business_id=${input.businessId} and id=${latest.id}
+  `;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Client agreements
+// ---------------------------------------------------------------------------
+
+type AgreementEmailReason = "ok" | "no_email_address" | "email_declined" | "messages_blocked";
+
+interface AgreementRecipient {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string | null;
+  emailAllowed: boolean;
+  blockMessages: boolean;
+}
+
+const agreementEmailDetail: Record<AgreementEmailReason, string | null> = {
+  ok: null,
+  no_email_address: "This client has no email address on file.",
+  email_declined: "This client has opted out of email.",
+  messages_blocked: "This client's profile blocks messages."
+};
+
+function agreementEmailReason(customer: AgreementRecipient): AgreementEmailReason {
+  if (!customer.email) return "no_email_address";
+  if (customer.blockMessages) return "messages_blocked";
+  if (!customer.emailAllowed) return "email_declined";
+  return "ok";
+}
+
+/**
+ * Describes, per channel, whether an agreement can actually be delivered to this client.
+ *
+ * "sms" is reported and permanently unavailable. `notification_intents.channel` is
+ * `check (channel in ('email'))` and Pawsh has no SMS transport, credentials, or cost
+ * model, so the honest answer is a named channel with a reason rather than an option
+ * the UI could present as if it might work.
+ */
+function agreementDelivery(customer: AgreementRecipient) {
+  const reason = agreementEmailReason(customer);
+  return {
+    supportedChannels: ["email"],
+    channels: [
+      {
+        channel: "email",
+        available: reason === "ok",
+        reason,
+        detail: agreementEmailDetail[reason],
+        destination: reason === "ok" ? customer.email : null
+      },
+      {
+        channel: "sms",
+        available: false,
+        reason: "channel_unsupported",
+        detail: "Pawsh has no SMS delivery. Agreements can only be sent by email.",
+        destination: null
+      }
+    ]
+  };
+}
+
+interface CustomerAgreementItem {
+  agreementId: string | null;
+  templateId: string;
+  name: string;
+  body: string;
+  required: boolean;
+  active: boolean;
+  templateVersion: number;
+  status: "not_sent" | "sent" | "signed";
+  sentAt: Date | null;
+  sendCount: number;
+  lastSentChannel: string | null;
+  signedAt: Date | null;
+  signedName: string | null;
+  signatureMethod: string | null;
+  signatureNote: string | null;
+  signedTemplateVersion: number | null;
+  recordedByName: string | null;
+  lastSend: Record<string, unknown> | null;
+}
+
+/**
+ * Resolved per-customer agreement state. Every live template appears, whether or not the
+ * client has a row for it, so "not sent" is a state the panel can render rather than a
+ * gap; an archived template appears only when this client already has state against it,
+ * so history is never lost when a salon retires a document.
+ */
+async function customerAgreementRows(
+  db: Database,
+  input: { businessId: string; customerId: string; templateId?: string }
+): Promise<CustomerAgreementItem[]> {
+  const scope = input.templateId ? db`template.id=${input.templateId}` : db`true`;
+  return db<CustomerAgreementItem[]>`
+    select template.id as template_id, template.name, template.body, template.required,
+      template.active, template.version as template_version,
+      state.id as agreement_id,
+      coalesce(state.status,'not_sent') as status,
+      state.sent_at, coalesce(state.send_count,0)::int as send_count,
+      state.last_sent_channel, state.signed_at, state.signed_name,
+      state.signature_method, state.signature_note, state.signed_template_version,
+      coalesce(signer_employee.display_name,signer_user.display_name) as recorded_by_name,
+      case when last_send.id is null then null else json_build_object(
+        'channel',last_send.channel,'deliveryStatus',last_send.status,
+        'queuedAt',last_send.created_at,'updatedAt',last_send.updated_at) end as last_send
+    from agreement_templates template
+    left join customer_agreements state
+      on state.business_id=template.business_id
+      and state.agreement_template_id=template.id
+      and state.customer_id=${input.customerId}
+    left join business_memberships signer_membership
+      on signer_membership.business_id=state.business_id
+      and signer_membership.id=state.signed_by_membership_id
+    left join users signer_user on signer_user.id=signer_membership.user_id
+    left join employees signer_employee
+      on signer_employee.business_id=signer_membership.business_id
+      and signer_employee.membership_id=signer_membership.id
+    left join lateral (
+      select intent.id,intent.channel,intent.status,intent.created_at,intent.updated_at
+      from notification_intents intent
+      where intent.business_id=template.business_id and intent.customer_id=${input.customerId}
+        and intent.agreement_template_id=template.id
+      order by intent.created_at desc,intent.id desc limit 1
+    ) last_send on true
+    where template.business_id=${input.businessId}
+      and (template.active or state.id is not null) and ${scope}
+    order by template.required desc,lower(btrim(template.name)),template.id
+  `;
+}
+
+/**
+ * The warning banner's condition: at least one live required document this client has
+ * not signed. Archived templates never raise the banner even when state exists for them.
+ */
+function agreementSummary(items: readonly CustomerAgreementItem[]) {
+  const live = items.filter((item) => item.active);
+  const required = live.filter((item) => item.required);
+  const unsignedRequired = required.filter((item) => item.status !== "signed");
+  return {
+    total: live.length,
+    requiredTotal: required.length,
+    signedTotal: live.filter((item) => item.status === "signed").length,
+    unsignedRequiredTotal: unsignedRequired.length,
+    unsignedRequiredTemplateIds: unsignedRequired.map((item) => item.templateId),
+    needsAttention: unsignedRequired.length > 0
+  };
+}
+
+/**
+ * The message a client actually receives. Pawsh has no client-facing signing surface, so
+ * the email carries the document text and asks the client to confirm with the salon; the
+ * signature is then recorded by staff. It is sealed like every other composed notification
+ * body so the outbox worker decrypts it instead of regenerating it.
+ */
+function agreementMessage(input: {
+  businessName: string;
+  businessPhone: string | null;
+  businessEmail: string | null;
+  templateName: string;
+  templateBody: string;
+}): string {
+  const contact = input.businessPhone ?? input.businessEmail ?? input.businessName;
+  return [
+    `${input.businessName} asks you to review and agree to "${input.templateName}".`,
+    input.templateBody,
+    `Reply to this message or contact ${contact} to confirm your agreement. Your confirmation is then recorded on your client record.`
+  ].join("\n\n");
 }
 
 async function lockSchedulingResources(
@@ -1603,24 +1848,33 @@ export function registerRoutes(
     const input = body(customerSchema, request.body);
     const customer = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [created] = await tx<{ id: string }[]>`
+      const [created] = await tx<(Record<string, unknown> & { id: string })[]>`
         insert into customers
           (business_id, first_name, last_name, phone, normalized_phone, email, normalized_email,
-           address, preferred_contact_method, email_allowed, notes, created_by, updated_by)
+           address, preferred_contact_method, email_allowed, created_by, updated_by)
         values
           (${context.businessId}, ${input.firstName}, ${input.lastName}, ${input.phone ?? null},
            ${normalizePhone(input.phone)}, ${input.email ?? null},
            ${input.email ? normalizeEmail(input.email) : null}, ${input.address ?? null},
-           ${input.preferredContactMethod}, ${input.emailAllowed}, ${input.notes ?? null},
+           ${input.preferredContactMethod}, ${input.emailAllowed},
            ${context.userId}, ${context.userId})
         returning *
       `;
       if (!created) throw new Error("Customer creation failed");
+      // `notes` is written through the thread; the mirror trigger fills the column back in.
+      const noteWritten = await applyLegacyCustomerNote(tx, {
+        businessId: context.businessId, customerId: created.id,
+        actorId: context.userId, value: input.notes
+      });
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "customer.create",
         resourceType: "customer", resourceId: created.id, eventType: "CustomerCreated"
       });
-      return created;
+      if (!noteWritten) return created;
+      const [stored] = await tx<(Record<string, unknown> & { id: string })[]>`
+        select * from customers where business_id=${context.businessId} and id=${created.id}
+      `;
+      return stored ?? created;
     });
     return reply.code(201).send(customer);
   });
@@ -1646,15 +1900,31 @@ export function registerRoutes(
     const context = auth(request);
     const { id } = idParams.parse(request.params);
     const input = body(customerSchema, request.body);
-    const [updated] = await db`
-      update customers set first_name=${input.firstName},last_name=${input.lastName},
-        phone=${input.phone ?? null},normalized_phone=${normalizePhone(input.phone)},
-        email=${input.email ?? null},normalized_email=${input.email ? normalizeEmail(input.email) : null},
-        address=${input.address ?? null},preferred_contact_method=${input.preferredContactMethod},
-        email_allowed=${input.emailAllowed},notes=${input.notes ?? null},
-        updated_by=${context.userId},updated_at=now()
-      where business_id=${context.businessId} and id=${id} and archived_at is null returning *
-    `;
+    // Transactional because the legacy `notes` field now writes through the note thread: the
+    // thread edit and the customer edit must land (or fail) together, and the thread edit runs
+    // first so the mirror trigger has already refreshed `notes` by the time this returns it.
+    const updated = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [existing] = await tx<{ id: string }[]>`
+        select id from customers
+        where business_id=${context.businessId} and id=${id} and archived_at is null for update
+      `;
+      if (!existing) return null;
+      await applyLegacyCustomerNote(tx, {
+        businessId: context.businessId, customerId: id,
+        actorId: context.userId, value: input.notes
+      });
+      const [row] = await tx<(Record<string, unknown> & { id: string })[]>`
+        update customers set first_name=${input.firstName},last_name=${input.lastName},
+          phone=${input.phone ?? null},normalized_phone=${normalizePhone(input.phone)},
+          email=${input.email ?? null},normalized_email=${input.email ? normalizeEmail(input.email) : null},
+          address=${input.address ?? null},preferred_contact_method=${input.preferredContactMethod},
+          email_allowed=${input.emailAllowed},
+          updated_by=${context.userId},updated_at=now()
+        where business_id=${context.businessId} and id=${id} and archived_at is null returning *
+      `;
+      return row ?? null;
+    });
     if (!updated) return reply.code(404).send({ error: "Active customer not found" });
     return updated;
   });
@@ -1673,6 +1943,592 @@ export function registerRoutes(
     `;
     if(!customer)return reply.code(404).send({error:"Active customer not found"});
     return customer;
+  });
+
+  app.get("/api/customers/:id/notes", {
+    preHandler: [authenticate, requirePermission("customers.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const query = body(customerNoteQuerySchema, request.query);
+    const [customer] = await db<{ id: string }[]>`
+      select id from customers where business_id=${context.businessId} and id=${id}
+    `;
+    if (!customer) return reply.code(404).send({ error: "Customer not found" });
+    const [items, totals] = await Promise.all([
+      customerNoteRows(db, {
+        businessId: context.businessId, customerId: id,
+        limit: query.pageSize, offset: (query.page - 1) * query.pageSize
+      }),
+      db<{ count: number }[]>`
+        select count(*)::int count from customer_notes
+        where business_id=${context.businessId} and customer_id=${id}
+      `
+    ]);
+    return { items, total: totals[0]?.count ?? 0, page: query.page, pageSize: query.pageSize };
+  });
+
+  app.post("/api/customers/:id/notes", {
+    preHandler: [authenticate, requirePermission("customers.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(customerNoteCreateSchema, request.body);
+    const created = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [customer] = await tx<{ id: string }[]>`
+        select id from customers
+        where business_id=${context.businessId} and id=${id} and archived_at is null
+      `;
+      if (!customer) return null;
+      const [note] = await tx<{ id: string }[]>`
+        insert into customer_notes (business_id, customer_id, body, pinned, created_by)
+        values (${context.businessId}, ${id}, ${input.body}, ${input.pinned}, ${context.userId})
+        returning id
+      `;
+      if (!note) throw new Error("Client note creation failed");
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "customer.note.create",
+        resourceType: "customer_note", resourceId: note.id,
+        after: { customerId: id, pinned: input.pinned }
+      });
+      return note;
+    });
+    if (!created) return reply.code(404).send({ error: "Active customer not found" });
+    const [note] = await customerNoteRows(db, {
+      businessId: context.businessId, customerId: id, noteId: created.id, limit: 1, offset: 0
+    });
+    return reply.code(201).send(note);
+  });
+
+  app.patch("/api/customers/:id/notes/:noteId", {
+    preHandler: [authenticate, requirePermission("customers.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id, noteId } = customerNoteParams.parse(request.params);
+    const input = body(customerNoteUpdateSchema, request.body);
+    const changed = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [note] = await tx<{ id: string; pinned: boolean }[]>`
+        update customer_notes note
+        set body=coalesce(${input.body ?? null}::text,note.body),
+          pinned=coalesce(${input.pinned ?? null}::boolean,note.pinned),
+          updated_at=now()
+        where note.business_id=${context.businessId} and note.id=${noteId} and note.customer_id=${id}
+          and exists (select 1 from customers customer
+            where customer.business_id=note.business_id and customer.id=note.customer_id
+              and customer.archived_at is null)
+        returning note.id,note.pinned
+      `;
+      if (!note) return null;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "customer.note.update",
+        resourceType: "customer_note", resourceId: note.id,
+        after: { customerId: id, pinned: note.pinned }
+      });
+      return note;
+    });
+    if (!changed) return reply.code(404).send({ error: "Client note not found" });
+    const [note] = await customerNoteRows(db, {
+      businessId: context.businessId, customerId: id, noteId: changed.id, limit: 1, offset: 0
+    });
+    return note;
+  });
+
+  app.delete("/api/customers/:id/notes/:noteId", {
+    preHandler: [authenticate, requirePermission("customers.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id, noteId } = customerNoteParams.parse(request.params);
+    const removed = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [note] = await tx<{ id: string }[]>`
+        delete from customer_notes note
+        where note.business_id=${context.businessId} and note.id=${noteId} and note.customer_id=${id}
+          and exists (select 1 from customers customer
+            where customer.business_id=note.business_id and customer.id=note.customer_id
+              and customer.archived_at is null)
+        returning note.id
+      `;
+      if (!note) return null;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "customer.note.delete",
+        resourceType: "customer_note", resourceId: note.id, before: { customerId: id }
+      });
+      return note;
+    });
+    if (!removed) return reply.code(404).send({ error: "Client note not found" });
+    return reply.code(204).send();
+  });
+
+  // Preferences live on the customer row and are already returned by every customer read
+  // (`select *`). Only the write side needs its own endpoint, and it is a partial PATCH so a
+  // caller that does not know about a switch can never reset it, which a full-object PUT would.
+  app.patch("/api/customers/:id/preferences", {
+    preHandler: [authenticate, requirePermission("customers.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(customerPreferencesSchema, request.body);
+    const clearFrequency = "bookingFrequencyWeeks" in input && input.bookingFrequencyWeeks === null;
+    const updated = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [before] = await tx<CustomerPreferences[]>`
+        select id,booking_frequency_weeks,block_messages,block_online_booking,
+          marketing_sms_allowed,email_allowed
+        from customers
+        where business_id=${context.businessId} and id=${id} and archived_at is null for update
+      `;
+      if (!before) return null;
+      const [after] = await tx<CustomerPreferences[]>`
+        update customers set
+          booking_frequency_weeks=case when ${clearFrequency} then null
+            else coalesce(${input.bookingFrequencyWeeks ?? null}::int,booking_frequency_weeks) end,
+          block_messages=coalesce(${input.blockMessages ?? null}::boolean,block_messages),
+          block_online_booking=coalesce(${input.blockOnlineBooking ?? null}::boolean,block_online_booking),
+          marketing_sms_allowed=coalesce(${input.marketingSmsAllowed ?? null}::boolean,marketing_sms_allowed),
+          email_allowed=coalesce(${input.emailAllowed ?? null}::boolean,email_allowed),
+          updated_by=${context.userId},updated_at=now()
+        where business_id=${context.businessId} and id=${id} and archived_at is null
+        returning id,booking_frequency_weeks,block_messages,block_online_booking,
+          marketing_sms_allowed,email_allowed
+      `;
+      if (!after) return null;
+      // Contact-consent switches are auditable: record what actually changed.
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "customer.preferences.update", resourceType: "customer", resourceId: id,
+        before, after
+      });
+      return after;
+    });
+    if (!updated) return reply.code(404).send({ error: "Active customer not found" });
+    return updated;
+  });
+
+  // -------------------------------------------------------------------------
+  // Client agreements
+  //
+  // Templates are salon-authored content: reading them needs client access (the
+  // profile panel renders the document text), authoring them is a settings act.
+  // -------------------------------------------------------------------------
+
+  app.get("/api/agreement-templates", { preHandler: authenticate }, async (request, reply) => {
+    const context = auth(request);
+    const mayRead = context.isOwner
+      || context.permissions.includes("customers.view")
+      || context.permissions.includes("settings.manage");
+    if (!mayRead) return reply.code(403).send({ error: "Missing permission: customers.view" });
+    const query = body(agreementTemplateQuerySchema, request.query);
+    const activeOnly = query.status === "all" ? null : query.status === "active";
+    return db<Record<string, unknown>[]>`
+      select template.id,template.name,template.body,template.required,template.active,
+        template.version,template.created_by,template.created_at,template.updated_at,
+        (select count(*)::int from customer_agreements state
+          where state.business_id=template.business_id
+            and state.agreement_template_id=template.id and state.status='signed') as signed_count
+      from agreement_templates template
+      where template.business_id=${context.businessId}
+        and (${activeOnly}::boolean is null or template.active=${activeOnly}::boolean)
+      order by template.active desc,template.required desc,lower(btrim(template.name)),template.id
+    `;
+  });
+
+  app.post("/api/agreement-templates", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const input = body(agreementTemplateCreateSchema, request.body);
+    const created = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      if (input.active) {
+        const [clash] = await tx<{ id: string }[]>`
+          select id from agreement_templates
+          where business_id=${context.businessId} and active
+            and lower(btrim(name))=lower(btrim(${input.name}))
+        `;
+        if (clash) return { clash };
+      }
+      const [template] = await tx<Record<string, unknown>[]>`
+        insert into agreement_templates (business_id,name,body,required,active,created_by,updated_by)
+        values (${context.businessId},${input.name},${input.body},${input.required},${input.active},
+          ${context.userId},${context.userId})
+        returning id,name,body,required,active,version,created_by,created_at,updated_at
+      `;
+      if (!template) throw new Error("Agreement template creation failed");
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "agreement.template.create",
+        resourceType: "agreement_template", resourceId: String(template.id),
+        after: { name: input.name, required: input.required, active: input.active }
+      });
+      return { template };
+    });
+    if ("clash" in created) {
+      return reply.code(409).send({
+        code: "AGREEMENT_TEMPLATE_DUPLICATE",
+        error: "An active agreement with this name already exists"
+      });
+    }
+    return reply.code(201).send({ ...created.template, signedCount: 0 });
+  });
+
+  app.patch("/api/agreement-templates/:id", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(agreementTemplateUpdateSchema, request.body);
+    const result = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [before] = await tx<{
+        id: string; name: string; body: string; required: boolean; active: boolean; version: number;
+      }[]>`
+        select id,name,body,required,active,version from agreement_templates
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!before) return { missing: true } as const;
+      const next = {
+        name: input.name ?? before.name,
+        body: input.body ?? before.body,
+        required: input.required ?? before.required,
+        active: input.active ?? before.active
+      };
+      if (next.active) {
+        const [clash] = await tx<{ id: string }[]>`
+          select id from agreement_templates
+          where business_id=${context.businessId} and active and id<>${id}
+            and lower(btrim(name))=lower(btrim(${next.name}))
+        `;
+        if (clash) return { clash: true } as const;
+      }
+      // Only a change to what the client is agreeing to is a new revision; archiving
+      // or restoring a document leaves already-recorded signatures pointing at the
+      // revision they were actually recorded against.
+      const contentChanged = next.name !== before.name
+        || next.body !== before.body
+        || next.required !== before.required;
+      const [template] = await tx<Record<string, unknown>[]>`
+        update agreement_templates set name=${next.name},body=${next.body},
+          required=${next.required},active=${next.active},
+          version=${before.version + (contentChanged ? 1 : 0)},
+          updated_by=${context.userId},updated_at=now()
+        where business_id=${context.businessId} and id=${id}
+        returning id,name,body,required,active,version,created_by,created_at,updated_at
+      `;
+      if (!template) throw new Error("Agreement template update failed");
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "agreement.template.update",
+        resourceType: "agreement_template", resourceId: id,
+        before: { name: before.name, required: before.required, active: before.active, version: before.version },
+        after: { name: next.name, required: next.required, active: next.active, version: template.version }
+      });
+      return { template } as const;
+    });
+    if ("missing" in result) return reply.code(404).send({ error: "Agreement template not found" });
+    if ("clash" in result) {
+      return reply.code(409).send({
+        code: "AGREEMENT_TEMPLATE_DUPLICATE",
+        error: "An active agreement with this name already exists"
+      });
+    }
+    const [signed] = await db<{ count: number }[]>`
+      select count(*)::int count from customer_agreements
+      where business_id=${context.businessId} and agreement_template_id=${id} and status='signed'
+    `;
+    return { ...result.template, signedCount: signed?.count ?? 0 };
+  });
+
+  // Archive, never delete: recorded signatures have to stay explainable.
+  app.delete("/api/agreement-templates/:id", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const archived = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [template] = await tx<{ id: string; name: string }[]>`
+        update agreement_templates set active=false,updated_by=${context.userId},updated_at=now()
+        where business_id=${context.businessId} and id=${id} and active
+        returning id,name
+      `;
+      if (!template) return null;
+      // A document nobody is being asked to sign any more should not keep nagging.
+      await tx`
+        update notification_intents set status='cancelled',resolved_at=now(),updated_at=now()
+        where business_id=${context.businessId} and agreement_template_id=${id}
+          and status in ('pending','failed')
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "agreement.template.archive",
+        resourceType: "agreement_template", resourceId: id, before: { name: template.name, active: true }
+      });
+      return template;
+    });
+    if (!archived) return reply.code(404).send({ error: "Active agreement template not found" });
+    return reply.code(204).send();
+  });
+
+  // Drives both the client profile Agreements panel and its warning banner.
+  app.get("/api/customers/:id/agreements", {
+    preHandler: [authenticate, requirePermission("customers.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [customer] = await db<(AgreementRecipient & { archivedAt: Date | null })[]>`
+      select id,first_name,last_name,email,email_allowed,block_messages,archived_at
+      from customers where business_id=${context.businessId} and id=${id}
+    `;
+    if (!customer) return reply.code(404).send({ error: "Customer not found" });
+    const items = await customerAgreementRows(db, { businessId: context.businessId, customerId: id });
+    return {
+      customerId: id,
+      items,
+      summary: agreementSummary(items),
+      delivery: agreementDelivery(customer),
+      // An archived client is readable but nothing can be sent to or recorded against it.
+      customerArchived: customer.archivedAt !== null
+    };
+  });
+
+  app.post("/api/customers/:id/agreements/:templateId/signature", {
+    preHandler: [authenticate, requirePermission("customers.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id, templateId } = customerAgreementParams.parse(request.params);
+    const input = body(agreementSignatureSchema, request.body);
+    const signedAt = input.signedAt ? new Date(input.signedAt) : new Date();
+    const result = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [customer] = await tx<{ id: string }[]>`
+        select id from customers
+        where business_id=${context.businessId} and id=${id} and archived_at is null
+      `;
+      if (!customer) return { missingCustomer: true } as const;
+      const [template] = await tx<{ id: string; active: boolean; version: number; name: string }[]>`
+        select id,active,version,name from agreement_templates
+        where business_id=${context.businessId} and id=${templateId}
+      `;
+      if (!template) return { missingTemplate: true } as const;
+      if (!template.active) return { archivedTemplate: true } as const;
+      // The `where` on the conflict path makes "already signed" a lost update rather
+      // than a race: two concurrent recordings cannot both overwrite provenance.
+      const [agreement] = await tx<{ id: string }[]>`
+        insert into customer_agreements
+          (business_id,customer_id,agreement_template_id,status,signed_at,signed_name,
+           signature_method,signature_note,signed_template_version,signed_by_membership_id)
+        values (${context.businessId},${id},${templateId},'signed',${signedAt},${input.signedName},
+          'staff_recorded',${input.note ?? null},${template.version},${context.membershipId})
+        on conflict (business_id,customer_id,agreement_template_id) do update set
+          status='signed',signed_at=excluded.signed_at,signed_name=excluded.signed_name,
+          signature_method='staff_recorded',signature_note=excluded.signature_note,
+          signed_template_version=excluded.signed_template_version,
+          signed_by_membership_id=excluded.signed_by_membership_id,updated_at=now()
+        where customer_agreements.status<>'signed'
+        returning id
+      `;
+      if (!agreement) return { alreadySigned: true } as const;
+      await tx`
+        update notification_intents set status='cancelled',resolved_at=now(),updated_at=now()
+        where business_id=${context.businessId} and customer_id=${id}
+          and agreement_template_id=${templateId} and status in ('pending','failed')
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "customer.agreement.sign",
+        resourceType: "customer_agreement", resourceId: agreement.id,
+        after: {
+          customerId: id, templateId, templateName: template.name,
+          signedName: input.signedName, signatureMethod: "staff_recorded",
+          signedTemplateVersion: template.version, signedAt: signedAt.toISOString()
+        }
+      });
+      return { agreement } as const;
+    });
+    if ("missingCustomer" in result) return reply.code(404).send({ error: "Active customer not found" });
+    if ("missingTemplate" in result) return reply.code(404).send({ error: "Agreement template not found" });
+    if ("archivedTemplate" in result) {
+      return reply.code(409).send({
+        code: "AGREEMENT_TEMPLATE_ARCHIVED",
+        error: "This agreement has been archived and cannot be signed"
+      });
+    }
+    if ("alreadySigned" in result) {
+      return reply.code(409).send({
+        code: "AGREEMENT_ALREADY_SIGNED",
+        error: "This agreement is already signed for this client"
+      });
+    }
+    const [item] = await customerAgreementRows(db, {
+      businessId: context.businessId, customerId: id, templateId
+    });
+    return item;
+  });
+
+  // Correction path for a signature recorded in error. The agreement falls back to
+  // "sent" when it had been sent, otherwise to "not sent" (the row disappears).
+  app.delete("/api/customers/:id/agreements/:templateId/signature", {
+    preHandler: [authenticate, requirePermission("customers.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id, templateId } = customerAgreementParams.parse(request.params);
+    const cleared = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [before] = await tx<{
+        id: string; sentAt: Date | null; signedName: string; signedTemplateVersion: number;
+      }[]>`
+        select agreement.id,agreement.sent_at,agreement.signed_name,agreement.signed_template_version
+        from customer_agreements agreement
+        join customers customer on customer.business_id=agreement.business_id
+          and customer.id=agreement.customer_id and customer.archived_at is null
+        where agreement.business_id=${context.businessId} and agreement.customer_id=${id}
+          and agreement.agreement_template_id=${templateId} and agreement.status='signed'
+        for update of agreement
+      `;
+      if (!before) return null;
+      if (before.sentAt) {
+        await tx`
+          update customer_agreements set status='sent',signed_at=null,signed_name=null,
+            signature_method=null,signature_note=null,signed_template_version=null,
+            signed_by_membership_id=null,updated_at=now()
+          where business_id=${context.businessId} and id=${before.id}
+        `;
+      } else {
+        await tx`
+          delete from customer_agreements
+          where business_id=${context.businessId} and id=${before.id}
+        `;
+      }
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "customer.agreement.signature.clear",
+        resourceType: "customer_agreement", resourceId: before.id,
+        before: {
+          customerId: id, templateId, signedName: before.signedName,
+          signedTemplateVersion: before.signedTemplateVersion
+        }
+      });
+      return before;
+    });
+    if (!cleared) return reply.code(404).send({ error: "Signed agreement not found" });
+    return reply.code(204).send();
+  });
+
+  /**
+   * Queues the selected agreements to the client by email.
+   *
+   * What this does: writes one `notification_intents` row per agreement onto the existing
+   * outbox, with the document text as the sealed message body, and marks the agreement
+   * "sent". The background worker delivers it through the configured email provider.
+   *
+   * What this does NOT do: there is no SMS channel (see `agreementDelivery`), and there is
+   * no client-facing signing page — the email asks the client to confirm with the salon and
+   * a staff member then records the signature.
+   */
+  app.post("/api/customers/:id/agreements/send", {
+    preHandler: [authenticate, requirePermission("customers.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(agreementSendSchema, request.body);
+    if (input.channel !== "email") {
+      return reply.code(409).send({
+        code: "AGREEMENT_CHANNEL_UNSUPPORTED",
+        error: "Pawsh has no SMS delivery. Agreements can only be sent by email.",
+        channel: input.channel,
+        supportedChannels: ["email"]
+      });
+    }
+    const templateIds = [...new Set(input.templateIds)];
+    const result = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [customer] = await tx<AgreementRecipient[]>`
+        select id,first_name,last_name,email,email_allowed,block_messages
+        from customers
+        where business_id=${context.businessId} and id=${id} and archived_at is null
+      `;
+      if (!customer) return { missingCustomer: true } as const;
+      const reason = agreementEmailReason(customer);
+      if (reason !== "ok") return { undeliverable: reason, customer } as const;
+      const [business] = await tx<{ name: string; phone: string | null; email: string | null }[]>`
+        select name,phone,email from businesses where id=${context.businessId}
+      `;
+      const templates = await tx<{
+        id: string; name: string; body: string; active: boolean;
+      }[]>`
+        select id,name,body,active from agreement_templates
+        where business_id=${context.businessId} and id in ${tx(templateIds)}
+      `;
+      const results: { templateId: string; outcome: string }[] = [];
+      for (const templateId of templateIds) {
+        const template = templates.find((candidate) => candidate.id === templateId);
+        if (!template) { results.push({ templateId, outcome: "not_found" }); continue; }
+        if (!template.active) { results.push({ templateId, outcome: "skipped_archived" }); continue; }
+        const [existing] = await tx<{ status: string }[]>`
+          select status from customer_agreements
+          where business_id=${context.businessId} and customer_id=${id}
+            and agreement_template_id=${templateId} for update
+        `;
+        if (existing?.status === "signed") {
+          results.push({ templateId, outcome: "skipped_signed" });
+          continue;
+        }
+        const message = agreementMessage({
+          businessName: business?.name ?? "Your salon",
+          businessPhone: business?.phone ?? null,
+          businessEmail: business?.email ?? null,
+          templateName: template.name,
+          templateBody: template.body
+        });
+        // `one_open_agreement_notification` makes this the idempotency point: while an
+        // earlier request is still undelivered, a repeat send queues nothing new.
+        const [intent] = await tx<{ id: string }[]>`
+          insert into notification_intents
+            (business_id,customer_id,agreement_template_id,notification_type,
+             scheduled_occurrence,channel,destination,encrypted_body)
+          values (${context.businessId},${id},${templateId},'agreement_signature_request',
+            now(),'email',${customer.email},${sealSecret(message, config.SESSION_SECRET)})
+          on conflict do nothing returning id
+        `;
+        if (!intent) { results.push({ templateId, outcome: "already_queued" }); continue; }
+        await tx`
+          insert into customer_agreements
+            (business_id,customer_id,agreement_template_id,status,sent_at,send_count,
+             last_sent_channel,last_sent_by_membership_id)
+          values (${context.businessId},${id},${templateId},'sent',now(),1,'email',${context.membershipId})
+          on conflict (business_id,customer_id,agreement_template_id) do update set
+            status=case when customer_agreements.status='signed' then customer_agreements.status else 'sent' end,
+            sent_at=now(),send_count=customer_agreements.send_count+1,
+            last_sent_channel='email',last_sent_by_membership_id=${context.membershipId},
+            updated_at=now()
+        `;
+        results.push({ templateId, outcome: "queued" });
+      }
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "customer.agreement.send",
+        resourceType: "customer", resourceId: id,
+        after: { channel: "email", results }
+      });
+      return { results, customer } as const;
+    });
+    if ("missingCustomer" in result) return reply.code(404).send({ error: "Active customer not found" });
+    if ("undeliverable" in result) {
+      return reply.code(409).send({
+        code: "AGREEMENT_UNDELIVERABLE",
+        error: agreementEmailDetail[result.undeliverable] ?? "This client cannot be emailed",
+        channel: "email",
+        reason: result.undeliverable,
+        supportedChannels: ["email"],
+        delivery: agreementDelivery(result.customer)
+      });
+    }
+    const items = await customerAgreementRows(db, { businessId: context.businessId, customerId: id });
+    return {
+      channel: "email",
+      queued: result.results.filter((entry) => entry.outcome === "queued").length,
+      results: result.results,
+      items,
+      summary: agreementSummary(items),
+      delivery: agreementDelivery(result.customer)
+    };
   });
 
   app.get("/api/customers/:id/history", {
@@ -2419,20 +3275,22 @@ export function registerRoutes(
           'id', aps.id, 'name', aps.service_name_snapshot, 'durationMinutes',
           aps.duration_minutes_snapshot, 'priceMinor', aps.price_minor_snapshot,
           'serviceId', aps.service_id
-        )) filter (where aps.id is not null), '[]') as services
+        )) filter (where aps.id is not null), '[]') as services,
+        inv.status as invoice_status, inv.balance_minor as invoice_balance_minor
       from appointments a
       join customers c on c.id=a.customer_id
       join pets p on p.id=a.pet_id
       join locations l on l.business_id=a.business_id and l.id=a.location_id
       join employees e on e.id=a.employee_id
       left join appointment_services aps on aps.appointment_id=a.id
+      left join invoices inv on inv.business_id=a.business_id and inv.appointment_id=a.id and inv.status<>'void'
       where a.business_id=${context.businessId} and a.location_id=${location.id}
         and ${assignedToEmployees(db,query.employeeIds)}
         and ${overlap
           ? db`a.start_at < ${to} and a.end_at > ${from}`
           : db`a.start_at >= ${from} - interval '2 days' and a.start_at < ${to} + interval '2 days'
               and a.scheduled_local_start >= ${localDate}::date and a.scheduled_local_start < ${endLocal.toISOString().slice(0,10)}::date`}
-      group by a.id,c.id,p.id,e.id,l.id order by a.start_at,a.employee_id,a.id
+      group by a.id,c.id,p.id,e.id,l.id,inv.id order by a.start_at,a.employee_id,a.id
     `;
     if (mayViewPetCare(context)) return rows;
     return rows.map((appointment) => redactPetCare(appointment));

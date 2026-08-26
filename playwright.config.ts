@@ -19,7 +19,12 @@ export default defineConfig({
   // reproduce; a retry absorbs it, and Playwright still reports the test as flaky so the
   // instability stays visible rather than silently passing.
   retries:process.env.CI ? 2 : 0,
-  workers:process.env.CI ? 2 : undefined,
+  // Local runs share ONE disposable server+database across all workers, so the
+  // Playwright default (half the CPU cores) starves navigation. Every project
+  // except "chromium" already pins workers:1; encoding the supported local
+  // concurrency here covers that project and any future unpinned one.
+  // CI is unchanged: each job owns its own server and database container.
+  workers:process.env.CI ? 2 : 1,
   timeout:30_000,
   expect:{timeout:5_000},
   reporter:process.env.CI ? [["github"],["html",{open:"never"}]] : "list",

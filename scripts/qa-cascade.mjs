@@ -24,10 +24,12 @@ function stageDefinitions(mode) {
     { name: "database", timeoutClass: "database", run: runDatabase },
     { name: "startup", timeoutClass: "startup", command: "compatibility:startup" },
     { name: "preflight", timeoutClass: "preflight", run: (env, timeoutMs, stageRunner) => runPreflights(mode, env, timeoutMs, stageRunner) },
-    // The local smoke set creates many tenants and browser contexts against a
-    // single disposable server/database. Ten workers caused reproducible
-    // navigation starvation; keep this narrow isolation local to smoke rather
-    // than changing the global Playwright concurrency contract.
+    // Local browser stages create many tenants and browser contexts against a
+    // single disposable server/database, which ten workers reproducibly starved.
+    // The supported local concurrency is now encoded once in playwright.config.ts
+    // (workers: 1 off CI); this explicit flag is kept as belt-and-braces so the
+    // stage stays correct even if that default is ever revisited. The "chromium"
+    // stage below relies on the same contract.
     { name: "smoke", timeoutClass: "smoke", command: "test:smoke -- --workers=1" }
   ];
   if (mode !== "quick") base.push({ name: "targeted", timeoutClass: "targeted", command: "vitest-run tests/domain/playwright-lifecycle.test.mjs tests/database/rabies-compliance.test.ts" });

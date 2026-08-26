@@ -318,6 +318,7 @@ export async function deliverNotifications(
           : intent.notificationType === "workspace_access_approved" ? "Your Pawsh workspace request was approved"
           : intent.notificationType === RABIES_CUSTOMER ? "Updated rabies information needed"
           : intent.notificationType === RABIES_STAFF ? "Rabies information needs attention"
+          : intent.notificationType === "agreement_signature_request" ? "Please review your agreement"
           : intent.notificationType === "appointment_reminder" ? "Upcoming Pawsh appointment"
           : intent.notificationType === "appointment_cancellation" ? "Pawsh appointment cancelled"
           : "Pawsh appointment confirmation",

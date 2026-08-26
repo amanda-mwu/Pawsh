@@ -570,3 +570,298 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
   .report-panel-wide{grid-column:auto}
   .hbar{grid-template-columns:minmax(0,6.5rem) minmax(0,1fr) auto;gap:var(--space-2)}
 }
+
+/* == appointment card == */
+/* One anatomy for the week and day cards: a white header strip carrying the compact time range,
+   the notes button and the status badge, sitting on top of the groomer-tinted body. The tint and
+   the saturated left rail still come from [data-groomer-slot] above; the strip only overlays the
+   top edge so the rail keeps running the full height of the card.
+
+   The strip is deliberately shallow (~16px). A 30-minute booking is one 32px slot, so anything
+   taller would push the pet name out of a density-short card entirely. */
+.appointment-block{display:flex;flex-direction:column;overflow:hidden}
+.appointment-block>.calendar-open{display:flex;flex-direction:column;gap:1px;flex:1 1 auto;height:auto;min-height:0;padding:2px 5px 3px;overflow:hidden}
+.appointment-block.density-short>.calendar-open{padding-top:1px}
+/* A card shorter than its content clips from the bottom rather than compressing every line:
+   the pet name is the one row that must survive a 30-minute booking. */
+.appointment-block>.calendar-open>*,.appointment-block .appointment-services>*{flex:0 0 auto;min-width:0}
+.appointment-head{position:relative;z-index:1;display:flex;align-items:center;gap:2px;min-width:0;padding:0 15px 0 4px;background:var(--paper);border-bottom:1px solid var(--line)}
+/* The time is the only elastic item, so a crowded strip shortens the range instead of clipping
+   the badge or the notes button. */
+.appointment-block .appointment-time{flex:1 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--ink);font-size:9px;font-weight:700;line-height:1.35;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+.appointment-block .appointment-badges{display:flex!important;flex:0 0 auto;align-items:center;gap:2px;margin:0}
+/* Kept in the DOM as the full-word status for automation and assistive text; the badge beside it
+   carries the visible meaning and its own accessible name. */
+.appointment-head .appointment-status{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+/* Three uppercase letters carry the meaning; the fill is a second, redundant signal only. Every
+   pairing is white on a dark token, so all six read at AA or better. */
+.appointment-badge{display:inline-block;flex:0 0 auto;padding:1px 2px;border-radius:var(--radius-sm);background:var(--ink);color:var(--paper);font-size:8px;font-weight:700;line-height:1.35;letter-spacing:.04em}
+.appointment-badge.badge-checked_in{background:var(--info)}
+.appointment-badge.badge-in_service{background:var(--warning)}
+.appointment-badge.badge-completed{background:var(--success)}
+.appointment-badge.badge-cancelled,.appointment-badge.badge-no_show{background:var(--danger)}
+.appointment-notes-trigger{position:relative;display:grid;flex:0 0 auto;place-items:center;width:13px;height:13px;min-height:0;padding:0;border:0;border-radius:var(--radius-sm);background:transparent;color:var(--muted)}
+/* The strip is only 14px deep, so both icon buttons stay small but claim a larger hit area than
+   they paint. Their neighbours in the strip are not interactive. */
+.appointment-notes-trigger::after,.appointment-quick-actions .calendar-action-trigger::after{content:"";position:absolute;inset:-3px}
+.appointment-notes-trigger svg{width:10px;height:10px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.appointment-notes-trigger:hover{background:var(--surface-2);color:var(--ink)}
+/* A safety alert is the one note class that must read before the panel is opened. */
+.appointment-notes-trigger[data-alert]{color:var(--danger)}
+.appointment-notes-trigger:focus-visible{outline:2px solid var(--brand);outline-offset:1px}
+.appointment-head .card-warning{width:11px;height:11px;font-size:8px}
+/* The overflow menu moves up into the strip, which is why .appointment-head reserves its width on
+   the right rather than the body reserving it on every line. */
+.appointment-quick-actions{top:1px;right:0}
+.appointment-quick-actions .calendar-action-trigger{position:relative;width:14px;height:14px;min-height:0;border-color:transparent;border-radius:var(--radius-sm);background:transparent;color:var(--muted);font-size:12px}
+.appointment-quick-actions .calendar-action-trigger:hover,.appointment-quick-actions .calendar-action-trigger[aria-expanded="true"]{border-color:transparent;background:var(--surface-2);color:var(--ink)}
+.appointment-quick-actions .calendar-action-popover{top:16px}
+/* Pet and breed share one line, so the breed costs height on no card and can come back at short
+   density. The parentheses are presentational: .appointment-breed keeps the bare breed as text. */
+.appointment-identity{display:flex!important;align-items:baseline;gap:3px;min-width:0}
+.appointment-block .appointment-pet{flex:0 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:12px;line-height:1.2}
+.appointment-block.density-short .appointment-pet{font-size:11px;line-height:1.1}
+.day-appointment .appointment-pet{font-size:13px}
+.appointment-block .appointment-breed{flex:0 20 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--muted);font-size:10px}
+.appointment-block.density-short .appointment-breed{display:block!important}
+.appointment-block .appointment-breed::before{content:"("}
+.appointment-block .appointment-breed::after{content:")"}
+/* The one base groom reads in ink; add-ons are greyed back so the card answers "what is this
+   booking" before "what was added to it". */
+.appointment-block .appointment-services{display:flex!important;flex-direction:column;min-width:0;font-size:10px;line-height:1.3}
+.appointment-block .service-primary,.appointment-block .service-addon{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.appointment-block .service-primary{color:var(--ink)}
+.appointment-block .service-addon{color:var(--muted)}
+.appointment-block .conflict-override{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--warning);font-size:9px}
+.appointment-block.density-short .conflict-override{display:none}
+.appointment-client{margin-top:auto;padding-top:2px;color:var(--ink);font-size:10px;font-weight:600}
+.appointment-block.density-short .appointment-client,.appointment-block.density-medium .appointment-client{display:none}
+/* Already clipped today by the card's overflow; stated explicitly so the flex body cannot start
+   reserving height for it. */
+.appointment-block>.appointment-accessible-safety{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+.appointment-notes-panel{display:grid;gap:var(--space-3);max-width:420px}
+.appointment-notes-panel .appointment-notes-meta{margin:0;color:var(--muted);font-size:13px}
+.appointment-notes-panel dl{display:grid;gap:var(--space-3);margin:0}
+.appointment-notes-panel dt{color:var(--muted);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
+.appointment-notes-panel dd{margin:3px 0 0;color:var(--ink);font-size:13px;line-height:1.45}
+/* Touch has no overflow menu on the card, so the strip spends that width on a bigger notes tap
+   target instead. */
+@media(hover:none){
+  .appointment-head{padding-right:5px}
+  .appointment-notes-trigger{width:22px;height:22px}
+  .appointment-notes-trigger svg{width:14px;height:14px}
+}
+
+/* Payment badges. PAI/UNP replace the lifecycle badge once an appointment has an
+   invoice; colour is a redundant second signal, the letters carry the meaning. */
+.appointment-badge.badge-paid{background:var(--success)}
+.appointment-badge.badge-unpaid{background:var(--warning)}
+
+/* == client profile == */
+/* The profile is one scrolling rail plus a history table. Everything below is additive: it
+   restyles the profile's own classes and introduces new ones, and never reaches outside the
+   client-profile view. */
+.profile-banner{margin:0 0 var(--space-3);padding:9px 11px;border:1px solid var(--warning);border-radius:var(--radius-sm);background:var(--warning-tint);color:var(--warning);font-size:12px;font-weight:600}
+.profile-section-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3);margin-top:var(--space-5);padding-bottom:var(--space-1);border-bottom:1px solid var(--line)}
+.profile-section-head h3{margin:0}
+.profile-section-head .text-button{padding:2px 0}
+
+/* Notes thread. Each note is a white card in the tinted rail so the muted authorship line keeps
+   its contrast and the overflow menu has a surface to hover against. */
+.client-notes{display:grid;gap:var(--space-2);margin-top:var(--space-2)}
+.client-note{position:relative;padding:10px 40px 10px 12px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--paper)}
+.client-note.pinned{border-color:var(--brand);box-shadow:inset 3px 0 var(--brand)}
+.note-body{color:var(--ink);font-size:13px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
+.note-pinned{color:var(--brand);font-weight:700}
+.note-meta{margin:5px 0 0;color:var(--muted);font-size:11px;line-height:1.35}
+.note-empty,.note-truncated{margin:var(--space-2) 0 0;color:var(--muted);font-size:12px}
+.note-failure{display:grid;gap:var(--space-2);justify-items:start;padding:10px 12px;border:1px solid var(--danger-line);border-radius:var(--radius-sm);background:var(--danger-tint)}
+.note-failure p{margin:0;color:var(--danger);font-size:12px;font-weight:600}
+.note-toggle{width:100%;min-height:var(--control-h);margin-top:var(--space-1);padding:6px 10px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--surface-2);color:var(--ink);font-size:12px;font-weight:600}
+.note-toggle:hover{border-color:var(--muted);background:var(--paper)}
+/* The rail scrolls, so the note menu anchors to its own note rather than the viewport. */
+.note-menu{position:absolute;top:4px;right:4px}
+.note-menu .row-menu-trigger{width:var(--icon-btn-sm);height:var(--icon-btn-sm)}
+.note-menu .row-menu-list{position:absolute;top:calc(100% + 4px);right:0;left:auto;z-index:20;min-width:150px}
+
+/* Tabs adopt the underline idiom the reminders view already uses, so the profile does not invent a
+   second tab style. */
+.profile-tabs{gap:var(--space-4);margin:var(--space-5) 0 0;border-bottom:1px solid var(--line)}
+.profile-tabs button{min-height:38px;padding:6px 2px;border:0;border-bottom:3px solid transparent;border-radius:0;background:transparent;color:var(--muted);font-size:13px;font-weight:700}
+.profile-tabs button[aria-selected="true"]{border-bottom-color:var(--brand);background:transparent;color:var(--ink)}
+.profile-tabs button:hover{color:var(--ink)}
+.profile-panel{padding-top:var(--space-4)}
+.profile-panel:focus-visible{outline:3px solid var(--brand);outline-offset:2px}
+.panel-actions{display:flex;justify-content:flex-end;margin-bottom:var(--space-3)}
+
+/* Pets */
+.pet-card{margin-bottom:var(--space-3);padding:var(--space-3);border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--paper)}
+.pet-card-head{display:flex;align-items:center;gap:10px}
+.pet-card .pet-avatar{flex:0 0 auto;width:38px;height:38px;font-size:17px}
+.pet-card-name{flex:1 1 auto;min-width:0;padding:4px 0;border:0;background:transparent;color:var(--ink);font-size:14px;text-align:left}
+.pet-card-name span{color:var(--muted);font-weight:400}
+.pet-card-name:hover strong{text-decoration:underline}
+.pet-fact-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-2) var(--space-4);margin:var(--space-3) 0 0;padding-top:var(--space-3);border-top:1px solid var(--line)}
+.pet-fact-grid div{display:flex;gap:5px;min-width:0;font-size:12px}
+.pet-fact-grid dt{flex:0 0 auto;color:var(--muted);font-weight:600}
+.pet-fact-grid dt::after{content:":"}
+.pet-fact-grid dd{margin:0;min-width:0;color:var(--ink);overflow-wrap:anywhere}
+.pet-card-notes{margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid var(--line)}
+.pet-note{margin:0 0 4px;color:var(--ink);font-size:12.5px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
+.pet-note.alert .note-pinned{color:var(--danger)}
+
+/* Preferences. The saved-not-enforced chip is real text, not a decoration: it is read out with the
+   control's own label because the whole row is the label. */
+.pref-intro{margin:0 0 var(--space-4);color:var(--muted);font-size:12px;line-height:1.5}
+.pref-row{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);margin:0;padding:10px 0;border-bottom:1px solid var(--line);font-size:13px;font-weight:600}
+.pref-text{display:grid;gap:3px;min-width:0}
+.pref-name{color:var(--ink)}
+.pref-unenforced{justify-self:start;padding:2px 7px;border-radius:20px;background:var(--warning-tint);color:var(--warning);font-size:10.5px;font-weight:700;letter-spacing:.02em}
+.pref-hint{color:var(--muted);font-size:11.5px;font-weight:400;line-height:1.4}
+.pref-frequency{display:flex;align-items:center;gap:var(--space-2);flex:0 0 auto}
+.pref-frequency input{width:78px;min-height:var(--control-h);padding:6px 9px;border-radius:var(--radius-sm);text-align:center}
+.pref-unit{color:var(--muted);font-weight:600}
+.pref-toggle{position:relative;flex:0 0 auto;width:44px;height:24px;min-height:24px;margin:0;padding:0;border:1px solid var(--muted);border-radius:20px;background:var(--surface-2);appearance:none;-webkit-appearance:none}
+.pref-toggle::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:var(--muted)}
+.pref-toggle:checked{border-color:var(--brand);background:var(--brand)}
+.pref-toggle:checked::after{left:auto;right:2px;background:var(--paper)}
+.pref-toggle:focus-visible{outline:3px solid var(--brand);outline-offset:2px;box-shadow:none}
+.pref-toggle:disabled,.pref-frequency input:disabled{cursor:not-allowed;opacity:.55}
+.pref-row-status{border-bottom:0}
+.pref-row-status .secondary{white-space:nowrap}
+.pref-row-status .status-dot{font-size:12px;font-weight:700}
+
+/* History table. The wrapper owns the horizontal scroll so a wide table can never push the
+   document sideways. */
+.client-profile-workspace{grid-template-columns:minmax(280px,33%) minmax(0,1fr)}
+.history-table-wrap{max-width:100%;overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--paper)}
+.history-table{width:100%;min-width:720px;border-collapse:collapse;font-size:12.5px}
+.history-table th,.history-table td{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.history-table tbody tr:last-child td{border-bottom:0}
+.history-table th{background:var(--surface-2);color:var(--muted);font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
+.history-row:hover{background:var(--cream)}
+.history-row.active{background:var(--brand-tint)}
+.history-id .text-button{padding:0;font-size:12.5px;white-space:nowrap}
+.history-date{white-space:nowrap}
+.history-date span{display:block;color:var(--muted);font-size:11px}
+.history-pets{min-width:96px}
+.history-pets span{display:block;color:var(--muted);font-size:11px}
+.history-items{min-width:146px;line-height:1.45}
+.history-total,.history-duration,.history-groomer{white-space:nowrap}
+.history-total{font-variant-numeric:tabular-nums}
+.muted-cell{color:var(--muted)}
+/* Lifecycle chip always shows; the payment chip is additive, because the profile history payload
+   only knows an invoice for appointments the loaded calendar window also covers. */
+.history-status{display:flex;flex-wrap:wrap;gap:4px;min-width:104px}
+.history-chip{display:inline-block;padding:2px 8px;border-radius:20px;background:var(--surface-2);color:var(--ink);font-size:10.5px;font-weight:700;text-transform:capitalize;white-space:nowrap}
+.history-chip.chip-scheduled,.history-chip.chip-checked_in{background:var(--info-tint);color:var(--info)}
+.history-chip.chip-in_service,.history-chip.chip-unpaid{background:var(--warning-tint);color:var(--warning)}
+.history-chip.chip-completed,.history-chip.chip-paid{background:var(--success-tint);color:var(--success)}
+.history-chip.chip-cancelled,.history-chip.chip-no_show{background:var(--danger-tint);color:var(--danger)}
+
+@media(max-width:700px){
+  .pref-row{align-items:flex-start;flex-wrap:wrap}
+  .pet-fact-grid{grid-template-columns:1fr}
+  .profile-tabs{gap:var(--space-3)}
+}
+
+/* == calendar drag == */
+/* A scheduled card is grabbable everywhere except its two precise controls, so the cursor is the
+   affordance and the drag itself only starts once the pointer has travelled. */
+.appointment-block[data-draggable="true"],.appointment-block[data-draggable="true"] .calendar-open{cursor:grab}
+.appointment-block[data-draggable="true"] .appointment-notes-trigger,.appointment-block[data-draggable="true"] .calendar-action-trigger{cursor:pointer}
+body.calendar-dragging{cursor:grabbing;user-select:none}
+body.calendar-dragging .appointment-block[data-draggable="true"],body.calendar-dragging .appointment-block[data-draggable="true"] .calendar-open{cursor:grabbing}
+/* The card follows the cursor on a transform, which leaves the grid maths untouched: its
+   grid-column and grid-row never change until the server has actually moved it. It lifts above the
+   sticky heads and stops taking pointer hits so the slot underneath stays findable. */
+.appointment-block.dragging{z-index:30;pointer-events:none;opacity:.92;box-shadow:0 10px 24px rgba(32,37,34,.28)}
+/* Hover tinting is suppressed mid-drag so the only lit cell is the one that would receive the drop. */
+body.calendar-dragging .week-slot:not(.closed):hover,body.calendar-dragging .day-slot:not(.closed):hover{background:transparent}
+.week-slot.drag-over,.day-slot.drag-over{background:var(--brand-tint);box-shadow:inset 0 0 0 2px var(--brand)}
+/* Coarse pointers never get the flag from app.js; this keeps the grab cursor out of print and of
+   any pointer that arrives after render. */
+@media(hover:none){.appointment-block[data-draggable="true"],.appointment-block[data-draggable="true"] .calendar-open{cursor:pointer}}
+
+/* == control primitives == */
+/* label is display:grid here, so a checkbox/radio became a stretched grid item —
+   measured 358x66 in the Edit service modal, with the box sitting above its text.
+   Four contexts already patched this locally (.permission-grid, .inline-check,
+   .compact-options, .groomer-filter); fix the cause once instead. */
+input[type="checkbox"],input[type="radio"]{
+  inline-size:16px;block-size:16px;min-height:0;width:auto;
+  justify-self:start;align-self:center;padding:0;accent-color:var(--brand)
+}
+label:has(> input[type="checkbox"]),label:has(> input[type="radio"]){
+  display:flex;align-items:center;gap:8px;font-weight:400
+}
+
+/* == agreements == */
+/* Unsigned-agreement notice. It is the one banner on the profile that is also a control, so the
+   label is a real button and the dismiss is a second, separately-labelled one — a nested button
+   would be invalid and unreachable by keyboard. */
+.agreement-banner{display:flex;align-items:stretch;gap:var(--space-1);margin:0 0 var(--space-3);border:1px solid var(--warning);border-radius:var(--radius-sm);background:var(--warning-tint)}
+.agreement-banner-open{flex:1;display:flex;align-items:center;gap:var(--space-2);min-height:var(--control-h);padding:8px 11px;border:0;border-radius:var(--radius-sm);background:none;color:var(--warning);font-size:12px;font-weight:600;text-align:left}
+.agreement-banner-open:hover{text-decoration:underline}
+.agreement-banner-icon{display:grid;place-items:center;flex:0 0 16px;width:16px;height:16px;border-radius:50%;background:var(--warning);color:var(--paper);font-size:11px;font-weight:700;line-height:1}
+.agreement-banner-dismiss{flex:0 0 auto;min-width:var(--control-h);border:0;border-radius:var(--radius-sm);background:none;color:var(--warning);font-size:16px;line-height:1}
+.agreement-banner-dismiss:hover{color:var(--ink)}
+
+/* Panel. One row per agreement: name and state on the left, the single action on the right. */
+.agreements-panel{margin-top:var(--space-5)}
+.agreements-panel .panel-head{margin-bottom:var(--space-3);gap:var(--space-3)}
+.agreement-list{display:grid;margin:0;padding:0;list-style:none;border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--paper)}
+.agreement-row{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);padding:12px 14px;border-bottom:1px solid var(--line)}
+.agreement-row:last-child{border-bottom:0}
+.agreement-row-main{min-width:0}
+.agreement-row-action{flex:0 0 auto}
+.agreement-name{display:flex;align-items:center;flex-wrap:wrap;gap:var(--space-2);margin:0;font-size:13px;font-weight:600}
+.agreement-tag{padding:1px 6px;border:1px solid var(--line);border-radius:20px;background:var(--cream);color:var(--muted);font-size:10.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+.agreement-tag.archived{border-color:var(--danger-line);background:var(--danger-tint);color:var(--danger)}
+.agreement-state{margin:3px 0 0;font-size:12px;font-weight:600}
+.agreement-state.unsigned{color:var(--danger)}
+.agreement-state.signed{color:var(--success)}
+/* The audit trail — who signed, who recorded it, which version — reads on the row itself so a
+   signed agreement can be checked without opening anything. */
+.agreement-audit{margin:2px 0 0;color:var(--muted);font-size:11px;line-height:1.45}
+.agreement-foot{margin:var(--space-2) 0 0;color:var(--muted);font-size:11px;line-height:1.5}
+
+/* Send dialog. */
+.agreement-send,.agreement-signature,.agreement-correction{display:block}
+.agreement-send-intro,.agreement-signature-intro{margin:0 0 var(--space-3);color:var(--muted);font-size:12px;line-height:1.55}
+.agreement-send-table-wrap{max-width:100%;overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--paper)}
+.agreement-send-table{width:100%;min-width:320px;border-collapse:collapse;font-size:13px}
+.agreement-send-table th,.agreement-send-table td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.agreement-send-table tbody tr:last-child td{border-bottom:0}
+.agreement-send-table th{background:var(--surface-2);color:var(--muted);font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.agreement-send-select{width:64px}
+.agreement-send-label{display:block;margin:0;font-size:13px;font-weight:600}
+.agreement-required{display:block;margin-top:2px;color:var(--danger);font-size:12px;font-weight:600}
+.agreement-required.met{color:var(--muted)}
+.agreement-send-blocked{display:block;margin-top:2px;color:var(--muted);font-size:12px}
+
+/* Channel choice. SMS is rendered because the reference offers it and hiding an unavailable
+   capability is its own kind of lie — but Pawsh has no SMS, so the control is permanently disabled
+   and the server's own sentence sits underneath as the reason. */
+.agreement-channels{margin:var(--space-4) 0 0;padding:var(--space-3);border:1px solid var(--line);border-radius:var(--radius-lg)}
+.agreement-channels legend{padding:0 var(--space-1);font-size:13px;font-weight:600}
+.agreement-channel{display:flex;align-items:center;gap:var(--space-2);margin:0;font-size:13px}
+.agreement-channel input:disabled+span{color:var(--muted)}
+.agreement-channel-reason{margin:2px 0 var(--space-3) 24px;color:var(--muted);font-size:12px;line-height:1.5}
+.agreement-delivery-ok{margin:2px 0 0 24px;color:var(--muted);font-size:12px;line-height:1.5}
+.agreement-delivery-blocked{margin:2px 0 0 24px;padding:8px 10px;border:1px solid var(--danger-line);border-radius:var(--radius-sm);background:var(--danger-tint);color:var(--danger);font-size:12px;font-weight:600;line-height:1.5}
+
+/* Signature dialog. The agreement text is collapsed by default so the form stays short, but it is
+   there — staff are attesting to a document and should be able to read it. */
+.agreement-signature-text{margin:0 0 var(--space-4);border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--cream)}
+.agreement-signature-text summary{min-height:var(--control-h);display:flex;align-items:center;padding:8px 12px;font-size:13px;font-weight:600}
+.agreement-signature-text summary:focus-visible{outline:3px solid var(--brand);outline-offset:-3px}
+.agreement-signature-text p{margin:0;padding:0 12px 12px;color:var(--muted);font-size:12px;line-height:1.6}
+.agreement-signature label,.agreement-correction p{margin-bottom:var(--space-3)}
+.agreement-correction p:last-child{margin-bottom:0}
+
+@media(max-width:580px){
+  .agreement-row{align-items:flex-start;flex-direction:column;gap:var(--space-2)}
+  .agreement-row-action,.agreement-row-action .primary,.agreement-row-action .text-button{width:100%}
+  .agreements-panel .panel-head{align-items:flex-start;flex-direction:column;gap:var(--space-2)}
+}

@@ -79,6 +79,107 @@ export const customerSchema = z.object({
   notes: z.string().max(5000).nullish()
 });
 
+export const customerNoteParams = z.object({
+  id: z.string().uuid(),
+  noteId: z.string().uuid()
+});
+
+// The thread is the source of truth for client notes; `pinned` is the stored name for the
+// note flag the reference profile renders as a "popup" note.
+export const customerNoteCreateSchema = z.object({
+  body: z.string().trim().min(1).max(5000),
+  pinned: z.boolean().default(false)
+}).strict();
+
+export const customerNoteUpdateSchema = z.object({
+  body: z.string().trim().min(1).max(5000).optional(),
+  pinned: z.boolean().optional()
+}).strict().refine(
+  (value) => value.body !== undefined || value.pinned !== undefined,
+  { message: "At least one note change is required" }
+);
+
+export const customerNoteQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(1000).default(1),
+  pageSize: z.coerce.number().int().min(10).max(100).default(50)
+}).strict();
+
+// Partial by design: the client profile toggles switches one at a time, and a full-object
+// PUT would let a caller that does not know about a switch silently reset it.
+// `emailAllowed` is the existing marketing-email column surfaced here, not a new one.
+export const customerPreferencesSchema = z.object({
+  bookingFrequencyWeeks: z.number().int().min(1).max(104).nullable().optional(),
+  blockMessages: z.boolean().optional(),
+  blockOnlineBooking: z.boolean().optional(),
+  marketingSmsAllowed: z.boolean().optional(),
+  emailAllowed: z.boolean().optional()
+}).strict().refine(
+  (value) => Object.keys(value).length > 0,
+  { message: "At least one preference is required" }
+);
+
+// ---------------------------------------------------------------------------
+// Client agreements
+// ---------------------------------------------------------------------------
+
+export const customerAgreementParams = z.object({
+  id: z.string().uuid(),
+  templateId: z.string().uuid()
+});
+
+export const agreementTemplateCreateSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  body: z.string().trim().min(1).max(20_000),
+  required: z.boolean().default(false),
+  active: z.boolean().default(true)
+}).strict();
+
+// Partial by design, like the other settings-owned records: a caller that does
+// not know about `required` must not be able to silently clear it.
+export const agreementTemplateUpdateSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  body: z.string().trim().min(1).max(20_000).optional(),
+  required: z.boolean().optional(),
+  active: z.boolean().optional()
+}).strict().refine(
+  (value) => Object.keys(value).length > 0,
+  { message: "At least one template change is required" }
+);
+
+export const agreementTemplateQuerySchema = z.object({
+  status: z.enum(["active", "inactive", "all"]).default("active")
+}).strict();
+
+/**
+ * A staff-recorded signature, not an e-signature: the name the client gave, when
+ * they gave it, and an optional note about how it was collected. `signedAt` may
+ * be backdated (paper form signed at the counter yesterday) but never postdated.
+ */
+export const agreementSignatureSchema = z.object({
+  signedName: z.string().trim().min(1).max(120),
+  signedAt: z.string().datetime({ offset: true }).optional(),
+  note: z.string().trim().max(500).nullish()
+}).strict().superRefine((value, context) => {
+  if (!value.signedAt) return;
+  const signed = Date.parse(value.signedAt);
+  if (signed > Date.now() + 60_000) {
+    context.addIssue({ code: "custom", path: ["signedAt"], message: "A signature cannot be recorded in the future" });
+  }
+  if (signed < Date.parse("2000-01-01T00:00:00.000Z")) {
+    context.addIssue({ code: "custom", path: ["signedAt"], message: "Signature date is out of range" });
+  }
+});
+
+/**
+ * `channel` accepts "sms" so the API can answer the question honestly instead of
+ * failing schema validation with a generic message. Pawsh has no SMS transport,
+ * so the handler refuses it with an explicit reason and the supported channel list.
+ */
+export const agreementSendSchema = z.object({
+  templateIds: z.array(z.string().uuid()).min(1).max(25),
+  channel: z.enum(["email", "sms"]).default("email")
+}).strict();
+
 const petBaseSchema = z.object({
   customerId: z.string().uuid(),
   name: z.string().trim().min(1).max(80),

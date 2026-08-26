@@ -67,5 +67,24 @@ describe("database migrations", () => {
     expect(sessionLocations).toContain("alter table sessions add column location_id uuid");
     expect(sessionLocations).toContain("sessions_location_within_business");
     expect(sessionLocations).toContain("references locations(business_id,id)");
+    const clientProfile = await readFile("migrations/0019_client_notes_and_preferences.sql", "utf8");
+    expect(clientProfile).toContain("create table customer_notes");
+    expect(clientProfile).toContain("foreign key (business_id, customer_id) references customers(business_id, id)");
+    expect(clientProfile).toContain("create policy tenant_isolation on customer_notes");
+    expect(clientProfile).toContain("customer_note_legacy_mirror");
+    expect(clientProfile).toContain("customer_booking_frequency_weeks_range");
+    expect(clientProfile).toContain("add column marketing_sms_allowed boolean not null default true");
+    const clientAgreements = await readFile("migrations/0020_client_agreements.sql", "utf8");
+    expect(clientAgreements).toContain("create table agreement_templates");
+    expect(clientAgreements).toContain("create table customer_agreements");
+    expect(clientAgreements).toContain("customer_agreement_state_consistency");
+    expect(clientAgreements).toContain("foreign key (business_id, customer_id) references customers(business_id, id)");
+    expect(clientAgreements).toContain("foreign key (business_id, agreement_template_id) references agreement_templates(business_id, id)");
+    expect(clientAgreements).toContain("create policy tenant_isolation on agreement_templates");
+    expect(clientAgreements).toContain("create policy tenant_isolation on customer_agreements");
+    expect(clientAgreements).toContain("one_open_agreement_notification");
+    // Sending reuses the email-only outbox; the channel enum stays untouched.
+    expect(clientAgreements).not.toContain("channel in ('email','sms')");
+    expect(clientAgreements).not.toContain("alter column channel");
   });
 });

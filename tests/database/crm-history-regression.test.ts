@@ -110,7 +110,7 @@ describeDatabase("D3 customer, pet, and history regression", () => {
     const pet = await app.inject({
       method: "POST", url: "/api/pets", headers: { cookie: ownerCookie },
       payload: {
-        customerId, name: "D3 Pet", species: "dog", breed: "Terrier",
+        customerId, name: "D3 Pet", species: "dog", breed: "Cairn Terrier",
         groomingPreferences: "Short trim", safetyAlerts: "Use basket muzzle",
         medicalNotes: "Hip sensitivity", vaccinationExpiresOn: "2035-04-12"
       }

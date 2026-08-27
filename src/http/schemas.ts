@@ -6,6 +6,7 @@ import { permissions } from "@pawsh/domain";
 import {pricingClasses,weightTiers} from "@pawsh/domain";
 
 export const idParams = z.object({ id: z.string().uuid() });
+export const locationParams = z.object({ locationId: z.string().uuid() });
 
 export const signupSchema = z.object({
   email: z.string().email().max(320),
@@ -279,6 +280,12 @@ const petBaseSchema = z.object({
   // the pet's name, and a record saying "a Goldendoodle" is more use than one saying "?".
   name: z.preprocess(blankToNull, z.string().trim().min(1).max(80).nullish()),
   species: z.string().trim().min(1).max(60).default("dog"),
+  // Canonical taxonomy. `petTypeId`/`breedId` are the authority; `breed` stays for legacy
+  // callers and as the display mirror, and `breedOther` records a deliberate "Other" so a
+  // typo can never be mistaken for one.
+  petTypeId: z.string().uuid().nullish(),
+  breedId: z.string().uuid().nullish(),
+  breedOther: z.string().trim().min(1).max(120).nullish(),
   breed: z.string().trim().max(100).nullish(),
   dateOfBirth: z.string().date().nullish(),
   approximateAge: z.string().trim().max(50).nullish(),
@@ -437,8 +444,24 @@ export const servicePricingSchema=z.object({prices:z.array(z.object({
   priceMinor:z.number().int().nonnegative().max(100_000_000)
 })).min(1).max(18)}).strict();
 
-export const breedCatalogCreateSchema=z.object({name:z.string().trim().min(1).max(100),defaultPricingClass:z.enum(pricingClasses).default("STANDARD")}).strict();
-export const breedCatalogUpdateSchema=z.object({name:z.string().trim().min(1).max(100).optional(),defaultPricingClass:z.enum(pricingClasses).optional(),active:z.boolean().optional()}).strict().refine(value=>Object.keys(value).length>0,{message:"At least one change is required"});
+export const petTypeParams=z.object({petTypeId:z.string().uuid()});
+export const breedParams=z.object({breedId:z.string().uuid()});
+
+// What one salon thinks about a canonical breed.
+//
+// Absent and null mean different things on purpose. An ABSENT field is left exactly as stored;
+// an explicit NULL clears that override and returns the field to the Pawsh default. Without the
+// distinction a caller editing only the pricing class would have to resend `active`, and
+// resending it at its current effective value would silently pin a field that was previously
+// just following the shared taxonomy - so the breed would stop tracking Pawsh without anyone
+// choosing that.
+export const breedSettingsSchema=z.object({
+  pricingClass:z.enum(pricingClasses).nullable().optional(),
+  active:z.boolean().nullable().optional()
+}).strict().refine(
+  (value)=>value.pricingClass!==undefined||value.active!==undefined,
+  { message:"At least one breed setting is required" }
+);
 export const priceResolutionSchema=z.object({petId:z.string().uuid(),serviceIds:z.array(z.string().uuid()).min(1).max(30)}).strict();
 
 export const employeeSchema = z.object({
@@ -502,11 +525,39 @@ export const workingHoursSchema = z.object({
   hours: z.array(z.object({
     weekday: z.number().int().min(0).max(6),
     startTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
-    endTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/)
+    endTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+    // Accepted so the editor can round-trip what it read, and stored so the setting has a home.
+    // The value is constrained to 1 by the handler rather than here, because a caller who asked
+    // for 2 deserves a specific refusal (`LIMIT_NOT_CONFIGURABLE`) rather than a schema error
+    // that reads like a typo. Concurrency above one is enforced-against by four database objects
+    // and is not a setting Pawsh can currently honour - see migration 0027.
+    appointmentLimit: z.number().int().min(1).max(10).default(1)
   }).refine((period)=>period.startTime<period.endTime,{
     message:"Working hours must start before they end"
   })).max(7)
 });
+
+/** `YYYY-MM-DD`, a calendar date in the location's own timezone. */
+const localDatePattern = /^\d{4}-\d{2}-\d{2}$/;
+
+export const closureDayQuerySchema = z.object({
+  // Both ends are required: an unbounded closure listing would grow without limit as a salon
+  // records years of holidays, and no caller needs one.
+  from: z.string().regex(localDatePattern),
+  to: z.string().regex(localDatePattern)
+}).refine((range) => range.from <= range.to, { message: "Range must end on or after it starts" });
+
+export const closureDaysSchema = z.object({
+  // The month scopes the replacement. A save publishes one month's answer and must not disturb
+  // any other month, so the window it may delete within is stated by the caller rather than
+  // inferred from whichever dates happen to be in the list.
+  month: z.string().regex(/^\d{4}-(?:0[1-9]|1[0-2])$/),
+  closedDates: z.array(z.string().regex(localDatePattern)).max(31),
+  reason: z.string().trim().min(1).max(500).nullish()
+}).strict().refine(
+  (input) => input.closedDates.every((date) => date.startsWith(`${input.month}-`)),
+  { message: "Every closed date must fall inside the month being saved", path: ["closedDates"] }
+);
 
 export const blockedTimeSchema = z.object({
   employeeId: z.string().uuid(),

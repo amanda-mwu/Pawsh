@@ -20,7 +20,7 @@ import {
   operationalUpdateSchema, voidPaymentSchema, appointmentMoveSchema, appointmentServicesSchema,
   passwordResetRequestSchema, passwordResetConfirmSchema, invitationSchema,
   invitationAcceptSchema, ownershipTransferSchema, petProfileUpdateSchema, petCareUpdateSchema,
-  servicePricingSchema,breedCatalogCreateSchema,breedCatalogUpdateSchema,priceResolutionSchema,
+  servicePricingSchema,petTypeParams,breedParams,breedSettingsSchema,priceResolutionSchema,
   ownProfileUpdateSchema,passwordChangeSchema,workspaceAccessRequestSchema,workspaceSelectionSchema,
   locationSelectionSchema,customerNoteParams,customerNoteCreateSchema,customerNoteUpdateSchema,
   customerNoteQuerySchema,customerPreferencesSchema,
@@ -30,8 +30,10 @@ import {
   petNoteParams,petPhotoUploadMetadataSchema,petAvatarSchema,
   customerChildParams,customerAddressCreateSchema,customerAddressUpdateSchema,
   customerContactCreateSchema,customerContactUpdateSchema,
-  petVaccinationCreateSchema,petVaccinationUpdateSchema,petDeceasedSchema
+  petVaccinationCreateSchema,petVaccinationUpdateSchema,petDeceasedSchema,
+  locationParams,closureDayQuerySchema,closureDaysSchema
 } from "./schemas.js";
+import { availabilityRefusalCodes } from "../domain/availability.js";
 import { sealSecret } from "../security/secrets.js";
 import { hashPassword, validateNewPassword, verifyPassword } from "../security/passwords.js";
 import { AuthAbuseProtector } from "../security/auth-abuse.js";
@@ -42,7 +44,7 @@ import {
   suppliedPetCareFields,
   type PetCareRecord
 } from "@pawsh/domain";
-import { catalogBreedName, normalizeBreedSearch } from "@pawsh/domain";
+import { normalizeBreedSearch } from "@pawsh/domain";
 import {provisionBusinessCatalog} from "../domain/catalog-seed.js";
 import {resolveServicePrices} from "../domain/service-pricing.js";
 
@@ -981,6 +983,173 @@ async function groomersAvailable(
   return Boolean(result?.available);
 }
 
+/**
+ * Refuses a booking on a day the shop is shut.
+ *
+ * This is step 1 of `resolveEffectiveAvailability` in `src/domain/availability.ts`, where the
+ * precedence is written down and tested: a closure is TERMINAL. It outranks a per-date staff
+ * override that says the groomer is working, and - unlike every other availability rule in this
+ * file - it outranks `availabilityOverride` too. Someone with the override permission is saying
+ * "book them anyway"; that is a judgement about a groomer's hours, and it cannot make an unstaffed
+ * building open. Because the verdict is terminal the resolver reads nothing else, so this needs
+ * only the one indexed lookup rather than the whole availability picture.
+ *
+ * The date is the local calendar date at the LOCATION. An appointment cannot cross local midnight
+ * (enforced separately), so the start's local date is the only one a booking can land on, and
+ * deriving it from the instant on the client would put a closure on the wrong day for anyone
+ * browsing from another timezone.
+ */
+async function salonClosedOn(
+  tx: Transaction,
+  input: { businessId: string; locationId: string; localDate: string }
+): Promise<{ localDate: string; reason: string | null } | null> {
+  const [closure] = await tx<{ localDate: string; reason: string | null }[]>`
+    select to_char(local_date,'YYYY-MM-DD') as local_date,reason
+    from location_closure_days
+    where business_id=${input.businessId} and location_id=${input.locationId}
+      and local_date=${input.localDate}::date
+  `;
+  return closure ?? null;
+}
+
+/**
+ * Canonical breeds for one pet type, with a tenant's sparse overrides folded in.
+ *
+ * `defaultPricingClass` and `active` come back as EFFECTIVE values so no caller has to
+ * re-implement the precedence, and `customized` says whether this salon has expressed an
+ * opinion at all - which is what lets Settings show "following the Pawsh default" honestly
+ * rather than implying the salon chose today's value.
+ */
+function breedCatalogRows(
+  db: Database,
+  input: { businessId: string; petTypeId: string; includeInactive?: boolean; breedId?: string }
+) {
+  return db<{
+    id: string; name: string; search: string;
+    defaultPricingClass: string; active: boolean; customized: boolean;
+  }[]>`
+    select breed.id,breed.name,breed.normalized_name as search,
+      coalesce(override.pricing_class,breed.default_pricing_class) as default_pricing_class,
+      coalesce(override.active,breed.active) as active,
+      (override.pricing_class is not null or override.active is not null) as customized
+    from breeds breed
+    left join business_breed_settings override
+      on override.business_id=${input.businessId} and override.breed_id=breed.id
+    where breed.pet_type_id=${input.petTypeId}
+      and (${input.breedId ?? null}::uuid is null or breed.id=${input.breedId ?? null}::uuid)
+      and (${input.includeInactive ?? false} or coalesce(override.active,breed.active))
+    order by coalesce(override.active,breed.active) desc,breed.name
+  `;
+}
+
+interface PetBreedSelection { petTypeId: string | null; breedId: string | null; breed: string | null; breedOther: string | null }
+
+/**
+ * Resolves what a pet's breed fields should become, from whatever the caller supplied.
+ *
+ * Four ways in, in precedence order:
+ *
+ *   1. `breedId` - an explicit canonical selection. Must belong to the pet's own type and be
+ *      active for this tenant, so a Cat can never be assigned a Golden Retriever and a salon
+ *      cannot book a breed it has switched off.
+ *   2. `breedOther` - a deliberate "Other". Stores free text with no canonical id.
+ *   3. `breed` text - resolved against the canonical taxonomy, then SAFE_EXACT aliases only.
+ *      A SEARCH_ALIAS ("GSD", "Yorkie") deliberately does NOT resolve here: it exists to help a
+ *      human find a breed in a picker, and letting it rewrite stored data would be the silent
+ *      name-based guessing this whole migration removes.
+ *   4. Nothing - a pet with no breed recorded, which is valid.
+ *
+ * Unrecognised text is REFUSED rather than quietly stored, so a typo cannot invent a breed and
+ * move a price. The one exception is the grandfather clause: text identical to what the pet
+ * already has passes through untouched. That is what lets someone edit a legacy pet's weight
+ * without being forced to resolve a historical breed value they may know nothing about.
+ */
+async function resolvePetBreedSelection(
+  tx: Transaction,
+  input: {
+    businessId: string;
+    supplied: {
+      species: string;
+      petTypeId?: string | null | undefined;
+      breedId?: string | null | undefined;
+      breed?: string | null | undefined;
+      breedOther?: string | null | undefined;
+    };
+    current?: { breed: string | null; breedId: string | null; petTypeId: string | null } | null;
+  }
+): Promise<PetBreedSelection> {
+  const { supplied, current } = input;
+  const [petType] = supplied.petTypeId
+    ? await tx<{ id: string }[]>`select id from pet_types where id=${supplied.petTypeId} and active`
+    : await tx<{ id: string }[]>`select id from pet_types where normalized_name=${normalizeBreedSearch(supplied.species)} and active`;
+  if (supplied.petTypeId && !petType) throw new SchedulingRequestError(400, "PET_TYPE_NOT_FOUND", "That pet type is unavailable.");
+  const petTypeId = petType?.id ?? current?.petTypeId ?? null;
+
+  const refuse = (message: string) => new SchedulingRequestError(400, "BREED_NOT_IN_CATALOG", message);
+
+  if (supplied.breedId) {
+    if (!petTypeId) throw refuse("Choose a pet type before choosing a breed.");
+    const [breed] = await tx<{ id: string; name: string }[]>`
+      select breed.id,breed.name from breeds breed
+      left join business_breed_settings override
+        on override.business_id=${input.businessId} and override.breed_id=breed.id
+      where breed.id=${supplied.breedId} and breed.pet_type_id=${petTypeId}
+        and coalesce(override.active,breed.active)
+    `;
+    if (!breed) throw refuse("That breed is not available for this pet type.");
+    return { petTypeId, breedId: breed.id, breed: breed.name, breedOther: null };
+  }
+
+  const other = supplied.breedOther?.trim();
+  if (other) return { petTypeId, breedId: null, breed: other, breedOther: other };
+
+  const text = supplied.breed?.trim();
+  if (!text) return { petTypeId, breedId: null, breed: null, breedOther: null };
+
+  const normalized = normalizeBreedSearch(text);
+  if (petTypeId) {
+    const [match] = await tx<{ id: string; name: string }[]>`
+      select breed.id,breed.name from breeds breed
+      left join business_breed_settings override
+        on override.business_id=${input.businessId} and override.breed_id=breed.id
+      where breed.pet_type_id=${petTypeId} and coalesce(override.active,breed.active)
+        and breed.normalized_name=${normalized}
+      union all
+      select breed.id,breed.name from breed_aliases alias
+      join breeds breed on breed.id=alias.breed_id
+      left join business_breed_settings override
+        on override.business_id=${input.businessId} and override.breed_id=breed.id
+      where alias.pet_type_id=${petTypeId} and alias.alias_kind='SAFE_EXACT_ALIAS'
+        and alias.normalized_name=${normalized} and coalesce(override.active,breed.active)
+      limit 1
+    `;
+    if (match) return { petTypeId, breedId: match.id, breed: match.name, breedOther: null };
+  }
+
+  // Grandfather clause: unchanged legacy text is preserved exactly, id and all.
+  if (current && current.breed && normalizeBreedSearch(current.breed) === normalized) {
+    return { petTypeId, breedId: current.breedId, breed: current.breed, breedOther: null };
+  }
+  throw refuse(`"${text}" is not a breed in the catalog. Choose one from the list, or select Other.`);
+}
+
+/** Calendar arithmetic on a `YYYY-MM-DD` local date, with no timezone in play. */
+function shiftLocalDate(localDate: string, days: number): string {
+  const [year, month, day] = localDate.split("-").map(Number) as [number, number, number];
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+}
+
+function salonClosedError(closure: { localDate: string; reason: string | null }): SchedulingRequestError {
+  return new SchedulingRequestError(
+    409,
+    availabilityRefusalCodes.location_closed,
+    closure.reason
+      ? `The salon is closed on ${closure.localDate} (${closure.reason}).`
+      : `The salon is closed on ${closure.localDate}.`,
+    { localDate: closure.localDate, closureReason: closure.reason }
+  );
+}
+
 async function record(
   tx: Transaction,
   input: {
@@ -1912,6 +2081,16 @@ export function registerRoutes(
     const context = auth(request);
     const { id } = idParams.parse(request.params);
     const input = body(workingHoursSchema, request.body);
+    // Concurrency is enforced at one by database triggers (0002, 0015) and the
+    // `one_groomer_per_appointment` index (0017), not by anything this handler could decide.
+    // Accepting a higher number here would store a promise the database refuses to keep, so the
+    // refusal is explicit and carries its own code rather than silently clamping to 1.
+    if (input.hours.some((period) => period.appointmentLimit !== 1)) {
+      return reply.code(400).send({
+        code: "LIMIT_NOT_CONFIGURABLE",
+        error: "Concurrent appointments per groomer are fixed at 1 and cannot be changed yet."
+      });
+    }
     const exists = await db`select id from employees where business_id=${context.businessId} and id=${id}`;
     if (!exists.length) return reply.code(404).send({ error: "Employee not found" });
     await db.begin(async (tx) => {
@@ -1919,12 +2098,104 @@ export function registerRoutes(
       await tx`delete from employee_working_hours where business_id=${context.businessId} and employee_id=${id}`;
       for (const period of input.hours) {
         await tx`
-          insert into employee_working_hours (business_id,employee_id,weekday,start_time,end_time)
-          values (${context.businessId},${id},${period.weekday},${period.startTime},${period.endTime})
+          insert into employee_working_hours (business_id,employee_id,weekday,start_time,end_time,appointment_limit)
+          values (${context.businessId},${id},${period.weekday},${period.startTime},${period.endTime},${period.appointmentLimit})
         `;
       }
     });
     return reply.code(204).send();
+  });
+
+  /**
+   * The whole availability grid in one response: every groomer, active or not, with the weekday
+   * rows they actually have.
+   *
+   * The settings screen renders one row per groomer against a seven-day header. Fanning that out
+   * to one request per groomer would make the page's cost scale with the size of the team and
+   * would let it paint a half-loaded grid; this is a single indexed read either way.
+   *
+   * `days` is absent-means-closed, exactly as the per-employee endpoint is, and a groomer with no
+   * rows at all comes back with an empty array. That empty array is not "closed all week" - the
+   * booking path treats an unconfigured groomer as unrestricted, and the interface must say so.
+   */
+  app.get("/api/availability/working-hours", {
+    preHandler: [authenticate, requirePermission("calendar.view")]
+  }, async (request) => {
+    const context = auth(request);
+    const rows = await db<{
+      id: string; displayName: string; active: boolean;
+      weekday: number | null; startTime: string | null; endTime: string | null; appointmentLimit: number | null;
+    }[]>`
+      select employee.id,employee.display_name,employee.active,
+        hours.weekday,
+        to_char(hours.start_time,'HH24:MI') as start_time,
+        to_char(hours.end_time,'HH24:MI') as end_time,
+        hours.appointment_limit
+      from employees employee
+      left join employee_working_hours hours
+        on hours.business_id=employee.business_id and hours.employee_id=employee.id
+      where employee.business_id=${context.businessId}
+      order by employee.active desc,employee.display_name,employee.id,hours.weekday,hours.start_time
+    `;
+    const employees: {
+      id: string; displayName: string; active: boolean;
+      days: { weekday: number; startTime: string; endTime: string; appointmentLimit: number }[];
+    }[] = [];
+    for (const row of rows) {
+      let employee = employees.at(-1);
+      if (employee?.id !== row.id) {
+        employee = { id: row.id, displayName: row.displayName, active: row.active, days: [] };
+        employees.push(employee);
+      }
+      if (row.weekday === null) continue;
+      employee.days.push({
+        weekday: row.weekday,
+        startTime: row.startTime!,
+        endTime: row.endTime!,
+        appointmentLimit: row.appointmentLimit ?? 1
+      });
+    }
+    return { employees };
+  });
+
+  /**
+   * How many bookings were made outside each groomer's stated hours, per weekday.
+   *
+   * The hours grid marks the cells this lands on, so an operator editing availability can see
+   * that bookings are routinely being routed around what they are about to change. One aggregate
+   * for the whole grid, for the same reason the grid itself is one read.
+   *
+   * The weekday is the appointment's wall-clock weekday at the salon, derived from the instant
+   * and the appointment's own recorded `scheduling_timezone`. A 22:30 booking in a Pacific salon
+   * is a Tuesday evening, not a Wednesday morning, and grouping on the UTC instant would file it
+   * under the wrong column of the grid.
+   *
+   * Deliberately not read from `scheduled_local_start`. That column is written by handing the
+   * driver a bare local string, which the driver converts through the API host's timezone, so
+   * outside a UTC host it holds the UTC instant rather than the local one - the exact error this
+   * grouping has to avoid. `start_at at time zone scheduling_timezone` is right on every host.
+   *
+   * Cancelled and no-show appointments are excluded: the marker reads as live bookings sitting
+   * outside the stated hours, and a cancelled one no longer sits anywhere. The window starts 60
+   * days back and is unbounded ahead, so the marker reflects the recent past and everything
+   * still to come rather than the whole history of the salon.
+   */
+  app.get("/api/availability/override-counts", {
+    preHandler: [authenticate, requirePermission("calendar.view")]
+  }, async (request) => {
+    const context = auth(request);
+    return db<{ employeeId: string; weekday: number; count: number }[]>`
+      select appointment.employee_id,
+        extract(dow from (appointment.start_at at time zone appointment.scheduling_timezone))::int as weekday,
+        count(*)::int as count
+      from appointments appointment
+      where appointment.business_id=${context.businessId}
+        and appointment.availability_overridden
+        and appointment.status not in ('cancelled','no_show')
+        and appointment.start_at >= now() - interval '60 days'
+      group by 1,2
+      order by 1,2
+    `;
   });
 
   app.post("/api/blocked-times", {
@@ -1967,6 +2238,15 @@ export function registerRoutes(
           values (${context.businessId},${location.id},${period.weekday},${period.startTime},${period.endTime})
         `;
       }
+      // Salon hours are one of the inputs the booking path checks, and booking detects a stale
+      // client through `expectedLocationVersion`. Rewriting the hours without moving the version
+      // left a client that had cached the old grid booking against hours that no longer exist,
+      // with nothing to tell it otherwise. The bump is in the same transaction as the rewrite so
+      // the two can never be observed apart.
+      await tx`
+        update locations set version=version+1,updated_at=now()
+        where business_id=${context.businessId} and id=${location.id}
+      `;
     });
     return { saved: true };
   });
@@ -1979,6 +2259,133 @@ export function registerRoutes(
       from business_hours
       where business_id=${context.businessId} and location_id=${context.locationId}::uuid
       order by weekday,start_time`;
+  });
+
+  /**
+   * Closure days for one shop over a bounded range.
+   *
+   * Scoped to the location on purpose: one shop closing for a flood is not both shops closing,
+   * and a business-wide answer could not express the difference. `from`/`to` are both required so
+   * a salon with years of recorded holidays cannot be made to return all of them at once.
+   */
+  app.get("/api/locations/:locationId/closure-days", {
+    preHandler: [authenticate, requirePermission("calendar.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { locationId } = locationParams.parse(request.params);
+    const range = body(closureDayQuerySchema, request.query);
+    // Scoped to the caller's business, so a location id from another tenant is simply absent.
+    const [location] = await db<{ id: string; timezone: string }[]>`
+      select id,timezone from locations where business_id=${context.businessId} and id=${locationId}
+    `;
+    if (!location) return reply.code(404).send({ error: "Location not found" });
+    // A date appears when it is closed, when it carries live appointments, or both. The booked
+    // count is what lets the confirmation state a real number before someone shuts a day:
+    // closing a day with bookings on it is allowed, but it must never happen silently, because
+    // those appointments are not cancelled by the closure and would otherwise be stranded.
+    //
+    // The day an appointment belongs to is its wall-clock day at the salon, derived here from the
+    // instant and the appointment's OWN recorded `scheduling_timezone`. Near local midnight that
+    // disagrees with the UTC instant, and the salon's answer is the one an operator means.
+    //
+    // Not read from `scheduled_local_start`, despite the name: that column is written by handing
+    // the driver a bare local string, which converts it through the API host's timezone, so its
+    // contents are the UTC instant on any server not running in UTC. Deriving from `start_at`
+    // gives the same answer on every host. See the note in the completion report.
+    //
+    // The instant window is widened a day at each end so an appointment whose own timezone
+    // differs from the location's current one cannot fall outside it; the derived date, not the
+    // window, decides what is counted. Bounding on `start_at` keeps `appointment_calendar` usable.
+    const window = {
+      from: localDateBounds(shiftLocalDate(range.from, -1), location.timezone).from,
+      to: localDateBounds(shiftLocalDate(range.to, 1), location.timezone).to
+    };
+    const days = await db<{
+      localDate: string; closed: boolean; reason: string | null; bookedAppointments: number;
+    }[]>`
+      with closure as (
+        select local_date,reason from location_closure_days
+        where business_id=${context.businessId} and location_id=${locationId}
+          and local_date between ${range.from}::date and ${range.to}::date
+      ), booked as (
+        select (appointment.start_at at time zone appointment.scheduling_timezone)::date as local_date,
+          count(*)::int as bookings
+        from appointments appointment
+        where appointment.business_id=${context.businessId} and appointment.location_id=${locationId}
+          and appointment.status not in ('cancelled','no_show')
+          and appointment.start_at >= ${window.from} and appointment.start_at < ${window.to}
+        group by 1
+        having (appointment.start_at at time zone appointment.scheduling_timezone)::date
+          between ${range.from}::date and ${range.to}::date
+      )
+      select to_char(coalesce(closure.local_date,booked.local_date),'YYYY-MM-DD') as local_date,
+        closure.local_date is not null as closed,
+        closure.reason,
+        coalesce(booked.bookings,0)::int as booked_appointments
+      from closure full outer join booked on booked.local_date=closure.local_date
+      order by 1
+    `;
+    return { locationId, from: range.from, to: range.to, days };
+  });
+
+  /**
+   * Replaces one month's closure days for one shop.
+   *
+   * The month, not the submitted list, defines what may be deleted: a save publishes a single
+   * month's answer and must leave every other month alone. Repeating the same save changes
+   * nothing, so a retried request from a flaky connection is safe.
+   *
+   * The location version moves with the write, in the same transaction. Closure days are a
+   * booking input, and booking detects a stale client through `expectedLocationVersion`; without
+   * the bump a client holding yesterday's calendar would keep offering a day the salon just shut.
+   */
+  app.put("/api/locations/:locationId/closure-days", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { locationId } = locationParams.parse(request.params);
+    const input = body(closureDaysSchema, request.body);
+    const closedDates = [...new Set(input.closedDates)].sort();
+    const monthStart = `${input.month}-01`;
+    const saved = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      // Locked for the same reason the settings writer locks: two concurrent saves must not both
+      // read the same version and both write version+1.
+      const [location] = await tx<{ id: string; version: number }[]>`
+        select id,version from locations
+        where business_id=${context.businessId} and id=${locationId} for update
+      `;
+      if (!location) return null;
+      await tx`
+        delete from location_closure_days
+        where business_id=${context.businessId} and location_id=${locationId}
+          and local_date >= ${monthStart}::date
+          and local_date < (${monthStart}::date + interval '1 month')
+          and not (to_char(local_date,'YYYY-MM-DD') = any(${closedDates}::text[]))
+      `;
+      for (const localDate of closedDates) {
+        // A date that is already closed keeps the reason it was recorded with, so re-saving a
+        // month does not blank out an explanation somebody typed.
+        await tx`
+          insert into location_closure_days (business_id,location_id,local_date,reason,created_by)
+          values (${context.businessId},${locationId},${localDate}::date,${input.reason ?? null},${context.userId})
+          on conflict (location_id,local_date) do nothing
+        `;
+      }
+      const [updated] = await tx<{ version: number }[]>`
+        update locations set version=version+1,updated_at=now()
+        where business_id=${context.businessId} and id=${locationId}
+        returning version
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "location.closure_days.save",
+        resourceType: "location", resourceId: locationId,
+        after: { month: input.month, closedDates }
+      });
+      return { locationVersion: updated!.version };
+    });
+    if (!saved) return reply.code(404).send({ error: "Location not found" });
+    return { locationId, month: input.month, closedDates, locationVersion: saved.locationVersion };
   });
 
   app.get("/api/customers", {
@@ -3288,29 +3695,95 @@ export function registerRoutes(
     return rows.map((pet) => redactPetCare(pet));
   });
 
+  /** The pet types breeds are organized under. Global taxonomy, readable by any tenant. */
+  app.get("/api/pet-types", {
+    preHandler: [authenticate, requirePermission("pets.view")]
+  }, async () => db`
+    select id,name,normalized_name as search,sort_order from pet_types
+    where active order by sort_order,name
+  `);
+
+  /**
+   * The breeds a tenant may choose from, for one pet type, with that tenant's own configuration
+   * folded in.
+   *
+   * `defaultPricingClass` and `active` are the EFFECTIVE values: the salon's sparse override
+   * where it has expressed one, the canonical Pawsh default otherwise. The caller never has to
+   * know which of the two answered, and a salon that has configured nothing simply sees the
+   * shared taxonomy.
+   *
+   * Staff who cannot manage settings see only what is active for them, so the pet editor cannot
+   * offer a breed the salon has switched off.
+   */
+  app.get("/api/pet-types/:petTypeId/breeds", {
+    preHandler: [authenticate, requirePermission("pets.view")]
+  }, async (request, reply) => {
+    const context=auth(request);
+    const {petTypeId}=petTypeParams.parse(request.params);
+    const [petType]=await db<{id:string}[]>`select id from pet_types where id=${petTypeId} and active`;
+    if(!petType)return reply.code(404).send({error:"Pet type not found"});
+    return breedCatalogRows(db,{businessId:context.businessId,petTypeId,
+      includeInactive:context.isOwner||context.permissions.includes("services.manage")});
+  });
+
+  /**
+   * Kept at its original path so existing clients keep working, but it is no longer a
+   * per-tenant catalog: it serves the canonical Dog taxonomy with this tenant's overrides
+   * applied. `id` is now a canonical breed id, which is the value `pets.breedId` references.
+   */
   app.get("/api/dog-breeds", {
     preHandler: [authenticate, requirePermission("pets.view")]
   }, async (request) => {
     const context=auth(request);
-    const canManage=context.isOwner||context.permissions.includes("services.manage");
-    return db`select id,breed_key,name,normalized_name as search,default_pricing_class,active from business_breeds where business_id=${context.businessId} and (${canManage} or active) order by active desc,name`;
+    const [petType]=await db<{id:string}[]>`select id from pet_types where normalized_name='dog'`;
+    if(!petType)return [];
+    return breedCatalogRows(db,{businessId:context.businessId,petTypeId:petType.id,
+      includeInactive:context.isOwner||context.permissions.includes("services.manage")});
   });
 
-  app.post("/api/dog-breeds",{preHandler:[authenticate,requirePermission("services.manage")]},async(request,reply)=>{
-    const context=auth(request);const input=body(breedCatalogCreateSchema,request.body);const normalized=normalizeBreedSearch(input.name);
-    const [created]=await db`insert into business_breeds(business_id,breed_key,name,normalized_name,default_pricing_class) values (${context.businessId},${`custom-${randomUUID()}`},${input.name},${normalized},${input.defaultPricingClass}) on conflict(business_id,normalized_name) do nothing returning *`;
-    if(!created){const [existing]=await db`select id,name,active from business_breeds where business_id=${context.businessId} and normalized_name=${normalized}`;return reply.code(409).send({code:"BREED_DUPLICATE",error:`Breed already exists: ${existing?.name??input.name}`,existing});}return reply.code(201).send(created);
-  });
-
-  app.patch("/api/dog-breeds/:id",{preHandler:[authenticate,requirePermission("services.manage")]},async(request,reply)=>{
-    const context=auth(request);const {id}=idParams.parse(request.params);const input=body(breedCatalogUpdateSchema,request.body);
-    try{
-      const [updated]=await db`update business_breeds set name=coalesce(${input.name??null},name),normalized_name=coalesce(${input.name?normalizeBreedSearch(input.name):null},normalized_name),default_pricing_class=coalesce(${input.defaultPricingClass??null},default_pricing_class),active=coalesce(${input.active??null},active),updated_at=now() where business_id=${context.businessId} and id=${id} returning *`;
-      if(!updated)return reply.code(404).send({error:"Breed not found"});return updated;
-    }catch(error){
-      if(error&&typeof error==="object"&&"code" in error&&error.code==="23505"&&input.name){const normalized=normalizeBreedSearch(input.name);const [existing]=await db`select id,name,active from business_breeds where business_id=${context.businessId} and normalized_name=${normalized}`;return reply.code(409).send({code:"BREED_DUPLICATE",error:`Breed already exists: ${existing?.name??input.name}`,existing});}
-      throw error;
-    }
+  /**
+   * Records what THIS salon thinks about a canonical breed - its coat/pricing class, and whether
+   * it offers the breed at all.
+   *
+   * It deliberately cannot rename a breed. Breed identity is canonical and shared: a salon
+   * renaming "German Shepherd" for everyone was never the intent, and under the old per-tenant
+   * catalog a rename silently repriced that salon's whole book because pets were joined to it by
+   * name. Setting a field back to null restores the Pawsh default rather than freezing today's
+   * value, so a breed follows the shared taxonomy again once the salon stops disagreeing.
+   */
+  app.put("/api/breeds/:breedId/settings",{preHandler:[authenticate,requirePermission("services.manage")]},async(request,reply)=>{
+    const context=auth(request);
+    const {breedId}=breedParams.parse(request.params);
+    const input=body(breedSettingsSchema,request.body);
+    const [breed]=await db<{id:string;petTypeId:string}[]>`select id,pet_type_id from breeds where id=${breedId}`;
+    if(!breed)return reply.code(404).send({error:"Breed not found"});
+    await db.begin(async (tx)=>{
+      await setTenant(tx,context.businessId);
+      // Merge, never replace. A field the caller omitted keeps whatever is stored, so editing
+      // the pricing class cannot silently pin `active` away from the shared taxonomy. Only an
+      // explicit null clears an override.
+      const [stored]=await tx<{pricingClass:string|null;active:boolean|null}[]>`
+        select pricing_class,active from business_breed_settings
+        where business_id=${context.businessId} and breed_id=${breedId} for update
+      `;
+      const pricingClass=input.pricingClass!==undefined?input.pricingClass:stored?.pricingClass??null;
+      const active=input.active!==undefined?input.active:stored?.active??null;
+      // A row that overrides nothing is deleted rather than stored: the table exists to hold
+      // disagreements, and an empty one keeps the common lookup free of rows that say nothing.
+      if(pricingClass===null&&active===null){
+        await tx`delete from business_breed_settings
+          where business_id=${context.businessId} and breed_id=${breedId}`;
+        return;
+      }
+      await tx`
+        insert into business_breed_settings (business_id,breed_id,pricing_class,active,created_by)
+        values (${context.businessId},${breedId},${pricingClass},${active},${context.userId})
+        on conflict (business_id,breed_id) do update
+          set pricing_class=excluded.pricing_class,active=excluded.active,updated_at=now()
+      `;
+    });
+    const [row]=await breedCatalogRows(db,{businessId:context.businessId,petTypeId:breed.petTypeId,breedId});
+    return row ?? reply.code(404).send({error:"Breed not found"});
   });
 
   app.post("/api/pricing/resolve",{preHandler:[authenticate,requirePermission("appointments.create")]},async(request)=>{
@@ -3333,9 +3806,13 @@ export function registerRoutes(
       const verifiedAt=verificationStatus === "staff_verified"
         ? input.rabiesVerificationDate ? new Date(`${input.rabiesVerificationDate}T12:00:00.000Z`) : new Date()
         : null;
+      const selection = await resolvePetBreedSelection(tx, {
+        businessId: context.businessId,
+        supplied: { species: input.species, petTypeId: input.petTypeId, breedId: input.breedId, breed: input.breed, breedOther: input.breedOther }
+      });
       const [created] = await tx<{ id: string }[]>`
         insert into pets
-          (business_id, customer_id, name, species, breed, date_of_birth, approximate_age,
+          (business_id, customer_id, name, species, pet_type_id, breed_id, breed_other, breed, date_of_birth, approximate_age,
            weight_ounces, sex, coat_notes, grooming_preferences, behavior_notes, medical_notes,
            safety_alerts, emergency_contact, veterinarian, vaccination_notes,
            vaccination_expires_on,rabies_vaccination_date,rabies_certificate_reference,
@@ -3343,7 +3820,7 @@ export function registerRoutes(
            rabies_verified_by_membership_id,photo_permission, created_by, updated_by)
         values
           (${context.businessId}, ${input.customerId}, ${input.name ?? null}, ${input.species},
-           ${input.breed ? catalogBreedName(input.breed) ?? input.breed : null}, ${input.dateOfBirth ?? null}, ${input.approximateAge ?? null},
+           ${selection.petTypeId}, ${selection.breedId}, ${selection.breedOther}, ${selection.breed}, ${input.dateOfBirth ?? null}, ${input.approximateAge ?? null},
            ${input.weightOunces ?? null}, ${input.sex ?? null}, ${input.coatNotes ?? null},
            ${input.groomingPreferences ?? null}, ${input.behaviorNotes ?? null},
            ${input.medicalNotes ?? null}, ${input.safetyAlerts ?? null},
@@ -3436,9 +3913,22 @@ export function registerRoutes(
         ) as available
       `;
       if (!customer?.available) return { kind: "invalidCustomer" } as const;
+      // The pet's stored breed is read first so unchanged legacy text can be grandfathered
+      // through: editing a weight must never fail because a historical breed predates the
+      // canonical taxonomy.
+      const [existingPet] = await tx<{ breed: string | null; breedId: string | null; petTypeId: string | null }[]>`
+        select breed,breed_id,pet_type_id from pets
+        where business_id=${context.businessId} and id=${id} and archived_at is null
+      `;
+      const selection = await resolvePetBreedSelection(tx, {
+        businessId: context.businessId,
+        supplied: { species: input.species, petTypeId: input.petTypeId, breedId: input.breedId, breed: input.breed, breedOther: input.breedOther },
+        current: existingPet ?? null
+      });
       const [pet] = await tx`
         update pets set customer_id=${input.customerId},name=${input.name ?? null},species=${input.species},
-          breed=${input.breed ? catalogBreedName(input.breed) ?? input.breed : null},date_of_birth=${input.dateOfBirth ?? null},
+          pet_type_id=${selection.petTypeId},breed_id=${selection.breedId},breed_other=${selection.breedOther},
+          breed=${selection.breed},date_of_birth=${input.dateOfBirth ?? null},
           approximate_age=${input.approximateAge ?? null},weight_ounces=${input.weightOunces ?? null},
           sex=${input.sex ?? null},coat_notes=${input.coatNotes ?? null},
           grooming_preferences=${input.groomingPreferences ?? null},
@@ -5394,6 +5884,11 @@ export function registerRoutes(
       if (localDateForInstant(endAt,location.timezone) !== input.localStart.slice(0,10)) {
         throw new Error("Appointments may not cross local midnight during the controlled pilot");
       }
+      // Ahead of every staff-availability rule and ahead of the override branch below, because a
+      // closure is terminal: see `salonClosedOn`.
+      const closure=await salonClosedOn(tx,{businessId:context.businessId,locationId:input.locationId,
+        localDate:localDateForInstant(startAt,location.timezone)});
+      if (closure) throw salonClosedError(closure);
       await schedulingHooks.beforeLock?.({
         operation: "create",
         businessId: context.businessId,
@@ -5611,6 +6106,11 @@ export function registerRoutes(
       if (localDateForInstant(endAt,location.timezone) !== input.localStart.slice(0,10)) {
         throw new Error("Appointments may not cross local midnight during the controlled pilot");
       }
+      // Same terminal closure rule as creation: an appointment cannot be moved onto a day the
+      // shop is shut, override or not.
+      const closure=await salonClosedOn(tx,{businessId:context.businessId,locationId:current.locationId,
+        localDate:localDateForInstant(startAt,location.timezone)});
+      if (closure) throw salonClosedError(closure);
       const conflicts=(await Promise.all(employeeIds.map(employeeId=>findSchedulingConflicts(tx,{businessId:context.businessId,employeeId,startAt,endAt,excludeAppointmentId:id})))).flat();
       if (conflicts.length && !input.overrideConflict) {
         const canOverride = await hasCurrentPermission(tx, {

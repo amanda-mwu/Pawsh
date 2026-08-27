@@ -1,5 +1,4 @@
 import type postgres from "postgres";
-import {dogBreeds} from "@pawsh/domain";
 import type {PricingClass,WeightTierCode} from "@pawsh/domain";
 
 type Sql=postgres.Sql|postgres.TransactionSql;
@@ -29,9 +28,11 @@ export const defaultServices:readonly SeedService[]=[
  ...[["cat-shed-less","Cat Shed-Less",2500],["cat-flea-tick","Cat Flea + Tick",2500],["cat-deep-clean","Cat Deep Clean + Degrease",2500],["cat-nail-trim","Cat Nail Trim",3000],["cat-sanitary","Cat Sanitary",2500],["cat-feet-trim","Cat Feet Trim",2500]].map(([key,name,base])=>({key:String(key),name:String(name),category:"CAT",mode:"FIXED",base:Number(base)}))
 ];
 
+// Breeds are no longer seeded per business. They are a single global taxonomy in `breeds`,
+// established by migration 0028; a new salon inherits it without copying 247 rows, and records
+// only its disagreements in `business_breed_settings`. The static `dogBreeds` list survives
+// solely as the source that migration was generated from.
 export async function provisionBusinessCatalog(sql:Sql,businessId:string):Promise<void>{
- const breeds=dogBreeds.map(breed=>({business_id:businessId,breed_key:breed.id,name:breed.name,normalized_name:breed.search,default_pricing_class:defaultBreedPricingClass(breed.name)}));
- await sql`insert into business_breeds ${sql(breeds,"business_id","breed_key","name","normalized_name","default_pricing_class")} on conflict (business_id,breed_key) do nothing`;
  const services=defaultServices.map(service=>({business_id:businessId,name:service.name,description:"Pawsh default; duration requires salon review",base_duration_minutes:service.duration??60,base_price_minor:service.base,category:service.category,pricing_mode:service.mode,seed_key:service.key,range_max_minor:service.rangeMax??null,price_confirmation_required:service.confirmation??false}));
  await sql`insert into services ${sql(services,"business_id","name","description","base_duration_minutes","base_price_minor","category","pricing_mode","seed_key","range_max_minor","price_confirmation_required")} on conflict (business_id,seed_key) where seed_key is not null do nothing`;
  const rows=await sql<{id:string;seedKey:string}[]>`select id,seed_key from services where business_id=${businessId} and seed_key is not null`;

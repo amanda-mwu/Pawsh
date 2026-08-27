@@ -1,7 +1,66 @@
 export interface DogBreed { id: string; name: string; search: string }
 
+/**
+ * The ONE canonical breed normalizer.
+ *
+ * Every breed comparison in Pawsh goes through it: canonical breeds, aliases, search, migrations,
+ * and API matching. Two normalizers that disagree by a single character silently mis-price a pet,
+ * so there must only ever be this one.
+ *
+ * Diacritics fold to their base letter BEFORE the non-alphanumeric strip. Without that step the
+ * strip ate the accented vowel outright - "Lowchen" spelled correctly normalized to "lwchen" and
+ * matched nothing, leaving the breed unreachable to anyone who typed it properly.
+ *
+ * `String.prototype.normalize` is missing from some React Native/Hermes builds and this package
+ * must run there unchanged, so the NFD path is feature-detected with an explicit fallback map
+ * covering the characters that actually occur in breed names.
+ */
+const DIACRITIC_FALLBACK: Record<string, string> = {
+  "á": "a", "à": "a", "â": "a", "ä": "a", "ã": "a", "å": "a",
+  "é": "e", "è": "e", "ê": "e", "ë": "e",
+  "í": "i", "ì": "i", "î": "i", "ï": "i",
+  "ó": "o", "ò": "o", "ô": "o", "ö": "o", "õ": "o",
+  "ú": "u", "ù": "u", "û": "u", "ü": "u",
+  "ñ": "n", "ç": "c", "ý": "y", "ÿ": "y"
+};
+
+/** Whitespace, hyphens and underscores all collapse to a single space. */
+const SEPARATORS = /[\s\-_]+/g;
+/** Anything that is not a lowercase letter, digit, or space is dropped. */
+const NON_ALPHANUMERIC = /[^a-z0-9 ]/g;
+
+/** Combining marks left behind by NFD decomposition. */
+function stripCombiningMarks(value: string): string {
+  let out = "";
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    if (code >= 0x300 && code <= 0x36f) continue;
+    out += character;
+  }
+  return out;
+}
+
+/** Hermes path: fold the non-ASCII characters that actually occur in breed names. */
+function foldWithoutNormalize(value: string): string {
+  let out = "";
+  for (const character of value) {
+    out += character.charCodeAt(0) < 0x80 ? character : (DIACRITIC_FALLBACK[character] ?? character);
+  }
+  return out;
+}
+
 export function normalizeBreedSearch(value: string): string {
-  return value.trim().toLowerCase().replace(/[\s\-_]+/g, " ").replace(/[^a-z0-9 ]/g, "");
+  const lowered = value.toLowerCase();
+  const folded = typeof lowered.normalize === "function"
+    ? stripCombiningMarks(lowered.normalize("NFD"))
+    : foldWithoutNormalize(lowered);
+  // Ligatures and stroked letters have no combining form, so NFD leaves them untouched.
+  return folded
+    .replace(/ø/g, "o").replace(/đ/g, "d").replace(/ß/g, "ss")
+    .replace(/æ/g, "ae").replace(/œ/g, "oe").replace(/ł/g, "l")
+    .replace(SEPARATORS, " ")
+    .replace(NON_ALPHANUMERIC, "")
+    .trim();
 }
 
 const names = [

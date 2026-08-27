@@ -77,7 +77,7 @@ test("@smoke account menu and personal profile remain separate from business set
   await expect(page.getByTestId("auth-form")).toBeVisible();
 });
 
-test("@smoke breed catalog is compact, searchable, editable, and duplicate-safe",async({page,tenant})=>{
+test("@smoke breed catalog is compact, searchable, and salon-overridable",async({page,tenant})=>{
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-setup").click();
   await expect(page.locator("#breed-admin-list")).toHaveCount(0);
@@ -90,33 +90,37 @@ test("@smoke breed catalog is compact, searchable, editable, and duplicate-safe"
   await expect(page.locator("#page-title")).toHaveText("Salon");
   await expect(page.getByRole("heading",{name:"Business reports"})).toBeHidden();
   expect(await page.locator("#breed-catalog-body tr[data-breed-id]").count()).toBeGreaterThan(20);
-  const name=`QA Coat Dog ${tenant.runId.slice(-8)}`;
-  await page.getByTestId("breed-add-name").fill(name);
-  await page.getByTestId("breed-add-class").selectOption("EXTRA_FLOOF");
-  await page.getByRole("button",{name:"Add breed"}).click();
+  // Breeds are shared Pawsh taxonomy now: a salon overrides a row, it never creates or renames one.
+  await expect(page.getByTestId("breed-add-name")).toHaveCount(0);
+  await expect(page.getByRole("button",{name:"Add breed"})).toHaveCount(0);
+  const first=page.locator("#breed-catalog-body tr[data-breed-id]").first();
+  const breedId=await first.getAttribute("data-breed-id");
+  const name=(await first.locator("strong").innerText()).trim();
   await page.getByTestId("breed-search").fill(name);
-  const row=page.locator("#breed-catalog-body tr[data-breed-id]").filter({hasText:name});
-  await expect(row).toContainText("Extra Floof");
-  const breedId=await row.getAttribute("data-breed-id");
+  const row=page.locator(`#breed-catalog-body tr[data-breed-id="${breedId}"]`);
+  await expect(row).toContainText("Pawsh default");
   await row.getByLabel(`Actions for ${name}`).click();
   await row.getByRole("button",{name:"Edit"}).click();
-  const editingRow=page.locator(`#breed-catalog-body tr[data-breed-id="${breedId}"]`);
-  await editingRow.locator(".breed-edit-class").selectOption("STANDARD");
-  await editingRow.locator(".breed-save").click();
-  await expect(page.locator("#breed-catalog-body tr[data-breed-id]").filter({hasText:name})).toContainText("Standard");
-  await page.getByTestId("breed-add-name").fill(`  ${name.toUpperCase().replaceAll(" ","   ")}  `);
-  await page.getByRole("button",{name:"Add breed"}).click();
-  await expect(page.locator("#breed-add-error")).toContainText(`Breed already exists: ${name}`);
-  const updatedRow=page.locator("#breed-catalog-body tr[data-breed-id]").filter({hasText:name});
-  await updatedRow.getByLabel(`Actions for ${name}`).click();
-  await updatedRow.getByRole("button",{name:"Deactivate"}).click();
-  await expect(updatedRow).toHaveCount(0);
+  await expect(row.locator(".breed-edit-name")).toHaveCount(0);
+  // Pick a class the row is not already on, so the save is a real override whatever the Pawsh default is.
+  const current=await row.locator(".breed-edit-class").inputValue();
+  const [nextClass,nextLabel]=current==="EXTRA_FLOOF"?["SMOOTH_SINGLE","Smooth Single"]:["EXTRA_FLOOF","Extra Floof"];
+  await row.locator(".breed-edit-class").selectOption(nextClass);
+  await row.locator(".breed-save").click();
+  await expect(row).toContainText(nextLabel);
+  await expect(row).toContainText("Customized");
+  await row.getByLabel(`Actions for ${name}`).click();
+  await row.getByRole("button",{name:"Deactivate"}).click();
+  await expect(row).toHaveCount(0);
   await page.locator("#breed-show-inactive").check();
-  const inactiveRow=page.locator("#breed-catalog-body tr[data-breed-id]").filter({hasText:name});
-  await expect(inactiveRow).toContainText("Inactive");
-  await inactiveRow.getByLabel(`Actions for ${name}`).click();
-  await inactiveRow.getByRole("button",{name:"Reactivate"}).click();
-  await expect(page.locator("#breed-catalog-body tr[data-breed-id]").filter({hasText:name})).toContainText("Active");
+  await expect(row).toContainText("Inactive");
+  await row.getByLabel(`Actions for ${name}`).click();
+  await row.getByRole("button",{name:"Reactivate"}).click();
+  await expect(row).toContainText("Active");
+  await row.getByLabel(`Actions for ${name}`).click();
+  await row.getByRole("button",{name:"Reset to Pawsh default"}).click();
+  await expect(row).toContainText("Pawsh default");
+  await expect(row).not.toContainText("Customized");
 });
 
 test("@smoke breed catalog route restores Salon navigation and redirects legacy routes",async({page,tenant})=>{

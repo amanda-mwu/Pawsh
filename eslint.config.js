@@ -2,7 +2,10 @@ import eslint from "@eslint/js";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist/**", "coverage/**", "node_modules/**", ".playwright-browsers/**", "playwright-report/**", "test-results/**", "apps/*/.expo/**", "apps/*/dist/**"] },
+  // `apps/*/web-build/**` is the Expo web export. It is generated, it is already ignored by
+  // `apps/mobile/.gitignore`, and it is a bundler's output rather than anybody's source, so
+  // linting it only ever reports the bundle's own scaffolding as thousands of errors.
+  { ignores: ["dist/**", "coverage/**", "node_modules/**", ".playwright-browsers/**", "playwright-report/**", "test-results/**", "apps/*/.expo/**", "apps/*/dist/**", "apps/*/web-build/**"] },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {

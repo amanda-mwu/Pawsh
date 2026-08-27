@@ -18,8 +18,8 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--coral);outline-offs
 @media(max-width:900px){.auth-shell{grid-template-columns:1fr}.brand-panel{display:none}.app-shell{grid-template-columns:1fr}aside{height:auto;position:static;padding:18px 22px;flex-direction:row;align-items:center;gap:18px;overflow:visible}aside nav{display:flex;margin:0;gap:2px;overflow:auto}.aside-foot{display:block;margin:0 0 0 auto}.account-control{border:0;padding:0}.account-control>button{width:auto;min-width:54px}.account-summary{display:none}.account-menu{left:auto;right:0;top:62px;bottom:auto;min-width:210px}main{padding:28px 20px}.metric-grid{grid-template-columns:repeat(2,1fr)}.content-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.card-grid{grid-template-columns:repeat(2,1fr)}.directory-controls{grid-template-columns:1fr 1fr}.calendar-workspace{grid-template-columns:1fr}.month-sidebar{display:none}.calendar-toolbar{align-items:flex-start;flex-wrap:wrap}.profile-section{grid-template-columns:1fr;gap:14px}}@media(max-width:580px){header{align-items:start}.header-actions span{display:none}.metric-grid,.card-grid,.form-grid{grid-template-columns:1fr}.appointment{grid-template-columns:65px 1fr}.appointment .badge{display:none}aside .brand{display:none}aside{padding:10px;justify-content:flex-start;gap:8px}aside nav{flex:1;overflow:auto}nav button{font-size:12px;padding:10px 8px}.panel-head,.split-head{align-items:flex-start;gap:12px;flex-wrap:wrap}h2{font-size:28px}#modal-form{padding:20px}.directory-controls{grid-template-columns:1fr}.directory-table th:nth-child(n+3),.directory-table td:nth-child(n+3){display:none}.directory-pagination{justify-content:space-between}.calendar-toolbar>div{flex-wrap:wrap}.week-grid{grid-template-columns:58px repeat(7,minmax(150px,1fr))}.account-chevron{display:none}}
 .breed-combobox{position:relative}.breed-options{position:absolute;z-index:10;top:70px;left:0;right:0;max-height:240px;overflow:auto;border:1px solid var(--line);border-radius:10px;background:#fff;box-shadow:var(--shadow);padding:5px}.breed-options button,.breed-no-results{display:block;width:100%;min-height:44px;border:0;background:#fff;color:var(--ink);padding:10px;text-align:left}.breed-options button:hover,.breed-options button[aria-selected="true"]{background:var(--mint);outline:2px solid #2f6f62;outline-offset:-2px}.breed-no-results{color:var(--muted);font-weight:400}.rabies-profile-status{padding:10px;border-radius:9px;background:var(--mint);font-weight:700}
 .mobile-only{display:none}
-.settings-list{border-top:1px solid var(--line)}.settings-row{width:100%;min-height:58px;border:0;background:transparent;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:10px 0;text-align:left;color:var(--ink)}.settings-row span:first-child{display:grid;gap:3px}.settings-row small{color:var(--muted);font-weight:400}.breed-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:10px}.breed-toolbar .search{margin:0;max-width:420px;flex:1}.inline-check{display:flex;align-items:center;gap:8px;margin:0;white-space:nowrap}.inline-check input{width:auto}.breed-add-row{display:grid;grid-template-columns:minmax(220px,2fr) minmax(170px,1fr) auto;gap:10px;align-items:end;padding:10px 12px;background:var(--mint);border:1px solid var(--line);border-bottom:0}.breed-add-row label{margin:0;gap:4px}.breed-add-row input,.breed-add-row select{padding:9px 10px;min-height:44px}.breed-error{grid-column:1/-1;margin:0;min-height:0}.breed-error:empty{display:none}.breed-table-wrap{border:1px solid var(--line);background:var(--paper);overflow:visible}.breed-table{width:100%;border-collapse:collapse;table-layout:fixed}.breed-table th,.breed-table td{height:44px;padding:4px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}.breed-table th{font-size:12px;background:#f7f8f6}.breed-table th:first-child{width:44%}.breed-table th:nth-child(2){width:27%}.breed-table th:nth-child(3){width:17%}.breed-table th:last-child{width:56px}.breed-table input,.breed-table select{width:100%;min-height:36px;padding:6px 8px}.table-sort{border:0;background:transparent;padding:8px 0;font-weight:700;color:var(--ink)}.breed-status{font-size:12px;font-weight:700}.breed-status.inactive{color:var(--muted)}.row-menu{position:relative}.row-menu summary{list-style:none;display:grid;place-items:center;width:44px;height:44px;border-radius:8px;cursor:pointer;font-size:20px}.row-menu summary::-webkit-details-marker{display:none}.row-menu[open] summary{background:var(--mint)}.row-menu-items{position:absolute;right:0;top:40px;z-index:8;min-width:145px;padding:5px;background:#fff;border:1px solid var(--line);border-radius:9px;box-shadow:var(--shadow)}.row-menu-items button{display:block;width:100%;min-height:44px;border:0;background:#fff;text-align:left;padding:8px 10px}.row-menu-items button:hover,.row-menu-items button:focus-visible{background:var(--mint)}.breed-edit-actions{display:flex;gap:4px}.breed-edit-actions button{min-width:44px;min-height:40px;border:0;background:transparent;font-weight:700}.breed-row-error td{height:auto;padding:5px 12px;color:#b3261e;font-size:12px}.breed-row-error[hidden]{display:none}
-@media(max-width:700px){.breed-toolbar{align-items:stretch;flex-direction:column}.breed-add-row{grid-template-columns:1fr 1fr}.breed-add-row button{grid-column:1/-1}.breed-table th:nth-child(2),.breed-table th:nth-child(3){display:none}.breed-table td:nth-child(2),.breed-table td:nth-child(3){display:none}.breed-table th:first-child{width:auto}.breed-table td:first-child strong,.breed-table td:first-child small{display:block}.breed-table td:first-child small{color:var(--muted);margin-top:2px}.breed-table-wrap{overflow:visible}}
+.settings-list{border-top:1px solid var(--line)}.settings-row{width:100%;min-height:58px;border:0;background:transparent;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:10px 0;text-align:left;color:var(--ink)}.settings-row span:first-child{display:grid;gap:3px}.settings-row small{color:var(--muted);font-weight:400}.breed-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:10px}.breed-toolbar .search{margin:0;max-width:420px;flex:1}.inline-check{display:flex;align-items:center;gap:8px;margin:0;white-space:nowrap}.inline-check input{width:auto}.breed-note{margin:0 0 10px;line-height:1.5}.breed-note strong{font-weight:700}.breed-table-wrap{border:1px solid var(--line);background:var(--paper);overflow:visible}.breed-table{width:100%;border-collapse:collapse;table-layout:fixed}.breed-table th,.breed-table td{height:44px;padding:4px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}.breed-table th{font-size:12px;background:#f7f8f6}.breed-table th:first-child{width:44%}.breed-table th:nth-child(2){width:27%}.breed-table th:nth-child(3){width:17%}.breed-table th:last-child{width:56px}.breed-table input,.breed-table select{width:100%;min-height:36px;padding:6px 8px}.table-sort{border:0;background:transparent;padding:8px 0;font-weight:700;color:var(--ink)}.breed-status{font-size:12px;font-weight:700}.breed-status.inactive{color:var(--muted)}.row-menu{position:relative}.row-menu summary{list-style:none;display:grid;place-items:center;width:44px;height:44px;border-radius:8px;cursor:pointer;font-size:20px}.row-menu summary::-webkit-details-marker{display:none}.row-menu[open] summary{background:var(--mint)}.row-menu-items{position:absolute;right:0;top:40px;z-index:8;min-width:145px;padding:5px;background:#fff;border:1px solid var(--line);border-radius:9px;box-shadow:var(--shadow)}.row-menu-items button{display:block;width:100%;min-height:44px;border:0;background:#fff;text-align:left;padding:8px 10px}.row-menu-items button:hover,.row-menu-items button:focus-visible{background:var(--mint)}.breed-flag{display:inline-block;padding:1px 6px;border-radius:999px;background:var(--mint);font-size:11px;font-weight:700}.breed-flag.default{background:transparent;color:var(--muted);padding-left:0}.breed-edit-row{display:flex;align-items:center;flex-wrap:wrap;gap:10px}.breed-edit-row label{margin:0;flex:1 1 170px;max-width:230px}.breed-editing td{padding-top:6px;padding-bottom:6px}.breed-edit-actions{display:flex;gap:4px}.breed-edit-actions button{min-width:44px;min-height:40px;border:0;background:transparent;font-weight:700}.breed-row-error td{height:auto;padding:5px 12px;color:#b3261e;font-size:12px}.breed-row-error[hidden]{display:none}
+@media(max-width:700px){.breed-toolbar{align-items:stretch;flex-direction:column}.breed-table th:nth-child(2),.breed-table th:nth-child(3){display:none}.breed-table td:nth-child(2),.breed-table td:nth-child(3){display:none}.breed-table th:first-child{width:auto}.breed-table td:first-child strong,.breed-table td:first-child small{display:block}.breed-table td:first-child small{color:var(--muted);margin-top:2px}.breed-table-wrap{overflow:visible}}
 @media(max-width:700px){.mobile-only{display:block}}
 .pet-summary>span{display:inline}.pet-row-actions{white-space:nowrap}.pet-row-actions .text-button{min-height:44px;padding:4px}.customer-detail-actions{display:flex;gap:12px;border-bottom:1px solid var(--line)}.customer-pet-row{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-top:1px solid var(--line)}.customer-pet-row small{display:block;color:var(--muted);margin-top:3px}
 .calendar-open{display:block;width:100%;border:0;background:transparent;color:inherit;text-align:left;padding:0;min-height:28px}.week-appointment{align-self:stretch}.week-appointment .safety-context{max-height:32px;overflow:hidden}.appointment-card-footer{display:flex;align-items:center;gap:5px;min-width:0;margin-top:3px}.appointment-card-footer .rabies-needed{flex:0 1 auto;min-width:0}.appointment-status{color:var(--muted);font-size:10px;text-transform:capitalize;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.appointment-card-footer .calendar-actions-menu{margin-left:auto}.week-appointment:has(.calendar-action-popover:not([hidden])){z-index:20;overflow:visible}
@@ -1180,3 +1180,131 @@ label:has(> input[type="checkbox"]),label:has(> input[type="radio"]){
 .pet-card-avatar{width:36px;height:36px}
 .pet-check{display:flex;align-items:center;gap:8px;align-self:end;min-height:var(--control-h);margin-bottom:var(--space-3);font-size:12px;font-weight:600}
 .pet-check input{width:auto;margin:0;flex:none}
+
+/* Settings → Availability. Two scopes on one screen: the tab bar, the strip under it and the
+   location-switch toast all exist to keep workspace-wide hours from reading as one location's. */
+.availability-root{display:block}
+.availability-tabs{display:flex;flex-wrap:wrap;align-items:flex-end;gap:0;margin-top:20px}
+.availability-tab-group{padding:0 14px 0 0}
+.availability-tab-group-location{padding-left:14px;padding-right:0;border-left:1px solid var(--line)}
+.availability-tab-eyebrow{margin:0 0 6px;font-size:10px;letter-spacing:1.7px}
+.availability-tab-group-workspace .availability-tab-eyebrow{color:var(--brand)}
+.availability-tab-group-location .availability-tab-eyebrow{color:var(--info)}
+.availability-tab-row{display:flex;flex-wrap:wrap;gap:2px}
+.availability-tab{min-height:var(--control-h);padding:8px 13px;border:1px solid transparent;border-radius:var(--radius-sm);background:transparent;color:var(--muted);font-size:12.5px;font-weight:700;white-space:nowrap}
+.availability-tab:hover,.availability-tab:focus-visible{background:var(--surface-2);color:var(--ink)}
+.availability-tab.active{background:var(--brand);color:var(--on-brand)}
+.availability-tab-group-location .availability-tab.active{background:var(--info);color:#fff}
+
+/* Always present, and it swaps with the tab rather than appearing only when something is wrong. */
+.availability-scope{max-width:760px;margin:14px 0 0;padding:10px 14px;border-radius:var(--radius-sm);font-size:12.5px;line-height:1.5}
+.availability-scope.is-workspace{background:var(--brand-tint);box-shadow:inset 3px 0 0 var(--brand);color:var(--ink)}
+.availability-scope.is-location{background:var(--info-tint);box-shadow:inset 3px 0 0 var(--info);color:var(--ink)}
+
+.availability-panel{max-width:none;margin-top:12px}
+/* A short paragraph does not need the full width the grid earns. */
+.availability-panel.settings-placeholder{max-width:760px}
+.availability-note{max-width:70ch;margin:0 0 12px;color:var(--muted);font-size:12.5px;line-height:1.55}
+.availability-note.is-quiet{color:var(--placeholder)}
+.availability-error{max-width:60ch;padding:20px 0}
+.availability-error h4{margin:0 0 6px;font-size:14px}
+.availability-error p{margin:0 0 12px;color:var(--muted);font-size:13px}
+
+.availability-grid-wrap{overflow:auto;max-height:60vh;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--paper)}
+.availability-grid{width:100%;min-width:820px;border-collapse:separate;border-spacing:0;font-size:12px}
+.availability-grid thead th{position:sticky;top:0;z-index:3;padding:8px 10px;border-bottom:1px solid var(--line);background:#f7f8f6;color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.04em;text-align:left;text-transform:uppercase}
+.availability-grid thead th abbr{text-decoration:none}
+.availability-grid td{padding:0;border-top:1px solid var(--line);border-left:1px solid var(--line);vertical-align:top}
+/* The identity colour reads as a rule down the row rather than the shared bottom bar the calendar
+   heads use, because here the row is the groomer and the column is the day. */
+.availability-grid th.availability-groomer,.availability-stack-groomer h4{padding:9px 12px;border-left:0;background:var(--paper);box-shadow:inset 3px 0 0 var(--g)}
+.availability-grid th.availability-groomer{position:sticky;left:0;z-index:2;min-width:150px;border-top:1px solid var(--line);font-size:12.5px;font-weight:700;text-align:left;white-space:nowrap}
+.availability-grid .availability-grid-corner{position:sticky;left:0;top:0;z-index:4;min-width:150px}
+.availability-grid tbody td{height:52px}
+.availability-grid td.availability-cell{padding:8px 10px}
+.availability-cell.is-off{color:var(--placeholder)}
+.availability-cell[tabindex]{cursor:pointer}
+.availability-cell[tabindex]:hover{background:var(--surface-2)}
+.availability-cell[tabindex]:focus-visible{outline:2px solid var(--brand);outline-offset:-2px}
+.availability-range{display:block;font-weight:650;white-space:nowrap}
+.availability-limit{display:block;margin-top:2px;color:var(--placeholder);font-size:10.5px}
+/* Information, never a warning: info blue, a dot, and a tinted underline. No amber, no red. */
+.availability-cell.has-override,.availability-stack-row.has-override{box-shadow:inset 0 -3px 0 var(--info-tint)}
+.availability-override{display:flex;align-items:center;gap:4px;margin-top:3px;color:var(--info);font-size:10.5px;font-weight:650;white-space:nowrap}
+.availability-override-dot{width:5px;height:5px;flex:none;border-radius:50%;background:var(--info)}
+.availability-cell.is-saved{animation:availability-saved .9s ease-out}
+@keyframes availability-saved{from{background:var(--brand-tint)}to{background:transparent}}
+@media(prefers-reduced-motion:reduce){.availability-cell.is-saved{animation:none;background:var(--brand-tint)}}
+.availability-grid.is-skeleton td,.availability-grid.is-skeleton th{padding:12px 10px}
+.availability-skeleton-bar{display:block;height:11px;border-radius:5px;background:var(--surface-2)}
+
+/* The editor is positioned against the viewport so the scroll container around the grid cannot clip
+   it. Its surface matches the calendar action popover without borrowing that popover's teardown. */
+.availability-editor{position:fixed;z-index:30;display:grid;gap:6px;width:250px;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--paper);box-shadow:0 8px 20px rgba(0,0,0,.18);color:var(--ink);font-size:12px;text-align:left;cursor:default}
+.availability-editor-head{margin:0 0 2px;font-size:12px;font-weight:700}
+.availability-editor .error{min-height:0;margin:0}
+.availability-editor .error:empty{display:none}
+.availability-editor-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:2px}
+.availability-mode{display:flex;border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden}
+.availability-mode button{flex:1;min-height:34px;padding:6px 10px;border:0;border-right:1px solid var(--line);background:var(--paper);color:var(--ink);font-size:12px;font-weight:700}
+.availability-mode button:last-child{border-right:0}
+.availability-mode button[aria-pressed="true"]{background:var(--brand);color:var(--on-brand)}
+.availability-times{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.availability-times label{margin:0;gap:3px;font-size:11px}
+.availability-times input{padding:6px 8px;font-size:12px}
+/* Seven chips, one request: the endpoint replaces the whole week, so Mon-Fri is a single save. */
+.availability-apply{display:flex;flex-wrap:wrap;gap:4px;margin:0;padding:0;border:0}
+.availability-apply legend{padding:0 0 5px;color:var(--muted);font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+.availability-chip{display:inline-flex;align-items:center;gap:4px;min-height:30px;margin:0;padding:3px 8px;border:1px solid var(--line);border-radius:999px;font-size:11px;font-weight:650}
+.availability-chip input{width:auto;min-height:0;margin:0;padding:0;flex:none}
+.availability-chip:has(input:checked){border-color:var(--brand);background:var(--brand-tint)}
+.availability-chip:has(input:disabled){opacity:.75}
+.availability-clear-note{margin:0;color:var(--warning);font-size:11px;line-height:1.45}
+
+.availability-closed-head{max-width:70ch;margin-bottom:14px}
+.availability-closed-head h3{margin-bottom:4px}
+.availability-closed-rule{margin:0;color:var(--ink);font-size:13px;font-weight:600;line-height:1.55}
+.availability-month-nav{margin-bottom:12px}
+.availability-month-nav strong{min-width:170px;font-size:14px;text-align:center}
+.availability-closed-grid-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--paper)}
+.availability-closed-grid{width:100%;min-width:420px;border-collapse:separate;border-spacing:0}
+.availability-closed-grid th{padding:8px 6px;border-bottom:1px solid var(--line);background:#f7f8f6;color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+.availability-closed-grid th abbr{text-decoration:none}
+.availability-closed-grid td{padding:0;border-top:1px solid var(--line);border-left:1px solid var(--line)}
+.availability-closed-grid tr td:first-child{border-left:0}
+.availability-day{display:flex;flex-direction:column;align-items:flex-start;justify-content:space-between;gap:2px;width:100%;min-height:60px;padding:7px 8px;border:0;background:transparent;color:inherit;font:inherit;text-align:left}
+.availability-day-number{font-size:13px;font-weight:650}
+button.availability-day:hover{background:var(--surface-2)}
+.availability-day:focus-visible{outline:2px solid var(--brand);outline-offset:-2px}
+/* Solid ink with the word spelled out, so the state survives a monochrome screen and never reads as
+   an error the way a danger red would. */
+.availability-day-cell.is-closed{background:var(--ink)}
+.availability-day-cell.is-closed .availability-day{color:#fff}
+.availability-day-cell.is-closed button.availability-day:hover{background:rgba(255,255,255,.12)}
+.availability-day-cell.is-closed .availability-day:focus-visible{outline-color:#fff}
+.availability-day-state{padding:1px 6px;border-radius:999px;background:rgba(255,255,255,.18);font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+.availability-day-cell.is-past .availability-day-number{color:var(--placeholder)}
+.availability-day-cell.is-past.is-closed .availability-day-number{color:rgba(255,255,255,.65)}
+.availability-day-blank{background:#f7f8f6}
+
+/* Below the grid breakpoint the same rows stack per groomer: touch targets, not columns of times. */
+.availability-stack{display:grid;gap:14px}
+.availability-stack-groomer{overflow:hidden;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--paper)}
+.availability-stack-groomer h4{margin:0;font-size:13px}
+.availability-stack-groomer ul{margin:0;padding:0;list-style:none}
+.availability-stack-row{display:flex;align-items:center;gap:10px;width:100%;min-height:48px;padding:9px 12px;border:0;border-top:1px solid var(--line);background:transparent;color:inherit;font:inherit;text-align:left}
+.availability-stack-row.is-off .availability-range{color:var(--placeholder)}
+.availability-stack-day{flex:1;font-weight:650}
+.availability-stack-row .availability-range{display:inline;white-space:nowrap}
+.availability-stack-row .availability-override{margin:0}
+button.availability-stack-row:hover{background:var(--surface-2)}
+
+@media(max-width:620px){
+  .availability-tabs{display:block}
+  .availability-tab-group{padding:0}
+  .availability-tab-group-location{margin-top:12px;padding:12px 0 0;border-top:1px solid var(--line);border-left:0}
+  .availability-tab-row{display:grid}
+  .availability-tab{text-align:left}
+  .availability-scope{max-width:none}
+  .availability-month-nav strong{min-width:0}
+}

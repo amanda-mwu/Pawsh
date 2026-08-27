@@ -16,6 +16,19 @@ import { createDocumentStorage, type DocumentStorage } from "./storage/documents
 import { WallTimeError } from "./domain/time.js";
 import type { StartupDiagnostics } from "./startup.js";
 
+/**
+ * Which directory the server publishes at `/`.
+ *
+ * Defaults to the web client in `public`. `PAWSH_STATIC_ROOT` points it somewhere else so a
+ * second instance can serve a different client from its own origin — the mobile web build, for
+ * instance, which needs to share an origin with the API rather than be reached cross-origin.
+ * Nothing about CORS or the mutation-origin check changes; the client simply stops being
+ * cross-origin.
+ */
+function staticRoot(): string {
+  return process.env.PAWSH_STATIC_ROOT?.trim() || "public";
+}
+
 export async function createApp(
   config: Config,
   db: Database,
@@ -57,7 +70,7 @@ export async function createApp(
     app.register(multipart, { limits: { files: 1, fields: 12, parts: 13, fileSize: 10 * 1024 * 1024 } }));
   if (options.serveStatic !== false) {
     await runStartupOperation(startup, "static files", "Plugin registration", () =>
-      app.register(staticFiles, { root: resolve("public"), prefix: "/" }));
+      app.register(staticFiles, { root: resolve(staticRoot()), prefix: "/" }));
     app.get("/salon/breeds", async (_request, reply) => reply.sendFile("index.html"));
     app.get("/account", async (_request, reply) => reply.sendFile("index.html"));
     app.get("/clients/*", async (_request, reply) => reply.sendFile("index.html"));

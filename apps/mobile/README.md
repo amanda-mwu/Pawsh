@@ -32,8 +32,40 @@ Consequences worth knowing:
 ```sh
 npm --prefix ../.. run build:packages   # build @pawsh/domain into dist/
 npm install                             # from apps/mobile
-npm start
 ```
+
+## Running it on a device
+
+Pawsh mobile runs as an **installed Pawsh development build** — a native app compiled from this
+source and installed on the device or emulator. It is not run through a general-purpose sandbox
+client, so the app can carry native modules this project actually needs rather than only those a
+shared client happens to bundle.
+
+There are two steps, and the first is only repeated when native dependencies change:
+
+```sh
+npm run android      # compiles and installs the development build, then starts Metro
+npm start            # subsequent runs: just start Metro; the installed app connects to it
+```
+
+`npm start` runs Metro for the development build. Installing the app is `npm run android` (or
+`npm run ios` on macOS); after that, day-to-day work only needs Metro.
+
+### Android prerequisites
+
+`npm run android` compiles native code, so it needs a local Android toolchain:
+
+- **Android Studio**, which supplies the Android SDK, platform-tools (`adb`), and an emulator
+- **JDK 17**, which Android Studio can install
+- `ANDROID_HOME` set to the SDK location, with `platform-tools` on `PATH`
+
+Without these, `npm run android` fails at the Gradle step. Typecheck, tests, and the bundle
+checks below all run fine without any of it.
+
+### iOS
+
+iOS development builds require **macOS with Xcode**. Windows cannot compile an iOS app or run the
+iOS Simulator, and no configuration changes that. `npm run ios` is there for macOS machines.
 
 ## Pointing the app at a server
 
@@ -44,14 +76,15 @@ through `expo-constants` as `extra.apiUrl`. It is never hardcoded at a call site
 | --- | --- |
 | iOS simulator on the dev machine | `http://localhost:3000` (the default) |
 | Android emulator | `http://10.0.2.2:3000` |
-| **A physical phone** | `http://<your-LAN-IP>:3000` |
+| **A physical device** | `http://<your-LAN-IP>:3000` |
 
 A physical device cannot reach the development machine's loopback address, and the failure looks
 exactly like a dead server. Find your LAN address (`ipconfig` on Windows, `ifconfig` on macOS),
 confirm the phone is on the same network, and start the app with it:
 
 ```sh
-EXPO_PUBLIC_PAWSH_API_URL=http://192.168.1.24:3000 npm start
+# the address below is an example; substitute your own
+EXPO_PUBLIC_PAWSH_API_URL=http://192.0.2.10:3000 npm start
 ```
 
 The server binds `HOST`/`PORT` from the repository's `.env`; it must be listening on `0.0.0.0`
@@ -107,7 +140,10 @@ would be called from.
 ## Commands
 
 ```sh
-npm start                # Expo dev server
+npm start                # Metro, for an already-installed development build
+npm run android          # compile and install the Android development build (needs the SDK)
+npm run ios              # the same for iOS (macOS only)
+npm run prebuild         # regenerate the native projects after a native dependency change
 npm run typecheck        # tsc --noEmit
 npm test                 # jest, from this directory only
 npm run export:ios       # bundle for iOS — proves every module resolves

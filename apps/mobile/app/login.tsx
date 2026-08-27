@@ -1,7 +1,9 @@
 import React, { useCallback, useRef, useState } from "react";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import {
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -16,6 +18,13 @@ import { ErrorCard } from "../src/components/States";
 import { useTheme } from "../src/theme/theme";
 import { radius, size, space, type } from "../src/theme/tokens";
 
+/**
+ * The tokens carry no glyph scale, so the eye is sized off the type ramp rather than a loose
+ * number: at the title ramp's 22 it out-weighs the field's 16pt body text and reads as a control
+ * rather than as decoration, while still clearing the 44pt row it sits in.
+ */
+const REVEAL_ICON_SIZE = type.title1.fontSize;
+
 export default function LoginScreen(): React.ReactElement {
   const { signIn } = useAuth();
   const { colors } = useTheme();
@@ -25,6 +34,11 @@ export default function LoginScreen(): React.ReactElement {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [revealed, setRevealed] = useState(false);
+
+  // Presentation only: the value never leaves `password`, and the input keeps its identity across
+  // the flip so the caret, the focus and the password manager's fill all survive it.
+  const toggleReveal = useCallback(() => setRevealed((shown) => !shown), []);
 
   const submit = useCallback(async () => {
     if (busy) return;
@@ -94,23 +108,46 @@ export default function LoginScreen(): React.ReactElement {
           <Text nativeID="password-label" style={[styles.label, { color: colors.muted }]}>
             PASSWORD
           </Text>
-          <TextInput
-            testID="password"
-            accessibilityLabelledBy="password-label"
-            accessibilityLabel="Password"
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-            autoCapitalize="none"
-            autoComplete="current-password"
-            returnKeyType="go"
-            onSubmitEditing={() => void submit()}
-            placeholderTextColor={colors.placeholder}
-            style={[
-              styles.input,
-              { color: colors.ink, backgroundColor: colors.surface, borderColor: colors.line }
-            ]}
-          />
+          <View
+            style={[styles.inputRow, { backgroundColor: colors.surface, borderColor: colors.line }]}
+          >
+            <TextInput
+              testID="password"
+              ref={passwordRef}
+              accessibilityLabelledBy="password-label"
+              accessibilityLabel="Password"
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry={!revealed}
+              autoCapitalize="none"
+              // Revealed text is ordinary text to the keyboard, which would otherwise offer to
+              // correct it and learn it into the dictionary.
+              autoCorrect={false}
+              spellCheck={false}
+              autoComplete="current-password"
+              returnKeyType="go"
+              onSubmitEditing={() => void submit()}
+              placeholderTextColor={colors.placeholder}
+              style={[styles.rowInput, { color: colors.ink }]}
+            />
+            <Pressable
+              testID="password-reveal"
+              // One accessibility element, so the glyph is not announced beside its own label.
+              accessible
+              accessibilityRole="button"
+              accessibilityLabel={revealed ? "Hide password" : "Show password"}
+              accessibilityState={{ selected: revealed }}
+              onPress={toggleReveal}
+              style={({ pressed }) => [styles.reveal, { opacity: pressed ? 0.6 : 1 }]}
+            >
+              <Ionicons
+                testID="password-reveal-icon"
+                name={revealed ? "eye-off-outline" : "eye-outline"}
+                size={REVEAL_ICON_SIZE}
+                color={colors.brandText}
+              />
+            </Pressable>
+          </View>
         </View>
 
         <PrimaryButton testID="sign-in" label="Sign in" busy={busy} onPress={() => void submit()} />
@@ -137,6 +174,27 @@ const styles = StyleSheet.create({
     borderRadius: radius.button,
     paddingHorizontal: space.md,
     ...type.body
+  },
+  /** The password field's chrome moves to the row so the reveal control sits inside the border. */
+  inputRow: {
+    minHeight: size.tap,
+    borderWidth: 1,
+    borderRadius: radius.button,
+    flexDirection: "row",
+    alignItems: "center"
+  },
+  rowInput: { flex: 1, minHeight: size.tap, paddingHorizontal: space.md, ...type.body },
+  /**
+   * The glyph is 22pt but the target is a full 44 square: the two eyes are the same width, so the
+   * extra room the "Show"/"Hide" wording needed to stop the field resizing is now just a gap.
+   */
+  reveal: {
+    minWidth: size.tap,
+    minHeight: size.tap,
+    alignSelf: "stretch",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: space.sm
   },
   footnote: { ...type.footnote, textAlign: "center" }
 });

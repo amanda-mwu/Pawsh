@@ -153,6 +153,19 @@ doubles the surface area for no workflow gain.
 backend has no device-token table or registration endpoint, so a push token acquired today would
 have nowhere to go; the module documents exactly what the backend needs.
 
+## Device testing uses a Pawsh development build
+
+The app is exercised on hardware as an **installed Pawsh development build** — a native binary
+compiled from this source — rather than through a general-purpose sandbox client. The reason is
+the dependency set: Pawsh carries native modules chosen for the product, and a shared client can
+only ever run the modules it happened to bundle. Tying development to one would mean letting that
+client's contents decide what Pawsh may depend on, and pinning the SDK to whatever it supports.
+
+The consequence is a real toolchain requirement, and it should not be understated: installing the
+Android build needs Android Studio, the Android SDK, platform-tools, and a JDK. Metro alone
+(`npm start`) is enough for day-to-day work once the build is installed, and none of it is needed
+for typecheck, tests, or the bundle checks that run in CI. iOS builds require macOS with Xcode.
+
 ## What has and has not been verified
 
 Development happened on Windows, which has no iOS toolchain and had no Android SDK or Java

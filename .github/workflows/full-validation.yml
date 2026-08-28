@@ -335,7 +335,14 @@ jobs:
       - name: Tests
         working-directory: apps/mobile
         run: npm test
-      - name: Expo configuration check
+      # Advisory only, deliberately. `expo-doctor` resolves to whatever version is current at
+      # run time and reports against Expo's latest recommended dependency set, so it can turn a
+      # previously green commit red without a line of this repository changing. Its findings are
+      # worth reading — it caught a genuinely missing peer dependency — but the blocking authority
+      # for this job is the deterministic work either side of it: typecheck, the test suite, and
+      # bundling for both platforms against the committed lockfile.
+      - name: Expo configuration report (advisory)
+        continue-on-error: true
         working-directory: apps/mobile
         run: npx expo-doctor
       - name: Bundle for iOS

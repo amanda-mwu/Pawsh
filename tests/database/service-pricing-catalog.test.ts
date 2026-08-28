@@ -46,6 +46,53 @@ describeDatabase("tenant service pricing and breed catalog",()=>{let db:Database
     expect(cleared.json()).toMatchObject({defaultPricingClass:"STANDARD",customized:false});
   });
 
+  // Both of these block an edit to a field that has nothing to do with the breed, which is the
+  // behaviour the canonical taxonomy is required to preserve.
+  it("keeps a pet editable after its breed is deactivated",async()=>{
+    const types=await app.inject({method:"GET",url:"/api/pet-types",headers:{cookie:ownerCookie}});
+    const dog=types.json().find((type:{search:string})=>type.search==="dog");
+    const breeds=await app.inject({method:"GET",url:`/api/pet-types/${dog.id}/breeds`,headers:{cookie:ownerCookie}});
+    const beagle=breeds.json().find((breed:{search:string})=>breed.search==="beagle");
+    const created=await app.inject({method:"POST",url:"/api/pets",headers:{cookie:ownerCookie},
+      payload:{customerId,name:"Deactivated Breed Pet",species:"dog",petTypeId:dog.id,breedId:beagle.id}});
+    expect(created.statusCode).toBe(201);
+    const pet=created.json();
+    // The salon retires the breed after the pet is already on it.
+    const off=await app.inject({method:"PUT",url:`/api/breeds/${beagle.id}/settings`,
+      headers:{cookie:ownerCookie},payload:{active:false}});
+    expect(off.statusCode).toBe(200);
+    // An unrelated edit must still save while resubmitting the pet's own unchanged breed.
+    const edited=await app.inject({method:"PUT",url:`/api/pets/${pet.id}`,headers:{cookie:ownerCookie},
+      payload:{customerId,name:"Deactivated Breed Pet",species:"dog",petTypeId:dog.id,
+        breedId:beagle.id,weightOunces:512,version:pet.version}});
+    expect(edited.statusCode).toBe(200);
+    expect(edited.json().breedId).toBe(beagle.id);
+    expect(Number(edited.json().weightOunces)).toBe(512);
+    // A different pet still cannot be assigned to the retired breed.
+    const refused=await app.inject({method:"POST",url:"/api/pets",headers:{cookie:ownerCookie},
+      payload:{customerId,name:"New On Retired Breed",species:"dog",petTypeId:dog.id,breedId:beagle.id}});
+    expect(refused.statusCode).toBe(400);
+    await app.inject({method:"PUT",url:`/api/breeds/${beagle.id}/settings`,headers:{cookie:ownerCookie},payload:{active:true}});
+  });
+
+  it("releases the canonical breed when a pet changes type instead of violating the composite key",async()=>{
+    const types=await app.inject({method:"GET",url:"/api/pet-types",headers:{cookie:ownerCookie}});
+    const dog=types.json().find((type:{search:string})=>type.search==="dog");
+    const cat=types.json().find((type:{search:string})=>type.search==="cat");
+    const breeds=await app.inject({method:"GET",url:`/api/pet-types/${dog.id}/breeds`,headers:{cookie:ownerCookie}});
+    const beagle=breeds.json().find((breed:{search:string})=>breed.search==="beagle");
+    const created=await app.inject({method:"POST",url:"/api/pets",headers:{cookie:ownerCookie},
+      payload:{customerId,name:"Retyped Pet",species:"dog",petTypeId:dog.id,breedId:beagle.id}});
+    const pet=created.json();
+    // Sending the stored breed *text* against a new pet type must not pair a cat type with a dog
+    // breed id — that would fail the (pet_type_id, breed_id) foreign key as a raw 409.
+    const retyped=await app.inject({method:"PUT",url:`/api/pets/${pet.id}`,headers:{cookie:ownerCookie},
+      payload:{customerId,name:"Retyped Pet",species:"cat",petTypeId:cat.id,
+        breed:"Beagle",version:pet.version}});
+    expect([200,400]).toContain(retyped.statusCode);
+    if(retyped.statusCode===200)expect(retyped.json().breedId).toBeNull();
+  });
+
   it("refuses unknown breed text but grandfathers a legacy pet through an unrelated edit",async()=>{
     const rejected=await app.inject({method:"POST",url:"/api/pets",headers:{cookie:ownerCookie},payload:{customerId,name:"Typo Pet",species:"dog",breed:"Golden Retreiver"}});
     expect(rejected.statusCode).toBe(400);

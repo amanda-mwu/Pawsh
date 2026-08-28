@@ -2,7 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const inviteToken = new URLSearchParams(location.search).get("invite");
 const resetToken = new URLSearchParams(location.search).get("reset");
-const state = { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:25}, pets: [], dogBreeds: [], breedCatalog:{query:"",showInactive:false,sortDirection:1,editingId:null}, employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointments:[],selectedGroomerIds:null,pendingGroomerIds:null,filterInitialized:false,displayMode:"calendar",view:"week",bookingPreset:null,bookingGroomerId:null,bookingCustomerId:null,bookingPetId:null,opened:false,preferences:null}, clientProfile:null,clientProfileReturnView:"customers", messageClientId:null, reportMode:"charts",reminders:{type:"appointment_reminder",items:[],supported:true}, members: [], accessRequests:[], workspaces:[], locations: [], reports: null, login: false };
+const state = { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:25}, pets: [], dogBreeds: [], petTypes: [], breedsByType:{}, breedCatalog:{query:"",showInactive:false,sortDirection:1,editingId:null}, employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointments:[],selectedGroomerIds:null,pendingGroomerIds:null,filterInitialized:false,displayMode:"calendar",view:"week",bookingPreset:null,bookingGroomerId:null,bookingCustomerId:null,bookingPetId:null,opened:false,preferences:null}, clientProfile:null,clientProfileReturnView:"customers", messageClientId:null, reportMode:"charts",reminders:{type:"appointment_reminder",items:[],supported:true}, members: [], accessRequests:[], workspaces:[], locations: [], reports: null, login: false };
 const pendingActions = new Set();
 let customerSearchSequence = 0;
 let calendarDetailOrigin = null;
@@ -171,12 +171,15 @@ async function refresh() {
     safe("team.manage") ? api("/api/members") : [],
     safe("reports.view") ? api("/api/reports") : null,
     safe("pets.view") && !state.dogBreeds.length ? api("/api/dog-breeds") : state.dogBreeds,
+    // The pet types breeds hang off. A breed belongs to exactly one type and the server refuses
+    // one that does not match the pet's, so the editor has to know the taxonomy to scope by.
+    safe("pets.view") && !state.petTypes.length ? api("/api/pet-types") : state.petTypes,
     safe("team.manage") ? api("/api/workspace-access-requests") : [],
     api("/api/workspaces"),
     loadLocations()
   ];
-  const [dashboard, customerDirectory, pets, employees, services, appointments, members, reports, dogBreeds, accessRequests, workspaces, locations] = await Promise.all(requests);
-  Object.assign(state, { customerDirectory,customers:customerDirectory.items||[], pets, employees, services, appointments, members, reports, dogBreeds, accessRequests, workspaces, locations });
+  const [dashboard, customerDirectory, pets, employees, services, appointments, members, reports, dogBreeds, petTypes, accessRequests, workspaces, locations] = await Promise.all(requests);
+  Object.assign(state, { customerDirectory,customers:customerDirectory.items||[], pets, employees, services, appointments, members, reports, dogBreeds, petTypes, accessRequests, workspaces, locations });
   renderAccountIdentity();
   renderLocationSwitcher();
   reconcileGroomerFilter();
@@ -1469,7 +1472,7 @@ function editPet(id) {
         customerId:pet.customerId,
         name:form.get("name"),
         species:form.get("species"),
-        breed:form.get("breed")||null,
+        ...breedPayload(form),
         dateOfBirth:form.get("dateOfBirth")||null,
         approximateAge:form.get("approximateAge")||null,
         weightOunces:form.get("weightPounds")===""?null:Math.round(Number(form.get("weightPounds"))*16),
@@ -1487,6 +1490,7 @@ function editPet(id) {
         $("#modal-fields").innerHTML=petProfileFields(pet);
         setupBreedAutocomplete();
       }
+      markBreedRefusal(error);
       throw error;
     }
   });
@@ -1495,8 +1499,8 @@ function editPet(id) {
 
 function petProfileFields(pet){
   return field("name","Pet name","text",`value="${escape(pet.name||"")}"`)+
-    field("species","Species","text",`required value="${escape(pet.species)}"`)+
-    breedField(pet.breed||"")+
+    petTypeField(pet.species)+
+    breedField(pet)+
     field("dateOfBirth","Date of birth","date",`value="${pet.dateOfBirth?String(pet.dateOfBirth).slice(0,10):""}"`)+
     field("approximateAge","Approximate age","text",`value="${escape(pet.approximateAge||"")}"`)+
     field("weightPounds","Weight (lb)","number",`min="0.0625" step="0.0625" value="${pet.weightOunces===null||pet.weightOunces===undefined?"":Number(pet.weightOunces)/16}"`)+
@@ -1551,18 +1555,184 @@ function editPetCare(id){
 function field(name, label, type = "text", extra = "", wide = false) {
   return `<label class="${wide ? "wide" : ""}">${label}<input data-testid="field-${name}" name="${name}" type="${type}" ${extra}></label>`;
 }
-function breedField(value="") {
-  return `<label class="breed-combobox">Breed<input data-testid="field-breed" name="breed" type="text" value="${escape(value)}" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="breed-options" aria-activedescendant=""><span class="breed-options" id="breed-options" role="listbox" hidden></span></label>`;
+// ── Pet type and breed taxonomy ───────────────────────────────────────────────────────────────
+// Breeds are canonical and keyed by pet type: the server accepts a breed id, a deliberate
+// "Other" with free text, or text it can itself resolve, and refuses anything else. The editor
+// therefore resolves the pet type first and scopes every breed lookup to it, so it can never
+// offer a breed the server would then refuse.
+function petTypeNames(){return state.petTypes.length?state.petTypes.map(type=>type.name):PET_TYPES;}
+function petTypeIdFor(species){
+  const wanted=normalizeBreedFilter(species??"");
+  if(!wanted)return null;
+  return state.petTypes.find(type=>type.search===wanted||normalizeBreedFilter(type.name)===wanted)?.id||null;
+}
+/** Loaded rows for a type, or null while they are still unknown - the two read differently. */
+function breedsForType(petTypeId){
+  if(!petTypeId)return [];
+  // The dog catalog already arrives with the session, so the commonest editor opens warm.
+  if(!state.breedsByType[petTypeId]&&state.dogBreeds.length&&petTypeId===petTypeIdFor("dog")){
+    state.breedsByType[petTypeId]=state.dogBreeds;
+  }
+  return state.breedsByType[petTypeId]||null;
+}
+async function loadBreedsForType(petTypeId){
+  if(!petTypeId||breedsForType(petTypeId))return;
+  state.breedsByType[petTypeId]=await api(`/api/pet-types/${petTypeId}/breeds`);
+}
+/** The pet type picker. Values stay the type's name because `species` is what pets store. */
+function petTypeField(value=""){
+  const names=petTypeNames();
+  const current=value||names[0]||"";
+  // A species the taxonomy does not list is kept rather than silently rewritten to Dog.
+  const options=current&&!names.some(name=>normalizeBreedFilter(name)===normalizeBreedFilter(current))
+    ? [...names,current] : names;
+  return `<label>Pet type<select data-testid="field-species" name="species" required>`
+    +options.map(name=>`<option value="${escape(name)}" ${normalizeBreedFilter(name)===normalizeBreedFilter(current)?"selected":""}>${escape(name)}</option>`).join("")
+    +`</select></label>`;
+}
+function breedField(pet={}) {
+  const other=Boolean(pet.breedOther);
+  return `<label class="breed-combobox">Breed`
+    +`<input data-testid="field-breed" name="breed" type="text" value="${escape(other?"Other":(pet.breed||""))}" autocomplete="off" aria-label="Breed" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="breed-options" aria-activedescendant="">`
+    +`<input type="hidden" data-testid="field-breedId" name="breedId" value="${escape(pet.breedId||"")}">`
+    +`<span class="breed-options" id="breed-options" role="listbox" aria-label="Breed suggestions" hidden></span></label>`
+    +`<p class="breed-hint" id="breed-hint" data-testid="breed-hint" role="status" hidden></p>`
+    +`<label class="breed-other-field" data-testid="breed-other-field" ${other?"":"hidden"}>Breed or mix description`
+    +`<input data-testid="field-breedOther" name="breedOther" type="text" maxlength="120" autocomplete="off" aria-label="Breed or mix description" value="${escape(pet.breedOther||"")}" ${other?"required":"disabled"}></label>`;
 }
 function setupBreedAutocomplete() {
   const input=$('[name="breed"]'),list=$("#breed-options");if(!input||!list)return;
-  let matches=[],active=-1;
-  const normalized=value=>String(value).trim().toLowerCase().replace(/[\s\-_]+/g," ").replace(/[^a-z0-9 ]/g,"");
+  const hint=$("#breed-hint"),otherField=$(".breed-other-field"),otherInput=$('[name="breedOther"]');
+  const form=input.closest("form");
+  const idField=form?.querySelector('[name="breedId"]')||$('[name="breedId"]');
+  const speciesField=form?.querySelector('[name="species"]');
+  let options=[],active=-1,otherMode=Boolean(otherInput&&!otherInput.disabled);
+  let petTypeId=petTypeIdFor(speciesField?speciesField.value:"dog");
+  const alive=()=>document.contains(input);
+  const setHint=text=>{if(!hint)return;hint.textContent=text||"";hint.hidden=!text;};
   const close=()=>{list.hidden=true;input.setAttribute("aria-expanded","false");input.setAttribute("aria-activedescendant","");active=-1;};
-  const selectBreed=index=>{const breed=matches[index];if(!breed)return;input.value=breed.name;close();input.dispatchEvent(new globalThis.Event("change",{bubbles:true}));};
-  const render=()=>{const query=normalized(input.value);matches=query?state.dogBreeds.filter(item=>item.active&&item.search.includes(query)).sort((a,b)=>Number(!a.search.startsWith(query))-Number(!b.search.startsWith(query))||a.name.localeCompare(b.name)).slice(0,12):[];active=matches.length?0:-1;list.innerHTML=matches.length?matches.map((item,index)=>`<button type="button" id="breed-option-${index}" role="option" aria-selected="${index===active}" data-index="${index}">${escape(item.name)}</button>`).join(""):`<span class="breed-no-results" role="option" aria-disabled="true">No matching breeds. You may keep the existing value or choose Other.</span>`;list.hidden=false;input.setAttribute("aria-expanded","true");input.setAttribute("aria-activedescendant",active>=0?`breed-option-${active}`:"");};
-  const move=direction=>{if(!matches.length)return;active=(active+direction+matches.length)%matches.length;list.querySelectorAll('[role="option"]').forEach((option,index)=>option.setAttribute("aria-selected",String(index===active)));input.setAttribute("aria-activedescendant",`breed-option-${active}`);list.querySelector(`#breed-option-${active}`)?.scrollIntoView({block:"nearest"});};
-  input.addEventListener("input",render);input.addEventListener("focus",()=>{if(input.value)render();});input.addEventListener("keydown",event=>{if(event.key==="ArrowDown"||event.key==="ArrowUp"){event.preventDefault();if(list.hidden)render();else move(event.key==="ArrowDown"?1:-1);}else if(event.key==="Enter"&&!list.hidden&&active>=0){event.preventDefault();selectBreed(active);}else if(event.key==="Escape"){event.preventDefault();close();}});list.addEventListener("pointerdown",event=>{const option=event.target.closest("[data-index]");if(option){event.preventDefault();selectBreed(Number(option.dataset.index));}});input.addEventListener("blur",()=>setTimeout(close,100));
+  const ensureBreeds=()=>{loadBreedsForType(petTypeId).then(()=>{if(alive()&&!list.hidden)render();}).catch(()=>{});};
+  // Leaving Other has to take its free text with it: a description left behind would be
+  // resubmitted and would quietly outrank the catalog breed the user just chose.
+  const leaveOther=()=>{
+    if(!otherMode)return;
+    otherMode=false;
+    if(otherField)otherField.hidden=true;
+    if(otherInput){otherInput.required=false;otherInput.disabled=true;otherInput.value="";}
+  };
+  const enterOther=()=>{
+    // Only text that matched nothing in the catalog is carried across. A canonical name never
+    // is: that is how a real breed would silently become an unlisted one.
+    const carried=otherMode?otherInput?.value:(options.length===1&&!idField?.value?input.value.trim():"");
+    otherMode=true;
+    input.value="Other";
+    input.removeAttribute("aria-invalid");
+    if(idField)idField.value="";
+    if(otherField)otherField.hidden=false;
+    if(otherInput){otherInput.disabled=false;otherInput.required=true;otherInput.value=carried||"";}
+    close();
+    setHint("Recorded as Other. Describe the breed or mix below.");
+    otherInput?.focus();
+  };
+  const choose=index=>{
+    const option=options[index];if(!option)return;
+    if(option.kind==="other")return enterOther();
+    leaveOther();
+    input.value=option.breed.name;
+    input.removeAttribute("aria-invalid");
+    if(idField)idField.value=option.breed.id;
+    close();setHint("");
+    input.dispatchEvent(new globalThis.Event("change",{bubbles:true}));
+  };
+  const render=()=>{
+    const query=otherMode?"":normalizeBreedFilter(input.value);
+    const catalog=breedsForType(petTypeId);
+    const matches=query&&catalog?catalog.filter(item=>item.active&&item.search.includes(query)).sort((a,b)=>Number(!a.search.startsWith(query))-Number(!b.search.startsWith(query))||a.name.localeCompare(b.name)).slice(0,12):[];
+    // Other is always the last option, so the way out of the catalog is reachable by keyboard
+    // whether or not the query matched anything.
+    options=[...matches.map(breed=>({kind:"breed",breed})),{kind:"other"}];
+    // Nothing is preselected when only Other is offered, so Enter still submits the form
+    // rather than committing the user to an Other they did not ask for.
+    active=matches.length?0:-1;
+    list.innerHTML=options.map((option,index)=>option.kind==="other"
+      ? `<button type="button" id="breed-option-${index}" class="breed-option-other" role="option" aria-selected="${index===active}" data-index="${index}" data-testid="breed-option-other">Other</button>`
+      : `<button type="button" id="breed-option-${index}" role="option" aria-selected="${index===active}" data-index="${index}">${escape(option.breed.name)}</button>`).join("");
+    list.hidden=false;input.setAttribute("aria-expanded","true");
+    input.setAttribute("aria-activedescendant",active>=0?`breed-option-${active}`:"");
+    setHint(!petTypeId?"No breed catalog for this pet type. Choose Other to describe the breed."
+      :!catalog?"Loading breeds…"
+      :query&&!matches.length?"No matching breeds. Choose Other to record an unlisted or mixed breed."
+      :"");
+  };
+  const move=direction=>{
+    if(!options.length)return;
+    active=((active+direction)%options.length+options.length)%options.length;
+    list.querySelectorAll('[role="option"]').forEach((option,index)=>option.setAttribute("aria-selected",String(index===active)));
+    input.setAttribute("aria-activedescendant",`breed-option-${active}`);
+    list.querySelector(`#breed-option-${active}`)?.scrollIntoView({block:"nearest"});
+  };
+  input.addEventListener("input",()=>{
+    // Typing invalidates a catalog selection: the id must not outlive the name it stood for.
+    if(idField)idField.value="";
+    input.removeAttribute("aria-invalid");
+    leaveOther();
+    render();
+  });
+  input.addEventListener("focus",()=>{if(input.value&&!otherMode)render();});
+  input.addEventListener("keydown",event=>{
+    // Opening the list also lands on an option when nothing was preselected, so Other is one
+    // keypress away on the query that has no matches - which is when it is needed.
+    if(event.key==="ArrowDown"||event.key==="ArrowUp"){event.preventDefault();const step=event.key==="ArrowDown"?1:-1;if(list.hidden){render();if(active<0)move(step);}else move(step);}
+    else if(event.key==="Enter"&&!list.hidden&&active>=0){event.preventDefault();choose(active);}
+    else if(event.key==="Escape"){event.preventDefault();close();}
+  });
+  list.addEventListener("pointerdown",event=>{const option=event.target.closest("[data-index]");if(option){event.preventDefault();choose(Number(option.dataset.index));}});
+  input.addEventListener("blur",()=>setTimeout(()=>{if(alive())close();},100));
+  speciesField?.addEventListener("change",()=>{
+    const nextTypeId=petTypeIdFor(speciesField.value);
+    if(nextTypeId===petTypeId)return;
+    petTypeId=nextTypeId;
+    close();
+    // A canonical breed belongs to one pet type, so changing the type releases the selection
+    // instead of saving a breed that contradicts it. Legacy free text is left untouched: it
+    // carries no id, and the server passes unchanged text through so unrelated edits still save.
+    if(idField?.value){
+      idField.value="";input.value="";
+      setHint("Pet type changed. Choose a breed for the new type, or select Other.");
+    }else setHint("");
+    ensureBreeds();
+  });
+  ensureBreeds();
+}
+/**
+ * Says which of the server's three breed inputs the form meant, and nothing more - the server
+ * decides what a breed is. A deliberate Other wins, then a catalog id, then plain text the
+ * server may still match or grandfather. An untouched legacy breed leaves here as text with no
+ * id and no `breedOther`, which is exactly what lets the server pass it through unchanged.
+ */
+function breedPayload(form){
+  const petTypeId=petTypeIdFor(form.get("species"));
+  const description=String(form.get("breedOther")||"").trim();
+  if(description)return {petTypeId,breedId:null,breed:description,breedOther:description};
+  const breedId=String(form.get("breedId")||"").trim();
+  const breed=String(form.get("breed")||"").trim();
+  // An id the salon has since switched off would be refused outright, and refusing it here
+  // would block a weight edit on a pet nobody was touching the breed of. Sending the stored
+  // text instead lets the server resolve it or pass it through, which is what it already does
+  // for a breed that predates the taxonomy.
+  const catalog=breedsForType(petTypeId);
+  const selectable=!breedId||!catalog||catalog.some(item=>item.id===breedId&&item.active);
+  return {petTypeId,breedId:selectable?breedId||null:null,breed:breed||null,breedOther:null};
+}
+/** A refused breed is a field problem, so it is reported on the field and not only in the form. */
+function markBreedRefusal(error){
+  if(!["BREED_NOT_IN_CATALOG","PET_TYPE_NOT_FOUND"].includes(error?.data?.code))return;
+  const input=$('[name="breed"]'),hint=$("#breed-hint");
+  if(!input)return;
+  // Focus first: it reopens the suggestions, and the refusal has to be the message left standing.
+  input.focus();
+  input.setAttribute("aria-invalid","true");
+  if(hint){hint.textContent=error.message;hint.hidden=false;}
 }
 function select(name, label, options, wide = false, selectedValue = "", required = true) {
   return `<label class="${wide ? "wide" : ""}">${label}<select data-testid="field-${name}" name="${name}" ${required?"required":""}><option value="">Choose…</option>${options.map(([v,l]) => `<option value="${v}" ${String(v)===String(selectedValue)?"selected":""}>${escape(l)}</option>`).join("")}</select></label>`;
@@ -2016,8 +2186,14 @@ const actions = {
     +`<p class="wide fine">Enough to find them again is enough to save: a name, a phone number, or an email. Take what an enquiry gives you and fill the rest in later.</p>`,
     (form) => api("/api/customers",{method:"POST",body:JSON.stringify(Object.fromEntries(form))})),
   "new-pet": () => { openModal("New pet",
-    select("customerId","Customer",state.customers.map(c=>[c.id,`${clientName(c)}`]),true)+field("name","Pet name","text","")+breedField()+field("weightPounds","Weight (lb)","number",'min="0.0625" step="0.0625"')+field("species","Species","text",'value="dog"')+field("groomingPreferences","Grooming preferences","text","",true)+(allowed("pets.care.edit")?field("behaviorNotes","Behavior notes","text","",true)+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true):""),
-    (form) => {const values=Object.fromEntries(form);values.weightOunces=values.weightPounds===""?null:Math.round(Number(values.weightPounds)*16);delete values.weightPounds;return api("/api/pets",{method:"POST",body:JSON.stringify(values)});}); setupBreedAutocomplete(); },
+    select("customerId","Customer",state.customers.map(c=>[c.id,`${clientName(c)}`]),true)+field("name","Pet name","text","")+petTypeField()+breedField()+field("weightPounds","Weight (lb)","number",'min="0.0625" step="0.0625"')+field("groomingPreferences","Grooming preferences","text","",true)+(allowed("pets.care.edit")?field("behaviorNotes","Behavior notes","text","",true)+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true):""),
+    async (form) => {
+      const values=Object.fromEntries(form);
+      values.weightOunces=values.weightPounds===""?null:Math.round(Number(values.weightPounds)*16);
+      delete values.weightPounds;
+      try{return await api("/api/pets",{method:"POST",body:JSON.stringify({...values,...breedPayload(form)})});}
+      catch(error){markBreedRefusal(error);throw error;}
+    }); setupBreedAutocomplete(); },
   "new-service": () => openModal("New service",
     field("name","Service name","text","required")+field("baseDurationMinutes","Duration (minutes)","number",'required min="1"')+field("basePrice","Fixed price ($)","number",'required min="0" step=".01"')+select("category","Category",[["GENERAL","General"],["DOG_ADDON","Dog add-on"],["A_LA_CARTE","À la carte"],["CAT","Cat"]],true,"GENERAL")+field("description","Description","text","",true),
     (form) => { const o=Object.fromEntries(form); o.baseDurationMinutes=Number(o.baseDurationMinutes); o.basePriceMinor=Math.round(Number(o.basePrice)*100);o.pricingMode="FIXED";o.active=true;delete o.basePrice; return api("/api/services",{method:"POST",body:JSON.stringify(o)}); }),
@@ -2973,8 +3149,9 @@ function petIdentitySectionMarkup(pet,photos){
     }).join("")
     +`</select></label>`;
   // A species the catalog does not list is kept rather than silently rewritten to Dog.
-  const speciesOptions=PET_TYPES.some(type=>type.toLowerCase()===String(pet.species||"").toLowerCase())
-    ? PET_TYPES : [...PET_TYPES,pet.species].filter(Boolean);
+  const typeNames=petTypeNames();
+  const speciesOptions=typeNames.some(type=>type.toLowerCase()===String(pet.species||"").toLowerCase())
+    ? typeNames : [...typeNames,pet.species].filter(Boolean);
   const years=Array.from({length:31},(unused,index)=>[String(index),`${index} ${index===1?"year":"years"}`]);
   const months=Array.from({length:12},(unused,index)=>[String(index),`${index} ${index===1?"month":"months"}`]);
   return `<form class="pet-profile-section pet-identity" data-pet-section="identity">`
@@ -2985,7 +3162,7 @@ function petIdentitySectionMarkup(pet,photos){
     +`<div class="pet-field-grid">`
       +field("name","Pet name","text",`value="${escape(pet.name||"")}"`)
       +choice("species","Type",speciesOptions,pet.species,"Not set")
-      +breedField(pet.breed||"")
+      +breedField(pet)
       +`<label class="pet-check"><input data-testid="field-mixedBreed" name="mixedBreed" type="checkbox" ${pet.mixedBreed?"checked":""}> Mixed breed</label>`
       +choice("hairLength","Hair length",PET_HAIR_LENGTHS,pet.hairLength)
       +choice("sex","Gender",PET_GENDERS,pet.sex)
@@ -3173,11 +3350,12 @@ function petPoundsToOunces(value){
 }
 
 async function savePetIdentity(form){
-  const values=Object.fromEntries(new FormData(form));
+  const data=new FormData(form);
+  const values=Object.fromEntries(data);
   const pet=petProfileState.pet;
   const updated=await api(`/api/pets/${pet.id}`,{method:"PUT",body:JSON.stringify({
     customerId:pet.customerId,
-    name:values.name||null,species:values.species,breed:values.breed||null,
+    name:values.name||null,species:values.species,...breedPayload(data),
     dateOfBirth:values.dateOfBirth||null,approximateAge:pet.approximateAge??null,
     weightOunces:petPoundsToOunces(values.weightPounds),
     sex:values.sex||null,coatNotes:values.coatNotes||null,
@@ -3325,7 +3503,7 @@ function bindPetProfile(){
     try{
       if(form.dataset.petSection==="identity")await savePetIdentity(form);
       else await savePetCareSection(form,form.dataset.petSection);
-    }catch(error){toast(error.message);}
+    }catch(error){markBreedRefusal(error);toast(error.message);}
     finally{if(button)button.disabled=false;}
   }));
   setupBreedAutocomplete();

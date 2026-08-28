@@ -1094,7 +1094,14 @@ async function resolvePetBreedSelection(
       left join business_breed_settings override
         on override.business_id=${input.businessId} and override.breed_id=breed.id
       where breed.id=${supplied.breedId} and breed.pet_type_id=${petTypeId}
-        and coalesce(override.active,breed.active)
+        and (
+          coalesce(override.active,breed.active)
+          -- A salon may deactivate a breed after pets are already on it. Keeping the pet's own
+          -- existing selection acceptable means an unrelated edit — a weight, a note — does not
+          -- force a reselection. A deactivated breed still cannot be chosen for a new pet,
+          -- because that only reaches here when the id differs from the stored one.
+          or breed.id=${current?.breedId ?? null}::uuid
+        )
     `;
     if (!breed) throw refuse("That breed is not available for this pet type.");
     return { petTypeId, breedId: breed.id, breed: breed.name, breedOther: null };
@@ -1126,9 +1133,16 @@ async function resolvePetBreedSelection(
     if (match) return { petTypeId, breedId: match.id, breed: match.name, breedOther: null };
   }
 
-  // Grandfather clause: unchanged legacy text is preserved exactly, id and all.
+  // Grandfather clause: unchanged legacy text is preserved exactly. The stored id is only kept
+  // when the pet type still matches it — `pets` carries a composite foreign key on
+  // (pet_type_id, breed_id), so pairing a new type with the old breed's id would fail as a raw
+  // integrity violation instead of anything a caller could act on. Changing the type releases the
+  // canonical link and leaves the text to stand on its own.
   if (current && current.breed && normalizeBreedSearch(current.breed) === normalized) {
-    return { petTypeId, breedId: current.breedId, breed: current.breed, breedOther: null };
+    const keepsType = current.petTypeId !== null && current.petTypeId === petTypeId;
+    return {
+      petTypeId, breedId: keepsType ? current.breedId : null, breed: current.breed, breedOther: null
+    };
   }
   throw refuse(`"${text}" is not a breed in the catalog. Choose one from the list, or select Other.`);
 }

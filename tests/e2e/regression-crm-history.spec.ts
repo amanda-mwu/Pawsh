@@ -9,7 +9,7 @@ import {
 import { cardForPet, petAction } from "./helpers/clients.js";
 import { decodablePng } from "../support/images.js";
 
-test("@regression-crm-history creates a customer and pet and persists their relationship", async ({ page, tenant }) => {
+test("@regression-crm-history creates a customer and pet and persists their relationship", async ({ page, request, tenant }) => {
   const token = tenant.runId.slice(-8);
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-customers").click();
@@ -34,14 +34,117 @@ test("@regression-crm-history creates a customer and pet and persists their rela
   await page.getByTestId("nav-customers").click();
   const card = page.getByTestId("customer-card").filter({ hasText: `D3 Persist ${token}` });
   await expect(card).toContainText(`Pet ${token}`);
+  // A breed chosen from the catalog is stored as canonical identity, not as the text of it.
+  const created = (await (await request.get("/api/pets")).json())
+    .find((pet: { name: string }) => pet.name === `Pet ${token}`);
+  expect(created.breed).toBe("Golden Retriever");
+  expect(created.breedId).not.toBeNull();
+  expect(created.breedOther).toBeNull();
+
+  // Breeds are canonical now, so an unlisted one is a deliberate Other rather than free text
+  // the catalog quietly accepts. The listbox offers it as a real option, and the description
+  // it reveals is what gets stored.
   await petAction(card, "profile");
   await expect(page.getByTestId("field-breed")).toHaveValue("Golden Retriever");
   await page.getByTestId("field-breed").fill("Historic Village Dog");
-  await page.getByTestId("field-breed").press("Escape");
+  await expect(page.getByTestId("breed-hint")).toContainText("No matching breeds");
+  await page.locator("#breed-options").getByRole("option", { name: "Other" }).click();
+  await expect(page.getByTestId("field-breed")).toHaveValue("Other");
+  await page.getByTestId("field-breedOther").fill("Historic Village Dog");
   await page.getByTestId("modal-submit").click();
   await expect(page.getByTestId("modal")).toBeHidden();
   await petAction(card, "profile");
-  await expect(page.getByTestId("field-breed")).toHaveValue("Historic Village Dog");
+  await expect(page.getByTestId("field-breed")).toHaveValue("Other");
+  await expect(page.getByTestId("field-breedOther")).toHaveValue("Historic Village Dog");
+  const saved = (await (await request.get("/api/pets")).json())
+    .find((pet: { name: string }) => pet.name === `Pet ${token}`);
+  expect(saved).toMatchObject({ breedId: null, breedOther: "Historic Village Dog", breed: "Historic Village Dog" });
+});
+
+// The catalog is the authority on what a breed is, so text it does not recognise is refused
+// rather than stored. Other is the supported way through, and it has to be reachable from the
+// keyboard on exactly the query that fails.
+test("@regression-crm-history refuses unlisted breed text and records it as Other instead", async ({ page, request, tenant }) => {
+  await login(page, tenant.ownerEmail);
+  await page.getByTestId("nav-customers").click();
+  await page.locator('[data-action="new-pet"]').click();
+  await page.getByTestId("field-customerId").selectOption({ label: "Emma Johnson" });
+  await page.getByTestId("field-name").fill("Village Pet");
+
+  // A breed belongs to one pet type, so the suggestions follow the type rather than offering a
+  // breed the server would then refuse.
+  await page.getByTestId("field-species").selectOption("Cat");
+  await page.getByTestId("field-breed").fill("b");
+  await expect(page.locator("#breed-options").getByRole("option", { name: "Bengal" })).toBeVisible();
+  await expect(page.locator("#breed-options").getByRole("option", { name: "Beagle" })).toHaveCount(0);
+  await page.getByTestId("field-species").selectOption("Dog");
+  await page.getByTestId("field-breed").fill("b");
+  await expect(page.locator("#breed-options").getByRole("option", { name: "Beagle" })).toBeVisible();
+
+  await page.getByTestId("field-breed").fill("Historic Village Dog");
+  await page.getByTestId("field-breed").press("Escape");
+  await page.getByTestId("modal-submit").click();
+  // The server's refusal is reported on the field that caused it, not only as a failed save.
+  await expect(page.getByTestId("modal")).toBeVisible();
+  await expect(page.locator("#modal-error")).toContainText("is not a breed in the catalog");
+  await expect(page.getByTestId("breed-hint")).toContainText("is not a breed in the catalog");
+  await expect(page.getByTestId("field-breed")).toHaveAttribute("aria-invalid", "true");
+
+  // One keypress opens the list onto Other, and text that matched nothing is safe to carry
+  // into the description.
+  await page.getByTestId("field-breed").press("ArrowDown");
+  await expect(page.locator("#breed-options").getByRole("option", { name: "Other" }))
+    .toHaveAttribute("aria-selected", "true");
+  await page.getByTestId("field-breed").press("Enter");
+  await expect(page.getByTestId("field-breed")).toHaveValue("Other");
+  await expect(page.getByTestId("field-breedOther")).toHaveValue("Historic Village Dog");
+  await page.getByTestId("modal-submit").click();
+  await expect(page.getByTestId("modal")).toBeHidden();
+
+  const created = (await (await request.get("/api/pets")).json())
+    .find((pet: { name: string }) => pet.name === "Village Pet");
+  expect(created).toMatchObject({ breedId: null, breedOther: "Historic Village Dog" });
+
+  // Going back to the catalog has to take the free text with it: a description left behind
+  // would outrank the breed just chosen and quietly win the save.
+  await petAction(cardForPet(page, created.id), "profile", created.id);
+  await expect(page.getByTestId("field-breedOther")).toHaveValue("Historic Village Dog");
+  await page.getByTestId("field-breed").fill("shih");
+  await expect(page.locator("#breed-options").getByRole("option", { name: "Shih Tzu" })).toBeVisible();
+  await page.getByTestId("field-breed").press("Enter");
+  await expect(page.getByTestId("breed-other-field")).toBeHidden();
+  await page.getByTestId("modal-submit").click();
+  await expect(page.getByTestId("modal")).toBeHidden();
+
+  const resolved = (await (await request.get("/api/pets")).json())
+    .find((pet: { name: string }) => pet.name === "Village Pet");
+  expect(resolved).toMatchObject({ breed: "Shih Tzu", breedOther: null });
+  expect(resolved.breedId).not.toBeNull();
+});
+
+// A stored breed the catalog can no longer resolve - a legacy value, or one this salon has
+// switched off - must not hold an unrelated edit hostage. The form sends the text it was given
+// and the server passes it through unchanged.
+test("@regression-crm-history edits a pet whose stored breed no longer resolves", async ({ page, request, tenant }) => {
+  const breeds = await (await request.get("/api/dog-breeds")).json();
+  const shihTzu = breeds.find((breed: { name: string }) => breed.name === "Shih Tzu");
+  expect((await request.put(`/api/breeds/${shihTzu.id}/settings`, { data: { active: false } })).ok()).toBeTruthy();
+
+  await login(page, tenant.ownerEmail);
+  await page.getByTestId("nav-customers").click();
+  const card = cardForPet(page, tenant.mochiPetId);
+  await petAction(card, "profile", tenant.mochiPetId);
+  await expect(page.getByTestId("field-breed")).toHaveValue("Shih Tzu");
+  await page.getByTestId("field-weightPounds").fill("24");
+  await page.getByTestId("modal-submit").click();
+  await expect(page.getByTestId("modal")).toBeHidden();
+
+  await petAction(card, "profile", tenant.mochiPetId);
+  await expect(page.getByTestId("field-weightPounds")).toHaveValue("24");
+  await expect(page.getByTestId("field-breed")).toHaveValue("Shih Tzu");
+  const mochi = (await (await request.get(`/api/pets?customerId=${tenant.sophiaCustomerId}`)).json())
+    .find((pet: { id: string }) => pet.id === tenant.mochiPetId);
+  expect(mochi).toMatchObject({ breed: "Shih Tzu", breedId: shihTzu.id, weightOunces: 384 });
 });
 
 test("@regression-crm-history protects Pet Care edits and reconciles a stale care form", async ({ page, request, tenant }) => {

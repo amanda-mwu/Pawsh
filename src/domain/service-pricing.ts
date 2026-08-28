@@ -1,5 +1,4 @@
 import type postgres from "postgres";
-import {normalizeBreedSearch} from "@pawsh/domain";
 import {resolveTierPrice,type PricingClass,type PriceTier} from "@pawsh/domain";
 
 type Sql=postgres.Sql|postgres.TransactionSql;
@@ -11,10 +10,28 @@ export interface ResolvedServicePrice {
 }
 
 export async function resolveServicePrices(sql:Sql,input:{businessId:string;petId:string;serviceIds:readonly string[]}):Promise<ResolvedServicePrice[]>{
- const [pet]=await sql<{weightOunces:number|null;breed:string|null;species:string}[]>`select weight_ounces,breed,species from pets where business_id=${input.businessId} and id=${input.petId} and archived_at is null`;
+ const [pet]=await sql<{weightOunces:number|null;breed:string|null;breedId:string|null;species:string}[]>`select weight_ounces,breed,breed_id,species from pets where business_id=${input.businessId} and id=${input.petId} and archived_at is null`;
  if(!pet)throw Object.assign(new Error("Pet not found"),{statusCode:404});
- const [breed]=pet.breed?await sql<{defaultPricingClass:PricingClass}[]>`select default_pricing_class from business_breeds where business_id=${input.businessId} and normalized_name=${normalizeBreedSearch(pet.breed)} limit 1`:[];
- const petClass:PricingClass=breed?.defaultPricingClass??"STANDARD";
+ // Coat class resolves through the canonical breed ID, never through `pets.breed` text.
+ //
+ // The old lookup matched the stored name against this tenant's `business_breeds` rows. That
+ // made a Settings rename silently reprice the salon's book, and it missed near-misses outright
+ // - 3,084 pets stored as "German Shepherd" never matched the catalog's "German Shepherd Dog"
+ // and quietly fell back to STANDARD. Identity is now the ID, so a display-name correction
+ // cannot move a price.
+ //
+ // Precedence: the tenant's sparse override, then the canonical default, then STANDARD. An
+ // INACTIVE breed deliberately yields STANDARD rather than falling back to the legacy name,
+ // because recovering the class through the name would defeat deactivating it. Legacy pets with
+ // no `breed_id` resolve to STANDARD, which is exactly what the name lookup already gave them.
+ const [breedClass]=pet.breedId?await sql<{pricingClass:PricingClass|null}[]>`
+   select case when coalesce(override.active,breed.active)
+               then coalesce(override.pricing_class,breed.default_pricing_class) end as pricing_class
+   from breeds breed
+   left join business_breed_settings override
+     on override.business_id=${input.businessId} and override.breed_id=breed.id
+   where breed.id=${pet.breedId}`:[];
+ const petClass:PricingClass=breedClass?.pricingClass??"STANDARD";
  const services=await sql<{id:string;name:string;category:string;pricingMode:string;basePriceMinor:number;baseDurationMinutes:number;rangeMaxMinor:number|null;priceConfirmationRequired:boolean}[]>`select id,name,category,pricing_mode,base_price_minor,base_duration_minutes,range_max_minor,price_confirmation_required from services where business_id=${input.businessId} and id in ${sql(input.serviceIds as string[])} and active`;
  if(services.length!==new Set(input.serviceIds).size)throw Object.assign(new Error("One or more services are unavailable"),{statusCode:400});
  const output:ResolvedServicePrice[]=[];

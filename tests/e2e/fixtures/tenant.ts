@@ -111,8 +111,14 @@ export async function createTenant(api: APIRequestContext, label: string): Promi
   const boba = await json<{id:string}>(await api.post("/api/pets",{data:{
     customerId:sophia.id,name:"Boba",species:"dog",breed:"Pomeranian",safetyAlerts:"Do not shave coat."
   }}));
+  // Read rather than counted. Every setup write that touches the location's booking inputs -
+  // settings, and now the salon's working hours - moves this version, and a fixture that assumed
+  // a particular number would start every booking with a stale-settings 409 the moment another
+  // one was added.
+  const me = await json<{ business: { locationVersion: number } }>(await api.get("/api/me"));
   return {
-    runId,ownerEmail,password,businessId:signup.businessId,ownerMembershipId:signup.membershipId,locationId:signup.locationId,locationVersion:2,
+    runId,ownerEmail,password,businessId:signup.businessId,ownerMembershipId:signup.membershipId,
+    locationId:signup.locationId,locationVersion:me.business.locationVersion,
     employeeId:employee.id,serviceId:service.id,customerId:emma.id,petId:charlie.id,
     rockyCustomerId:daniel.id,rockyPetId:rocky.id,sophiaCustomerId:sophia.id,
     mochiPetId:mochi.id,bobaPetId:boba.id,anchor:nextMonday()

@@ -2,7 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const inviteToken = new URLSearchParams(location.search).get("invite");
 const resetToken = new URLSearchParams(location.search).get("reset");
-const state = { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:25}, pets: [], dogBreeds: [], breedCatalog:{query:"",showInactive:false,sortDirection:1,editingId:null}, employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointments:[],selectedGroomerIds:null,pendingGroomerIds:null,filterInitialized:false,displayMode:"calendar",view:"week",bookingPreset:null,bookingGroomerId:null,bookingCustomerId:null,bookingPetId:null,opened:false,preferences:null}, clientProfile:null,clientProfileReturnView:"customers", messageClientId:null, reportMode:"charts",reminders:{type:"appointment_reminder",items:[],supported:true}, members: [], accessRequests:[], workspaces:[], locations: [], reports: null, login: false };
+const state = { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:25}, pets: [], dogBreeds: [], petTypes: [], breedsByType:{}, breedCatalog:{query:"",showInactive:false,sortDirection:1,editingId:null}, employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointments:[],selectedGroomerIds:null,pendingGroomerIds:null,filterInitialized:false,displayMode:"calendar",view:"week",bookingPreset:null,bookingGroomerId:null,bookingCustomerId:null,bookingPetId:null,opened:false,preferences:null}, clientProfile:null,clientProfileReturnView:"customers", messageClientId:null, reportMode:"charts",reminders:{type:"appointment_reminder",items:[],supported:true}, members: [], accessRequests:[], workspaces:[], locations: [], reports: null, login: false };
 const pendingActions = new Set();
 let customerSearchSequence = 0;
 let calendarDetailOrigin = null;
@@ -171,12 +171,15 @@ async function refresh() {
     safe("team.manage") ? api("/api/members") : [],
     safe("reports.view") ? api("/api/reports") : null,
     safe("pets.view") && !state.dogBreeds.length ? api("/api/dog-breeds") : state.dogBreeds,
+    // The pet types breeds hang off. A breed belongs to exactly one type and the server refuses
+    // one that does not match the pet's, so the editor has to know the taxonomy to scope by.
+    safe("pets.view") && !state.petTypes.length ? api("/api/pet-types") : state.petTypes,
     safe("team.manage") ? api("/api/workspace-access-requests") : [],
     api("/api/workspaces"),
     loadLocations()
   ];
-  const [dashboard, customerDirectory, pets, employees, services, appointments, members, reports, dogBreeds, accessRequests, workspaces, locations] = await Promise.all(requests);
-  Object.assign(state, { customerDirectory,customers:customerDirectory.items||[], pets, employees, services, appointments, members, reports, dogBreeds, accessRequests, workspaces, locations });
+  const [dashboard, customerDirectory, pets, employees, services, appointments, members, reports, dogBreeds, petTypes, accessRequests, workspaces, locations] = await Promise.all(requests);
+  Object.assign(state, { customerDirectory,customers:customerDirectory.items||[], pets, employees, services, appointments, members, reports, dogBreeds, petTypes, accessRequests, workspaces, locations });
   renderAccountIdentity();
   renderLocationSwitcher();
   reconcileGroomerFilter();
@@ -1125,19 +1128,28 @@ function renderBreedCatalog(){
   const body=$("#breed-catalog-body");if(!body)return;
   const query=normalizeBreedFilter(state.breedCatalog.query);const breeds=state.dogBreeds.filter(breed=>(state.breedCatalog.showInactive||breed.active)&&(!query||breed.search.includes(query))).sort((a,b)=>state.breedCatalog.sortDirection*a.name.localeCompare(b.name));
   body.innerHTML=breeds.length?breeds.map(breed=>{
-    if(state.breedCatalog.editingId===breed.id)return `<tr data-breed-id="${breed.id}"><td><label><span class="sr-only">Breed name</span><input class="breed-edit-name" value="${escape(breed.name)}" maxlength="100" aria-describedby="breed-error-${breed.id}"></label><small class="mobile-only">${escape(breedClassLabel(breed.defaultPricingClass))} · ${breed.active?"Active":"Inactive"}</small></td><td><label><span class="sr-only">Pricing class</span><select class="breed-edit-class">${breedClassOptions(breed.defaultPricingClass)}</select></label></td><td><span class="breed-status ${breed.active?"":"inactive"}">${breed.active?"Active":"Inactive"}</span></td><td><div class="breed-edit-actions"><button type="button" class="breed-save" aria-label="Save ${escape(breed.name)}">✓</button><button type="button" class="breed-cancel" aria-label="Cancel editing ${escape(breed.name)}">×</button></div></td></tr><tr id="breed-error-${breed.id}" class="breed-row-error" role="alert" aria-live="assertive" hidden><td colspan="4"></td></tr>`;
-    return `<tr data-breed-id="${breed.id}"><td><strong>${escape(breed.name)}</strong><small class="mobile-only">${escape(breedClassLabel(breed.defaultPricingClass))} · ${breed.active?"Active":"Inactive"}</small></td><td>${escape(breedClassLabel(breed.defaultPricingClass))}</td><td><span class="breed-status ${breed.active?"":"inactive"}">${breed.active?"Active":"Inactive"}</span></td><td><details class="row-menu"><summary aria-label="Actions for ${escape(breed.name)}">⋯</summary><div class="row-menu-items"><button type="button" class="breed-edit">Edit</button><button type="button" class="breed-toggle">${breed.active?"Deactivate":"Reactivate"}</button></div></details></td></tr>`;
+    if(state.breedCatalog.editingId===breed.id)return `<tr class="breed-editing" data-breed-id="${breed.id}"><td colspan="4"><div class="breed-edit-row"><strong>${escape(breed.name)}</strong><label><span class="sr-only">Pricing class for ${escape(breed.name)}</span><select class="breed-edit-class" aria-describedby="breed-error-${breed.id}">${breedClassOptions(breed.defaultPricingClass)}</select></label><div class="breed-edit-actions"><button type="button" class="breed-save" aria-label="Save ${escape(breed.name)}">✓</button><button type="button" class="breed-cancel" aria-label="Cancel editing ${escape(breed.name)}">×</button></div></div></td></tr><tr id="breed-error-${breed.id}" class="breed-row-error" role="alert" aria-live="assertive" hidden><td colspan="4"></td></tr>`;
+    const source=breed.customized?`<span class="breed-flag">Customized</span>`:`<span class="breed-flag default">Pawsh default</span>`;
+    return `<tr data-breed-id="${breed.id}"><td><strong>${escape(breed.name)}</strong><small class="mobile-only">${escape(breedClassLabel(breed.defaultPricingClass))} · ${breed.active?"Active":"Inactive"} · ${breed.customized?"Customized":"Pawsh default"}</small></td><td>${escape(breedClassLabel(breed.defaultPricingClass))} ${source}</td><td><span class="breed-status ${breed.active?"":"inactive"}">${breed.active?"Active":"Inactive"}</span></td><td><details class="row-menu"><summary aria-label="Actions for ${escape(breed.name)}">⋯</summary><div class="row-menu-items"><button type="button" class="breed-edit">Edit</button><button type="button" class="breed-toggle">${breed.active?"Deactivate":"Reactivate"}</button>${breed.customized?`<button type="button" class="breed-reset">Reset to Pawsh default</button>`:""}</div></details></td></tr>`;
   }).join(""):`<tr><td colspan="4" class="empty">No breeds match this view.</td></tr>`;
   $("#breed-catalog-status").textContent=`${breeds.length} breed${breeds.length===1?"":"s"} shown`;
-  $$("#breed-catalog-body .breed-edit").forEach(button=>button.addEventListener("click",()=>{state.breedCatalog.editingId=button.closest("tr").dataset.breedId;renderBreedCatalog();$(".breed-edit-name")?.focus();}));
+  $$("#breed-catalog-body .breed-edit").forEach(button=>button.addEventListener("click",()=>{state.breedCatalog.editingId=button.closest("tr").dataset.breedId;renderBreedCatalog();$(".breed-edit-class")?.focus();}));
   $$("#breed-catalog-body .breed-cancel").forEach(button=>button.addEventListener("click",()=>{state.breedCatalog.editingId=null;renderBreedCatalog();}));
   $$("#breed-catalog-body .breed-save").forEach(button=>button.addEventListener("click",()=>saveBreedRow(button.closest("tr"))));
   $$("#breed-catalog-body .breed-toggle").forEach(button=>button.addEventListener("click",async()=>{const id=button.closest("tr").dataset.breedId,breed=state.dogBreeds.find(item=>item.id===id);await toggleBreed(id,!breed.active);}));
+  $$("#breed-catalog-body .breed-reset").forEach(button=>button.addEventListener("click",()=>runDetached(()=>resetBreed(button.closest("tr").dataset.breedId))));
   $$("#breed-catalog-body input,#breed-catalog-body select").forEach(control=>control.addEventListener("keydown",event=>{if(event.key==="Escape"){state.breedCatalog.editingId=null;renderBreedCatalog();}else if(event.key==="Enter"){event.preventDefault();saveBreedRow(control.closest("tr"));}}));
 }
 async function reloadBreeds(){state.dogBreeds=await api("/api/dog-breeds");renderBreedCatalog();}
-async function saveBreedRow(row){const errorRow=row.nextElementSibling;try{await api(`/api/dog-breeds/${row.dataset.breedId}`,{method:"PATCH",body:JSON.stringify({name:row.querySelector(".breed-edit-name").value,defaultPricingClass:row.querySelector(".breed-edit-class").value})});state.breedCatalog.editingId=null;await reloadBreeds();toast("Breed updated");}catch(error){errorRow.hidden=false;errorRow.firstElementChild.textContent=error.message;row.querySelector(".breed-edit-name").setAttribute("aria-invalid","true");}}
-async function toggleBreed(id,active){await api(`/api/dog-breeds/${id}`,{method:"PATCH",body:JSON.stringify({active})});await reloadBreeds();toast(active?"Breed reactivated":"Breed deactivated");}
+// Breeds are shared Pawsh taxonomy: a salon only stores a sparse override, and each call sends
+// only the field it is changing. The server merges an omitted field with what is stored, so
+// editing one never pins the other away from the Pawsh default.
+async function putBreedSettings(id,body){await api(`/api/breeds/${id}/settings`,{method:"PUT",body:JSON.stringify(body)});await reloadBreeds();}
+async function saveBreedRow(row){const errorRow=row.nextElementSibling,select=row.querySelector(".breed-edit-class");try{await api(`/api/breeds/${row.dataset.breedId}/settings`,{method:"PUT",body:JSON.stringify({pricingClass:select.value})});state.breedCatalog.editingId=null;await reloadBreeds();toast("Breed updated");}catch(error){errorRow.hidden=false;errorRow.firstElementChild.textContent=error.message;select.setAttribute("aria-invalid","true");}}
+// Send only the field being changed. The server merges: an omitted field keeps whatever is
+// stored, so changing the class cannot pin `active` away from the shared Pawsh default.
+async function toggleBreed(id,active){await putBreedSettings(id,{active});toast(active?"Breed reactivated":"Breed deactivated");}
+async function resetBreed(id){await putBreedSettings(id,{pricingClass:null,active:null});toast("Pawsh default restored");}
 async function deactivate(type,id) {
   if(!confirm(`Deactivate this ${type==="services"?"service":"team member"}?`))return;
   try{await api(`/api/${type}/${id}`,{method:"DELETE"});toast("Deactivated");await refresh();}catch(error){toast(error.message);}
@@ -1460,7 +1472,7 @@ function editPet(id) {
         customerId:pet.customerId,
         name:form.get("name"),
         species:form.get("species"),
-        breed:form.get("breed")||null,
+        ...breedPayload(form),
         dateOfBirth:form.get("dateOfBirth")||null,
         approximateAge:form.get("approximateAge")||null,
         weightOunces:form.get("weightPounds")===""?null:Math.round(Number(form.get("weightPounds"))*16),
@@ -1478,6 +1490,7 @@ function editPet(id) {
         $("#modal-fields").innerHTML=petProfileFields(pet);
         setupBreedAutocomplete();
       }
+      markBreedRefusal(error);
       throw error;
     }
   });
@@ -1486,8 +1499,8 @@ function editPet(id) {
 
 function petProfileFields(pet){
   return field("name","Pet name","text",`value="${escape(pet.name||"")}"`)+
-    field("species","Species","text",`required value="${escape(pet.species)}"`)+
-    breedField(pet.breed||"")+
+    petTypeField(pet.species)+
+    breedField(pet)+
     field("dateOfBirth","Date of birth","date",`value="${pet.dateOfBirth?String(pet.dateOfBirth).slice(0,10):""}"`)+
     field("approximateAge","Approximate age","text",`value="${escape(pet.approximateAge||"")}"`)+
     field("weightPounds","Weight (lb)","number",`min="0.0625" step="0.0625" value="${pet.weightOunces===null||pet.weightOunces===undefined?"":Number(pet.weightOunces)/16}"`)+
@@ -1542,18 +1555,184 @@ function editPetCare(id){
 function field(name, label, type = "text", extra = "", wide = false) {
   return `<label class="${wide ? "wide" : ""}">${label}<input data-testid="field-${name}" name="${name}" type="${type}" ${extra}></label>`;
 }
-function breedField(value="") {
-  return `<label class="breed-combobox">Breed<input data-testid="field-breed" name="breed" type="text" value="${escape(value)}" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="breed-options" aria-activedescendant=""><span class="breed-options" id="breed-options" role="listbox" hidden></span></label>`;
+// ── Pet type and breed taxonomy ───────────────────────────────────────────────────────────────
+// Breeds are canonical and keyed by pet type: the server accepts a breed id, a deliberate
+// "Other" with free text, or text it can itself resolve, and refuses anything else. The editor
+// therefore resolves the pet type first and scopes every breed lookup to it, so it can never
+// offer a breed the server would then refuse.
+function petTypeNames(){return state.petTypes.length?state.petTypes.map(type=>type.name):PET_TYPES;}
+function petTypeIdFor(species){
+  const wanted=normalizeBreedFilter(species??"");
+  if(!wanted)return null;
+  return state.petTypes.find(type=>type.search===wanted||normalizeBreedFilter(type.name)===wanted)?.id||null;
+}
+/** Loaded rows for a type, or null while they are still unknown - the two read differently. */
+function breedsForType(petTypeId){
+  if(!petTypeId)return [];
+  // The dog catalog already arrives with the session, so the commonest editor opens warm.
+  if(!state.breedsByType[petTypeId]&&state.dogBreeds.length&&petTypeId===petTypeIdFor("dog")){
+    state.breedsByType[petTypeId]=state.dogBreeds;
+  }
+  return state.breedsByType[petTypeId]||null;
+}
+async function loadBreedsForType(petTypeId){
+  if(!petTypeId||breedsForType(petTypeId))return;
+  state.breedsByType[petTypeId]=await api(`/api/pet-types/${petTypeId}/breeds`);
+}
+/** The pet type picker. Values stay the type's name because `species` is what pets store. */
+function petTypeField(value=""){
+  const names=petTypeNames();
+  const current=value||names[0]||"";
+  // A species the taxonomy does not list is kept rather than silently rewritten to Dog.
+  const options=current&&!names.some(name=>normalizeBreedFilter(name)===normalizeBreedFilter(current))
+    ? [...names,current] : names;
+  return `<label>Pet type<select data-testid="field-species" name="species" required>`
+    +options.map(name=>`<option value="${escape(name)}" ${normalizeBreedFilter(name)===normalizeBreedFilter(current)?"selected":""}>${escape(name)}</option>`).join("")
+    +`</select></label>`;
+}
+function breedField(pet={}) {
+  const other=Boolean(pet.breedOther);
+  return `<label class="breed-combobox">Breed`
+    +`<input data-testid="field-breed" name="breed" type="text" value="${escape(other?"Other":(pet.breed||""))}" autocomplete="off" aria-label="Breed" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="breed-options" aria-activedescendant="">`
+    +`<input type="hidden" data-testid="field-breedId" name="breedId" value="${escape(pet.breedId||"")}">`
+    +`<span class="breed-options" id="breed-options" role="listbox" aria-label="Breed suggestions" hidden></span></label>`
+    +`<p class="breed-hint" id="breed-hint" data-testid="breed-hint" role="status" hidden></p>`
+    +`<label class="breed-other-field" data-testid="breed-other-field" ${other?"":"hidden"}>Breed or mix description`
+    +`<input data-testid="field-breedOther" name="breedOther" type="text" maxlength="120" autocomplete="off" aria-label="Breed or mix description" value="${escape(pet.breedOther||"")}" ${other?"required":"disabled"}></label>`;
 }
 function setupBreedAutocomplete() {
   const input=$('[name="breed"]'),list=$("#breed-options");if(!input||!list)return;
-  let matches=[],active=-1;
-  const normalized=value=>String(value).trim().toLowerCase().replace(/[\s\-_]+/g," ").replace(/[^a-z0-9 ]/g,"");
+  const hint=$("#breed-hint"),otherField=$(".breed-other-field"),otherInput=$('[name="breedOther"]');
+  const form=input.closest("form");
+  const idField=form?.querySelector('[name="breedId"]')||$('[name="breedId"]');
+  const speciesField=form?.querySelector('[name="species"]');
+  let options=[],active=-1,otherMode=Boolean(otherInput&&!otherInput.disabled);
+  let petTypeId=petTypeIdFor(speciesField?speciesField.value:"dog");
+  const alive=()=>document.contains(input);
+  const setHint=text=>{if(!hint)return;hint.textContent=text||"";hint.hidden=!text;};
   const close=()=>{list.hidden=true;input.setAttribute("aria-expanded","false");input.setAttribute("aria-activedescendant","");active=-1;};
-  const selectBreed=index=>{const breed=matches[index];if(!breed)return;input.value=breed.name;close();input.dispatchEvent(new globalThis.Event("change",{bubbles:true}));};
-  const render=()=>{const query=normalized(input.value);matches=query?state.dogBreeds.filter(item=>item.active&&item.search.includes(query)).sort((a,b)=>Number(!a.search.startsWith(query))-Number(!b.search.startsWith(query))||a.name.localeCompare(b.name)).slice(0,12):[];active=matches.length?0:-1;list.innerHTML=matches.length?matches.map((item,index)=>`<button type="button" id="breed-option-${index}" role="option" aria-selected="${index===active}" data-index="${index}">${escape(item.name)}</button>`).join(""):`<span class="breed-no-results" role="option" aria-disabled="true">No matching breeds. You may keep the existing value or choose Other.</span>`;list.hidden=false;input.setAttribute("aria-expanded","true");input.setAttribute("aria-activedescendant",active>=0?`breed-option-${active}`:"");};
-  const move=direction=>{if(!matches.length)return;active=(active+direction+matches.length)%matches.length;list.querySelectorAll('[role="option"]').forEach((option,index)=>option.setAttribute("aria-selected",String(index===active)));input.setAttribute("aria-activedescendant",`breed-option-${active}`);list.querySelector(`#breed-option-${active}`)?.scrollIntoView({block:"nearest"});};
-  input.addEventListener("input",render);input.addEventListener("focus",()=>{if(input.value)render();});input.addEventListener("keydown",event=>{if(event.key==="ArrowDown"||event.key==="ArrowUp"){event.preventDefault();if(list.hidden)render();else move(event.key==="ArrowDown"?1:-1);}else if(event.key==="Enter"&&!list.hidden&&active>=0){event.preventDefault();selectBreed(active);}else if(event.key==="Escape"){event.preventDefault();close();}});list.addEventListener("pointerdown",event=>{const option=event.target.closest("[data-index]");if(option){event.preventDefault();selectBreed(Number(option.dataset.index));}});input.addEventListener("blur",()=>setTimeout(close,100));
+  const ensureBreeds=()=>{loadBreedsForType(petTypeId).then(()=>{if(alive()&&!list.hidden)render();}).catch(()=>{});};
+  // Leaving Other has to take its free text with it: a description left behind would be
+  // resubmitted and would quietly outrank the catalog breed the user just chose.
+  const leaveOther=()=>{
+    if(!otherMode)return;
+    otherMode=false;
+    if(otherField)otherField.hidden=true;
+    if(otherInput){otherInput.required=false;otherInput.disabled=true;otherInput.value="";}
+  };
+  const enterOther=()=>{
+    // Only text that matched nothing in the catalog is carried across. A canonical name never
+    // is: that is how a real breed would silently become an unlisted one.
+    const carried=otherMode?otherInput?.value:(options.length===1&&!idField?.value?input.value.trim():"");
+    otherMode=true;
+    input.value="Other";
+    input.removeAttribute("aria-invalid");
+    if(idField)idField.value="";
+    if(otherField)otherField.hidden=false;
+    if(otherInput){otherInput.disabled=false;otherInput.required=true;otherInput.value=carried||"";}
+    close();
+    setHint("Recorded as Other. Describe the breed or mix below.");
+    otherInput?.focus();
+  };
+  const choose=index=>{
+    const option=options[index];if(!option)return;
+    if(option.kind==="other")return enterOther();
+    leaveOther();
+    input.value=option.breed.name;
+    input.removeAttribute("aria-invalid");
+    if(idField)idField.value=option.breed.id;
+    close();setHint("");
+    input.dispatchEvent(new globalThis.Event("change",{bubbles:true}));
+  };
+  const render=()=>{
+    const query=otherMode?"":normalizeBreedFilter(input.value);
+    const catalog=breedsForType(petTypeId);
+    const matches=query&&catalog?catalog.filter(item=>item.active&&item.search.includes(query)).sort((a,b)=>Number(!a.search.startsWith(query))-Number(!b.search.startsWith(query))||a.name.localeCompare(b.name)).slice(0,12):[];
+    // Other is always the last option, so the way out of the catalog is reachable by keyboard
+    // whether or not the query matched anything.
+    options=[...matches.map(breed=>({kind:"breed",breed})),{kind:"other"}];
+    // Nothing is preselected when only Other is offered, so Enter still submits the form
+    // rather than committing the user to an Other they did not ask for.
+    active=matches.length?0:-1;
+    list.innerHTML=options.map((option,index)=>option.kind==="other"
+      ? `<button type="button" id="breed-option-${index}" class="breed-option-other" role="option" aria-selected="${index===active}" data-index="${index}" data-testid="breed-option-other">Other</button>`
+      : `<button type="button" id="breed-option-${index}" role="option" aria-selected="${index===active}" data-index="${index}">${escape(option.breed.name)}</button>`).join("");
+    list.hidden=false;input.setAttribute("aria-expanded","true");
+    input.setAttribute("aria-activedescendant",active>=0?`breed-option-${active}`:"");
+    setHint(!petTypeId?"No breed catalog for this pet type. Choose Other to describe the breed."
+      :!catalog?"Loading breeds…"
+      :query&&!matches.length?"No matching breeds. Choose Other to record an unlisted or mixed breed."
+      :"");
+  };
+  const move=direction=>{
+    if(!options.length)return;
+    active=((active+direction)%options.length+options.length)%options.length;
+    list.querySelectorAll('[role="option"]').forEach((option,index)=>option.setAttribute("aria-selected",String(index===active)));
+    input.setAttribute("aria-activedescendant",`breed-option-${active}`);
+    list.querySelector(`#breed-option-${active}`)?.scrollIntoView({block:"nearest"});
+  };
+  input.addEventListener("input",()=>{
+    // Typing invalidates a catalog selection: the id must not outlive the name it stood for.
+    if(idField)idField.value="";
+    input.removeAttribute("aria-invalid");
+    leaveOther();
+    render();
+  });
+  input.addEventListener("focus",()=>{if(input.value&&!otherMode)render();});
+  input.addEventListener("keydown",event=>{
+    // Opening the list also lands on an option when nothing was preselected, so Other is one
+    // keypress away on the query that has no matches - which is when it is needed.
+    if(event.key==="ArrowDown"||event.key==="ArrowUp"){event.preventDefault();const step=event.key==="ArrowDown"?1:-1;if(list.hidden){render();if(active<0)move(step);}else move(step);}
+    else if(event.key==="Enter"&&!list.hidden&&active>=0){event.preventDefault();choose(active);}
+    else if(event.key==="Escape"){event.preventDefault();close();}
+  });
+  list.addEventListener("pointerdown",event=>{const option=event.target.closest("[data-index]");if(option){event.preventDefault();choose(Number(option.dataset.index));}});
+  input.addEventListener("blur",()=>setTimeout(()=>{if(alive())close();},100));
+  speciesField?.addEventListener("change",()=>{
+    const nextTypeId=petTypeIdFor(speciesField.value);
+    if(nextTypeId===petTypeId)return;
+    petTypeId=nextTypeId;
+    close();
+    // A canonical breed belongs to one pet type, so changing the type releases the selection
+    // instead of saving a breed that contradicts it. Legacy free text is left untouched: it
+    // carries no id, and the server passes unchanged text through so unrelated edits still save.
+    if(idField?.value){
+      idField.value="";input.value="";
+      setHint("Pet type changed. Choose a breed for the new type, or select Other.");
+    }else setHint("");
+    ensureBreeds();
+  });
+  ensureBreeds();
+}
+/**
+ * Says which of the server's three breed inputs the form meant, and nothing more - the server
+ * decides what a breed is. A deliberate Other wins, then a catalog id, then plain text the
+ * server may still match or grandfather. An untouched legacy breed leaves here as text with no
+ * id and no `breedOther`, which is exactly what lets the server pass it through unchanged.
+ */
+function breedPayload(form){
+  const petTypeId=petTypeIdFor(form.get("species"));
+  const description=String(form.get("breedOther")||"").trim();
+  if(description)return {petTypeId,breedId:null,breed:description,breedOther:description};
+  const breedId=String(form.get("breedId")||"").trim();
+  const breed=String(form.get("breed")||"").trim();
+  // An id the salon has since switched off would be refused outright, and refusing it here
+  // would block a weight edit on a pet nobody was touching the breed of. Sending the stored
+  // text instead lets the server resolve it or pass it through, which is what it already does
+  // for a breed that predates the taxonomy.
+  const catalog=breedsForType(petTypeId);
+  const selectable=!breedId||!catalog||catalog.some(item=>item.id===breedId&&item.active);
+  return {petTypeId,breedId:selectable?breedId||null:null,breed:breed||null,breedOther:null};
+}
+/** A refused breed is a field problem, so it is reported on the field and not only in the form. */
+function markBreedRefusal(error){
+  if(!["BREED_NOT_IN_CATALOG","PET_TYPE_NOT_FOUND"].includes(error?.data?.code))return;
+  const input=$('[name="breed"]'),hint=$("#breed-hint");
+  if(!input)return;
+  // Focus first: it reopens the suggestions, and the refusal has to be the message left standing.
+  input.focus();
+  input.setAttribute("aria-invalid","true");
+  if(hint){hint.textContent=error.message;hint.hidden=false;}
 }
 function select(name, label, options, wide = false, selectedValue = "", required = true) {
   return `<label class="${wide ? "wide" : ""}">${label}<select data-testid="field-${name}" name="${name}" ${required?"required":""}><option value="">Choose…</option>${options.map(([v,l]) => `<option value="${v}" ${String(v)===String(selectedValue)?"selected":""}>${escape(l)}</option>`).join("")}</select></label>`;
@@ -2007,8 +2186,14 @@ const actions = {
     +`<p class="wide fine">Enough to find them again is enough to save: a name, a phone number, or an email. Take what an enquiry gives you and fill the rest in later.</p>`,
     (form) => api("/api/customers",{method:"POST",body:JSON.stringify(Object.fromEntries(form))})),
   "new-pet": () => { openModal("New pet",
-    select("customerId","Customer",state.customers.map(c=>[c.id,`${clientName(c)}`]),true)+field("name","Pet name","text","")+breedField()+field("weightPounds","Weight (lb)","number",'min="0.0625" step="0.0625"')+field("species","Species","text",'value="dog"')+field("groomingPreferences","Grooming preferences","text","",true)+(allowed("pets.care.edit")?field("behaviorNotes","Behavior notes","text","",true)+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true):""),
-    (form) => {const values=Object.fromEntries(form);values.weightOunces=values.weightPounds===""?null:Math.round(Number(values.weightPounds)*16);delete values.weightPounds;return api("/api/pets",{method:"POST",body:JSON.stringify(values)});}); setupBreedAutocomplete(); },
+    select("customerId","Customer",state.customers.map(c=>[c.id,`${clientName(c)}`]),true)+field("name","Pet name","text","")+petTypeField()+breedField()+field("weightPounds","Weight (lb)","number",'min="0.0625" step="0.0625"')+field("groomingPreferences","Grooming preferences","text","",true)+(allowed("pets.care.edit")?field("behaviorNotes","Behavior notes","text","",true)+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true):""),
+    async (form) => {
+      const values=Object.fromEntries(form);
+      values.weightOunces=values.weightPounds===""?null:Math.round(Number(values.weightPounds)*16);
+      delete values.weightPounds;
+      try{return await api("/api/pets",{method:"POST",body:JSON.stringify({...values,...breedPayload(form)})});}
+      catch(error){markBreedRefusal(error);throw error;}
+    }); setupBreedAutocomplete(); },
   "new-service": () => openModal("New service",
     field("name","Service name","text","required")+field("baseDurationMinutes","Duration (minutes)","number",'required min="1"')+field("basePrice","Fixed price ($)","number",'required min="0" step=".01"')+select("category","Category",[["GENERAL","General"],["DOG_ADDON","Dog add-on"],["A_LA_CARTE","À la carte"],["CAT","Cat"]],true,"GENERAL")+field("description","Description","text","",true),
     (form) => { const o=Object.fromEntries(form); o.baseDurationMinutes=Number(o.baseDurationMinutes); o.basePriceMinor=Math.round(Number(o.basePrice)*100);o.pricingMode="FIXED";o.active=true;delete o.basePrice; return api("/api/services",{method:"POST",body:JSON.stringify(o)}); }),
@@ -2230,9 +2415,15 @@ async function switchLocation(locationId){
     // Identity first: a stale locationId or locationVersion reaching the next booking or settings
     // save would write against the location the user just left.
     state.me=await api("/api/me");
-    state.calendar.opened=false;state.calendar.monthAppointments=[];state.businessHours=[];
+    state.calendar.opened=false;state.calendar.monthAppointments=[];state.businessHours=[];resetAvailabilityLocationData();
     applyPermissions();
-    toast(`Switched to ${result?.locationName||state.me.business.locationName}`);
+    const switchedTo=result?.locationName||state.me.business.locationName;
+    // Fired at the exact moment the misconception forms. Three of the four Availability tabs are
+    // workspace-wide, so an operator watching a grid of hours change location has to be told that
+    // the grid did not.
+    toast(availabilityWorkspaceTabOpen()
+      ? `Switched to ${switchedTo}. Default working hours are workspace-wide and did not change.`
+      : `Switched to ${switchedTo}`);
     await refresh();
     await showView(activeViewId(),{history:"none"});
   }catch(error){
@@ -2275,7 +2466,633 @@ const settingsDescriptions={"appointment-schedule":"Configurable appointment pol
 function settingsPathCategory(){const match=location.pathname.match(/^\/settings\/([^/]+)$/);return settingsCategories.some(([id])=>id===match?.[1])?match[1]:"account";}
 function settingsLink(title,description,label,target){return `<article class="settings-panel"><h3>${escape(title)}</h3><p>${escape(description)}</p><button type="button" class="primary compact settings-canonical-link" data-target="${target}">${escape(label)}</button></article>`;}
 function settingsPlaceholder(id,title){return `<article class="settings-panel settings-placeholder" data-testid="settings-placeholder"><p class="eyebrow">Coming soon</p><h3>${escape(title)}</h3><p>${escape(settingsDescriptions[id]||"This capability is not yet available in Pawsh.")}</p></article>`;}
-function renderSettingsCategory(category=settingsPathCategory(),{history="replace"}={}){const definition=settingsCategories.find(([id])=>id===category)||settingsCategories[0],[id,title]=definition,nav=$("#settings-navigation"),content=$("#settings-content");if(!nav||!content)return;nav.innerHTML=settingsCategories.map(([key,label])=>`<button type="button" data-settings-category="${key}" class="${key===id?"active":""}" ${key===id?'aria-current="page"':""}>${escape(label)}</button>`).join("");let html="";if(id==="account")html=settingsLink("Account","Personal identity and password security remain in your canonical account workspace.","Manage profile & security","profile-account");else if(id==="staff")html=settingsLink("Staff","Groomer records, operational eligibility, and active status remain in Salon.","Open Salon team","setup");else if(id==="business")html=`<article class="settings-panel"><h3>Business</h3><p>Manage the workspace name and authoritative timezone, currency, tax rate, and reminder lead time.</p><button type="button" class="primary compact settings-business-action">Edit business settings</button></article>`;else if(id==="availability")html=settingsLink("Availability","Salon owns authoritative operating hours and staff availability. Calendar visible hours remain a personal view preference.","Open Salon availability","setup");else if(id==="permissions")html=allowed("team.manage")?`<article class="settings-panel"><div class="panel-head"><div><h3>Permissions</h3><p>Manage workspace membership and server-authorized access.</p></div><button type="button" class="secondary compact settings-invite">+ Invite</button></div><div id="member-list" class="simple-list"></div><h4>Pending access requests</h4><div id="access-request-list" class="simple-list"></div></article>`:settingsPlaceholder(id,title);else if(id==="services")html=settingsLink("Services","Service names, pricing, durations, and availability have one canonical workspace.","Open Services","services");else if(id==="pet-options")html=settingsLink("Pet options","Breed Catalog and pricing classifications remain location-operational configuration under Salon. Rabies safety rules are not configurable here.","Open Breed Catalog","breed-catalog");else if(id==="tax-payments")html=`<article class="settings-panel"><h3>Tax & payments</h3><p>The server-authoritative tax rate is part of Business settings. Payment recording remains in checkout.</p><button type="button" class="primary compact settings-business-action">Manage tax settings</button></article>`;else if(id==="automated-messages")html=`<article class="settings-panel"><h3>Automated messages</h3><p>Pawsh’s durable reminder/outbox flow uses the configured reminder lead time. Template and channel management are deferred.</p><button type="button" class="primary compact settings-business-action">Manage reminder timing</button></article>`;else html=settingsPlaceholder(id,title);content.innerHTML=`<div class="settings-content-head"><p class="eyebrow">Settings</p><h2>${escape(title)}</h2></div>${html}`;nav.querySelectorAll("[data-settings-category]").forEach(button=>button.addEventListener("click",()=>renderSettingsCategory(button.dataset.settingsCategory,{history:"push"})));content.querySelectorAll(".settings-canonical-link").forEach(button=>button.addEventListener("click",()=>showView(button.dataset.target)));content.querySelectorAll(".settings-business-action").forEach(button=>button.addEventListener("click",actions["business-settings"]));content.querySelector(".settings-invite")?.addEventListener("click",actions["invite-member"]);if(id==="permissions")renderSetup();if(history!=="none")globalThis.history[history==="push"?"pushState":"replaceState"]({view:"admin-settings",settingsCategory:id},"",`/settings/${id}`);content.focus({preventScroll:true});}
+// ---------------------------------------------------------------------------
+// Settings → Availability
+//
+// Four tabs over two different scopes, which is the whole difficulty of this screen. A groomer's
+// default hours belong to the workspace and follow that person to every salon; a closed day belongs
+// to one location. Most groomers work at both, so an operator editing hours while the header reads
+// "Riverside" has to be told — in the tab bar, in a strip under it, and again in the toast when they
+// switch — that the grid in front of them is not Riverside's.
+// ---------------------------------------------------------------------------
+const AVAILABILITY_WEEKDAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const AVAILABILITY_WEEKDAYS_SHORT=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const AVAILABILITY_TABS=[
+  ["default","Default working hours","workspace"],
+  ["week","Schedule by week","workspace"],
+  ["calendar","Working calendar","workspace"],
+  ["closed","Closed","location"]
+];
+const AVAILABILITY_PLACEHOLDERS={
+  week:"Setting a groomer's hours for one specific week is not yet available. Default working hours apply to every week, and a one-off change is still made on the appointment itself.",
+  calendar:"A month-at-a-glance view of who is working is not yet available. Default working hours are the source of truth for now, and the Calendar shows what is actually booked."
+};
+const availabilityState={tab:"default",hours:null,overrides:null,hoursError:null,hoursLoading:false,closures:null,closuresError:null,closuresLoading:false,closureLocationId:null,month:null,focusCell:null,focusDate:null,restoreFocus:false};
+let availabilityEditorTeardown=null;
+// Seven columns of times do not survive a phone, so below this width the same data renders as a
+// stacked per-groomer list and the editor becomes the shared dialog. The query is read at render
+// time, so rotating the device is enough to change template.
+const availabilityCompact=globalThis.matchMedia?globalThis.matchMedia("(max-width:619px)"):null;
+availabilityCompact?.addEventListener("change",()=>{if($("#availability-root"))renderAvailability();});
+
+function availabilityClock(value){const [hour,minute]=String(value||"").split(":");return timeLabel(Number(hour)*60+Number(minute));}
+function availabilityLocationName(){return state.me?.business?.locationName||"this location";}
+function availabilityLocationId(){return state.me?.business?.locationId||null;}
+function availabilityMonth(){return availabilityState.month||businessDate().slice(0,7);}
+function availabilityMonthShift(month,step){const [year,index]=month.split("-").map(Number),date=new Date(Date.UTC(year,index-1+step,1));return `${date.getUTCFullYear()}-${String(date.getUTCMonth()+1).padStart(2,"0")}`;}
+function availabilityMonthLength(month){const [year,index]=month.split("-").map(Number);return new Date(Date.UTC(year,index,0)).getUTCDate();}
+function availabilityMonthLabel(month){return new Intl.DateTimeFormat([],{month:"long",year:"numeric",timeZone:"UTC"}).format(dateAt(`${month}-01`));}
+function availabilityDateValue(month,day){return `${month}-${String(day).padStart(2,"0")}`;}
+// "Saturday 14 March 2026" rather than a bare date: the switch's accessible name has to say which
+// day it closes, or aria-checked is describing nothing anybody can identify.
+function availabilityDateLabel(localDate){
+  const date=dateAt(localDate);
+  const weekday=new Intl.DateTimeFormat([],{weekday:"long",timeZone:"UTC"}).format(date);
+  const month=new Intl.DateTimeFormat([],{month:"long",timeZone:"UTC"}).format(date);
+  return `${weekday} ${Number(localDate.slice(8,10))} ${month} ${localDate.slice(0,4)}`;
+}
+function availabilityGroomers(){return (availabilityState.hours||[]).filter(employee=>employee.active);}
+function availabilityEmployee(employeeId){return (availabilityState.hours||[]).find(employee=>employee.id===employeeId)||null;}
+function availabilityDay(employee,weekday){return (employee?.days||[]).find(day=>Number(day.weekday)===Number(weekday))||null;}
+function availabilityOverrideCount(employeeId,weekday){return Number(availabilityState.overrides?.get(`${employeeId}:${weekday}`)||0);}
+function availabilityOverrideText(count){return `${count} appointment${count===1?"":"s"} booked outside these hours.`;}
+function availabilityCellAt(employeeId,weekday){
+  return $$("#availability-root [data-availability-cell]").find(cell=>cell.dataset.employeeId===employeeId&&Number(cell.dataset.weekday)===Number(weekday))||null;
+}
+
+async function loadAvailabilityHours(){
+  availabilityState.hoursLoading=true;availabilityState.hoursError=null;
+  try{
+    // The counts are decoration on a grid that is useful without them, so a failure there is not
+    // allowed to take the hours down with it.
+    const [hours,counts]=await Promise.all([
+      api("/api/availability/working-hours"),
+      api("/api/availability/override-counts").catch(()=>[])
+    ]);
+    availabilityState.hours=Array.isArray(hours?.employees)?hours.employees:[];
+    availabilityState.overrides=new Map((Array.isArray(counts)?counts:[]).map(entry=>[`${entry.employeeId}:${Number(entry.weekday)}`,Number(entry.count)]));
+  }catch(error){availabilityState.hoursError=error;}
+  finally{availabilityState.hoursLoading=false;}
+}
+async function loadAvailabilityClosures(){
+  const locationId=availabilityLocationId(),month=availabilityMonth();
+  if(!locationId){availabilityState.closuresError=new Error("This workspace has no active location.");return;}
+  availabilityState.closuresLoading=true;availabilityState.closuresError=null;
+  try{
+    const to=availabilityDateValue(month,availabilityMonthLength(month));
+    const result=await api(`/api/locations/${encodeURIComponent(locationId)}/closure-days?from=${month}-01&to=${to}`);
+    // The response is sparse: a quiet, open day is simply absent, so absence has to read as "open,
+    // nothing booked" rather than as data that failed to arrive.
+    availabilityState.closures=new Map((result?.days||[]).map(day=>[day.localDate,{closed:Boolean(day.closed),reason:day.reason||null,booked:Number(day.bookedAppointments||0)}]));
+    availabilityState.closureLocationId=locationId;
+  }catch(error){availabilityState.closuresError=error;}
+  finally{availabilityState.closuresLoading=false;}
+}
+// Every entry point runs through here, so a nav click, a tab change, a month step and a location
+// switch all decide what to fetch by one rule: what this tab needs and does not already hold.
+function ensureAvailabilityData(){
+  if(!allowed("calendar.view"))return;
+  if(availabilityState.tab==="closed"){
+    if(availabilityState.closuresLoading||availabilityState.closuresError)return;
+    if(availabilityState.closures&&availabilityState.closureLocationId===availabilityLocationId())return;
+    runDetached(async()=>{await loadAvailabilityClosures();renderAvailability();});
+    return;
+  }
+  if(availabilityState.tab!=="default"||availabilityState.hours||availabilityState.hoursLoading||availabilityState.hoursError)return;
+  runDetached(async()=>{await loadAvailabilityHours();renderAvailability();});
+}
+// The location switcher invalidates the location-scoped half. Working hours survive it deliberately:
+// they are workspace data, and refetching them would imply, wrongly, that they had changed.
+function resetAvailabilityLocationData(){
+  availabilityState.closures=null;availabilityState.closuresError=null;availabilityState.closureLocationId=null;availabilityState.month=null;
+}
+function availabilityWorkspaceTabOpen(){return Boolean($("#availability-root"))&&availabilityState.tab!=="closed";}
+
+function availabilityTabsMarkup(){
+  const location=availabilityLocationName();
+  // One tablist so the arrow keys cross the divider, split into two labelled groups so the divider
+  // falls exactly where the scope changes. The groups are presentational, which keeps the tabs
+  // owned by the tablist rather than by a generic container.
+  const group=(scope,eyebrow)=>`<div class="availability-tab-group availability-tab-group-${scope}" role="presentation">`
+    +`<p class="eyebrow availability-tab-eyebrow" aria-hidden="true">${escape(eyebrow)}</p>`
+    +`<div class="availability-tab-row" role="presentation">`
+    +AVAILABILITY_TABS.filter(([,,tabScope])=>tabScope===scope).map(([id,label])=>{
+      const active=availabilityState.tab===id;
+      // Visible label first, so that speaking the name and clicking the control stay the same
+      // instruction (WCAG 2.5.3); the scope rides along behind it.
+      const name=`${label}, ${scope==="workspace"?"workspace-wide":`${location} only`}`;
+      return `<button type="button" role="tab" id="availability-tab-${id}" class="availability-tab${active?" active":""}" data-availability-tab="${id}" data-testid="availability-tab-${id}" aria-selected="${active}" aria-controls="availability-panel" aria-label="${escape(name)}" tabindex="${active?0:-1}">${escape(label)}</button>`;
+    }).join("")
+    +`</div></div>`;
+  return `<div class="availability-tabs" role="tablist" aria-label="Availability" data-testid="availability-tabs">`
+    +group("workspace","Workspace · All locations")
+    +group("location",`${location} only`)
+    +`</div>`;
+}
+function availabilityScopeMarkup(){
+  if(availabilityState.tab==="closed"){
+    return `<p class="availability-scope is-location" id="availability-scope-note" data-testid="availability-scope-strip"><strong>${escape(availabilityLocationName())} only.</strong> Closed days apply to bookings at this location and nowhere else.</p>`;
+  }
+  return `<p class="availability-scope is-workspace" id="availability-scope-note" data-testid="availability-scope-strip"><strong>Workspace-wide.</strong> These hours follow each groomer to every Pawsh location.</p>`;
+}
+
+// Seven columns of times only fit if they are written the way the calendar writes them, so the
+// visible range reuses the same compaction. The spoken form below stays unabbreviated.
+function availabilityRange(startTime,endTime){
+  const at=value=>{const [hour,minute]=String(value||"").split(":");return new Date(2020,0,1,Number(hour),Number(minute));};
+  return compactTimeRange(at(startTime),at(endTime));
+}
+function availabilityCellState(employee,weekday){
+  const day=availabilityDay(employee,weekday),count=availabilityOverrideCount(employee.id,weekday);
+  const range=day?availabilityRange(day.startTime,day.endTime):"Off";
+  const spoken=day?`${availabilityClock(day.startTime)} to ${availabilityClock(day.endTime)}`:"Off";
+  return {day,count,range,name:`${employee.displayName}, ${AVAILABILITY_WEEKDAYS[weekday]}, ${spoken}.${count?` ${availabilityOverrideText(count)}`:""}`};
+}
+// Information, not a fault: a groomer marked off on Saturday with four Saturday bookings is the most
+// useful thing this grid can say, so the marker renders on Off cells too.
+function availabilityOverrideMarkup(count){
+  return count?`<span class="availability-override" aria-hidden="true"><span class="availability-override-dot"></span>${count} booked outside</span>`:"";
+}
+function availabilityRovingCell(groomers){
+  const wanted=availabilityState.focusCell;
+  const valid=wanted&&groomers.some(employee=>employee.id===wanted.employeeId);
+  return valid?`${wanted.employeeId}:${wanted.weekday}`:groomers[0]?`${groomers[0].id}:0`:null;
+}
+function availabilityGridMarkup(editable){
+  const groomers=availabilityGroomers(),roving=availabilityRovingCell(groomers);
+  return `<div class="availability-grid-wrap" data-allow-horizontal-scroll>`
+    +`<table class="availability-grid"${editable?' role="grid"':""} aria-label="Default working hours by groomer and weekday" aria-describedby="availability-scope-note availability-limit-note" data-testid="availability-grid">`
+    +`<thead><tr><th scope="col" class="availability-grid-corner">Groomer</th>${AVAILABILITY_WEEKDAYS.map((day,index)=>`<th scope="col"><abbr title="${escape(day)}">${AVAILABILITY_WEEKDAYS_SHORT[index]}</abbr></th>`).join("")}</tr></thead><tbody>`
+    +groomers.map(employee=>`<tr><th scope="row" class="availability-groomer" data-groomer-slot="${groomerSlot(employee.id)}">${escape(employee.displayName)}</th>`
+      +AVAILABILITY_WEEKDAYS.map((unused,weekday)=>{
+        const cell=availabilityCellState(employee,weekday);
+        const body=`<span class="availability-range">${escape(cell.range)}</span>`
+          // Stated once in the panel note and reached through aria-describedby on the grid. Repeating
+          // one constant across thirty-five cells is noise for anybody listening to it.
+          +(cell.day?`<span class="availability-limit" aria-hidden="true">1 at a time</span>`:"")
+          +availabilityOverrideMarkup(cell.count);
+        const shared=`class="availability-cell${cell.day?" is-working":" is-off"}${cell.count?" has-override":""}" data-availability-cell data-employee-id="${escape(employee.id)}" data-weekday="${weekday}" aria-label="${escape(cell.name)}"`;
+        return editable
+          ?`<td role="gridcell" ${shared} tabindex="${`${employee.id}:${weekday}`===roving?0:-1}">${body}</td>`
+          :`<td ${shared}>${body}</td>`;
+      }).join("")+`</tr>`).join("")
+    +`</tbody></table></div>`;
+}
+function availabilityStackMarkup(editable){
+  return `<div class="availability-stack" data-testid="availability-stack">`
+    +availabilityGroomers().map(employee=>`<section class="availability-stack-groomer">`
+      +`<h4 data-groomer-slot="${groomerSlot(employee.id)}">${escape(employee.displayName)}</h4><ul>`
+      +AVAILABILITY_WEEKDAYS.map((label,weekday)=>{
+        const cell=availabilityCellState(employee,weekday);
+        const body=`<span class="availability-stack-day">${escape(label)}</span><span class="availability-range">${escape(cell.range)}</span>`+availabilityOverrideMarkup(cell.count);
+        const shared=`class="availability-stack-row${cell.day?" is-working":" is-off"}${cell.count?" has-override":""}" data-availability-cell data-employee-id="${escape(employee.id)}" data-weekday="${weekday}" aria-label="${escape(cell.name)}"`;
+        return `<li>${editable?`<button type="button" ${shared}>${body}</button>`:`<div ${shared}>${body}</div>`}</li>`;
+      }).join("")+`</ul></section>`).join("")
+    +`</div>`;
+}
+// The real table shell with skeleton bars rather than a spinner, so arriving data does not move the
+// columns the operator has already started reading.
+function availabilitySkeletonMarkup(){
+  return `<div class="availability-grid-wrap" data-allow-horizontal-scroll>`
+    +`<table class="availability-grid is-skeleton" aria-busy="true" aria-label="Default working hours, loading">`
+    +`<thead><tr><th scope="col" class="availability-grid-corner">Groomer</th>${AVAILABILITY_WEEKDAYS.map((day,index)=>`<th scope="col"><abbr title="${escape(day)}">${AVAILABILITY_WEEKDAYS_SHORT[index]}</abbr></th>`).join("")}</tr></thead><tbody>`
+    +[0,1,2,3].map(()=>`<tr><th scope="row" class="availability-groomer"><span class="availability-skeleton-bar"></span></th>${AVAILABILITY_WEEKDAYS.map(()=>`<td><span class="availability-skeleton-bar"></span></td>`).join("")}</tr>`).join("")
+    +`</tbody></table></div>`;
+}
+function availabilityErrorMarkup(kind,error){
+  const message=error?.status===403?"You do not have permission to view this."
+    :error?.status===404?"That location is no longer available."
+    :error?.status?error.message
+    :"Could not load availability. Check your connection and try again.";
+  return `<div class="availability-error" data-testid="availability-error"><h4>This could not load</h4><p>${escape(message)}</p>`
+    +`<button type="button" class="secondary compact" data-availability-retry="${kind}">Try again</button></div>`;
+}
+function availabilityDefaultMarkup(){
+  if(!allowed("calendar.view"))return `<p class="availability-note">Viewing working hours needs the Calendar permission.</p>`;
+  if(availabilityState.hoursError)return availabilityErrorMarkup("hours",availabilityState.hoursError);
+  if(!availabilityState.hours)return `<p class="availability-note" id="availability-limit-note">Each groomer takes one appointment at a time.</p>`+availabilitySkeletonMarkup();
+  const editable=allowed("team.manage"),groomers=availabilityGroomers();
+  if(!groomers.length){
+    return `<div class="empty-workspace"><span class="empty-icon" aria-hidden="true">◎</span><h3>No groomers yet</h3>`
+      +`<p>Default working hours describe the people who groom. Add a groomer in Salon and their week appears here.</p>`
+      +`<button type="button" class="secondary compact settings-canonical-link" data-target="setup">Open Salon team</button></div>`;
+  }
+  // Nobody having set hours yet is not an empty state. The grid is the answer, every cell reads Off,
+  // and the note says what Pawsh actually does with that — which is not "refuse every booking".
+  const unset=groomers.every(employee=>!(employee.days||[]).length);
+  return `<p class="availability-note" id="availability-limit-note">Each groomer takes one appointment at a time.${editable?" Choose a day to change it.":""}</p>`
+    +(unset?`<p class="availability-note is-quiet">No default hours are set yet. Every day reads Off, and until hours are set Pawsh does not restrict when these groomers can be booked.</p>`:"")
+    +(editable?"":`<p class="availability-note is-quiet">Changing working hours needs the Team permission.</p>`)
+    +(availabilityCompact?.matches?availabilityStackMarkup(editable):availabilityGridMarkup(editable));
+}
+function availabilityClosedMarkup(){
+  const location=availabilityLocationName(),month=availabilityMonth();
+  const head=`<div class="availability-closed-head"><h3>${escape(location)}</h3>`
+    +`<p class="availability-closed-rule">A closed day turns down every booking at ${escape(location)} — an override reason will not get past it.</p></div>`;
+  if(!allowed("calendar.view"))return head+`<p class="availability-note">Viewing closed days needs the Calendar permission.</p>`;
+  const nav=`<div class="calendar-date-nav availability-month-nav">`
+    +`<button type="button" class="secondary compact" data-availability-month="-1" aria-label="Previous month">←</button>`
+    +`<strong data-testid="availability-month">${escape(availabilityMonthLabel(month))}</strong>`
+    +`<button type="button" class="secondary compact" data-availability-month="1" aria-label="Next month">→</button></div>`;
+  if(availabilityState.closuresError)return head+nav+availabilityErrorMarkup("closures",availabilityState.closuresError);
+  if(!availabilityState.closures)return head+nav+`<p class="availability-note is-quiet" aria-busy="true">Loading closed days…</p>`;
+  const editable=allowed("settings.manage"),today=businessDate(),length=availabilityMonthLength(month),lead=dateAt(`${month}-01`).getUTCDay();
+  const roving=availabilityState.focusDate&&availabilityState.focusDate.startsWith(`${month}-`)
+    ?availabilityState.focusDate
+    :availabilityDateValue(month,today.startsWith(`${month}-`)?Number(today.slice(8,10)):1);
+  const cells=[];
+  for(let index=0;index<lead;index++)cells.push(`<td class="availability-day-blank"></td>`);
+  for(let day=1;day<=length;day++){
+    const localDate=availabilityDateValue(month,day),entry=availabilityState.closures.get(localDate);
+    const closed=Boolean(entry?.closed),past=localDate<today,label=availabilityDateLabel(localDate),tab=localDate===roving?0:-1;
+    // Solid ink and the word "Closed": the state never rests on hue alone, and it is deliberately not
+    // danger red — closing a day is a decision the operator made, not a fault to be corrected.
+    const body=`<span class="availability-day-number">${day}</span>${closed?`<span class="availability-day-state">Closed</span>`:""}`;
+    // A past day cannot be closed any more, but dropping it would put a hole in the arrow path, so it
+    // stays reachable and simply stops being a switch.
+    cells.push(`<td role="gridcell" class="availability-day-cell${closed?" is-closed":""}${past?" is-past":""}">`
+      +(past||!editable
+        ?`<span class="availability-day" tabindex="${tab}" data-availability-day="${localDate}" data-availability-static>${body}<span class="visually-hidden">${escape(label)}${closed?", closed":""}${past?", past day":""}</span></span>`
+        :`<button type="button" class="availability-day" role="switch" aria-checked="${closed}" tabindex="${tab}" data-availability-day="${localDate}" aria-label="Closed on ${escape(label)}">${body}</button>`)
+      +`</td>`);
+  }
+  while(cells.length%7)cells.push(`<td class="availability-day-blank"></td>`);
+  const rows=[];
+  for(let index=0;index<cells.length;index+=7)rows.push(`<tr>${cells.slice(index,index+7).join("")}</tr>`);
+  return head+nav
+    +`<div class="availability-closed-grid-wrap" data-allow-horizontal-scroll>`
+    +`<table class="availability-closed-grid" role="grid" aria-label="Closed days at ${escape(location)}, ${escape(availabilityMonthLabel(month))}" data-testid="availability-closed-grid">`
+    +`<thead><tr>${AVAILABILITY_WEEKDAYS.map((day,index)=>`<th scope="col"><abbr title="${escape(day)}">${AVAILABILITY_WEEKDAYS_SHORT[index]}</abbr></th>`).join("")}</tr></thead>`
+    +`<tbody>${rows.join("")}</tbody></table></div>`
+    +(editable?"":`<p class="availability-note is-quiet">Changing closed days needs the Settings permission.</p>`);
+}
+function availabilityMarkup(){
+  const placeholder=Boolean(AVAILABILITY_PLACEHOLDERS[availabilityState.tab]);
+  const body=placeholder
+    ?`<p class="eyebrow">Coming soon</p><h3>${escape(AVAILABILITY_TABS.find(([id])=>id===availabilityState.tab)[1])}</h3><p>${escape(AVAILABILITY_PLACEHOLDERS[availabilityState.tab])}</p>`
+    :availabilityState.tab==="closed"?availabilityClosedMarkup():availabilityDefaultMarkup();
+  return availabilityTabsMarkup()+availabilityScopeMarkup()
+    +`<article class="settings-panel availability-panel${placeholder?" settings-placeholder":""}" id="availability-panel" role="tabpanel" aria-labelledby="availability-tab-${availabilityState.tab}"${placeholder?' tabindex="0" data-testid="settings-placeholder"':""}>`
+    +body+`</article>`;
+}
+
+// renderSettingsCategory replaces the whole settings pane on every nav click, so this re-reads module
+// state rather than assuming anything about what is currently on screen.
+function renderAvailability(){
+  const root=$("#availability-root");if(!root)return;
+  closeAvailabilityEditor();
+  root.innerHTML=availabilityMarkup();
+  bindAvailability(root);
+  if(!availabilityState.restoreFocus)return;
+  const target=availabilityState.tab==="closed"
+    ?root.querySelector(`[data-availability-day="${availabilityState.focusDate}"]`)
+    :root.querySelector("[data-availability-cell][tabindex='0']");
+  if(!target)return;
+  availabilityState.restoreFocus=false;target.focus();
+}
+function selectAvailabilityTab(tab,{focus=true}={}){
+  if(availabilityState.tab===tab)return;
+  availabilityState.tab=tab;
+  renderAvailability();
+  if(focus)$(`#availability-tab-${tab}`)?.focus();
+  ensureAvailabilityData();
+}
+function shiftAvailabilityMonth(step,{focusDay=null}={}){
+  const month=availabilityMonthShift(availabilityMonth(),step);
+  availabilityState.month=month;availabilityState.closures=null;availabilityState.closuresError=null;
+  if(focusDay){
+    availabilityState.focusDate=availabilityDateValue(month,Math.min(focusDay,availabilityMonthLength(month)));
+    availabilityState.restoreFocus=true;
+  }
+  renderAvailability();ensureAvailabilityData();
+}
+function bindAvailability(root){
+  // Arrow keys move focus across the divider without activating. Activation on focus would fire four
+  // loads for one pass along the bar, so Enter and Space are what commit.
+  root.querySelector('[role="tablist"]')?.addEventListener("keydown",event=>{
+    const buttons=[...root.querySelectorAll("[data-availability-tab]")],index=buttons.indexOf(document.activeElement);
+    if(index<0)return;
+    if(event.key==="Enter"||event.key===" "||event.key==="Spacebar"){event.preventDefault();selectAvailabilityTab(buttons[index].dataset.availabilityTab);return;}
+    if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;
+    event.preventDefault();
+    const next=event.key==="Home"?0:event.key==="End"?buttons.length-1:(index+(event.key==="ArrowRight"?1:-1)+buttons.length)%buttons.length;
+    buttons[next]?.focus();
+  });
+  root.querySelectorAll("[data-availability-tab]").forEach(button=>button.addEventListener("click",()=>selectAvailabilityTab(button.dataset.availabilityTab,{focus:false})));
+  root.querySelectorAll("[data-availability-retry]").forEach(button=>button.addEventListener("click",()=>{
+    if(button.dataset.availabilityRetry==="hours"){availabilityState.hours=null;availabilityState.hoursError=null;}
+    else{availabilityState.closures=null;availabilityState.closuresError=null;}
+    renderAvailability();ensureAvailabilityData();
+  }));
+  root.querySelectorAll(".settings-canonical-link").forEach(button=>button.addEventListener("click",()=>showView(button.dataset.target)));
+  root.querySelectorAll("[data-availability-month]").forEach(button=>button.addEventListener("click",()=>shiftAvailabilityMonth(Number(button.dataset.availabilityMonth))));
+  bindAvailabilityHours(root);
+  bindAvailabilityClosures(root);
+}
+
+// --- Tab 1 editing -------------------------------------------------------
+function bindAvailabilityHours(root){
+  if(!allowed("team.manage"))return;
+  root.querySelectorAll("[data-availability-cell]").forEach(cell=>cell.addEventListener("click",event=>{
+    event.stopPropagation();openAvailabilityEditor(cell);
+  }));
+  const grid=root.querySelector('.availability-grid[role="grid"]');
+  grid?.addEventListener("keydown",event=>{
+    const cell=event.target.closest?.("[data-availability-cell]");
+    if(!cell||event.target!==cell)return;
+    if(["Enter","F2"," ","Spacebar"].includes(event.key)){event.preventDefault();openAvailabilityEditor(cell);return;}
+    // Delete does not save. It opens the same editor with Off already chosen, because a week that
+    // clears itself on a keystroke is a week nobody can be sure they meant to clear.
+    if(["Delete","Backspace"].includes(event.key)){event.preventDefault();openAvailabilityEditor(cell,{off:true});return;}
+    if(!["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End"].includes(event.key))return;
+    event.preventDefault();
+    const cells=[...grid.querySelectorAll("[data-availability-cell]")],index=cells.indexOf(cell),column=index%7;
+    const target=event.key==="Home"?index-column
+      :event.key==="End"?index-column+6
+      :event.key==="ArrowLeft"?(column?index-1:index)
+      :event.key==="ArrowRight"?(column<6?index+1:index)
+      :event.key==="ArrowUp"?index-7:index+7;
+    const next=cells[target];if(!next||next===cell)return;
+    cells.forEach(item=>item.setAttribute("tabindex","-1"));
+    next.setAttribute("tabindex","0");
+    availabilityState.focusCell={employeeId:next.dataset.employeeId,weekday:Number(next.dataset.weekday)};
+    next.focus();
+  });
+}
+function availabilityEditorModel(cell,{off=false}={}){
+  const employee=availabilityEmployee(cell.dataset.employeeId);if(!employee)return null;
+  const weekday=Number(cell.dataset.weekday),day=availabilityDay(employee,weekday);
+  return {employee,weekday,mode:off||!day?"off":"working",startTime:day?.startTime||"09:00",endTime:day?.endTime||"17:00"};
+}
+// The chip row is what earns the grid: the endpoint replaces the whole week in one call, so Monday to
+// Friday nine to five is one request rather than five.
+function availabilityEditorMarkup(model,{wide=false}={}){
+  const cls=wide?" wide":"";
+  return `<p class="availability-editor-head${cls}">${escape(model.employee.displayName)} · ${escape(AVAILABILITY_WEEKDAYS[model.weekday])}</p>`
+    +`<div class="availability-mode${cls}" role="group" aria-label="Working or off">`
+    +["working","off"].map(mode=>`<button type="button" data-availability-mode="${mode}" data-testid="availability-mode-${mode}" aria-pressed="${model.mode===mode}">${mode==="working"?"Working":"Off"}</button>`).join("")
+    +`</div>`
+    +`<div class="availability-times${cls}"${model.mode==="off"?" hidden":""}>`
+    +`<label>Starts<input type="time" data-testid="availability-start" data-availability-start value="${escape(model.startTime)}"></label>`
+    +`<label>Ends<input type="time" data-testid="availability-end" data-availability-end value="${escape(model.endTime)}"></label></div>`
+    +`<fieldset class="availability-apply${cls}"><legend>Also apply to</legend>`
+    +AVAILABILITY_WEEKDAYS.map((label,weekday)=>`<label class="availability-chip"><input type="checkbox" data-availability-day="${weekday}" ${weekday===model.weekday?"checked disabled":""}><span aria-hidden="true">${AVAILABILITY_WEEKDAYS_SHORT[weekday]}</span><span class="visually-hidden">${escape(label)}</span></label>`).join("")
+    +`</fieldset>`
+    // Clearing the last day does not block the groomer: the API reads an empty week as "no
+    // restriction". Saying so here is the difference between an intended change and a surprise.
+    +`<p class="availability-clear-note${cls}" data-availability-clear-note hidden>With no days set, Pawsh stops restricting when ${escape(model.employee.displayName)} can be booked.</p>`;
+}
+function availabilityEditorRead(scope,model){
+  const days=new Set([model.weekday]);
+  scope.querySelectorAll("[data-availability-day]").forEach(box=>{if(box.checked)days.add(Number(box.dataset.availabilityDay));});
+  return {
+    employee:model.employee,weekday:model.weekday,days,
+    mode:scope.querySelector('[data-availability-mode][aria-pressed="true"]')?.dataset.availabilityMode||"off",
+    startTime:scope.querySelector("[data-availability-start]")?.value||"",
+    endTime:scope.querySelector("[data-availability-end]")?.value||""
+  };
+}
+function availabilityRebuildWeek(employee,input){
+  const week=new Map((employee.days||[]).map(day=>[Number(day.weekday),{weekday:Number(day.weekday),startTime:day.startTime,endTime:day.endTime}]));
+  for(const weekday of input.days){
+    if(input.mode==="off")week.delete(weekday);
+    else week.set(weekday,{weekday,startTime:input.startTime,endTime:input.endTime});
+  }
+  return [...week.values()].sort((left,right)=>left.weekday-right.weekday);
+}
+function availabilityValidate(input){
+  if(input.mode==="off")return null;
+  if(!input.startTime||!input.endTime)return "Enter both a start and an end time.";
+  if(input.startTime>=input.endTime)return "The end time must be later than the start time.";
+  return null;
+}
+function availabilitySaveMessage(error){
+  if(error.status===403)return "You do not have permission to change working hours.";
+  if(error.status===404)return "That groomer is no longer in this workspace.";
+  if(error.status===409)return "These hours were changed somewhere else. Close this and open the day again.";
+  if(error.status)return error.message;
+  // The same phrasing as the location switcher, because it is the same failure and the operator has
+  // already learned what it means there.
+  return "Could not save working hours. Check your connection and try again.";
+}
+async function saveAvailabilityWeek(input){
+  const problem=availabilityValidate(input);
+  if(problem)throw new Error(problem);
+  const employee=input.employee,path=`/api/employees/${encodeURIComponent(employee.id)}/working-hours`;
+  // appointmentLimit is deliberately never sent: Pawsh's database enforces one appointment per
+  // groomer at a time, and the endpoint refuses any other value.
+  await api(path,{method:"PUT",body:JSON.stringify({hours:availabilityRebuildWeek(employee,input)})});
+  // A destructive whole-week replace with no concurrency token, so what was sent is not evidence of
+  // what is stored. Re-reading is the only thing standing between two managers and a week neither of
+  // them saved.
+  const stored=await api(path);
+  employee.days=(Array.isArray(stored)?stored:[]).map(day=>({weekday:Number(day.weekday),startTime:day.startTime,endTime:day.endTime,appointmentLimit:1}));
+}
+function availabilityAfterSave(input){
+  availabilityState.focusCell={employeeId:input.employee.id,weekday:input.weekday};
+  availabilityState.restoreFocus=true;
+  renderAvailability();
+  const cell=availabilityCellAt(input.employee.id,input.weekday);
+  if(cell){cell.classList.add("is-saved");setTimeout(()=>cell.classList.remove("is-saved"),1200);}
+  toast(`${input.employee.displayName}'s working hours saved.`);
+}
+function availabilityBindEditorControls(scope,model,{onSave,onCancel}){
+  const times=scope.querySelector(".availability-times"),clearNote=scope.querySelector("[data-availability-clear-note]");
+  const sync=()=>{
+    const input=availabilityEditorRead(scope,model);
+    times.hidden=input.mode==="off";
+    clearNote.hidden=input.mode!=="off"||availabilityRebuildWeek(model.employee,input).length>0;
+  };
+  scope.querySelectorAll("[data-availability-mode]").forEach(button=>button.addEventListener("click",()=>{
+    scope.querySelectorAll("[data-availability-mode]").forEach(other=>other.setAttribute("aria-pressed",String(other===button)));
+    sync();
+    if(button.dataset.availabilityMode==="working")scope.querySelector("[data-availability-start]")?.focus();
+  }));
+  scope.querySelectorAll("[data-availability-day]").forEach(box=>box.addEventListener("change",sync));
+  scope.querySelectorAll('input[type="time"]').forEach(input=>input.addEventListener("keydown",event=>{
+    if(event.key!=="Enter")return;
+    event.preventDefault();onSave();
+  }));
+  scope.querySelector("[data-availability-cancel]")?.addEventListener("click",onCancel);
+  scope.querySelector("[data-availability-save]")?.addEventListener("click",onSave);
+  sync();
+}
+// The grid scrolls inside its own container, so an absolutely positioned popover would be clipped by
+// it. Fixed coordinates recomputed against the cell keep the editor anchored and whole.
+function positionAvailabilityEditor(popover,cell){
+  const rect=cell.getBoundingClientRect(),width=popover.offsetWidth,height=popover.offsetHeight;
+  const left=Math.max(8,Math.min(rect.left,globalThis.innerWidth-width-8));
+  const below=rect.bottom+4;
+  popover.style.left=`${Math.round(left)}px`;
+  popover.style.top=`${Math.round(below+height>globalThis.innerHeight-8?Math.max(8,rect.top-height-4):below)}px`;
+}
+function closeAvailabilityEditor({restoreFocus=false}={}){
+  availabilityEditorTeardown?.();
+  availabilityEditorTeardown=null;
+  const popover=$("#availability-root .availability-editor");if(!popover)return;
+  const cell=popover.closest("[data-availability-cell]");
+  popover.remove();
+  if(restoreFocus)cell?.focus();
+}
+function openAvailabilityEditor(cell,{off=false}={}){
+  const model=availabilityEditorModel(cell,{off});if(!model)return;
+  if(availabilityCompact?.matches)return openAvailabilityDialog(model);
+  closeAvailabilityEditor();
+  const popover=document.createElement("div");
+  popover.className="availability-editor";
+  popover.dataset.testid="availability-editor";
+  popover.innerHTML=availabilityEditorMarkup(model)
+    +`<p class="error" data-availability-error role="alert"></p>`
+    +`<div class="availability-editor-actions"><button type="button" class="secondary compact" data-availability-cancel>Cancel</button>`
+    +`<button type="button" class="primary compact" data-testid="availability-save" data-availability-save>Save</button></div>`;
+  cell.append(popover);
+  positionAvailabilityEditor(popover,cell);
+  const error=popover.querySelector("[data-availability-error]");
+  const save=async()=>{
+    const input=availabilityEditorRead(popover,model),button=popover.querySelector("[data-availability-save]");
+    const problem=availabilityValidate(input);
+    error.textContent="";
+    if(problem){error.textContent=problem;return;}
+    // Disabled and aria-busy, but the label stays put: a button that renames itself mid-save moves
+    // the very thing the operator is looking at.
+    button.disabled=true;button.setAttribute("aria-busy","true");
+    try{
+      await saveAvailabilityWeek(input);
+      closeAvailabilityEditor();
+      availabilityAfterSave(input);
+    }catch(failure){
+      // The editor stays open with every value intact, because retyping a week in order to retry a
+      // failure is the real cost of closing it.
+      error.textContent=availabilitySaveMessage(failure);
+      button.disabled=false;button.removeAttribute("aria-busy");
+    }
+  };
+  availabilityBindEditorControls(popover,model,{onSave:()=>runDetached(save),onCancel:()=>closeAvailabilityEditor({restoreFocus:true})});
+  popover.addEventListener("keydown",event=>{
+    if(event.key==="Escape"){event.preventDefault();event.stopPropagation();closeAvailabilityEditor({restoreFocus:true});return;}
+    if(event.key!=="Tab")return;
+    const focusable=[...popover.querySelectorAll("button:not(:disabled),input:not(:disabled)")];
+    if(!focusable.length)return;
+    const first=focusable[0],last=focusable.at(-1);
+    if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
+    else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+  });
+  popover.addEventListener("click",event=>event.stopPropagation());
+  const reposition=()=>positionAvailabilityEditor(popover,cell);
+  const dismiss=event=>{if(!popover.contains(event.target))closeAvailabilityEditor();};
+  const scroller=cell.closest(".availability-grid-wrap");
+  globalThis.addEventListener("resize",reposition);
+  scroller?.addEventListener("scroll",reposition);
+  document.addEventListener("click",dismiss);
+  availabilityEditorTeardown=()=>{
+    globalThis.removeEventListener("resize",reposition);
+    scroller?.removeEventListener("scroll",reposition);
+    document.removeEventListener("click",dismiss);
+  };
+  (model.mode==="off"?popover.querySelector("[data-availability-mode]"):popover.querySelector("[data-availability-start]"))?.focus();
+}
+// Below the grid breakpoint the same model, the same save and the same copy go into the shared
+// dialog. Only the container changes.
+function openAvailabilityDialog(model){
+  openModal("Working hours",availabilityEditorMarkup(model,{wide:true}),async()=>{
+    const input=availabilityEditorRead($("#modal-fields"),model);
+    await saveAvailabilityWeek(input);
+    return ()=>availabilityAfterSave(input);
+  },{submitLabel:"Save"});
+  availabilityBindEditorControls($("#modal-fields"),model,{
+    onSave:()=>$("#modal-form").requestSubmit(),
+    onCancel:()=>$("#modal").close()
+  });
+}
+
+// --- Tab 4 closures ------------------------------------------------------
+function availabilityClosureMessage(error){
+  if(error.status===403)return "You do not have permission to change closed days.";
+  if(error.status===404)return "That location is no longer available.";
+  if(error.status)return error.message;
+  return "Could not update closed days. Check your connection and try again.";
+}
+function bindAvailabilityClosures(root){
+  const grid=root.querySelector(".availability-closed-grid");if(!grid)return;
+  grid.querySelectorAll("[data-availability-day]:not([data-availability-static])").forEach(day=>{
+    day.addEventListener("click",()=>runDetached(()=>toggleAvailabilityClosure(day.dataset.availabilityDay)));
+  });
+  grid.addEventListener("keydown",event=>{
+    const day=event.target.closest?.("[data-availability-day]");if(!day)return;
+    const localDate=day.dataset.availabilityDay;
+    if(event.key==="Enter"||event.key===" "||event.key==="Spacebar"){
+      if(day.hasAttribute("data-availability-static"))return;
+      event.preventDefault();runDetached(()=>toggleAvailabilityClosure(localDate));return;
+    }
+    if(["PageUp","PageDown"].includes(event.key)){
+      event.preventDefault();shiftAvailabilityMonth(event.key==="PageUp"?-1:1,{focusDay:Number(localDate.slice(8,10))});return;
+    }
+    if(!["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End"].includes(event.key))return;
+    event.preventDefault();
+    const days=[...grid.querySelectorAll("[data-availability-day]")],index=days.indexOf(day);
+    const column=(dateAt(`${availabilityMonth()}-01`).getUTCDay()+index)%7;
+    const target=event.key==="Home"?index-column
+      :event.key==="End"?index-column+6
+      :event.key==="ArrowLeft"?index-1
+      :event.key==="ArrowRight"?index+1
+      :event.key==="ArrowUp"?index-7:index+7;
+    const next=days[Math.max(0,Math.min(days.length-1,target))];if(!next||next===day)return;
+    days.forEach(item=>item.setAttribute("tabindex","-1"));
+    next.setAttribute("tabindex","0");
+    availabilityState.focusDate=next.dataset.availabilityDay;
+    next.focus();
+  });
+}
+async function toggleAvailabilityClosure(localDate){
+  if(!allowed("settings.manage"))return;
+  const entry=availabilityState.closures?.get(localDate)||{closed:false,reason:null,booked:0};
+  // Re-opening never asks. Closing over live bookings does, and it is still allowed: Pawsh does not
+  // quietly strand an appointment, and it does not quietly overrule the operator either.
+  if(!entry.closed&&entry.booked>0){
+    const count=entry.booked;
+    openModal("Close the salon",
+      `<p class="wide">${count} appointment${count===1?" is":"s are"} already booked on ${escape(availabilityDateLabel(localDate))}. Closing the salon does not cancel ${count===1?"it":"them"} — you will need to move or cancel each one.</p>`,
+      async()=>{const message=await applyAvailabilityClosure(localDate,true,{announce:false});return ()=>toast(message);},
+      {submitLabel:"Close the salon",cancelLabel:"Keep it open"});
+    return;
+  }
+  await applyAvailabilityClosure(localDate,!entry.closed);
+}
+async function applyAvailabilityClosure(localDate,closed,{announce=true}={}){
+  const closures=availabilityState.closures,locationId=availabilityLocationId();
+  if(!closures||!locationId)return null;
+  const month=availabilityMonth(),previous=closures.get(localDate)||{closed:false,reason:null,booked:0};
+  closures.set(localDate,{...previous,closed});
+  availabilityState.focusDate=localDate;availabilityState.restoreFocus=true;
+  renderAvailability();
+  const closedDates=[...closures].filter(([date,entry])=>entry.closed&&date.startsWith(`${month}-`)).map(([date])=>date).sort();
+  try{
+    const result=await api(`/api/locations/${encodeURIComponent(locationId)}/closure-days`,{method:"PUT",body:JSON.stringify({month,closedDates})});
+    // The save bumps the location's optimistic-concurrency token. Leaving the stale one in state
+    // would fail the operator's very next booking with STALE_LOCATION_SETTINGS and no visible cause.
+    const version=Number(result?.locationVersion);
+    if(state.me?.business&&Number.isFinite(version))state.me.business.locationVersion=version;
+    // The server normalises and echoes the month back, so the grid reconciles against what was
+    // stored rather than against what this screen happened to send.
+    const saved=new Set(result?.closedDates||closedDates);
+    for(const [date,value] of closures)if(date.startsWith(`${month}-`))closures.set(date,{...value,closed:saved.has(date)});
+    for(const date of saved)if(!closures.has(date))closures.set(date,{closed:true,reason:null,booked:0});
+    availabilityState.restoreFocus=true;
+    renderAvailability();
+    const message=`${availabilityLocationName()} is ${closed?"closed":"open"} on ${availabilityDateLabel(localDate)}.`;
+    if(announce)toast(message);
+    return message;
+  }catch(error){
+    closures.set(localDate,previous);
+    availabilityState.restoreFocus=true;
+    renderAvailability();
+    if(!announce)throw new Error(availabilityClosureMessage(error));
+    toast(availabilityClosureMessage(error));
+    return null;
+  }
+}
+
+function renderSettingsCategory(category=settingsPathCategory(),{history="replace"}={}){const definition=settingsCategories.find(([id])=>id===category)||settingsCategories[0],[id,title]=definition,nav=$("#settings-navigation"),content=$("#settings-content");if(!nav||!content)return;nav.innerHTML=settingsCategories.map(([key,label])=>`<button type="button" data-settings-category="${key}" class="${key===id?"active":""}" ${key===id?'aria-current="page"':""}>${escape(label)}</button>`).join("");let html="";if(id==="account")html=settingsLink("Account","Personal identity and password security remain in your canonical account workspace.","Manage profile & security","profile-account");else if(id==="staff")html=settingsLink("Staff","Groomer records, operational eligibility, and active status remain in Salon.","Open Salon team","setup");else if(id==="business")html=`<article class="settings-panel"><h3>Business</h3><p>Manage the workspace name and authoritative timezone, currency, tax rate, and reminder lead time.</p><button type="button" class="primary compact settings-business-action">Edit business settings</button></article>`;else if(id==="availability")html=`<div id="availability-root" class="availability-root"></div>`;else if(id==="permissions")html=allowed("team.manage")?`<article class="settings-panel"><div class="panel-head"><div><h3>Permissions</h3><p>Manage workspace membership and server-authorized access.</p></div><button type="button" class="secondary compact settings-invite">+ Invite</button></div><div id="member-list" class="simple-list"></div><h4>Pending access requests</h4><div id="access-request-list" class="simple-list"></div></article>`:settingsPlaceholder(id,title);else if(id==="services")html=settingsLink("Services","Service names, pricing, durations, and availability have one canonical workspace.","Open Services","services");else if(id==="pet-options")html=settingsLink("Pet options","Breed Catalog and pricing classifications remain location-operational configuration under Salon. Rabies safety rules are not configurable here.","Open Breed Catalog","breed-catalog");else if(id==="tax-payments")html=`<article class="settings-panel"><h3>Tax & payments</h3><p>The server-authoritative tax rate is part of Business settings. Payment recording remains in checkout.</p><button type="button" class="primary compact settings-business-action">Manage tax settings</button></article>`;else if(id==="automated-messages")html=`<article class="settings-panel"><h3>Automated messages</h3><p>Pawsh’s durable reminder/outbox flow uses the configured reminder lead time. Template and channel management are deferred.</p><button type="button" class="primary compact settings-business-action">Manage reminder timing</button></article>`;else html=settingsPlaceholder(id,title);content.innerHTML=`<div class="settings-content-head"><p class="eyebrow">Settings</p><h2>${escape(title)}</h2></div>${html}`;nav.querySelectorAll("[data-settings-category]").forEach(button=>button.addEventListener("click",()=>renderSettingsCategory(button.dataset.settingsCategory,{history:"push"})));content.querySelectorAll(".settings-canonical-link").forEach(button=>button.addEventListener("click",()=>showView(button.dataset.target)));content.querySelectorAll(".settings-business-action").forEach(button=>button.addEventListener("click",actions["business-settings"]));content.querySelector(".settings-invite")?.addEventListener("click",actions["invite-member"]);if(id==="permissions")renderSetup();if(id==="availability"){renderAvailability();ensureAvailabilityData();}if(history!=="none")globalThis.history[history==="push"?"pushState":"replaceState"]({view:"admin-settings",settingsCategory:id},"",`/settings/${id}`);content.focus({preventScroll:true});}
 
 async function openClientProfile(customerId,{petId=null,appointmentId=null,returnView=null}={}){
   if(returnView)state.clientProfileReturnView=returnView;
@@ -2332,8 +3149,9 @@ function petIdentitySectionMarkup(pet,photos){
     }).join("")
     +`</select></label>`;
   // A species the catalog does not list is kept rather than silently rewritten to Dog.
-  const speciesOptions=PET_TYPES.some(type=>type.toLowerCase()===String(pet.species||"").toLowerCase())
-    ? PET_TYPES : [...PET_TYPES,pet.species].filter(Boolean);
+  const typeNames=petTypeNames();
+  const speciesOptions=typeNames.some(type=>type.toLowerCase()===String(pet.species||"").toLowerCase())
+    ? typeNames : [...typeNames,pet.species].filter(Boolean);
   const years=Array.from({length:31},(unused,index)=>[String(index),`${index} ${index===1?"year":"years"}`]);
   const months=Array.from({length:12},(unused,index)=>[String(index),`${index} ${index===1?"month":"months"}`]);
   return `<form class="pet-profile-section pet-identity" data-pet-section="identity">`
@@ -2344,7 +3162,7 @@ function petIdentitySectionMarkup(pet,photos){
     +`<div class="pet-field-grid">`
       +field("name","Pet name","text",`value="${escape(pet.name||"")}"`)
       +choice("species","Type",speciesOptions,pet.species,"Not set")
-      +breedField(pet.breed||"")
+      +breedField(pet)
       +`<label class="pet-check"><input data-testid="field-mixedBreed" name="mixedBreed" type="checkbox" ${pet.mixedBreed?"checked":""}> Mixed breed</label>`
       +choice("hairLength","Hair length",PET_HAIR_LENGTHS,pet.hairLength)
       +choice("sex","Gender",PET_GENDERS,pet.sex)
@@ -2532,11 +3350,12 @@ function petPoundsToOunces(value){
 }
 
 async function savePetIdentity(form){
-  const values=Object.fromEntries(new FormData(form));
+  const data=new FormData(form);
+  const values=Object.fromEntries(data);
   const pet=petProfileState.pet;
   const updated=await api(`/api/pets/${pet.id}`,{method:"PUT",body:JSON.stringify({
     customerId:pet.customerId,
-    name:values.name||null,species:values.species,breed:values.breed||null,
+    name:values.name||null,species:values.species,...breedPayload(data),
     dateOfBirth:values.dateOfBirth||null,approximateAge:pet.approximateAge??null,
     weightOunces:petPoundsToOunces(values.weightPounds),
     sex:values.sex||null,coatNotes:values.coatNotes||null,
@@ -2684,7 +3503,7 @@ function bindPetProfile(){
     try{
       if(form.dataset.petSection==="identity")await savePetIdentity(form);
       else await savePetCareSection(form,form.dataset.petSection);
-    }catch(error){toast(error.message);}
+    }catch(error){markBreedRefusal(error);toast(error.message);}
     finally{if(button)button.disabled=false;}
   }));
   setupBreedAutocomplete();
@@ -3897,7 +4716,6 @@ $("#customer-prev").addEventListener("click",()=>loadCustomerDirectory(state.cus
 $("#breed-search")?.addEventListener("input",event=>{state.breedCatalog.query=event.target.value;renderBreedCatalog();});
 $("#breed-show-inactive")?.addEventListener("change",event=>{state.breedCatalog.showInactive=event.target.checked;renderBreedCatalog();});
 $("#breed-sort-name")?.addEventListener("click",()=>{state.breedCatalog.sortDirection*=-1;$("#breed-sort-name span").textContent=state.breedCatalog.sortDirection===1?"A–Z":"Z–A";renderBreedCatalog();});
-$("#breed-add-form")?.addEventListener("submit",async event=>{event.preventDefault();const form=event.currentTarget,errorBox=$("#breed-add-error");errorBox.textContent="";form.elements.name.removeAttribute("aria-invalid");try{const values=Object.fromEntries(new FormData(form));await api("/api/dog-breeds",{method:"POST",body:JSON.stringify(values)});form.reset();await reloadBreeds();toast("Breed added");}catch(error){errorBox.textContent=error.message;if(error.status===409&&error.data?.existing&&!error.data.existing.active){const button=document.createElement("button");button.type="button";button.className="text-button";button.textContent=`Reactivate ${error.data.existing.name}`;button.addEventListener("click",()=>toggleBreed(error.data.existing.id,true));errorBox.append(" ",button);}form.elements.name.setAttribute("aria-invalid","true");}});
 function printRangeDefaults(){if(state.calendar.view==="day"||state.calendar.view==="month")return [state.calendar.selectedDate,state.calendar.selectedDate];return [state.calendar.weekStart,dateShift(state.calendar.weekStart,6)];}
 function printableAgenda(items){const sorted=items.slice().sort((a,b)=>new Date(a.startAt)-new Date(b.startAt));return sorted.length?sorted.map(item=>{const model=appointmentPresentation(item);return `<article class="print-appointment"><header><strong>${escape(model.groomer)}</strong><span>${escape(model.dateLabel)} · ${escape(model.timeRange)}</span></header><div><p><b>Pet:</b> ${escape(petName({petName:model.petName}))}${model.breed?` · ${escape(model.breed)}`:""}</p><p><b>Services:</b> ${model.services.map(escape).join(", ")}</p><p><b>Client:</b> ${escape(model.customerName)}${item.customerPhone?` · ${escape(item.customerPhone)}`:""}</p>${item.notes?`<p><b>Appointment note:</b> ${escape(item.notes)}</p>`:""}</div></article>`;}).join(""):`<p>No appointments in this print range.</p>`;}
 async function printAgendaItems(form){const start=String(form.get("printStart")),end=String(form.get("printEnd")),days=Math.round((dateAt(end)-dateAt(start))/86400000)+1;if(!start||!end||days<1||days>31)throw new Error("Choose a print range from 1 to 31 days.");const groomerId=String(form.get("printGroomer")||""),items=filteredAppointments(await loadAppointmentRange(start,days));return groomerId?items.filter(item=>(item.groomers||[]).some(groomer=>groomer.id===groomerId)):items;}

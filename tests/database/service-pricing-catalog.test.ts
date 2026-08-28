@@ -108,4 +108,74 @@ describeDatabase("tenant service pricing and breed catalog",()=>{let db:Database
     await app.inject({method:"PUT",url:`/api/breeds/${poodle.id}/settings`,headers:{cookie:ownerCookie},payload:{pricingClass:null,active:null}});
   });
 
+
+  // Two reviewed taxonomy outcomes that must not drift back.
+  //
+  // "Sheep Dog" is retired because the name is ambiguous, NOT folded into Old English Sheepdog:
+  // that fold would move EXTRA_FLOOF -> STANDARD, a price cut dressed up as a cleanup.
+  it("retires Sheep Dog without repointing it at another breed",async()=>{
+    const [sheepDog]=await db<{active:boolean;defaultPricingClass:string}[]>`
+      select active,default_pricing_class from breeds where normalized_name='sheep dog'`;
+    expect(sheepDog).toMatchObject({active:false});
+    // No alias may resolve the retired name onto anything.
+    const [aliased]=await db<{count:number}[]>`
+      select count(*)::int as count from breed_aliases where normalized_name='sheep dog'`;
+    expect(aliased!.count).toBe(0);
+    // Old English Sheepdog is untouched and keeps its own class.
+    const [oes]=await db<{active:boolean;defaultPricingClass:string}[]>`
+      select active,default_pricing_class from breeds where normalized_name='old english sheepdog'`;
+    expect(oes).toMatchObject({active:true,defaultPricingClass:"STANDARD"});
+  });
+
+  // Irish Water Dog and Irish Water Spaniel are one animal. The Spaniel survives as canonical at
+  // EXTRA_FLOOF - the coat class it should always have carried - and the Dog spelling becomes a
+  // safe exact alias onto it, so the fold cannot move a price.
+  it("consolidates Irish Water Dog onto the Irish Water Spaniel",async()=>{
+    const [spaniel]=await db<{id:string;active:boolean;defaultPricingClass:string}[]>`
+      select id,active,default_pricing_class from breeds where normalized_name='irish water spaniel'`;
+    expect(spaniel).toMatchObject({active:true,defaultPricingClass:"EXTRA_FLOOF"});
+    const [dog]=await db<{active:boolean}[]>`
+      select active from breeds where normalized_name='irish water dog'`;
+    expect(dog).toMatchObject({active:false});
+    const [alias]=await db<{breedId:string;aliasKind:string}[]>`
+      select breed_id,alias_kind from breed_aliases where normalized_name='irish water dog'`;
+    expect(alias).toMatchObject({breedId:spaniel!.id,aliasKind:"SAFE_EXACT_ALIAS"});
+
+    // The retired spelling is no longer selectable...
+    const types=(await app.inject({method:"GET",url:"/api/pet-types",headers:{cookie:ownerCookie}})).json();
+    const dogType=types.find((type:{search:string})=>type.search==="dog");
+    const selectable=(await app.inject({method:"GET",url:`/api/pet-types/${dogType.id}/breeds`,
+      headers:{cookie:ownerCookie}})).json().filter((breed:{active:boolean})=>breed.active)
+      .map((breed:{name:string})=>breed.name);
+    expect(selectable).not.toContain("Irish Water Dog");
+    expect(selectable).not.toContain("Sheep Dog");
+    expect(selectable).toContain("Irish Water Spaniel");
+
+    // ...but the alias still resolves legacy text onto the surviving canonical breed.
+    const created=await app.inject({method:"POST",url:"/api/pets",headers:{cookie:ownerCookie},
+      payload:{customerId,name:"Water Pet",species:"dog",breed:"Irish Water Dog"}});
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({breedId:spaniel!.id,breed:"Irish Water Spaniel"});
+  });
+
+  // An explicit Other is a finished answer, not a half-resolved record: it carries no canonical
+  // id, keeps its description, and prices at the neutral default.
+  it("prices an explicit Other at the default and leaves it editable",async()=>{
+    const created=await app.inject({method:"POST",url:"/api/pets",headers:{cookie:ownerCookie},
+      payload:{customerId,name:"Other Pet",species:"dog",breedOther:"Pomeranian x Chihuahua"}});
+    expect(created.statusCode).toBe(201);
+    const petId=created.json().id;
+    const [stored]=await db<{breedId:string|null;breedOther:string|null;breed:string|null}[]>`
+      select breed_id,breed_other,breed from pets where id=${petId}`;
+    expect(stored).toMatchObject({breedId:null,breedOther:"Pomeranian x Chihuahua"});
+    const priced=await app.inject({method:"POST",url:"/api/pricing/resolve",headers:{cookie:ownerCookie},
+      payload:{petId,serviceIds:[groomId]}});
+    expect(priced.json()[0].pricingClass).toBe("STANDARD");
+    // An unrelated edit must not force a breed decision.
+    const edited=await app.inject({method:"PUT",url:`/api/pets/${petId}`,headers:{cookie:ownerCookie},
+      payload:{customerId,name:"Other Pet",species:"dog",breedOther:"Pomeranian x Chihuahua",weightOunces:320,version:created.json().version}});
+    expect(edited.statusCode).toBe(200);
+    expect(edited.json()).toMatchObject({breedId:null,breedOther:"Pomeranian x Chihuahua",weightOunces:320});
+  });
+
 });

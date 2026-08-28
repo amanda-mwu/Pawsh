@@ -3782,7 +3782,10 @@ export function registerRoutes(
           set pricing_class=excluded.pricing_class,active=excluded.active,updated_at=now()
       `;
     });
-    const [row]=await breedCatalogRows(db,{businessId:context.businessId,petTypeId:breed.petTypeId,breedId});
+    // Read back with inactive rows included. Deactivating a breed is a legitimate outcome of
+    // this call, and the default catalog projection hides inactive rows - so without this the
+    // write would succeed and then report 404 for the row it had just saved.
+    const [row]=await breedCatalogRows(db,{businessId:context.businessId,petTypeId:breed.petTypeId,breedId,includeInactive:true});
     return row ?? reply.code(404).send({error:"Breed not found"});
   });
 

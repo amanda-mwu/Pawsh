@@ -1138,13 +1138,14 @@ function renderBreedCatalog(){
   $$("#breed-catalog-body input,#breed-catalog-body select").forEach(control=>control.addEventListener("keydown",event=>{if(event.key==="Escape"){state.breedCatalog.editingId=null;renderBreedCatalog();}else if(event.key==="Enter"){event.preventDefault();saveBreedRow(control.closest("tr"));}}));
 }
 async function reloadBreeds(){state.dogBreeds=await api("/api/dog-breeds");renderBreedCatalog();}
-// Breeds are shared Pawsh taxonomy: a salon only stores a sparse override. Carry the fields it is
-// not changing at their current value when an override already exists, and as null when it does not,
-// so editing one field never silently pins the other away from the Pawsh default.
-function breedOverride(breed,changes){return {pricingClass:breed?.customized?breed.defaultPricingClass:null,active:breed?.customized?breed.active:null,...changes};}
+// Breeds are shared Pawsh taxonomy: a salon only stores a sparse override, and each call sends
+// only the field it is changing. The server merges an omitted field with what is stored, so
+// editing one never pins the other away from the Pawsh default.
 async function putBreedSettings(id,body){await api(`/api/breeds/${id}/settings`,{method:"PUT",body:JSON.stringify(body)});await reloadBreeds();}
-async function saveBreedRow(row){const errorRow=row.nextElementSibling,select=row.querySelector(".breed-edit-class"),breed=state.dogBreeds.find(item=>item.id===row.dataset.breedId);try{await api(`/api/breeds/${row.dataset.breedId}/settings`,{method:"PUT",body:JSON.stringify(breedOverride(breed,{pricingClass:select.value}))});state.breedCatalog.editingId=null;await reloadBreeds();toast("Breed updated");}catch(error){errorRow.hidden=false;errorRow.firstElementChild.textContent=error.message;select.setAttribute("aria-invalid","true");}}
-async function toggleBreed(id,active){await putBreedSettings(id,breedOverride(state.dogBreeds.find(item=>item.id===id),{active}));toast(active?"Breed reactivated":"Breed deactivated");}
+async function saveBreedRow(row){const errorRow=row.nextElementSibling,select=row.querySelector(".breed-edit-class");try{await api(`/api/breeds/${row.dataset.breedId}/settings`,{method:"PUT",body:JSON.stringify({pricingClass:select.value})});state.breedCatalog.editingId=null;await reloadBreeds();toast("Breed updated");}catch(error){errorRow.hidden=false;errorRow.firstElementChild.textContent=error.message;select.setAttribute("aria-invalid","true");}}
+// Send only the field being changed. The server merges: an omitted field keeps whatever is
+// stored, so changing the class cannot pin `active` away from the shared Pawsh default.
+async function toggleBreed(id,active){await putBreedSettings(id,{active});toast(active?"Breed reactivated":"Breed deactivated");}
 async function resetBreed(id){await putBreedSettings(id,{pricingClass:null,active:null});toast("Pawsh default restored");}
 async function deactivate(type,id) {
   if(!confirm(`Deactivate this ${type==="services"?"service":"team member"}?`))return;

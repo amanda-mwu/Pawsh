@@ -85,6 +85,26 @@ describe("database migrations", () => {
     expect(clientAgreements).toContain("one_open_agreement_notification");
     // Sending reuses the email-only outbox; the channel enum stays untouched.
     expect(clientAgreements).not.toContain("channel in ('email','sms')");
+
+    // The legacy breed cleanup is an explicit allow-list with a price guard. Both properties are
+    // asserted here because losing either turns a reviewed cleanup into a silent repricing.
+    const legacyBreeds = await readFile("migrations/0031_resolve_safe_legacy_breeds.sql", "utf8");
+    expect(legacyBreeds).toContain("'yorkie', 'dog', 'yorkshire terrier'");
+    expect(legacyBreeds).toContain("'STANDARD'");
+    // Neither fold may be added without a product decision: both move EXTRA_FLOOF -> STANDARD.
+    expect(legacyBreeds).not.toContain("'sheep dog', 'dog', 'old english sheepdog'");
+    expect(legacyBreeds).not.toContain("'irish water dog', 'dog', 'irish water spaniel'");
+    // The consolidation migration retires two names and reclasses one, and must refuse to run
+    // where any pet references them rather than silently repricing that salon's book.
+    const consolidation = await readFile(
+      "migrations/0032_consolidate_water_spaniel_and_retire_sheep_dog.sql", "utf8");
+    expect(consolidation).toContain("raise exception");
+    expect(consolidation).toContain("would be repriced");
+    expect(consolidation).toContain("'EXTRA_FLOOF'");
+    expect(consolidation).toContain("'SAFE_EXACT_ALIAS'");
+    // "Sheep Dog" is retired, never repointed: no alias row may be created for it.
+    expect(consolidation).not.toContain("'sheep dog', 'SAFE_EXACT_ALIAS'");
+    expect(consolidation).not.toContain("old english sheepdog',");
     expect(clientAgreements).not.toContain("alter column channel");
   });
 });

@@ -21,6 +21,7 @@ import {
   passwordResetRequestSchema, passwordResetConfirmSchema, invitationSchema,
   invitationAcceptSchema, ownershipTransferSchema, petProfileUpdateSchema, petCareUpdateSchema,
   servicePricingSchema,petTypeParams,breedParams,breedSettingsSchema,priceResolutionSchema,
+  breedCreateSchema,breedRenameSchema,
   ownProfileUpdateSchema,passwordChangeSchema,workspaceAccessRequestSchema,workspaceSelectionSchema,
   locationSelectionSchema,customerNoteParams,customerNoteCreateSchema,customerNoteUpdateSchema,
   customerNoteQuerySchema,customerPreferencesSchema,
@@ -1016,9 +1017,18 @@ async function salonClosedOn(
  * Canonical breeds for one pet type, with a tenant's sparse overrides folded in.
  *
  * `defaultPricingClass` and `active` come back as EFFECTIVE values so no caller has to
- * re-implement the precedence, and `customized` says whether this salon has expressed an
+ * re-implement the precedence, and `customized` says whether this business has expressed an
  * opinion at all - which is what lets Settings show "following the Pawsh default" honestly
- * rather than implying the salon chose today's value.
+ * rather than implying the business chose today's value.
+ *
+ * `businessOwned` separates the two partitions of the taxonomy: false is a shared Pawsh breed,
+ * which this business may configure but never rename or delete; true is a breed this business
+ * created, which only it can see and only it can change. It is the single field the client
+ * needs to decide whether a row gets rename and delete controls.
+ *
+ * Everything here is keyed on `businessId` alone - the customer account - so the same catalog
+ * is served at every location that account operates. There is no location dimension by
+ * design; see migrations/0033_business_owned_breeds.sql.
  */
 function breedCatalogRows(
   db: Database,
@@ -1026,20 +1036,104 @@ function breedCatalogRows(
 ) {
   return db<{
     id: string; name: string; search: string;
-    defaultPricingClass: string; active: boolean; customized: boolean;
+    defaultPricingClass: string; active: boolean; customized: boolean; businessOwned: boolean;
   }[]>`
     select breed.id,breed.name,breed.normalized_name as search,
       coalesce(override.pricing_class,breed.default_pricing_class) as default_pricing_class,
       coalesce(override.active,breed.active) as active,
-      (override.pricing_class is not null or override.active is not null) as customized
+      (override.pricing_class is not null or override.active is not null) as customized,
+      (breed.business_id is not null) as business_owned
     from breeds breed
     left join business_breed_settings override
       on override.business_id=${input.businessId} and override.breed_id=breed.id
     where breed.pet_type_id=${input.petTypeId}
+      -- The shared taxonomy plus this account's own additions, and nothing belonging to
+      -- another tenant. Every breed query in this file carries this predicate, and it is the
+      -- primary boundary: the row-level policies on this table are inert while Pawsh connects
+      -- as its owner, so this predicate is load-bearing rather than defense in depth.
+      and (breed.business_id is null or breed.business_id=${input.businessId})
       and (${input.breedId ?? null}::uuid is null or breed.id=${input.breedId ?? null}::uuid)
       and (${input.includeInactive ?? false} or coalesce(override.active,breed.active))
     order by coalesce(override.active,breed.active) desc,breed.name
   `;
+}
+
+/**
+ * Loads a breed this tenant is allowed to see, and says which partition it belongs to.
+ *
+ * Returning `undefined` and returning a shared breed are different answers and the callers act
+ * on them differently: not visible is a 404, visible but shared is a refusal with its own code,
+ * because "no such breed" and "that breed is not yours to change" are different things for
+ * anyone reading the response.
+ */
+async function loadBreedForTenant(
+  sql: Transaction | Database,
+  input: { businessId: string; breedId: string }
+): Promise<{ id: string; petTypeId: string; name: string; businessId: string | null } | undefined> {
+  const [breed] = await sql<{ id: string; petTypeId: string; name: string; businessId: string | null }[]>`
+    select id,pet_type_id,name,business_id from breeds
+    where id=${input.breedId}
+      and (business_id is null or business_id=${input.businessId})
+  `;
+  return breed;
+}
+
+/**
+ * Refuses to mutate a shared Pawsh breed.
+ *
+ * A rename would change breed identity for every tenant at once, which is exactly the property
+ * the canonical taxonomy exists to guarantee, and a delete would remove a row other tenants'
+ * pets reference. The account's controls over a shared breed are pricing class and availability,
+ * both of which are already served by `PUT /api/breeds/:breedId/settings` and neither of which
+ * touches the shared row.
+ */
+function refuseSharedBreedMutation(name: string): SchedulingRequestError {
+  return new SchedulingRequestError(
+    409,
+    "BREED_NOT_BUSINESS_OWNED",
+    `"${name}" is a shared Pawsh breed. Set its pricing class or turn it off for your business instead.`
+  );
+}
+
+/**
+ * Refuses a business-created breed name that is already taken for this pet type.
+ *
+ * Three sources of collision, all reported with one code because the client's response to each
+ * is the same - ask for a different name - and the message says which one it hit:
+ *   * a shared Pawsh breed, so a custom "Poodle" cannot shadow the canonical Poodle
+ *   * one of this account's own breeds
+ *   * an alias, because a breed named "Yorkie" would make the pet write path's name
+ *     resolution ambiguous between the new row and the Yorkshire Terrier the alias points at
+ * Another BUSINESS holding the name is NOT a collision: the two rows are independent, which is
+ * what lets two unrelated accounts each add "Cavapoochon".
+ */
+async function assertBreedNameAvailable(
+  tx: Transaction,
+  input: { businessId: string; petTypeId: string; normalizedName: string; name: string; excludeBreedId?: string }
+): Promise<void> {
+  // Ordered rather than left to the planner: a bare `union all ... limit 1` picks an arbitrary
+  // branch, and which collision the caller is told about should not depend on the plan.
+  const [taken] = await tx<{ owner: string }[]>`
+    select owner from (
+      select case when breed.business_id is null then 'shared' else 'business' end as owner,
+        case when breed.business_id is null then 1 else 2 end as rank
+      from breeds breed
+      where breed.pet_type_id=${input.petTypeId}
+        and breed.normalized_name=${input.normalizedName}
+        and (breed.business_id is null or breed.business_id=${input.businessId})
+        and breed.id is distinct from ${input.excludeBreedId ?? null}::uuid
+      union all
+      select 'alias' as owner,3 as rank from breed_aliases alias
+      where alias.pet_type_id=${input.petTypeId} and alias.normalized_name=${input.normalizedName}
+    ) collision order by rank limit 1
+  `;
+  if (!taken) return;
+  const reason = taken.owner === "shared"
+    ? `"${input.name}" is already a Pawsh breed for this pet type.`
+    : taken.owner === "alias"
+      ? `"${input.name}" is already used as another spelling of an existing breed.`
+      : `You already have a breed called "${input.name}".`;
+  throw new SchedulingRequestError(409, "BREED_NAME_TAKEN", reason);
 }
 
 interface PetBreedSelection { petTypeId: string | null; breedId: string | null; breed: string | null; breedOther: string | null }
@@ -1094,6 +1188,9 @@ async function resolvePetBreedSelection(
       left join business_breed_settings override
         on override.business_id=${input.businessId} and override.breed_id=breed.id
       where breed.id=${supplied.breedId} and breed.pet_type_id=${petTypeId}
+        -- A business-owned breed is selectable only by the business that owns it. Without this, a
+        -- caller who learned another tenant's breed id could attach it to their own pet.
+        and (breed.business_id is null or breed.business_id=${input.businessId})
         and (
           coalesce(override.active,breed.active)
           -- A salon may deactivate a breed after pets are already on it. Keeping the pet's own
@@ -1120,6 +1217,7 @@ async function resolvePetBreedSelection(
       left join business_breed_settings override
         on override.business_id=${input.businessId} and override.breed_id=breed.id
       where breed.pet_type_id=${petTypeId} and coalesce(override.active,breed.active)
+        and (breed.business_id is null or breed.business_id=${input.businessId})
         and breed.normalized_name=${normalized}
       union all
       select breed.id,breed.name from breed_aliases alias
@@ -1128,6 +1226,7 @@ async function resolvePetBreedSelection(
         on override.business_id=${input.businessId} and override.breed_id=breed.id
       where alias.pet_type_id=${petTypeId} and alias.alias_kind='SAFE_EXACT_ALIAS'
         and alias.normalized_name=${normalized} and coalesce(override.active,breed.active)
+        and (breed.business_id is null or breed.business_id=${input.businessId})
       limit 1
     `;
     if (match) return { petTypeId, breedId: match.id, breed: match.name, breedOther: null };
@@ -3721,13 +3820,13 @@ export function registerRoutes(
    * The breeds a tenant may choose from, for one pet type, with that tenant's own configuration
    * folded in.
    *
-   * `defaultPricingClass` and `active` are the EFFECTIVE values: the salon's sparse override
+   * `defaultPricingClass` and `active` are the EFFECTIVE values: the account's sparse override
    * where it has expressed one, the canonical Pawsh default otherwise. The caller never has to
-   * know which of the two answered, and a salon that has configured nothing simply sees the
+   * know which of the two answered, and an account that has configured nothing simply sees the
    * shared taxonomy.
    *
    * Staff who cannot manage settings see only what is active for them, so the pet editor cannot
-   * offer a breed the salon has switched off.
+   * offer a breed the account has switched off.
    */
   app.get("/api/pet-types/:petTypeId/breeds", {
     preHandler: [authenticate, requirePermission("pets.view")]
@@ -3756,20 +3855,27 @@ export function registerRoutes(
   });
 
   /**
-   * Records what THIS salon thinks about a canonical breed - its coat/pricing class, and whether
+   * Records what THIS BUSINESS thinks about a canonical breed - its coat/pricing class, and whether
    * it offers the breed at all.
    *
-   * It deliberately cannot rename a breed. Breed identity is canonical and shared: a salon
+   * It deliberately cannot rename a breed. Breed identity is canonical and shared: a business
    * renaming "German Shepherd" for everyone was never the intent, and under the old per-tenant
-   * catalog a rename silently repriced that salon's whole book because pets were joined to it by
+   * catalog a rename silently repriced that account's whole book because pets were joined to it by
    * name. Setting a field back to null restores the Pawsh default rather than freezing today's
-   * value, so a breed follows the shared taxonomy again once the salon stops disagreeing.
+   * value, so a breed follows the shared taxonomy again once the account stops disagreeing.
+   * Renaming a breed the business owns is a separate call - PATCH /api/breeds/:breedId.
+   *
+   * This serves business-owned breeds too, through the same override table and the same
+   * precedence. Keeping one write path for pricing class and availability means those two
+   * fields have exactly one storage location per breed, so no two endpoints can disagree about
+   * which value wins.
    */
   app.put("/api/breeds/:breedId/settings",{preHandler:[authenticate,requirePermission("services.manage")]},async(request,reply)=>{
     const context=auth(request);
     const {breedId}=breedParams.parse(request.params);
     const input=body(breedSettingsSchema,request.body);
-    const [breed]=await db<{id:string;petTypeId:string}[]>`select id,pet_type_id from breeds where id=${breedId}`;
+    // Scoped, so another tenant's business-owned breed is a 404 rather than a settable row.
+    const breed=await loadBreedForTenant(db,{businessId:context.businessId,breedId});
     if(!breed)return reply.code(404).send({error:"Breed not found"});
     await db.begin(async (tx)=>{
       await setTenant(tx,context.businessId);
@@ -3801,6 +3907,119 @@ export function registerRoutes(
     // write would succeed and then report 404 for the row it had just saved.
     const [row]=await breedCatalogRows(db,{businessId:context.businessId,petTypeId:breed.petTypeId,breedId,includeInactive:true});
     return row ?? reply.code(404).send({error:"Breed not found"});
+  });
+
+  /**
+   * Creates a breed that belongs to THIS BUSINESS - the customer account, so it is available at
+   * every location that account operates rather than at one salon.
+   *
+   * The row lives in `breeds` alongside the shared taxonomy, carrying this business_id, so its
+   * id is an ordinary breed id: `pets.breedId` references it through the same composite foreign
+   * key, the pricing resolver reads it through the same join, and the settings endpoint
+   * configures it through the same override table. No second identity space, and no row is
+   * created for any account that does not ask for one.
+   *
+   * `pricingClass` defaults to STANDARD, which is what an unresolved breed already prices at, so
+   * adding a breed cannot move a price by itself. It is changed afterwards through the settings
+   * endpoint like any other breed.
+   */
+  app.post("/api/pet-types/:petTypeId/breeds",{preHandler:[authenticate,requirePermission("services.manage")]},async(request,reply)=>{
+    const context=auth(request);
+    const {petTypeId}=petTypeParams.parse(request.params);
+    const input=body(breedCreateSchema,request.body);
+    const [petType]=await db<{id:string}[]>`select id from pet_types where id=${petTypeId} and active`;
+    if(!petType)return reply.code(404).send({error:"Pet type not found"});
+    const normalized=normalizeBreedSearch(input.name);
+    if(!normalized)throw new SchedulingRequestError(400,"BREED_NAME_INVALID","Enter a breed name using letters or numbers.");
+    const breedId=await db.begin(async (tx)=>{
+      await setTenant(tx,context.businessId);
+      await assertBreedNameAvailable(tx,{businessId:context.businessId,petTypeId,normalizedName:normalized,name:input.name});
+      const [created]=await tx<{id:string}[]>`
+        insert into breeds (business_id,pet_type_id,name,normalized_name,default_pricing_class)
+        values (${context.businessId},${petTypeId},${input.name},${normalized},${input.pricingClass??"STANDARD"})
+        returning id
+      `;
+      return created!.id;
+    });
+    const [row]=await breedCatalogRows(db,{businessId:context.businessId,petTypeId,breedId,includeInactive:true});
+    return reply.code(201).send(row);
+  });
+
+  /**
+   * Renames a breed this business owns.
+   *
+   * A SHARED breed is refused with BREED_NOT_BUSINESS_OWNED: renaming one would change breed
+   * identity for every tenant at once, and stable identity across a display-name change is the
+   * property the canonical taxonomy exists to provide.
+   *
+   * `pets.breed` is the denormalized display copy of the name, so it is rewritten for this
+   * account's pets on this breed. That is a display correction and nothing more - `breed_id` does
+   * not move, so no pet changes pricing class. Only this account's pets can reference the breed,
+   * so the update is bounded to rows this tenant owns.
+   */
+  app.patch("/api/breeds/:breedId",{preHandler:[authenticate,requirePermission("services.manage")]},async(request,reply)=>{
+    const context=auth(request);
+    const {breedId}=breedParams.parse(request.params);
+    const input=body(breedRenameSchema,request.body);
+    const normalized=normalizeBreedSearch(input.name);
+    if(!normalized)throw new SchedulingRequestError(400,"BREED_NAME_INVALID","Enter a breed name using letters or numbers.");
+    const petTypeId=await db.begin(async (tx)=>{
+      await setTenant(tx,context.businessId);
+      const breed=await loadBreedForTenant(tx,{businessId:context.businessId,breedId});
+      if(!breed)throw new SchedulingRequestError(404,"RESOURCE_NOT_FOUND","Breed not found");
+      if(breed.businessId===null)throw refuseSharedBreedMutation(breed.name);
+      await assertBreedNameAvailable(tx,{businessId:context.businessId,petTypeId:breed.petTypeId,
+        normalizedName:normalized,name:input.name,excludeBreedId:breedId});
+      await tx`
+        update breeds set name=${input.name},normalized_name=${normalized},updated_at=now()
+        where id=${breedId} and business_id=${context.businessId}
+      `;
+      await tx`
+        update pets set breed=${input.name},updated_at=now()
+        where business_id=${context.businessId} and breed_id=${breedId}
+      `;
+      return breed.petTypeId;
+    });
+    const [row]=await breedCatalogRows(db,{businessId:context.businessId,petTypeId,breedId,includeInactive:true});
+    return row ?? reply.code(404).send({error:"Breed not found"});
+  });
+
+  /**
+   * Deletes a breed this business owns.
+   *
+   * A SHARED breed is refused with BREED_NOT_BUSINESS_OWNED, for the same reason a rename is.
+   *
+   * A breed any pet still references is refused with BREED_IN_USE rather than deleted. The
+   * alternative - clearing `pets.breed_id` and leaving the display text, the way legacy pets are
+   * grandfathered - would drop every one of those pets to STANDARD, which is a price cut applied
+   * without anyone choosing it. Refusing puts the decision where it belongs: move the pets, or
+   * turn the breed off with the settings endpoint and keep them priced as they are.
+   *
+   * Archived pets count. They still hold the foreign key, and un-archiving one must not
+   * resurrect a reference to a breed that no longer exists.
+   */
+  app.delete("/api/breeds/:breedId",{preHandler:[authenticate,requirePermission("services.manage")]},async(request,reply)=>{
+    const context=auth(request);
+    const {breedId}=breedParams.parse(request.params);
+    await db.begin(async (tx)=>{
+      await setTenant(tx,context.businessId);
+      const breed=await loadBreedForTenant(tx,{businessId:context.businessId,breedId});
+      if(!breed)throw new SchedulingRequestError(404,"RESOURCE_NOT_FOUND","Breed not found");
+      if(breed.businessId===null)throw refuseSharedBreedMutation(breed.name);
+      const [usage]=await tx<{petCount:number}[]>`
+        select count(*)::int as pet_count from pets
+        where business_id=${context.businessId} and breed_id=${breedId}
+      `;
+      const petCount=usage?.petCount??0;
+      if(petCount>0){
+        throw new SchedulingRequestError(409,"BREED_IN_USE",
+          `${petCount} ${petCount===1?"pet is":"pets are"} still recorded as "${breed.name}". Change them to another breed first, or turn this one off instead.`,
+          {petCount});
+      }
+      // The account's own override of its own breed goes with it, by cascade.
+      await tx`delete from breeds where id=${breedId} and business_id=${context.businessId}`;
+    });
+    return reply.code(204).send();
   });
 
   app.post("/api/pricing/resolve",{preHandler:[authenticate,requirePermission("appointments.create")]},async(request)=>{

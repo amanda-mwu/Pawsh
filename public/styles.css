@@ -18,13 +18,13 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--coral);outline-offs
 @media(max-width:900px){.auth-shell{grid-template-columns:1fr}.brand-panel{display:none}.app-shell{grid-template-columns:1fr}aside{height:auto;position:static;padding:18px 22px;flex-direction:row;align-items:center;gap:18px;overflow:visible}aside nav{display:flex;margin:0;gap:2px;overflow:auto}.aside-foot{display:block;margin:0 0 0 auto}.account-control{border:0;padding:0}.account-control>button{width:auto;min-width:54px}.account-summary{display:none}.account-menu{left:auto;right:0;top:62px;bottom:auto;min-width:210px}main{padding:28px 20px}.metric-grid{grid-template-columns:repeat(2,1fr)}.content-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.card-grid{grid-template-columns:repeat(2,1fr)}.directory-controls{grid-template-columns:1fr 1fr}.calendar-workspace{grid-template-columns:1fr}.month-sidebar{display:none}.calendar-toolbar{align-items:flex-start;flex-wrap:wrap}.profile-section{grid-template-columns:1fr;gap:14px}}@media(max-width:580px){header{align-items:start}.header-actions span{display:none}.metric-grid,.card-grid,.form-grid{grid-template-columns:1fr}.appointment{grid-template-columns:65px 1fr}.appointment .badge{display:none}aside .brand{display:none}aside{padding:10px;justify-content:flex-start;gap:8px}aside nav{flex:1;overflow:auto}nav button{font-size:12px;padding:10px 8px}.panel-head,.split-head{align-items:flex-start;gap:12px;flex-wrap:wrap}h2{font-size:28px}#modal-form{padding:20px}.directory-controls{grid-template-columns:1fr}.directory-table th:nth-child(n+3),.directory-table td:nth-child(n+3){display:none}.directory-pagination{justify-content:space-between}.calendar-toolbar>div{flex-wrap:wrap}.week-grid{grid-template-columns:58px repeat(7,minmax(150px,1fr))}.account-chevron{display:none}}
 .breed-combobox{position:relative}.breed-options{position:absolute;z-index:10;top:70px;left:0;right:0;max-height:240px;overflow:auto;border:1px solid var(--line);border-radius:10px;background:#fff;box-shadow:var(--shadow);padding:5px}.breed-options button{display:block;width:100%;min-height:44px;border:0;background:#fff;color:var(--ink);padding:10px;text-align:left}.breed-options button:hover,.breed-options button[aria-selected="true"]{background:var(--mint);outline:2px solid #2f6f62;outline-offset:-2px}.breed-options .breed-option-other{border-top:1px solid var(--line);font-weight:700}.breed-options button:only-child.breed-option-other{border-top:0}.breed-hint{margin:-8px 0 14px;color:var(--muted);font-size:12px;font-weight:400;line-height:1.4}.breed-hint[hidden]{display:none}.breed-other-field[hidden]{display:none}.breed-combobox input[aria-invalid="true"]{border-color:#b3261e}.rabies-profile-status{padding:10px;border-radius:9px;background:var(--mint);font-weight:700}
 .mobile-only{display:none}
-.settings-list{border-top:1px solid var(--line)}.settings-row{width:100%;min-height:58px;border:0;background:transparent;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:10px 0;text-align:left;color:var(--ink)}.settings-row span:first-child{display:grid;gap:3px}.settings-row small{color:var(--muted);font-weight:400}.breed-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:10px}.breed-toolbar .search{margin:0;max-width:420px;flex:1}.inline-check{display:flex;align-items:center;gap:8px;margin:0;white-space:nowrap}.inline-check input{width:auto}.breed-note{margin:0 0 10px;line-height:1.5}.breed-note strong{font-weight:700}.breed-table-wrap{border:1px solid var(--line);background:var(--paper);overflow:visible}.breed-table{width:100%;border-collapse:collapse;table-layout:fixed}.breed-table th,.breed-table td{height:44px;padding:4px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}.breed-table th{font-size:12px;background:#f7f8f6}.breed-table th:first-child{width:44%}.breed-table th:nth-child(2){width:27%}.breed-table th:nth-child(3){width:17%}.breed-table th:last-child{width:56px}.breed-table input,.breed-table select{width:100%;min-height:36px;padding:6px 8px}.table-sort{border:0;background:transparent;padding:8px 0;font-weight:700;color:var(--ink)}.breed-status{font-size:12px;font-weight:700}.breed-status.inactive{color:var(--muted)}.row-menu{position:relative}.row-menu summary{list-style:none;display:grid;place-items:center;width:44px;height:44px;border-radius:8px;cursor:pointer;font-size:20px}.row-menu summary::-webkit-details-marker{display:none}.row-menu[open] summary{background:var(--mint)}.row-menu-items{position:absolute;right:0;top:40px;z-index:8;min-width:145px;padding:5px;background:#fff;border:1px solid var(--line);border-radius:9px;box-shadow:var(--shadow)}.row-menu-items button{display:block;width:100%;min-height:44px;border:0;background:#fff;text-align:left;padding:8px 10px}.row-menu-items button:hover,.row-menu-items button:focus-visible{background:var(--mint)}.breed-flag{display:inline-block;padding:1px 6px;border-radius:999px;background:var(--mint);font-size:11px;font-weight:700}.breed-flag.default{background:transparent;color:var(--muted);padding-left:0}.breed-edit-row{display:flex;align-items:center;flex-wrap:wrap;gap:10px}.breed-edit-row label{margin:0;flex:1 1 170px;max-width:230px}.breed-editing td{padding-top:6px;padding-bottom:6px}.breed-edit-actions{display:flex;gap:4px}.breed-edit-actions button{min-width:44px;min-height:40px;border:0;background:transparent;font-weight:700}.breed-row-error td{height:auto;padding:5px 12px;color:#b3261e;font-size:12px}.breed-row-error[hidden]{display:none}
-@media(max-width:700px){.breed-toolbar{align-items:stretch;flex-direction:column}.breed-table th:nth-child(2),.breed-table th:nth-child(3){display:none}.breed-table td:nth-child(2),.breed-table td:nth-child(3){display:none}.breed-table th:first-child{width:auto}.breed-table td:first-child strong,.breed-table td:first-child small{display:block}.breed-table td:first-child small{color:var(--muted);margin-top:2px}.breed-table-wrap{overflow:visible}}
+.settings-list{border-top:1px solid var(--line)}.settings-row{width:100%;min-height:58px;border:0;background:transparent;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:10px 0;text-align:left;color:var(--ink)}.settings-row span:first-child{display:grid;gap:3px}.settings-row small{color:var(--muted);font-weight:400}.inline-check{display:flex;align-items:center;gap:8px;margin:0;white-space:nowrap}.inline-check input{width:auto}.row-menu{position:relative}.row-menu summary{list-style:none;display:grid;place-items:center;width:44px;height:44px;border-radius:8px;cursor:pointer;font-size:20px}.row-menu summary::-webkit-details-marker{display:none}.row-menu[open] summary{background:var(--mint)}.row-menu-items{position:absolute;right:0;top:40px;z-index:8;min-width:145px;padding:5px;background:#fff;border:1px solid var(--line);border-radius:9px;box-shadow:var(--shadow)}.row-menu-items button{display:block;width:100%;min-height:44px;border:0;background:#fff;text-align:left;padding:8px 10px}.row-menu-items button:hover,.row-menu-items button:focus-visible{background:var(--mint)}.breed-flag{display:inline-block;padding:1px 6px;border-radius:999px;background:var(--mint);font-size:11px;font-weight:700}
+
 @media(max-width:700px){.mobile-only{display:block}}
 .pet-summary>span{display:inline}.pet-row-actions{white-space:nowrap}.pet-row-actions .text-button{min-height:44px;padding:4px}.customer-detail-actions{display:flex;gap:12px;border-bottom:1px solid var(--line)}.customer-pet-row{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-top:1px solid var(--line)}.customer-pet-row small{display:block;color:var(--muted);margin-top:3px}
 .calendar-open{display:block;width:100%;border:0;background:transparent;color:inherit;text-align:left;padding:0;min-height:28px}.week-appointment{align-self:stretch}.week-appointment .safety-context{max-height:32px;overflow:hidden}.appointment-card-footer{display:flex;align-items:center;gap:5px;min-width:0;margin-top:3px}.appointment-card-footer .rabies-needed{flex:0 1 auto;min-width:0}.appointment-status{color:var(--muted);font-size:10px;text-transform:capitalize;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.appointment-card-footer .calendar-actions-menu{margin-left:auto}.week-appointment:has(.calendar-action-popover:not([hidden])){z-index:20;overflow:visible}
 .setup-menu{position:relative}.setup-menu summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:var(--paper);cursor:pointer;font-weight:700}.setup-menu summary::-webkit-details-marker{display:none}.setup-menu[open] summary{background:var(--mint)}.setup-menu-items{position:absolute;right:0;z-index:12;min-width:210px;margin-top:5px;padding:5px;border:1px solid var(--line);border-radius:9px;background:#fff;box-shadow:var(--shadow)}.setup-menu-items button,.setup-menu-items a{display:block;width:100%;min-height:44px;padding:10px;border:0;background:#fff;color:var(--ink);text-align:left;text-decoration:none}.setup-menu-items button:hover,.setup-menu-items button:focus-visible,.setup-menu-items a:hover,.setup-menu-items a:focus-visible,.setup-menu-items a[aria-current="page"]{background:var(--mint)}.breadcrumbs{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px;color:var(--muted);font-size:13px}.breadcrumbs a{color:var(--ink)}
-@media(max-width:700px){.breed-catalog-head .setup-menu{width:100%}.breed-catalog-head .setup-menu summary{width:100%}.setup-menu-items{left:0;right:0}.breadcrumbs{font-size:12px}}
+@media(max-width:700px){.setup-menu-items{left:0;right:0}.breadcrumbs{font-size:12px}}
 @media(max-width:900px){aside{min-width:0}aside nav{min-width:0}.aside-foot{flex:0 0 auto}}
 .auth-access-request{margin-top:20px;padding-top:16px;border-top:1px solid var(--line);display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;color:var(--muted)}.access-request-section{border-top:1px solid var(--line);margin-top:18px;padding-top:14px}.access-request-section h4{margin:0 0 8px}.service-unavailable{color:var(--muted)}.service-unavailable small{display:block;font-weight:400;margin-left:24px}
 .compact-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.35rem .75rem}.compact-options label{display:flex;align-items:center;gap:.55rem;min-height:44px;margin:0;padding:.35rem .5rem;border:1px solid var(--line);border-radius:.45rem}.compact-options label:has(input:checked){background:var(--mint);border-color:#2f6f62}.compact-options input{flex:0 0 auto;width:auto}.compact-options small{display:block;color:var(--muted);margin-top:.1rem}.service-options{display:grid;gap:.75rem}.service-options section{margin:0}.service-options h4{margin:0 0 .3rem;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
@@ -171,7 +171,7 @@ label{gap:5px;margin-bottom:12px}
 
 /* Tables read as one component: compact rows, quiet headers, obvious row affordance. */
 .directory-table th,.directory-table td{padding:8px 12px}
-.directory-table th,.reminder-table th,.breed-table th{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.directory-table th,.reminder-table th{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
 .directory-table th{background:#f7f8f6}
 .reminder-table td,.reminder-table th{padding:7px 10px}
 .reminder-table .icon-action{width:var(--icon-btn-sm);height:var(--icon-btn-sm);min-height:var(--icon-btn-sm);border-radius:6px}
@@ -225,7 +225,6 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 .week-appointment[data-groomer-slot]{background:var(--g-tint);border-left-color:var(--g)}
 .week-groomer-head[data-groomer-slot],.day-groomer[data-groomer-slot]{box-shadow:inset 0 -3px 0 var(--g)}
 #groomer-filter-options label[data-groomer-slot]{border-left:3px solid var(--g);padding-left:8px}
-
 
 /* 44px touch contract. Density elsewhere comes from padding and type scale;
    these specific controls are asserted by expectCriticalTarget and stay 44. */
@@ -1308,3 +1307,68 @@ button.availability-stack-row:hover{background:var(--surface-2)}
   .availability-scope{max-width:none}
   .availability-month-nav strong{min-width:0}
 }
+
+/* Pet Options: a section rail beside the section's own content, matching the settings shell. */
+.pet-options-workspace{display:grid;grid-template-columns:180px minmax(0,1fr);gap:var(--space-5);align-items:start}
+.pet-options-nav{display:grid;gap:2px;align-content:start;border-right:1px solid var(--line);padding-right:var(--space-4)}
+.pet-options-nav button{min-height:40px;padding:8px 10px;border:0;border-radius:9px;background:transparent;color:var(--muted);font-size:13px;font-weight:600;text-align:left}
+.pet-options-nav button:hover{background:var(--mint);color:var(--ink)}
+.pet-options-nav button.active{background:var(--brand);color:var(--on-brand);font-weight:700}
+.pet-type-table{width:100%;border-collapse:collapse}
+.pet-type-table th{height:38px;padding:0 12px;background:var(--cream);color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;text-align:left;border-bottom:1px solid var(--line)}
+.pet-type-table td{padding:12px;border-bottom:1px solid var(--line);font-size:14px}
+.pet-type-actions{display:flex;gap:var(--space-4);justify-content:flex-end}
+.pet-type-actions .text-button{min-height:32px}
+.pet-type-actions .text-button.danger{color:var(--danger,#b3261e)}
+.pet-type-actions .text-button[disabled]{color:var(--muted);cursor:not-allowed}
+.pet-type-foot{display:flex;justify-content:flex-end;margin-top:var(--space-4)}
+.pet-type-panel .settings-note{margin-top:var(--space-4)}
+@media(max-width:760px){.pet-options-workspace{grid-template-columns:1fr}
+  .pet-options-nav{display:flex;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line);padding:0 0 var(--space-3)}
+  .pet-options-nav button{flex:0 0 auto}}
+
+/* Breeds belong to a pet type, so they open over Pet Options rather than navigating away. */
+.breed-drawer{margin:0 0 0 auto;width:min(560px,100vw);max-width:100vw;height:100dvh;max-height:100dvh;border:0;border-left:1px solid var(--line);border-radius:0;padding:0;background:var(--paper)}
+.breed-drawer::backdrop{background:rgba(0,0,0,.35)}
+.breed-drawer[open]{display:flex;flex-direction:column}
+.breed-drawer-head{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);padding:var(--space-4) var(--space-5);border-bottom:1px solid var(--line)}
+.breed-drawer-head h3{margin:0;font-size:17px}
+.breed-drawer-body{flex:1;min-height:0;overflow-y:auto;padding:var(--space-4) var(--space-5)}
+.breed-drawer-foot{display:flex;justify-content:flex-end;padding:var(--space-4) var(--space-5);border-top:1px solid var(--line)}
+@media(max-width:620px){.breed-drawer{width:100vw}}
+.breed-drawer-list{list-style:none;margin:var(--space-4) 0 0;padding:0;display:grid}
+/* Name takes the slack; the three control columns size to their content so they stay aligned
+   down the list whether or not a given row owns a rename, a delete, or a reset. */
+.breed-drawer-list li{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;align-items:center;gap:var(--space-3);min-height:48px;padding:8px 2px;border-bottom:1px solid var(--line);font-size:14px}
+.breed-drawer-list li small{color:var(--muted);font-size:11px;white-space:nowrap}
+.breed-drawer-list li.empty{display:block;color:var(--muted)}
+.breed-drawer-list li.is-inactive .breed-row-name{color:var(--muted)}
+.breed-drawer-body .search{max-width:none}
+.breed-drawer-body .inline-check{margin:var(--space-3) 0 0;font-size:12px}
+.breed-row-name{min-width:0;display:flex;align-items:center;gap:7px;overflow:hidden;text-overflow:ellipsis}
+/* Marks a breed this business added, which is also the only kind that gets rename and delete. */
+.breed-flag{flex:none;font-size:10px;font-weight:700;letter-spacing:.02em;padding:3px 7px;border-radius:20px;background:var(--mint);color:var(--ink)}
+.breed-row-class{margin:0}
+.breed-row-class select{padding:6px 8px;font-size:12px;border-radius:8px}
+.breed-status-toggle{flex:none;min-width:74px;border:1px solid var(--line);border-radius:20px;background:var(--success-tint);color:var(--success);padding:5px 10px;font-size:11px;font-weight:700}
+.breed-status-toggle.inactive{background:var(--paper);color:var(--muted)}
+.breed-status-toggle:focus-visible{outline:3px solid var(--coral);outline-offset:2px}
+/* Rename and delete appear on hover or keyboard focus; the column keeps its width either way so
+   rows do not shift under the pointer. Reset is only present when this business has overridden
+   the breed, so it is what tells you the row is no longer following the Pawsh default. */
+.breed-row-actions{display:flex;align-items:center;justify-content:flex-end;gap:2px;min-width:72px}
+.breed-row-actions .icon-button,.breed-row-actions .breed-reset{opacity:0;transition:opacity .12s ease}
+.breed-drawer-list li:hover .breed-row-actions .icon-button,.breed-drawer-list li:focus-within .breed-row-actions .icon-button,.breed-drawer-list li:hover .breed-row-actions .breed-reset,.breed-drawer-list li:focus-within .breed-row-actions .breed-reset{opacity:1}
+.breed-row-actions .breed-reset{font-size:11px;padding:6px 4px}
+@media(hover:none){.breed-row-actions .icon-button,.breed-row-actions .breed-reset{opacity:1}}
+/* Narrow phones cannot hold four columns; the controls wrap under the name instead. */
+@media(max-width:520px){
+  .breed-drawer-list li{grid-template-columns:minmax(0,1fr) auto;row-gap:6px}
+  .breed-row-name{grid-column:1/-1}
+  .breed-row-actions{justify-content:flex-start}
+}
+.icon-button{display:grid;place-items:center;width:32px;height:32px;padding:0;border:0;border-radius:7px;background:transparent;color:var(--muted)}
+.icon-button svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.icon-button:hover{background:var(--mint);color:var(--ink)}
+.icon-button.danger:hover{background:#fdecea;color:#b3261e}
+.icon-button:focus-visible{outline:3px solid var(--coral);outline-offset:2px}

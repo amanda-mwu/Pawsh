@@ -114,21 +114,14 @@
       </section>
 
       <section id="setup" data-testid="setup-view" class="view" hidden>
-        <div class="split-head"><div><p class="eyebrow">Location operations</p><h3>Salon</h3></div><details class="setup-menu"><summary aria-label="Salon sections" aria-expanded="false">Salon sections <span aria-hidden="true">▾</span></summary><nav class="setup-menu-items" aria-label="Salon sections"><button data-permission="settings.manage" type="button" data-action="business-hours">Business hours</button><a href="/salon/breeds" data-view-link="breed-catalog">Breed catalog</a></nav></details></div>
+        <div class="split-head"><div><p class="eyebrow">Location operations</p><h3>Salon</h3></div><details class="setup-menu"><summary aria-label="Salon sections" aria-expanded="false">Salon sections <span aria-hidden="true">▾</span></summary><nav class="setup-menu-items" aria-label="Salon sections"><button data-permission="settings.manage" type="button" data-action="business-hours">Business hours</button></nav></details></div>
         <div class="content-grid">
           <article class="panel" data-permission="team.manage"><div class="panel-head"><h3>Team</h3><button type="button" class="text-button" data-action="new-employee">+ Add</button></div><div id="employee-list" class="simple-list"></div></article>
           <article class="panel" data-permission="settings.manage"><h3>Business hours</h3><p>Set the operating hours used by scheduling.</p><div class="settings-list"><button class="settings-row" type="button" data-action="business-hours"><span><strong>Manage hours</strong><small>Location opening and closing times</small></span><span aria-hidden="true">Open →</span></button></div></article>
-          <article class="panel" data-permission="services.manage"><h3>Breed Catalog</h3><p>Manage breeds and pricing classifications.</p><div class="settings-list"><a class="settings-row" href="/salon/breeds" data-view-link="breed-catalog"><span><strong>Manage breeds</strong><small>Active breeds and pricing classes</small></span><span aria-hidden="true">Open →</span></a></div></article>
+
         </div>
       </section>
 
-      <section id="breed-catalog" data-testid="breed-catalog-view" class="view" data-permission="services.manage" hidden>
-        <div class="split-head breed-catalog-head"><div><nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/" data-view-link="setup">Salon</a><span aria-hidden="true">/</span><span aria-current="page">Breed Catalog</span></nav><p class="eyebrow">Salon</p><h3>Breed Catalog</h3><p>Manage breeds and pricing classifications.</p></div><details class="setup-menu"><summary aria-label="Salon sections" aria-expanded="false">Salon sections <span aria-hidden="true">▾</span></summary><nav class="setup-menu-items" aria-label="Breed Catalog sections"><button data-permission="settings.manage" type="button" data-action="business-hours">Business hours</button><a href="/salon/breeds" data-view-link="breed-catalog" aria-current="page">Breed catalog</a></nav></details></div>
-        <div class="breed-toolbar"><label class="search"><span class="sr-only">Search breeds</span><input data-testid="breed-search" id="breed-search" type="search" placeholder="Search breeds…"></label><label class="inline-check"><input id="breed-show-inactive" type="checkbox"> Show inactive</label></div>
-        <p class="fine breed-note">Breeds are a shared Pawsh catalog, so names cannot be edited here. Each salon sets its own pricing class and availability; rows marked <strong>Pawsh default</strong> follow the shared setting.</p>
-        <div class="breed-table-wrap"><table class="breed-table"><thead><tr><th scope="col"><button id="breed-sort-name" type="button" class="table-sort" aria-label="Sort breed name">Breed <span aria-hidden="true">A–Z</span></button></th><th scope="col">Pricing class</th><th scope="col">Status</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="breed-catalog-body"></tbody></table></div>
-        <p id="breed-catalog-status" class="fine" role="status" aria-live="polite"></p>
-      </section>
 
       <section id="admin-settings" data-testid="admin-settings-view" class="view" data-permission="settings.manage" hidden>
         <div class="settings-workspace"><aside class="settings-secondary" aria-label="Settings navigation"><div><p class="eyebrow">Workspace</p><h3>Settings</h3></div><nav id="settings-navigation" aria-label="Settings categories"></nav></aside><div id="settings-content" class="settings-content" tabindex="-1"></div></div>
@@ -229,6 +222,22 @@
     <div class="stacked-dialog-actions">
       <button type="button" class="secondary" data-testid="stacked-dialog-dismiss">Cancel</button>
       <button type="button" class="primary" data-testid="stacked-dialog-confirm">OK</button>
+    </div>
+  </dialog>
+  <dialog id="breed-drawer" class="breed-drawer" aria-labelledby="breed-drawer-title" data-testid="breed-drawer">
+    <div class="breed-drawer-head">
+      <h3 id="breed-drawer-title">Breeds</h3>
+      <button type="button" class="close" data-testid="breed-drawer-close" aria-label="Close breeds">&#215;</button>
+    </div>
+    <div class="breed-drawer-body">
+      <label class="search"><span class="sr-only">Search breeds</span>
+        <input id="breed-drawer-search" data-testid="breed-drawer-search" type="search" placeholder="Search breeds…"></label>
+      <label class="inline-check"><input id="breed-drawer-show-inactive" data-testid="breed-drawer-show-inactive" type="checkbox"> Show inactive</label>
+      <ul id="breed-drawer-list" class="breed-drawer-list"></ul>
+      <p id="breed-drawer-status" class="fine" role="status" aria-live="polite"></p>
+    </div>
+    <div class="breed-drawer-foot">
+      <button type="button" class="primary compact" id="breed-add" data-testid="breed-add">Add Pet Breed</button>
     </div>
   </dialog>
   <dialog id="modal" data-testid="modal">

@@ -24,13 +24,20 @@ export async function resolveServicePrices(sql:Sql,input:{businessId:string;petI
  // INACTIVE breed deliberately yields STANDARD rather than falling back to the legacy name,
  // because recovering the class through the name would defeat deactivating it. Legacy pets with
  // no `breed_id` resolve to STANDARD, which is exactly what the name lookup already gave them.
+ //
+ // A business-owned breed (`breeds.business_id` non-null) resolves through exactly the same join:
+ // its class lives on its own row, and the account's sparse override still layers on top. The
+ // tenant predicate keeps another account's breed from ever answering here - a pet can only carry
+ // such an id through a database the API never wrote, and this refuses to price it rather than
+ // reading a class the tenant does not own.
  const [breedClass]=pet.breedId?await sql<{pricingClass:PricingClass|null}[]>`
    select case when coalesce(override.active,breed.active)
                then coalesce(override.pricing_class,breed.default_pricing_class) end as pricing_class
    from breeds breed
    left join business_breed_settings override
      on override.business_id=${input.businessId} and override.breed_id=breed.id
-   where breed.id=${pet.breedId}`:[];
+   where breed.id=${pet.breedId}
+     and (breed.business_id is null or breed.business_id=${input.businessId})`:[];
  const petClass:PricingClass=breedClass?.pricingClass??"STANDARD";
  const services=await sql<{id:string;name:string;category:string;pricingMode:string;basePriceMinor:number;baseDurationMinutes:number;rangeMaxMinor:number|null;priceConfirmationRequired:boolean}[]>`select id,name,category,pricing_mode,base_price_minor,base_duration_minutes,range_max_minor,price_confirmation_required from services where business_id=${input.businessId} and id in ${sql(input.serviceIds as string[])} and active`;
  if(services.length!==new Set(input.serviceIds).size)throw Object.assign(new Error("One or more services are unavailable"),{statusCode:400});

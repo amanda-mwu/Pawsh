@@ -462,6 +462,24 @@ export const breedSettingsSchema=z.object({
   (value)=>value.pricingClass!==undefined||value.active!==undefined,
   { message:"At least one breed setting is required" }
 );
+// A breed this business adds for itself. `pricingClass` is optional because the overwhelmingly
+// common case is a breed that prices like everything else; omitting it stores STANDARD, which
+// is what a pet with no resolvable breed already resolves to, so adding a breed can never move
+// a price on its own.
+export const breedCreateSchema=z.object({
+  // 120 matches `pets.breed_other`, the other place a human types a breed name.
+  name:z.string().trim().min(1).max(120),
+  pricingClass:z.enum(pricingClasses).optional()
+}).strict();
+
+// Renaming is the ONLY field a business may change on the breed row itself, and only on a breed it
+// owns. Pricing class and availability continue to go through `breedSettingsSchema` for every
+// breed alike, so there is exactly one write path per field and no way for two of them to
+// disagree about which value wins.
+export const breedRenameSchema=z.object({
+  name:z.string().trim().min(1).max(120)
+}).strict();
+
 export const priceResolutionSchema=z.object({petId:z.string().uuid(),serviceIds:z.array(z.string().uuid()).min(1).max(30)}).strict();
 
 export const employeeSchema = z.object({

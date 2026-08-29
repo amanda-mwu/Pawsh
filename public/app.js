@@ -2,7 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const inviteToken = new URLSearchParams(location.search).get("invite");
 const resetToken = new URLSearchParams(location.search).get("reset");
-const state = { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:25}, pets: [], dogBreeds: [], petTypes: [], breedsByType:{}, breedCatalog:{query:"",showInactive:false,sortDirection:1,editingId:null}, employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointments:[],selectedGroomerIds:null,pendingGroomerIds:null,filterInitialized:false,displayMode:"calendar",view:"week",bookingPreset:null,bookingGroomerId:null,bookingCustomerId:null,bookingPetId:null,opened:false,preferences:null}, clientProfile:null,clientProfileReturnView:"customers", messageClientId:null, reportMode:"charts",reminders:{type:"appointment_reminder",items:[],supported:true}, members: [], accessRequests:[], workspaces:[], locations: [], reports: null, login: false };
+const state = { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:25}, pets: [], dogBreeds: [], petTypes: [], breedsByType:{}, employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointments:[],selectedGroomerIds:null,pendingGroomerIds:null,filterInitialized:false,displayMode:"calendar",view:"week",bookingPreset:null,bookingGroomerId:null,bookingCustomerId:null,bookingPetId:null,opened:false,preferences:null}, clientProfile:null,clientProfileReturnView:"customers", messageClientId:null, reportMode:"charts",reminders:{type:"appointment_reminder",items:[],supported:true}, members: [], accessRequests:[], workspaces:[], locations: [], reports: null, login: false };
 const pendingActions = new Set();
 let customerSearchSequence = 0;
 let calendarDetailOrigin = null;
@@ -146,6 +146,19 @@ async function financialMutation(path,operation,payload) {
   return result;
 }
 
+// Settings, plus the one deep link that outlives the page it used to open. A legacy
+// /salon/breeds-style URL selects Pet Options and opens the breed drawer on the first pet type,
+// which is where that page's contents now live. Read the path BEFORE rendering:
+// renderSettingsCategory rewrites it to /settings/pet-options.
+function openSettingsForPath({history="replace"}={}){
+  const breedDeepLink=legacyBreedPaths.has(location.pathname);
+  renderSettingsCategory(settingsPathCategory(),{history});
+  if(breedDeepLink)runDetached(async()=>{
+    await loadPetTypes();
+    const first=state.petTypes[0];
+    if(first)await openBreedDrawer(first.id);
+  });
+}
 async function bootstrap() {
   try {
     state.me = await api("/api/me");
@@ -154,7 +167,7 @@ async function bootstrap() {
     applyPermissions();
     await refresh();
     $("#auth-view").hidden = true; $("#app-view").hidden = false;
-    const initialView=viewForPath(location.pathname);if(initialView==="client-profile"){const customerId=location.pathname.match(/^\/clients\/([^/]+)$/)?.[1];if(customerId)await openClientProfile(customerId);else activateView("customers",{history:"replace"});}else{activateView(initialView,{history:"replace"});if(initialView==="admin-settings")renderSettingsCategory(settingsPathCategory(),{history:"replace"});}
+    const initialView=viewForPath(location.pathname);if(initialView==="client-profile"){const customerId=location.pathname.match(/^\/clients\/([^/]+)$/)?.[1];if(customerId)await openClientProfile(customerId);else activateView("customers",{history:"replace"});}else{activateView(initialView,{history:"replace"});if(initialView==="admin-settings")openSettingsForPath({history:"replace"});}
   } catch { $("#auth-view").hidden = false; $("#app-view").hidden = true; }
 }
 
@@ -1122,32 +1135,21 @@ function editService(id) {
   openModal("Edit service",field("name","Service name","text",`required value="${escape(service.name)}"`)+field("baseDurationMinutes","Duration (minutes)","number",`required min="1" value="${service.baseDurationMinutes}"`)+field("basePrice","Base/fixed price ($)","number",`required min="0" step=".01" value="${Number(service.basePriceMinor)/100}`)+field("description","Description","text",`value="${escape(service.description||"")}"`,true)+`<label><input name="active" type="checkbox" ${service.active?"checked":""}> Active</label>`+tierFields,async form=>{const values=Object.fromEntries(form);await api(`/api/services/${id}`,{method:"PUT",body:JSON.stringify({name:values.name,description:values.description||null,baseDurationMinutes:Number(values.baseDurationMinutes),basePriceMinor:Math.round(Number(values.basePrice)*100),category:service.category,pricingMode:service.pricingMode,rangeMaxMinor:service.rangeMaxMinor,priceConfirmationRequired:service.priceConfirmationRequired,active:form.has("active")})});const prices=[...form.entries()].filter(([name])=>name.startsWith("tier:")).map(([name,value])=>{const [,pricingClass,weightTierCode]=name.split(":");return {pricingClass,weightTierCode,priceMinor:Math.round(Number(value)*100)};});if(prices.length)await api(`/api/services/${id}/pricing`,{method:"PUT",body:JSON.stringify({prices})});});
 }
 const breedClasses=[["SMOOTH_SINGLE","Smooth Single"],["STANDARD","Standard"],["EXTRA_FLOOF","Extra Floof"]];
-function breedClassLabel(value){return breedClasses.find(([key])=>key===value)?.[1]??value.replaceAll("_"," ");}
 function breedClassOptions(value){return breedClasses.map(([key,label])=>`<option value="${key}" ${key===value?"selected":""}>${label}</option>`).join("");}
-function renderBreedCatalog(){
-  const body=$("#breed-catalog-body");if(!body)return;
-  const query=normalizeBreedFilter(state.breedCatalog.query);const breeds=state.dogBreeds.filter(breed=>(state.breedCatalog.showInactive||breed.active)&&(!query||breed.search.includes(query))).sort((a,b)=>state.breedCatalog.sortDirection*a.name.localeCompare(b.name));
-  body.innerHTML=breeds.length?breeds.map(breed=>{
-    if(state.breedCatalog.editingId===breed.id)return `<tr class="breed-editing" data-breed-id="${breed.id}"><td colspan="4"><div class="breed-edit-row"><strong>${escape(breed.name)}</strong><label><span class="sr-only">Pricing class for ${escape(breed.name)}</span><select class="breed-edit-class" aria-describedby="breed-error-${breed.id}">${breedClassOptions(breed.defaultPricingClass)}</select></label><div class="breed-edit-actions"><button type="button" class="breed-save" aria-label="Save ${escape(breed.name)}">✓</button><button type="button" class="breed-cancel" aria-label="Cancel editing ${escape(breed.name)}">×</button></div></div></td></tr><tr id="breed-error-${breed.id}" class="breed-row-error" role="alert" aria-live="assertive" hidden><td colspan="4"></td></tr>`;
-    const source=breed.customized?`<span class="breed-flag">Customized</span>`:`<span class="breed-flag default">Pawsh default</span>`;
-    return `<tr data-breed-id="${breed.id}"><td><strong>${escape(breed.name)}</strong><small class="mobile-only">${escape(breedClassLabel(breed.defaultPricingClass))} · ${breed.active?"Active":"Inactive"} · ${breed.customized?"Customized":"Pawsh default"}</small></td><td>${escape(breedClassLabel(breed.defaultPricingClass))} ${source}</td><td><span class="breed-status ${breed.active?"":"inactive"}">${breed.active?"Active":"Inactive"}</span></td><td><details class="row-menu"><summary aria-label="Actions for ${escape(breed.name)}">⋯</summary><div class="row-menu-items"><button type="button" class="breed-edit">Edit</button><button type="button" class="breed-toggle">${breed.active?"Deactivate":"Reactivate"}</button>${breed.customized?`<button type="button" class="breed-reset">Reset to Pawsh default</button>`:""}</div></details></td></tr>`;
-  }).join(""):`<tr><td colspan="4" class="empty">No breeds match this view.</td></tr>`;
-  $("#breed-catalog-status").textContent=`${breeds.length} breed${breeds.length===1?"":"s"} shown`;
-  $$("#breed-catalog-body .breed-edit").forEach(button=>button.addEventListener("click",()=>{state.breedCatalog.editingId=button.closest("tr").dataset.breedId;renderBreedCatalog();$(".breed-edit-class")?.focus();}));
-  $$("#breed-catalog-body .breed-cancel").forEach(button=>button.addEventListener("click",()=>{state.breedCatalog.editingId=null;renderBreedCatalog();}));
-  $$("#breed-catalog-body .breed-save").forEach(button=>button.addEventListener("click",()=>saveBreedRow(button.closest("tr"))));
-  $$("#breed-catalog-body .breed-toggle").forEach(button=>button.addEventListener("click",async()=>{const id=button.closest("tr").dataset.breedId,breed=state.dogBreeds.find(item=>item.id===id);await toggleBreed(id,!breed.active);}));
-  $$("#breed-catalog-body .breed-reset").forEach(button=>button.addEventListener("click",()=>runDetached(()=>resetBreed(button.closest("tr").dataset.breedId))));
-  $$("#breed-catalog-body input,#breed-catalog-body select").forEach(control=>control.addEventListener("keydown",event=>{if(event.key==="Escape"){state.breedCatalog.editingId=null;renderBreedCatalog();}else if(event.key==="Enter"){event.preventDefault();saveBreedRow(control.closest("tr"));}}));
+async function loadPetTypes(){
+  if(!state.petTypes.length)state.petTypes=await api("/api/pet-types");
+  return state.petTypes;
 }
-async function reloadBreeds(){state.dogBreeds=await api("/api/dog-breeds");renderBreedCatalog();}
-// Breeds are shared Pawsh taxonomy: a salon only stores a sparse override, and each call sends
-// only the field it is changing. The server merges an omitted field with what is stored, so
-// editing one never pins the other away from the Pawsh default.
-async function putBreedSettings(id,body){await api(`/api/breeds/${id}/settings`,{method:"PUT",body:JSON.stringify(body)});await reloadBreeds();}
-async function saveBreedRow(row){const errorRow=row.nextElementSibling,select=row.querySelector(".breed-edit-class");try{await api(`/api/breeds/${row.dataset.breedId}/settings`,{method:"PUT",body:JSON.stringify({pricingClass:select.value})});state.breedCatalog.editingId=null;await reloadBreeds();toast("Breed updated");}catch(error){errorRow.hidden=false;errorRow.firstElementChild.textContent=error.message;select.setAttribute("aria-invalid","true");}}
-// Send only the field being changed. The server merges: an omitted field keeps whatever is
-// stored, so changing the class cannot pin `active` away from the shared Pawsh default.
+// Settings -> Pet Options -> Pet Type -> Breeds is the only breed-management surface, so every
+// write re-reads that one drawer rather than a second catalog's copy of the same rows.
+//
+// Only the field being changed is sent. The server merges an omitted field with what is stored,
+// so setting a pricing class cannot pin `active` away from the shared Pawsh default, and
+// sending both as null deletes the override row entirely.
+async function putBreedSettings(id,body){
+  await api(`/api/breeds/${id}/settings`,{method:"PUT",body:JSON.stringify(body)});
+  await refreshBreedDrawer();
+}
 async function toggleBreed(id,active){await putBreedSettings(id,{active});toast(active?"Breed reactivated":"Breed deactivated");}
 async function resetBreed(id){await putBreedSettings(id,{pricingClass:null,active:null});toast("Pawsh default restored");}
 async function deactivate(type,id) {
@@ -2463,7 +2465,179 @@ const settingsCategories=[
   ["account","Account","canonical"],["staff","Staff","canonical"],["business","Business","functional"],["availability","Availability","canonical"],["appointment-schedule","Appointment schedule","placeholder"],["locations","Locations","placeholder"],["permissions","Permissions","functional"],["services","Services","canonical"],["payroll","Payroll","placeholder"],["pet-options","Pet options","canonical"],["tax-payments","Tax & payments","functional"],["discounts","Coupons & discounts","placeholder"],["automated-messages","Automated messages","functional"],["sms-auto-reply","SMS auto-reply","placeholder"],["agreements","Agreements","placeholder"],["online-booking","Online booking","placeholder"],["intake-form","Intake form","placeholder"],["client-portal","Client portal","placeholder"],["loyalty","Loyalty program","placeholder"],["reviews","Review booster","placeholder"],["report-cards","Report card","placeholder"],["integrations","Integrations","placeholder"]
 ];
 const settingsDescriptions={"appointment-schedule":"Configurable appointment policy is not yet available. Calendar display preferences remain under the Calendar gear.",locations:"Pawsh currently supports one active scheduling location per workspace. Multi-location management requires the approved location architecture.",payroll:"Payroll, commissions, and pay runs are not yet available in Pawsh.",discounts:"Manual checkout discounts are supported, but a coupon or discount-program management system is not yet available.","sms-auto-reply":"Pawsh does not currently provide an SMS auto-reply integration.",agreements:"Agreement and waiver template management is not yet available.","online-booking":"Public online-booking configuration is not yet available.","intake-form":"A configurable intake-form builder is not yet available.","client-portal":"Pawsh does not currently provide a client portal.",loyalty:"A points or rewards program is not yet available.",reviews:"Automated external review requests are not yet available.","report-cards":"Configurable grooming report cards are not yet available.",integrations:"No external integrations are currently configured."};
-function settingsPathCategory(){const match=location.pathname.match(/^\/settings\/([^/]+)$/);return settingsCategories.some(([id])=>id===match?.[1])?match[1]:"account";}
+function settingsPathCategory(){if(legacyBreedPaths.has(location.pathname))return "pet-options";const match=location.pathname.match(/^\/settings\/([^/]+)$/);return settingsCategories.some(([id])=>id===match?.[1])?match[1]:"account";}
+// Pet Options is the pet-configuration workspace. Pet Type is its first section and the parent
+// of the breed catalog; the remaining sections are recorded on the pet record today and are not
+// yet salon-configurable, so they are listed honestly rather than omitted or faked.
+const petOptionSections=[
+  ["pet-type","Pet Type"],["behavior","Behavior"],["pet-hair","Pet Hair"],["weight-range","Weight Range"],
+  ["fixed","Fixed"],["vaccine","Vaccine"],["coat-color","Coat color"],["pet-tags","Pet tags"]
+];
+const petOptionNotes={
+  behavior:"Behaviour and safety notes are written on each pet record. A salon-managed list of behaviour flags is not available yet.",
+  "pet-hair":"Hair length is recorded on the pet record. A salon-managed list of hair lengths is not available yet.",
+  "weight-range":"Weight ranges drive tiered service pricing and are set in the Pawsh price book, not here. Editing the range boundaries is not available yet.",
+  fixed:"Spayed, neutered and intact are recorded on the pet record. A salon-managed list is not available yet.",
+  vaccine:"Vaccination records, rabies compliance and reminders are managed on each pet. A salon-managed list of vaccine types is not available yet.",
+  "coat-color":"Coat colour is free text on the pet record, and the suggestions come from what this salon has already entered. A managed list is not available yet.",
+  "pet-tags":"Pet tags are not available yet."
+};
+const petOptionsState={section:"pet-type"};
+function petTypeRows(){
+  if(!state.petTypes.length)return `<tr><td colspan="2" class="empty">Loading pet types…</td></tr>`;
+  return state.petTypes.map(type=>`<tr data-pet-type-row="${type.id}"><td><strong>${escape(type.name)}</strong></td><td class="pet-type-actions"><button type="button" class="text-button pet-type-breeds" data-pet-type-id="${type.id}">Breeds</button><button type="button" class="text-button danger" disabled aria-disabled="true" title="Pet types are shared Pawsh taxonomy. Removing one is not available yet.">Delete</button></td></tr>`).join("");
+}
+function petOptionsBody(){
+  if(petOptionsState.section!=="pet-type"){
+    const [,label]=petOptionSections.find(([key])=>key===petOptionsState.section)||["",""];
+    return `<article class="settings-panel settings-placeholder" data-testid="settings-placeholder"><p class="eyebrow">Not available yet</p><h3>${escape(label)}</h3><p>${escape(petOptionNotes[petOptionsState.section]||"")}</p></article>`;
+  }
+  return `<div class="pet-type-panel"><table class="pet-type-table" data-testid="pet-type-table"><thead><tr><th scope="col">Pet Type</th><th scope="col">Actions</th></tr></thead><tbody id="pet-type-body">${petTypeRows()}</tbody></table><div class="pet-type-foot"><button type="button" class="primary compact" disabled aria-disabled="true" title="Pet types are shared Pawsh taxonomy, so every salon sees the same list. Adding one is not available yet.">+ Add</button></div><p class="fine settings-note">Dog and Cat are shared Pawsh taxonomy, so every business sees the same pet types and the same breed names. Your pricing class, availability, and any breed you add apply across every location on this account.</p></div>`;
+}
+// Settings -> Pet Options -> Pet Type -> Breeds. This drawer is the authoritative breed
+// management surface: it lists the breeds of one pet type and carries every control that acts
+// on them - pricing class, availability, rename, delete, and adding one of this account's own.
+//
+// There is deliberately no second catalog page. Two surfaces over one row set means two caches
+// that disagree and two sets of controls that drift apart, which is what the standalone Salon
+// Breed Catalog had become.
+//
+// Everything here is scoped to the BUSINESS - the customer account - not to the location the
+// session happens to be working at, so a breed added here is available at every location that
+// account operates.
+const breedDrawerState={petTypeId:null,breeds:[],query:"",showInactive:false};
+function breedDrawerRow(breed){
+  // Only a breed this account created can be renamed or removed. A shared Pawsh breed is the
+  // same row for every tenant, so offering a pencil there would promise something the server
+  // must refuse. Pricing class and availability ARE offered on both: those are stored per
+  // business in `business_breed_settings` and change nothing for anyone else.
+  const rename=breed.businessOwned
+    ?`<button type="button" class="icon-button breed-rename" data-breed-id="${breed.id}" aria-label="Rename ${escape(breed.name)}" title="Rename"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16v4Z"/><path d="M14 6l4 4"/></svg></button>`
+    :"";
+  const remove=breed.businessOwned
+    ?`<button type="button" class="icon-button danger breed-delete" data-breed-id="${breed.id}" aria-label="Delete ${escape(breed.name)}" title="Delete"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 7V5h4v2M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/></svg></button>`
+    :"";
+  const reset=breed.customized
+    ?`<button type="button" class="text-button breed-reset" data-breed-id="${breed.id}" title="Reset to the Pawsh default">Reset</button>`
+    :"";
+  const owner=breed.businessOwned?`<span class="breed-flag">Added by you</span>`:"";
+  return `<li data-breed-id="${breed.id}" ${breed.businessOwned?'data-business-owned="true"':""} class="${breed.active?"":"is-inactive"}">`
+    +`<span class="breed-row-name">${escape(breed.name)}${owner}</span>`
+    +`<label class="breed-row-class"><span class="sr-only">Pricing class for ${escape(breed.name)}</span>`
+    +`<select class="breed-class-select" data-breed-id="${breed.id}">${breedClassOptions(breed.defaultPricingClass)}</select></label>`
+    +`<button type="button" class="breed-status-toggle ${breed.active?"":"inactive"}" data-breed-id="${breed.id}" aria-pressed="${breed.active}" title="${breed.active?"Offered when adding a pet":"Not offered when adding a pet"}">${breed.active?"Active":"Inactive"}</button>`
+    +`<span class="breed-row-actions">${reset}${rename}${remove}</span></li>`;
+}
+function renderBreedDrawerList(){
+  const list=$("#breed-drawer-list");if(!list)return;
+  const query=normalizeBreedFilter(breedDrawerState.query);
+  const visible=breedDrawerState.breeds.filter(breed=>breedDrawerState.showInactive||breed.active);
+  const shown=visible.filter(breed=>!query||breed.search.includes(query));
+  list.innerHTML=shown.length?shown.map(breedDrawerRow).join("")
+    :`<li class="empty">${query?"No breeds match that search.":"No breeds to show."}</li>`;
+  const hidden=breedDrawerState.breeds.length-visible.length;
+  $("#breed-drawer-status").textContent=`${shown.length} breed${shown.length===1?"":"s"}`
+    +(hidden&&!query?` · ${hidden} inactive hidden`:"");
+
+  list.querySelectorAll(".breed-class-select").forEach(select=>select.addEventListener("change",()=>runDetached(async()=>{
+    try{
+      await putBreedSettings(select.dataset.breedId,{pricingClass:select.value});
+      toast("Pricing class updated");
+    }catch(error){
+      // Put the row back to what the server still holds rather than leaving the select showing
+      // a value that was never saved.
+      toast(error.message);await refreshBreedDrawer();
+    }
+  })));
+  list.querySelectorAll(".breed-status-toggle").forEach(button=>button.addEventListener("click",()=>runDetached(async()=>{
+    const breed=breedDrawerState.breeds.find(item=>item.id===button.dataset.breedId);
+    try{await toggleBreed(button.dataset.breedId,!breed.active);}
+    catch(error){toast(error.message);await refreshBreedDrawer();}
+  })));
+  list.querySelectorAll(".breed-reset").forEach(button=>button.addEventListener("click",()=>runDetached(async()=>{
+    try{await resetBreed(button.dataset.breedId);}
+    catch(error){toast(error.message);await refreshBreedDrawer();}
+  })));
+  list.querySelectorAll(".breed-rename").forEach(button=>button.addEventListener("click",()=>
+    promptBreedName("Rename breed",breedDrawerState.breeds.find(b=>b.id===button.dataset.breedId)?.name??"",async name=>{
+      await api(`/api/breeds/${button.dataset.breedId}`,{method:"PATCH",body:JSON.stringify({name})});
+      await refreshBreedDrawer();toast("Breed renamed");
+    })));
+  list.querySelectorAll(".breed-delete").forEach(button=>button.addEventListener("click",()=>{
+    const breed=breedDrawerState.breeds.find(b=>b.id===button.dataset.breedId);
+    openStackedDialog({title:`Delete ${breed?.name??"this breed"}?`,
+      body:"<p>It stops being offered when adding or editing a pet, at every location.</p>",
+      confirmLabel:"Delete",dismissLabel:"Cancel",
+      onConfirm:async()=>{
+        try{
+          await api(`/api/breeds/${button.dataset.breedId}`,{method:"DELETE"});
+        }catch(error){
+          // The server refuses while pets still reference the breed rather than repricing them.
+          $("#stacked-dialog-body").innerHTML=`<p class="error">${escape(error.message)}</p>`;return false;
+        }
+        await refreshBreedDrawer();toast("Breed deleted");return true;
+      }});
+  }));
+}
+async function refreshBreedDrawer(){
+  if(!breedDrawerState.petTypeId)return;
+  breedDrawerState.breeds=await api(`/api/pet-types/${breedDrawerState.petTypeId}/breeds`);
+  state.breedsByType[breedDrawerState.petTypeId]=breedDrawerState.breeds;
+  // The pet editor opens warm from `dogBreeds`, so a breed added or renamed here has to land
+  // there too or the editor keeps offering the stale list until the next sign-in.
+  if(breedDrawerState.petTypeId===petTypeIdFor("dog"))state.dogBreeds=breedDrawerState.breeds;
+  renderBreedDrawerList();
+}
+// A single-field prompt, matching the "Add Pet Breed" dialog: a name, Cancel, OK.
+function promptBreedName(title,value,commit){
+  openModal(title,`<label class="wide">Breed name<input data-testid="breed-name-input" name="breedName" type="text" required maxlength="120" value="${escape(value)}"></label>`,
+    async form=>{const name=String(form.get("breedName")||"").trim();if(!name)throw new Error("Enter a breed name.");await commit(name);},
+    {submitLabel:"OK"});
+}
+async function openBreedDrawer(petTypeId){
+  const drawer=$("#breed-drawer");if(!drawer)return;
+  breedDrawerState.petTypeId=petTypeId;breedDrawerState.query="";breedDrawerState.showInactive=false;
+  const search=$("#breed-drawer-search");if(search)search.value="";
+  const showInactive=$("#breed-drawer-show-inactive");if(showInactive)showInactive.checked=false;
+  await loadPetTypes();
+  const type=state.petTypes.find(item=>item.id===petTypeId);
+  $("#breed-drawer-title").textContent=type?`Breeds for ${type.name}`:"Breeds";
+  if(!drawer.open)drawer.showModal();
+  await refreshBreedDrawer();
+}
+function closeBreedDrawer(){
+  const drawer=$("#breed-drawer");
+  if(drawer?.open)drawer.close();
+}
+function setupBreedDrawer(){
+  const drawer=$("#breed-drawer");if(!drawer)return;
+  drawer.querySelector("[data-testid='breed-drawer-close']")?.addEventListener("click",closeBreedDrawer);
+  $("#breed-add")?.addEventListener("click",()=>promptBreedName("Add Pet Breed","",async name=>{
+    await api(`/api/pet-types/${breedDrawerState.petTypeId}/breeds`,{method:"POST",body:JSON.stringify({name})});
+    await refreshBreedDrawer();toast("Breed added");
+  }));
+  // Clicking the backdrop dismisses it: the click lands on the dialog itself, never on its panel.
+  drawer.addEventListener("click",event=>{if(event.target===drawer)closeBreedDrawer();});
+  // Escape already closes a native dialog; returning focus keeps the Pet Type list usable.
+  drawer.addEventListener("close",()=>{if($("#pet-options-workspace"))renderPetOptions();});
+  $("#breed-drawer-search")?.addEventListener("input",event=>{
+    breedDrawerState.query=event.target.value;renderBreedDrawerList();
+  });
+  $("#breed-drawer-show-inactive")?.addEventListener("change",event=>{
+    breedDrawerState.showInactive=event.target.checked;renderBreedDrawerList();
+  });
+}
+function renderPetOptions(){
+  const host=$("#pet-options-workspace");if(!host)return;
+  host.innerHTML=`<nav class="pet-options-nav" aria-label="Pet options sections">${petOptionSections.map(([key,label])=>`<button type="button" data-pet-option-section="${key}" class="${key===petOptionsState.section?"active":""}" ${key===petOptionsState.section?'aria-current="page"':""}>${escape(label)}</button>`).join("")}</nav><div class="pet-options-body">${petOptionsBody()}</div>`;
+  host.querySelectorAll("[data-pet-option-section]").forEach(button=>button.addEventListener("click",()=>{
+    petOptionsState.section=button.dataset.petOptionSection;renderPetOptions();
+  }));
+  host.querySelectorAll(".pet-type-breeds").forEach(button=>button.addEventListener("click",()=>{
+    runDetached(()=>openBreedDrawer(button.dataset.petTypeId));
+  }));
+  if(!state.petTypes.length)runDetached(async()=>{await loadPetTypes();renderPetOptions();});
+}
 function settingsLink(title,description,label,target){return `<article class="settings-panel"><h3>${escape(title)}</h3><p>${escape(description)}</p><button type="button" class="primary compact settings-canonical-link" data-target="${target}">${escape(label)}</button></article>`;}
 function settingsPlaceholder(id,title){return `<article class="settings-panel settings-placeholder" data-testid="settings-placeholder"><p class="eyebrow">Coming soon</p><h3>${escape(title)}</h3><p>${escape(settingsDescriptions[id]||"This capability is not yet available in Pawsh.")}</p></article>`;}
 // ---------------------------------------------------------------------------
@@ -3092,7 +3266,7 @@ async function applyAvailabilityClosure(localDate,closed,{announce=true}={}){
   }
 }
 
-function renderSettingsCategory(category=settingsPathCategory(),{history="replace"}={}){const definition=settingsCategories.find(([id])=>id===category)||settingsCategories[0],[id,title]=definition,nav=$("#settings-navigation"),content=$("#settings-content");if(!nav||!content)return;nav.innerHTML=settingsCategories.map(([key,label])=>`<button type="button" data-settings-category="${key}" class="${key===id?"active":""}" ${key===id?'aria-current="page"':""}>${escape(label)}</button>`).join("");let html="";if(id==="account")html=settingsLink("Account","Personal identity and password security remain in your canonical account workspace.","Manage profile & security","profile-account");else if(id==="staff")html=settingsLink("Staff","Groomer records, operational eligibility, and active status remain in Salon.","Open Salon team","setup");else if(id==="business")html=`<article class="settings-panel"><h3>Business</h3><p>Manage the workspace name and authoritative timezone, currency, tax rate, and reminder lead time.</p><button type="button" class="primary compact settings-business-action">Edit business settings</button></article>`;else if(id==="availability")html=`<div id="availability-root" class="availability-root"></div>`;else if(id==="permissions")html=allowed("team.manage")?`<article class="settings-panel"><div class="panel-head"><div><h3>Permissions</h3><p>Manage workspace membership and server-authorized access.</p></div><button type="button" class="secondary compact settings-invite">+ Invite</button></div><div id="member-list" class="simple-list"></div><h4>Pending access requests</h4><div id="access-request-list" class="simple-list"></div></article>`:settingsPlaceholder(id,title);else if(id==="services")html=settingsLink("Services","Service names, pricing, durations, and availability have one canonical workspace.","Open Services","services");else if(id==="pet-options")html=settingsLink("Pet options","Breed Catalog and pricing classifications remain location-operational configuration under Salon. Rabies safety rules are not configurable here.","Open Breed Catalog","breed-catalog");else if(id==="tax-payments")html=`<article class="settings-panel"><h3>Tax & payments</h3><p>The server-authoritative tax rate is part of Business settings. Payment recording remains in checkout.</p><button type="button" class="primary compact settings-business-action">Manage tax settings</button></article>`;else if(id==="automated-messages")html=`<article class="settings-panel"><h3>Automated messages</h3><p>Pawsh’s durable reminder/outbox flow uses the configured reminder lead time. Template and channel management are deferred.</p><button type="button" class="primary compact settings-business-action">Manage reminder timing</button></article>`;else html=settingsPlaceholder(id,title);content.innerHTML=`<div class="settings-content-head"><p class="eyebrow">Settings</p><h2>${escape(title)}</h2></div>${html}`;nav.querySelectorAll("[data-settings-category]").forEach(button=>button.addEventListener("click",()=>renderSettingsCategory(button.dataset.settingsCategory,{history:"push"})));content.querySelectorAll(".settings-canonical-link").forEach(button=>button.addEventListener("click",()=>showView(button.dataset.target)));content.querySelectorAll(".settings-business-action").forEach(button=>button.addEventListener("click",actions["business-settings"]));content.querySelector(".settings-invite")?.addEventListener("click",actions["invite-member"]);if(id==="permissions")renderSetup();if(id==="availability"){renderAvailability();ensureAvailabilityData();}if(history!=="none")globalThis.history[history==="push"?"pushState":"replaceState"]({view:"admin-settings",settingsCategory:id},"",`/settings/${id}`);content.focus({preventScroll:true});}
+function renderSettingsCategory(category=settingsPathCategory(),{history="replace"}={}){const definition=settingsCategories.find(([id])=>id===category)||settingsCategories[0],[id,title]=definition,nav=$("#settings-navigation"),content=$("#settings-content");if(!nav||!content)return;nav.innerHTML=settingsCategories.map(([key,label])=>`<button type="button" data-settings-category="${key}" class="${key===id?"active":""}" ${key===id?'aria-current="page"':""}>${escape(label)}</button>`).join("");let html="";if(id==="account")html=settingsLink("Account","Personal identity and password security remain in your canonical account workspace.","Manage profile & security","profile-account");else if(id==="staff")html=settingsLink("Staff","Groomer records, operational eligibility, and active status remain in Salon.","Open Salon team","setup");else if(id==="business")html=`<article class="settings-panel"><h3>Business</h3><p>Manage the workspace name and authoritative timezone, currency, tax rate, and reminder lead time.</p><button type="button" class="primary compact settings-business-action">Edit business settings</button></article>`;else if(id==="availability")html=`<div id="availability-root" class="availability-root"></div>`;else if(id==="permissions")html=allowed("team.manage")?`<article class="settings-panel"><div class="panel-head"><div><h3>Permissions</h3><p>Manage workspace membership and server-authorized access.</p></div><button type="button" class="secondary compact settings-invite">+ Invite</button></div><div id="member-list" class="simple-list"></div><h4>Pending access requests</h4><div id="access-request-list" class="simple-list"></div></article>`:settingsPlaceholder(id,title);else if(id==="services")html=settingsLink("Services","Service names, pricing, durations, and availability have one canonical workspace.","Open Services","services");else if(id==="pet-options")html=`<div id="pet-options-workspace" class="pet-options-workspace"></div>`;else if(id==="tax-payments")html=`<article class="settings-panel"><h3>Tax & payments</h3><p>The server-authoritative tax rate is part of Business settings. Payment recording remains in checkout.</p><button type="button" class="primary compact settings-business-action">Manage tax settings</button></article>`;else if(id==="automated-messages")html=`<article class="settings-panel"><h3>Automated messages</h3><p>Pawsh’s durable reminder/outbox flow uses the configured reminder lead time. Template and channel management are deferred.</p><button type="button" class="primary compact settings-business-action">Manage reminder timing</button></article>`;else html=settingsPlaceholder(id,title);content.innerHTML=`<div class="settings-content-head"><p class="eyebrow">Settings</p><h2>${escape(title)}</h2></div>${html}`;nav.querySelectorAll("[data-settings-category]").forEach(button=>button.addEventListener("click",()=>renderSettingsCategory(button.dataset.settingsCategory,{history:"push"})));content.querySelectorAll(".settings-canonical-link").forEach(button=>button.addEventListener("click",()=>showView(button.dataset.target)));content.querySelectorAll(".settings-business-action").forEach(button=>button.addEventListener("click",actions["business-settings"]));content.querySelector(".settings-invite")?.addEventListener("click",actions["invite-member"]);if(id==="permissions")renderSetup();if(id==="pet-options")renderPetOptions();if(id==="availability"){renderAvailability();ensureAvailabilityData();}if(history!=="none")globalThis.history[history==="push"?"pushState":"replaceState"]({view:"admin-settings",settingsCategory:id},"",`/settings/${id}`);content.focus({preventScroll:true});}
 
 async function openClientProfile(customerId,{petId=null,appointmentId=null,returnView=null}={}){
   if(returnView)state.clientProfileReturnView=returnView;
@@ -4663,8 +4837,13 @@ $("#message-search")?.addEventListener("input",renderMessages);
 $("#report-charts-mode")?.addEventListener("click",()=>{state.reportMode="charts";renderReports();});
 $("#report-table-mode")?.addEventListener("click",()=>{state.reportMode="table";renderReports();});
 $("#report-apply")?.addEventListener("click",async()=>{state.reports=await api(`/api/reports?${reportQuery()}`);renderReports();});
-const viewPaths={dashboard:"/",calendar:"/",customers:"/",messages:"/",reminders:"/","sales-expense":"/",product:"/",services:"/",setup:"/","breed-catalog":"/salon/breeds","admin-settings":"/settings",reports:"/","profile-account":"/account","intake-submissions":"/intake-submissions","client-profile":"/clients"};
-function viewForPath(path){if(path==="/account")return "profile-account";if(path==="/intake-submissions")return "intake-submissions";if(path.startsWith("/clients/"))return "client-profile";if(path==="/settings"||path.startsWith("/settings/"))return "admin-settings";return path==="/salon/breeds"||path==="/reports/breeds"||path==="/overview/breeds"?"breed-catalog":"dashboard";}
+const viewPaths={dashboard:"/",calendar:"/",customers:"/",messages:"/",reminders:"/","sales-expense":"/",product:"/",services:"/",setup:"/","admin-settings":"/settings",reports:"/","profile-account":"/account","intake-submissions":"/intake-submissions","client-profile":"/clients"};
+// The breed catalog used to be a standalone Salon page. Its URLs still resolve, but they now
+// deep-link into Settings -> Pet Options -> Pet Type -> Breeds, which is the one place breeds
+// are managed. Keeping the routes costs a set lookup and keeps existing links and bookmarks
+// working; keeping the page would have meant two catalogs to hold in sync.
+const legacyBreedPaths=new Set(["/salon/breeds","/reports/breeds","/overview/breeds"]);
+function viewForPath(path){if(path==="/account")return "profile-account";if(path==="/intake-submissions")return "intake-submissions";if(path.startsWith("/clients/"))return "client-profile";if(path==="/settings"||path.startsWith("/settings/"))return "admin-settings";return legacyBreedPaths.has(path)?"admin-settings":"dashboard";}
 function closeSetupMenus(){$$(".setup-menu[open]").forEach(menu=>menu.open=false);}
 $$("nav [data-view]").forEach((button) => button.addEventListener("click", () => {$("#primary-navigation").classList.remove("mobile-open");$("#mobile-nav-toggle").setAttribute("aria-expanded","false");$("#mobile-nav-toggle").setAttribute("aria-label","Open navigation");showView(button.dataset.view);}));
 $("#mobile-nav-toggle").addEventListener("click",event=>{const open=$("#primary-navigation").classList.toggle("mobile-open");event.currentTarget.setAttribute("aria-expanded",String(open));event.currentTarget.setAttribute("aria-label",open?"Close navigation":"Open navigation");});
@@ -4682,9 +4861,8 @@ async function showView(view,{history="push"}={}) {
     if(view==="messages")renderMessages();
     if(view==="reminders")await loadReminders();
     if(view==="client-profile"){const customerId=location.pathname.match(/^\/clients\/([^/]+)$/)?.[1];if(customerId&&!state.clientProfile)await openClientProfile(customerId);else renderClientProfile();}
-    if(view==="breed-catalog")renderBreedCatalog();
     if(view==="profile-account")renderAccountIdentity();
-    if(view==="admin-settings")renderSettingsCategory(settingsPathCategory(),{history:history==="none"?"none":"replace"});
+    if(view==="admin-settings")openSettingsForPath({history:history==="none"?"none":"replace"});
     if($(`[data-view="${view}"]`)?.hidden){
       activateView("dashboard",{history:"replace"});
     }
@@ -4693,11 +4871,10 @@ async function showView(view,{history="push"}={}) {
 function activateView(view,{history="push"}={}) {
   closeCalendarMenus();
   const target=$(`#${view}`);if(!target||$(`[data-view="${view}"]`)?.hidden)return;
-  const canonicalPath=view==="client-profile"&&state.clientProfile?`/clients/${state.clientProfile.data.customer.id}`:viewPaths[view];if(canonicalPath&&history!=="none"&&view!=="admin-settings"&&(location.pathname!==canonicalPath||view==="breed-catalog")){globalThis.history[history==="replace"?"replaceState":"pushState"]({view},"",canonicalPath);}
-  $$(".view").forEach(v=>v.hidden=v.id!==view); $$("nav button").forEach(b=>{const active=b.dataset.view===view||view==="breed-catalog"&&b.dataset.view==="setup";b.classList.toggle("active",active);if(active)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current");});const servicesHeader=$("[data-testid=header-services]");servicesHeader?.classList.toggle("active",view==="services");if(view==="services")servicesHeader?.setAttribute("aria-current","page");else servicesHeader?.removeAttribute("aria-current"); $("#page-kicker").textContent=view==="breed-catalog"?"Salon":view==="profile-account"?"Your account":view==="admin-settings"?"Administration":"Daily operations"; $("#page-title").textContent={dashboard:"Dashboard",calendar:"Calendar",customers:"Clients",messages:"Messages",reminders:"Reminders","sales-expense":"Sales & Expense",product:"Product",services:"Services",setup:"Salon","breed-catalog":"Salon","admin-settings":"Settings",reports:"Report","profile-account":"Profile & Account"}[view];
+  const canonicalPath=view==="client-profile"&&state.clientProfile?`/clients/${state.clientProfile.data.customer.id}`:viewPaths[view];if(canonicalPath&&history!=="none"&&view!=="admin-settings"&&location.pathname!==canonicalPath){globalThis.history[history==="replace"?"replaceState":"pushState"]({view},"",canonicalPath);}
+  $$(".view").forEach(v=>v.hidden=v.id!==view); $$("nav button").forEach(b=>{const active=b.dataset.view===view;b.classList.toggle("active",active);if(active)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current");});const servicesHeader=$("[data-testid=header-services]");servicesHeader?.classList.toggle("active",view==="services");if(view==="services")servicesHeader?.setAttribute("aria-current","page");else servicesHeader?.removeAttribute("aria-current"); $("#page-kicker").textContent=view==="profile-account"?"Your account":view==="admin-settings"?"Administration":"Daily operations"; $("#page-title").textContent={dashboard:"Dashboard",calendar:"Calendar",customers:"Clients",messages:"Messages",reminders:"Reminders","sales-expense":"Sales & Expense",product:"Product",services:"Services",setup:"Salon","admin-settings":"Settings",reports:"Report","profile-account":"Profile & Account"}[view];
   if(view==="client-profile"){$("#page-title").textContent="Client Profile";$("#page-kicker").textContent="Relationships";}
   if(view==="intake-submissions"){$("#page-title").textContent="Intake Form Submissions";$("#page-kicker").textContent="Client intake";}
-  if(view==="breed-catalog")renderBreedCatalog();
   return true;
 }
 $$(".close").forEach((button)=>button.addEventListener("click",()=>$("#modal").close()));
@@ -4713,9 +4890,6 @@ $("#customer-search").addEventListener("input", async (event)=>{
 });
 [$("#customer-status"),$("#customer-upcoming"),$("#customer-sort")].forEach(control=>control.addEventListener("change",()=>loadCustomerDirectory(1)));
 $("#customer-prev").addEventListener("click",()=>loadCustomerDirectory(state.customerDirectory.page-1));$("#customer-next").addEventListener("click",()=>loadCustomerDirectory(state.customerDirectory.page+1));
-$("#breed-search")?.addEventListener("input",event=>{state.breedCatalog.query=event.target.value;renderBreedCatalog();});
-$("#breed-show-inactive")?.addEventListener("change",event=>{state.breedCatalog.showInactive=event.target.checked;renderBreedCatalog();});
-$("#breed-sort-name")?.addEventListener("click",()=>{state.breedCatalog.sortDirection*=-1;$("#breed-sort-name span").textContent=state.breedCatalog.sortDirection===1?"A–Z":"Z–A";renderBreedCatalog();});
 function printRangeDefaults(){if(state.calendar.view==="day"||state.calendar.view==="month")return [state.calendar.selectedDate,state.calendar.selectedDate];return [state.calendar.weekStart,dateShift(state.calendar.weekStart,6)];}
 function printableAgenda(items){const sorted=items.slice().sort((a,b)=>new Date(a.startAt)-new Date(b.startAt));return sorted.length?sorted.map(item=>{const model=appointmentPresentation(item);return `<article class="print-appointment"><header><strong>${escape(model.groomer)}</strong><span>${escape(model.dateLabel)} · ${escape(model.timeRange)}</span></header><div><p><b>Pet:</b> ${escape(petName({petName:model.petName}))}${model.breed?` · ${escape(model.breed)}`:""}</p><p><b>Services:</b> ${model.services.map(escape).join(", ")}</p><p><b>Client:</b> ${escape(model.customerName)}${item.customerPhone?` · ${escape(item.customerPhone)}`:""}</p>${item.notes?`<p><b>Appointment note:</b> ${escape(item.notes)}</p>`:""}</div></article>`;}).join(""):`<p>No appointments in this print range.</p>`;}
 async function printAgendaItems(form){const start=String(form.get("printStart")),end=String(form.get("printEnd")),days=Math.round((dateAt(end)-dateAt(start))/86400000)+1;if(!start||!end||days<1||days>31)throw new Error("Choose a print range from 1 to 31 days.");const groomerId=String(form.get("printGroomer")||""),items=filteredAppointments(await loadAppointmentRange(start,days));return groomerId?items.filter(item=>(item.groomers||[]).some(groomer=>groomer.id===groomerId)):items;}
@@ -4755,4 +4929,5 @@ if (inviteToken || resetToken) {
   $("#toggle-auth").hidden=true;$("#forgot-password").hidden=true;
   $("#auth-form input[name=password]").autocomplete="new-password";
 }
+setupBreedDrawer();
 bootstrap();

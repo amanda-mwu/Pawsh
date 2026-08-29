@@ -106,5 +106,24 @@ describe("database migrations", () => {
     expect(consolidation).not.toContain("'sheep dog', 'SAFE_EXACT_ALIAS'");
     expect(consolidation).not.toContain("old english sheepdog',");
     expect(clientAgreements).not.toContain("alter column channel");
+
+    // Business-owned breeds share the `breeds` table with the curated taxonomy, so the
+    // properties that keep the two partitions apart are release-critical. Each of these, lost,
+    // turns a business's own addition into something that reaches other tenants.
+    const businessBreeds = await readFile("migrations/0033_business_owned_breeds.sql", "utf8");
+    // The shared taxonomy keeps the uniqueness it had; added names are scoped per business.
+    expect(businessBreeds).toContain("create unique index breed_shared_name on breeds (pet_type_id, normalized_name)\n  where business_id is null");
+    expect(businessBreeds).toContain("create unique index breed_business_name on breeds (business_id, pet_type_id, normalized_name)\n  where business_id is not null");
+    // The 0001 tenant_isolation loop is a one-time do-block; this table carries its own policies.
+    expect(businessBreeds).toContain("alter table breeds enable row level security");
+    expect(businessBreeds).toContain("create policy shared_taxonomy_read on breeds");
+    expect(businessBreeds).toContain("create policy tenant_isolation on breeds");
+    // A shared breed and a business breed may never share a name; a pet may never reference
+    // another account's breed. Neither is expressible as a unique index or a foreign key.
+    expect(businessBreeds).toContain("breed_name_scope_guard");
+    expect(businessBreeds).toContain("pet_breed_tenant_guard");
+    expect(businessBreeds).toContain("a pet cannot reference a breed owned by another business");
+    // Pets are never cascaded: dropping a pet's breed_id would silently reprice it to STANDARD.
+    expect(businessBreeds).not.toContain("references breeds(pet_type_id, id) on delete cascade");
   });
 });

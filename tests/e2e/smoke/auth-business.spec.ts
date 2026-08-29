@@ -77,89 +77,129 @@ test("@smoke account menu and personal profile remain separate from business set
   await expect(page.getByTestId("auth-form")).toBeVisible();
 });
 
-test("@smoke breed catalog is compact, searchable, and salon-overridable",async({page,tenant})=>{
+test("@smoke Pet options opens on Pet Type and reaches each type's breeds",async({page,tenant})=>{
   await login(page,tenant.ownerEmail);
-  await page.getByTestId("nav-setup").click();
-  await expect(page.locator("#breed-admin-list")).toHaveCount(0);
-  await page.locator("#setup .setup-menu summary").click();
-  await page.locator("#setup .setup-menu").getByRole("link",{name:"Breed catalog",exact:true}).click();
-  await expect(page.getByTestId("breed-catalog-view")).toBeVisible();
-  await expect(page).toHaveURL(/\/salon\/breeds$/);
-  await expect(page.getByTestId("nav-setup")).toHaveAttribute("aria-current","page");
-  await expect(page.getByTestId("nav-reports")).not.toHaveAttribute("aria-current","page");
-  await expect(page.locator("#page-title")).toHaveText("Salon");
-  await expect(page.getByRole("heading",{name:"Business reports"})).toBeHidden();
-  expect(await page.locator("#breed-catalog-body tr[data-breed-id]").count()).toBeGreaterThan(20);
-  // Breeds are shared Pawsh taxonomy now: a salon overrides a row, it never creates or renames one.
-  await expect(page.getByTestId("breed-add-name")).toHaveCount(0);
-  await expect(page.getByRole("button",{name:"Add breed"})).toHaveCount(0);
-  const first=page.locator("#breed-catalog-body tr[data-breed-id]").first();
-  const breedId=await first.getAttribute("data-breed-id");
-  const name=(await first.locator("strong").innerText()).trim();
-  await page.getByTestId("breed-search").fill(name);
-  const row=page.locator(`#breed-catalog-body tr[data-breed-id="${breedId}"]`);
-  await expect(row).toContainText("Pawsh default");
-  await row.getByLabel(`Actions for ${name}`).click();
-  await row.getByRole("button",{name:"Edit"}).click();
-  await expect(row.locator(".breed-edit-name")).toHaveCount(0);
-  // Pick a class the row is not already on, so the save is a real override whatever the Pawsh default is.
-  const current=await row.locator(".breed-edit-class").inputValue();
-  const [nextClass,nextLabel]=current==="EXTRA_FLOOF"?["SMOOTH_SINGLE","Smooth Single"]:["EXTRA_FLOOF","Extra Floof"];
-  await row.locator(".breed-edit-class").selectOption(nextClass);
-  await row.locator(".breed-save").click();
-  await expect(row).toContainText(nextLabel);
-  await expect(row).toContainText("Customized");
-  await row.getByLabel(`Actions for ${name}`).click();
-  await row.getByRole("button",{name:"Deactivate"}).click();
-  await expect(row).toHaveCount(0);
-  await page.locator("#breed-show-inactive").check();
-  await expect(row).toContainText("Inactive");
-  await row.getByLabel(`Actions for ${name}`).click();
-  await row.getByRole("button",{name:"Reactivate"}).click();
-  await expect(row).toContainText("Active");
-  await row.getByLabel(`Actions for ${name}`).click();
-  await row.getByRole("button",{name:"Reset to Pawsh default"}).click();
-  await expect(row).toContainText("Pawsh default");
-  await expect(row).not.toContainText("Customized");
+  await page.goto("/settings/pet-options");
+  // Pet Options is the pet-configuration workspace; Pet Type is its first section.
+  const nav=page.locator(".pet-options-nav button");
+  await expect(nav).toHaveCount(8);
+  await expect(nav.nth(0)).toHaveText("Pet Type");
+  await expect(nav.nth(0)).toHaveClass(/active/);
+  const rows=page.locator("#pet-type-body tr[data-pet-type-row]");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toContainText("Dog");
+  await expect(rows.nth(1)).toContainText("Cat");
+  // Pet types are shared Pawsh taxonomy, so these are shown but not yet actionable.
+  await expect(rows.nth(0).getByRole("button",{name:"Delete"})).toBeDisabled();
+  await expect(page.getByRole("button",{name:"+ Add"})).toBeDisabled();
+  // Sections without a salon-configurable surface say so rather than being omitted.
+  await nav.nth(1).click();
+  await expect(page.getByTestId("settings-placeholder")).toContainText("Behavior");
+  await nav.nth(0).click();
+  // Breeds open over Pet Options in a drawer, scoped to that pet type. Cat breeds were
+  // unreachable from the catalog before, though they were already selectable on a pet.
+  await rows.nth(1).getByRole("button",{name:"Breeds"}).click();
+  const drawer=page.getByTestId("breed-drawer");
+  await expect(drawer).toBeVisible();
+  await expect(page.locator("#breed-drawer-title")).toHaveText("Breeds for Cat");
+  const names=await page.locator("#breed-drawer-list li[data-breed-id] .breed-row-name").allInnerTexts();
+  expect(names).toContain("Abyssinian");
+  expect(names).not.toContain("Beagle");
+  await expect(page.locator("#breed-add")).toBeEnabled();
+  // Dismissable three ways, each returning to the Pet Type list.
+  await page.getByTestId("breed-drawer-close").click();
+  await expect(drawer).toBeHidden();
+  await rows.nth(0).getByRole("button",{name:"Breeds"}).click();
+  await expect(page.locator("#breed-drawer-title")).toHaveText("Breeds for Dog");
+  await page.keyboard.press("Escape");
+  await expect(drawer).toBeHidden();
+  await rows.nth(0).getByRole("button",{name:"Breeds"}).click();
+  await page.mouse.click(60,400);
+  await expect(drawer).toBeHidden();
+  await expect(page.locator("#pet-type-body")).toBeVisible();
 });
 
-test("@smoke breed catalog route restores Salon navigation and redirects legacy routes",async({page,tenant})=>{
+test("@smoke breed management lives in Pet Options and overrides per business",async({page,tenant})=>{
+  await login(page,tenant.ownerEmail);
+  await page.goto("/settings/pet-options");
+  // Salon no longer carries a competing catalog: one surface owns breeds.
+  await page.getByTestId("nav-setup").click();
+  await expect(page.locator("#setup").getByText("Breed Catalog")).toHaveCount(0);
+  await page.locator("#setup .setup-menu summary").click();
+  await expect(page.locator("#setup .setup-menu").getByRole("link",{name:"Breed catalog"})).toHaveCount(0);
+
+  await page.goto("/settings/pet-options");
+  const rows=page.locator("#pet-type-body tr[data-pet-type-row]");
+  await rows.nth(0).getByRole("button",{name:"Breeds"}).click();
+  await expect(page.locator("#breed-drawer-title")).toHaveText("Breeds for Dog");
+  const list=page.locator("#breed-drawer-list li[data-breed-id]");
+  await expect(list.first()).toBeVisible();
+  expect(await list.count()).toBeGreaterThan(20);
+
+  // Search narrows to one row, which is then the row every control below acts on.
+  const first=list.first();
+  const name=(await first.locator(".breed-row-name").innerText()).trim();
+  await page.locator("#breed-drawer-search").fill(name);
+  const row=page.locator(`#breed-drawer-list li[data-breed-id="${await first.getAttribute("data-breed-id")}"]`);
+  await expect(row).toBeVisible();
+  // A shared Pawsh breed is configurable but never renamable or deletable.
+  await expect(row).not.toHaveAttribute("data-business-owned","true");
+  await expect(row.locator(".breed-rename")).toHaveCount(0);
+  await expect(row.locator(".breed-delete")).toHaveCount(0);
+  await expect(row.locator(".breed-reset")).toHaveCount(0);
+
+  // Pricing class is a per-business override. Pick a class the row is not already on so the
+  // save is a real change whatever the Pawsh default happens to be.
+  const current=await row.locator(".breed-class-select").inputValue();
+  const nextClass=current==="EXTRA_FLOOF"?"SMOOTH_SINGLE":"EXTRA_FLOOF";
+  await row.locator(".breed-class-select").selectOption(nextClass);
+  await expect(row.locator(".breed-class-select")).toHaveValue(nextClass);
+  // Overriding the Pawsh default is what puts a reset control on the row.
+  await expect(row.locator(".breed-reset")).toHaveCount(1);
+
+  // Availability is the other per-business control, and an inactive row hides until asked for.
+  await row.locator(".breed-status-toggle").click();
+  await expect(row).toHaveCount(0);
+  await page.locator("#breed-drawer-show-inactive").check();
+  await expect(row.locator(".breed-status-toggle")).toHaveText("Inactive");
+  await row.locator(".breed-status-toggle").click();
+  await expect(row.locator(".breed-status-toggle")).toHaveText("Active");
+
+  await row.locator(".breed-reset").click();
+  await expect(row.locator(".breed-reset")).toHaveCount(0);
+  await expect(row.locator(".breed-class-select")).toHaveValue(current);
+});
+
+test("@smoke legacy breed catalog routes deep-link into Pet Options",async({page,tenant})=>{
   await login(page,tenant.ownerEmail);
   await expect(page.getByTestId("dashboard").getByText("Breed Catalog")).toHaveCount(0);
-  await page.goto("/salon/breeds");
-  await expect(page.getByTestId("breed-catalog-view")).toBeVisible();
-  await expect(page.getByTestId("nav-setup")).toHaveAttribute("aria-current","page");
-  await expect(page.getByTestId("nav-reports")).not.toHaveAttribute("aria-current","page");
-  await expect(page.locator("#page-title")).toHaveText("Salon");
-  await expect(page.getByRole("navigation",{name:"Breadcrumb"})).toContainText("Salon/Breed Catalog");
-  await page.reload();
-  await expect(page.getByTestId("breed-catalog-view")).toBeVisible();
-  await expect(page.getByTestId("nav-setup")).toHaveAttribute("aria-current","page");
-  await page.goto("/reports/breeds");
-  await expect(page).toHaveURL(/\/salon\/breeds$/);
-  await expect(page.getByTestId("nav-setup")).toHaveAttribute("aria-current","page");
-  const settingsMenu=page.locator("#breed-catalog .setup-menu summary");
-  await settingsMenu.click();
-  await expect(settingsMenu).toHaveAttribute("aria-expanded","true");
-  await page.keyboard.press("Escape");
-  await expect(settingsMenu).toHaveAttribute("aria-expanded","false");
-  await expect(settingsMenu).toBeFocused();
+  // The standalone page is gone; its URLs resolve to the surface that replaced it.
+  for(const path of ["/salon/breeds","/reports/breeds","/overview/breeds"]){
+    await page.goto(path);
+    await expect(page).toHaveURL(/\/settings\/pet-options$/);
+    await expect(page.getByTestId("breed-drawer")).toBeVisible();
+    await expect(page.locator("#breed-drawer-title")).toHaveText("Breeds for Dog");
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#pet-type-body")).toBeVisible();
+  }
   await page.getByTestId("nav-reports").click();
   await expect(page.getByTestId("nav-reports")).toHaveAttribute("aria-current","page");
-  await expect(page.getByTestId("breed-catalog-view")).toBeHidden();
-  await expect(page.locator("#reports").getByRole("heading",{name:"Dashboard reporting"})).toBeVisible();
   await expect(page.locator("#reports").getByText("Breed Catalog")).toHaveCount(0);
 });
 
-test("@responsive Breed Catalog preserves compact Salon context without horizontal overflow",async({page,tenant})=>{
+test("@responsive Breed management stays usable without horizontal overflow",async({page,tenant})=>{
   await login(page,tenant.ownerEmail);
-  await page.goto("/salon/breeds");
+  await page.goto("/settings/pet-options");
   for(const width of [1440,1024,768,430,390]){
     await page.setViewportSize({width,height:900});
-    await expect(page.getByTestId("breed-catalog-view")).toBeVisible();
-    await expect(page.getByTestId("nav-setup")).toHaveAttribute("aria-current","page");
-    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth)).toBe(true);
-    await expect(page.locator("#breed-catalog .setup-menu summary")).toBeVisible();
+    await page.locator("#pet-type-body tr[data-pet-type-row]").nth(0).getByRole("button",{name:"Breeds"}).click();
+    await expect(page.getByTestId("breed-drawer")).toBeVisible();
+    const row=page.locator("#breed-drawer-list li[data-breed-id]").first();
+    await expect(row.locator(".breed-row-name")).toBeVisible();
+    await expect(row.locator(".breed-class-select")).toBeVisible();
+    await expect(row.locator(".breed-status-toggle")).toBeVisible();
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),`width ${width}`).toBe(true);
+    await page.keyboard.press("Escape");
   }
 });
 

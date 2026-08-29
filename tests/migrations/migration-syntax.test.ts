@@ -2,79 +2,91 @@ import { readFile, readdir } from "node:fs/promises";
 import { parse } from "pgsql-parser";
 import { describe, expect, it } from "vitest";
 
+/**
+ * Reads a migration with its line endings normalised.
+ *
+ * Git checks this repository out with CRLF on Windows, so an assertion that spans a line break
+ * matches on Linux and macOS and fails on a Windows runner - which is exactly the kind of defect
+ * the cross-platform matrix exists to catch, and no reason to restrict these assertions to a
+ * single line each.
+ */
+async function readMigration(file: string): Promise<string> {
+  return (await readFile(`migrations/${file}`, "utf8")).replaceAll("\r\n", "\n");
+}
+
 describe("database migrations", () => {
   it("parses as PostgreSQL SQL", async () => {
     const migrations = (await readdir("migrations")).filter((file) => file.endsWith(".sql")).sort();
     expect(migrations.length).toBeGreaterThanOrEqual(2);
     for (const migration of migrations) {
-      const source = await readFile(`migrations/${migration}`, "utf8");
+      const source = await readMigration(migration);
       const tree = await parse(source);
       expect(tree.stmts?.length ?? 0, migration).toBeGreaterThan(0);
     }
   });
 
   it("contains release-critical constraints", async () => {
-    const source = await readFile("migrations/0001_initial.sql", "utf8");
+    const source = await readMigration("0001_initial.sql");
     expect(source).toContain("employee_appointment_no_overlap");
     expect(source).toContain("prevent_last_owner_loss");
     expect(source).toContain("create policy tenant_isolation");
     expect(source).toContain("one_active_invoice_per_appointment");
-    const scheduling = await readFile("migrations/0002_scheduling_conflict_overrides.sql", "utf8");
+    const scheduling = await readMigration("0002_scheduling_conflict_overrides.sql");
     expect(scheduling).toContain("employee_appointment_conflict_guard");
     expect(scheduling).toContain("pg_advisory_xact_lock");
     expect(scheduling).toContain("app.scheduling_conflict_override_appointment_id");
-    const petVersions = await readFile("migrations/0003_pet_versions.sql", "utf8");
+    const petVersions = await readMigration("0003_pet_versions.sql");
     expect(petVersions).toContain("add column version integer not null default 1");
     expect(petVersions).toContain("pet_version_positive");
-    const petCare = await readFile("migrations/0004_pet_care_permissions.sql", "utf8");
+    const petCare = await readMigration("0004_pet_care_permissions.sql");
     expect(petCare).toContain("update business_memberships");
     expect(petCare).toContain("update membership_invitations");
     expect(petCare).toContain("pets.care.view");
     expect(petCare).toContain("pets.care.edit");
-    const petDocuments = await readFile("migrations/0005_pet_documents.sql", "utf8");
+    const petDocuments = await readMigration("0005_pet_documents.sql");
     expect(petDocuments).toContain("one_current_pet_document");
     expect(petDocuments).toContain("pet_document_lifecycle_guard");
     expect(petDocuments).toContain("foreign key (business_id,pet_id) references pets(business_id,id)");
     expect(petDocuments).toContain("create policy tenant_isolation on pet_documents");
     expect(petDocuments).toContain("create policy tenant_isolation on pet_document_requests");
-    const malwareProtection = await readFile("migrations/0009_document_malware_protection.sql", "utf8");
+    const malwareProtection = await readMigration("0009_document_malware_protection.sql");
     expect(malwareProtection).toContain("create table pet_document_scan_attempts");
     expect(malwareProtection).toContain("pet_document_scan_attempts_immutable");
     expect(malwareProtection).toContain("state in ('pending','pending_scan','rejected','current','superseded')");
-    const rabiesCompliance = await readFile("migrations/0010_rabies_appointment_compliance.sql", "utf8");
+    const rabiesCompliance = await readMigration("0010_rabies_appointment_compliance.sql");
     expect(rabiesCompliance).toContain("pet_rabies_verification_consistency");
     expect(rabiesCompliance).toContain("unique_notification_material_recipient");
     expect(rabiesCompliance).toContain("0010_rabies_appointment_compliance");
     expect(malwareProtection).toContain("create policy tenant_isolation on pet_document_scan_attempts");
-    const attachmentMvp = await readFile("migrations/0011_rabies_attachment_mvp.sql", "utf8");
+    const attachmentMvp = await readMigration("0011_rabies_attachment_mvp.sql");
     expect(attachmentMvp).toContain("old.state='pending' and new.state not in ('pending','current','pending_scan')");
-    const pricingCatalog = await readFile("migrations/0012_service_pricing_and_breed_catalog.sql", "utf8");
+    const pricingCatalog = await readMigration("0012_service_pricing_and_breed_catalog.sql");
     expect(pricingCatalog).toContain("create table service_price_tiers");
     expect(pricingCatalog).toContain("create table business_breeds");
     expect(pricingCatalog).toContain("pricing_class_snapshot");
-    const workspaceAccess = await readFile("migrations/0014_workspace_access_requests.sql", "utf8");
+    const workspaceAccess = await readMigration("0014_workspace_access_requests.sql");
     expect(workspaceAccess).toContain("create table workspace_access_requests");
     expect(workspaceAccess).toContain("one_pending_workspace_access_request");
     expect(workspaceAccess).toContain("create policy tenant_isolation on workspace_access_requests");
-    const multiGroomer = await readFile("migrations/0015_multi_groomer_booking.sql", "utf8");
+    const multiGroomer = await readMigration("0015_multi_groomer_booking.sql");
     expect(multiGroomer).toContain("create table appointment_employees");
     expect(multiGroomer).toContain("appointment_employee_conflict_guard");
     expect(multiGroomer).toContain("one_active_normalized_service_name");
     expect(multiGroomer).toContain("'Ear Cleaning'");
     expect(multiGroomer).toContain("'Ear Plucking'");
-    const sessionLocations = await readFile("migrations/0018_session_location_selection.sql", "utf8");
+    const sessionLocations = await readMigration("0018_session_location_selection.sql");
     expect(sessionLocations).toContain("drop index if exists one_active_location_per_business");
     expect(sessionLocations).toContain("alter table sessions add column location_id uuid");
     expect(sessionLocations).toContain("sessions_location_within_business");
     expect(sessionLocations).toContain("references locations(business_id,id)");
-    const clientProfile = await readFile("migrations/0019_client_notes_and_preferences.sql", "utf8");
+    const clientProfile = await readMigration("0019_client_notes_and_preferences.sql");
     expect(clientProfile).toContain("create table customer_notes");
     expect(clientProfile).toContain("foreign key (business_id, customer_id) references customers(business_id, id)");
     expect(clientProfile).toContain("create policy tenant_isolation on customer_notes");
     expect(clientProfile).toContain("customer_note_legacy_mirror");
     expect(clientProfile).toContain("customer_booking_frequency_weeks_range");
     expect(clientProfile).toContain("add column marketing_sms_allowed boolean not null default true");
-    const clientAgreements = await readFile("migrations/0020_client_agreements.sql", "utf8");
+    const clientAgreements = await readMigration("0020_client_agreements.sql");
     expect(clientAgreements).toContain("create table agreement_templates");
     expect(clientAgreements).toContain("create table customer_agreements");
     expect(clientAgreements).toContain("customer_agreement_state_consistency");
@@ -88,7 +100,7 @@ describe("database migrations", () => {
 
     // The legacy breed cleanup is an explicit allow-list with a price guard. Both properties are
     // asserted here because losing either turns a reviewed cleanup into a silent repricing.
-    const legacyBreeds = await readFile("migrations/0031_resolve_safe_legacy_breeds.sql", "utf8");
+    const legacyBreeds = await readMigration("0031_resolve_safe_legacy_breeds.sql");
     expect(legacyBreeds).toContain("'yorkie', 'dog', 'yorkshire terrier'");
     expect(legacyBreeds).toContain("'STANDARD'");
     // Neither fold may be added without a product decision: both move EXTRA_FLOOF -> STANDARD.
@@ -96,8 +108,7 @@ describe("database migrations", () => {
     expect(legacyBreeds).not.toContain("'irish water dog', 'dog', 'irish water spaniel'");
     // The consolidation migration retires two names and reclasses one, and must refuse to run
     // where any pet references them rather than silently repricing that salon's book.
-    const consolidation = await readFile(
-      "migrations/0032_consolidate_water_spaniel_and_retire_sheep_dog.sql", "utf8");
+    const consolidation = await readMigration("0032_consolidate_water_spaniel_and_retire_sheep_dog.sql");
     expect(consolidation).toContain("raise exception");
     expect(consolidation).toContain("would be repriced");
     expect(consolidation).toContain("'EXTRA_FLOOF'");
@@ -110,7 +121,7 @@ describe("database migrations", () => {
     // Business-owned breeds share the `breeds` table with the curated taxonomy, so the
     // properties that keep the two partitions apart are release-critical. Each of these, lost,
     // turns a business's own addition into something that reaches other tenants.
-    const businessBreeds = await readFile("migrations/0033_business_owned_breeds.sql", "utf8");
+    const businessBreeds = await readMigration("0033_business_owned_breeds.sql");
     // The shared taxonomy keeps the uniqueness it had; added names are scoped per business.
     expect(businessBreeds).toContain("create unique index breed_shared_name on breeds (pet_type_id, normalized_name)\n  where business_id is null");
     expect(businessBreeds).toContain("create unique index breed_business_name on breeds (business_id, pet_type_id, normalized_name)\n  where business_id is not null");

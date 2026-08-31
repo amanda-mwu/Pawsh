@@ -1,0 +1,14 @@
+{
+  "refund": {
+    "id": "PAYSAMPLE00000001_RFNDSAMPLE000002",
+    "status": "REJECTED",
+    "amount_money": {
+      "amount": 2500,
+      "currency": "USD"
+    },
+    "payment_id": "PAYSAMPLE00000001",
+    "location_id": "LSAMPLE000000001",
+    "created_at": "2026-08-31T11:09:44Z",
+    "updated_at": "2026-08-31T11:11:07Z"
+  }
+}

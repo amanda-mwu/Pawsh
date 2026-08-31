@@ -39,7 +39,7 @@ test("@smoke @regression-checkout checkout totals persist and manual payment cor
   await (await appointmentAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"appointment-completed")).click();
   await page.getByTestId("field-discount").fill("5");
   await page.getByTestId("field-tip").fill("15");
-  await page.getByTestId("field-method").selectOption("cash");
+  await page.getByTestId("field-method").selectOption({label:"Cash"});
   await page.getByTestId("modal-submit").click();
   const receipt=page.getByTestId("receipt");
   await expect(receipt).toContainText("Subtotal$85.00");

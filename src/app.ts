@@ -10,8 +10,14 @@ import type { Config } from "./config.js";
 import type { Database } from "./db/client.js";
 import { deliverNotifications, LogEmailProvider, processOutbox, SmtpEmailProvider } from "./engagement/worker.js";
 import { registerRoutes } from "./http/routes.js";
+import { registerSquareRoutes } from "./http/square-routes.js";
 import type { DocumentHooks, FinancialHooks, LifecycleHooks, SchedulingHooks } from "./http/routes.js";
 import { openSecret } from "./security/secrets.js";
+import { createSquareClient, type SquareClient } from "./integrations/square/client.js";
+import { refreshDueConnections, purgeExpiredOAuthStates } from "./integrations/square/oauth.js";
+import { squareIntegration } from "./integrations/square/settings.js";
+import { expireStaleDeviceCodes } from "./integrations/square/terminal.js";
+import { processSquareWebhooks } from "./integrations/square/webhooks.js";
 import { createDocumentStorage, type DocumentStorage } from "./storage/documents.js";
 import { WallTimeError } from "./domain/time.js";
 import type { StartupDiagnostics } from "./startup.js";
@@ -29,6 +35,37 @@ function staticRoot(): string {
   return process.env.PAWSH_STATIC_ROOT?.trim() || "public";
 }
 
+/**
+ * Unique indexes an ordinary user can hit, and what to say when they do.
+ *
+ * Keyed by the index name PostgreSQL reports, so the sentence and the constraint cannot drift
+ * apart the way a hand-written message next to each insert would. Every entry here is also
+ * checked for ahead of time by the route that writes the table; this is the answer when two
+ * writers race that check, and it must still be a sentence, not a constraint name.
+ */
+export const uniqueViolations: Record<string, { code: string; error: string }> = {
+  payment_method_name_per_business: {
+    code: "PAYMENT_METHOD_NAME_TAKEN",
+    error: "A payment method with that name already exists."
+  },
+  tax_rate_name_per_business: {
+    code: "TAX_RATE_NAME_TAKEN",
+    error: "A tax rate with that name already exists."
+  },
+  tax_rate_single_default: {
+    code: "TAX_RATE_DEFAULT_CONFLICT",
+    error: "Another rate was made the default at the same moment. Refresh and try again."
+  },
+  card_processors_business_id_provider_key: {
+    code: "CARD_PROCESSOR_EXISTS",
+    error: "That processor is already configured. Edit the existing one instead."
+  },
+  card_processor_single_default: {
+    code: "CARD_PROCESSOR_DEFAULT_CONFLICT",
+    error: "Another processor was made the default at the same moment. Refresh and try again."
+  }
+};
+
 export async function createApp(
   config: Config,
   db: Database,
@@ -41,6 +78,8 @@ export async function createApp(
     documentHooks?: DocumentHooks;
     financialHooks?: FinancialHooks;
     startupDiagnostics?: StartupDiagnostics;
+    /** Injected by tests so the Square routes and worker never reach the network. */
+    squareClient?: SquareClient;
   } = {}
 ): Promise<FastifyInstance> {
   const startup = options.startupDiagnostics;
@@ -105,15 +144,51 @@ export async function createApp(
   registerRoutes(app, db, config, documentStorage,
     options.schedulingHooks, options.lifecycleHooks, options.financialHooks,
     options.documentHooks);
+  registerSquareRoutes(app, db, config, { client: options.squareClient });
   startup?.log("Authentication and API routes registered");
   let worker: NodeJS.Timeout | undefined;
   startup?.log("Registering background workers");
+  /**
+   * The Square half of the worker tick.
+   *
+   * Refreshing is scheduled here rather than triggered by a failed request because Square's
+   * refresh window does not depend on use: a salon that takes no card payments for a month still
+   * needs its token refreshed inside seven days, and there is no request in that month to hang a
+   * lazy refresh on. Webhook events are drained in the same tick, so the receiver stays a write
+   * and an acknowledgement while every decision about what an event means - including reading a
+   * Square Payment and posting it to the ledger - happens here rather than inside a request Square
+   * is timing.
+   *
+   * A no-op when Square is unconfigured, which is the normal state of this project today.
+   */
+  const square = squareIntegration(config);
+  async function processSquare(): Promise<void> {
+    if (!square.available) return;
+    const squareClient = options.squareClient ?? createSquareClient({
+      environment: square.settings.environment,
+      applicationId: square.settings.applicationId,
+      applicationSecret: square.settings.applicationSecret
+    });
+    const dependencies = {
+      client: squareClient,
+      keyring: square.settings.keyring,
+      environment: square.settings.environment
+    };
+    await refreshDueConnections(db, dependencies);
+    await processSquareWebhooks(db, dependencies);
+    await purgeExpiredOAuthStates(db);
+    // A pairing code that has passed its `pair_by` is expired whether or not anybody has looked.
+    // The screen already derives that from the instant, so this is not what makes the product
+    // honest - it is what keeps the column from disagreeing with the clock.
+    await expireStaleDeviceCodes(db);
+  }
   if (options.runWorker !== false) {
     const emailProvider = config.SMTP_HOST ? new SmtpEmailProvider(config) : new LogEmailProvider();
     worker = setInterval(async () => {
       try {
         await processOutbox(db);
         await deliverNotifications(db, emailProvider, (value) => openSecret(value, config.SESSION_SECRET));
+        await processSquare();
       } catch (error) {
         app.log.error({ err: error }, "background processing failed");
       }
@@ -148,6 +223,13 @@ export async function createApp(
         canOverride: false
       });
     }
+    // A unique index a person can walk into - a second "Cash", two rates racing to be the one in
+    // force - has to come back as something a modal can render. The routes check for these first
+    // and refuse with the same code, so reaching here means two writers raced; the reply is the
+    // same either way rather than "violates a data integrity rule", which explains nothing to a
+    // salon owner who typed a name that was already taken.
+    const violated = uniqueViolations[(error as { constraint_name?: string }).constraint_name ?? ""];
+    if (violated) return reply.code(409).send(violated);
     if ((error as { code?: string }).code?.startsWith("23")) {
       return reply.code(409).send({ error: "The requested change violates a data integrity rule" });
     }

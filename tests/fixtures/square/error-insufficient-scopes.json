@@ -1,0 +1,9 @@
+{
+  "errors": [
+    {
+      "category": "AUTHENTICATION_ERROR",
+      "code": "INSUFFICIENT_SCOPES",
+      "detail": "This request requires the PAYMENTS_WRITE scope."
+    }
+  ]
+}

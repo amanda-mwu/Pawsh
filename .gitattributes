@@ -1,2 +1,7 @@
 .githooks/* text eol=lf
 *.sh text eol=lf
+
+# Square fixtures are signed byte-for-byte at test time. Any end-of-line translation would
+# change the bytes the HMAC is computed over and the sha256 recorded in the manifest, so these
+# files are checked out exactly as they are stored.
+tests/fixtures/square/** -text

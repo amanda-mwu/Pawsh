@@ -35,7 +35,10 @@ test("@smoke business configuration persists through the GUI",async({page,tenant
   await page.getByTestId("field-name").fill(`QA Salon ${tenant.runId}`);
   await page.getByTestId("field-timezone").fill("America/Los_Angeles");
   await page.getByTestId("field-currency").fill("USD");
-  await page.getByTestId("field-taxRate").fill("8.25");
+  // The tax rate moved to Settings -> Tax & payments, where a named rate is marked as the one in
+  // force and mirrored onto the business. It is shown here read-only so the two screens cannot
+  // disagree, so this asserts the field reports itself as read-only rather than typing into it.
+  await expect(page.getByTestId("field-taxRate")).toHaveAttribute("aria-readonly","true");
   await page.locator('input[name="reminderHours"]').fill("24");
   await page.getByTestId("modal-submit").click();
   await expect(page.locator("#account-role")).toContainText(`QA Salon ${tenant.runId}`);
@@ -220,7 +223,9 @@ test("@smoke primary navigation exposes requested destinations without orphaning
   await login(page,tenant.ownerEmail);
   const destinations:[string,string][]=[["nav-dashboard","Dashboard"],["nav-calendar","Calendar"],["nav-customers","Clients"],["nav-messages","Messages"],["nav-reminders","Reminders"],["nav-sales","Sales and Expense"],["nav-product","Product"],["nav-reports","Report"],["nav-settings","Settings"]];
   for(const [testId,name] of destinations)await expect(page.getByTestId(testId)).toHaveAccessibleName(name);
-  await page.getByTestId("nav-messages").click();await expect(page.locator("#messages").getByRole("heading",{name:"Messages"})).toBeVisible();
+  // Messages names itself once, in the page header: the conversation pane's own "Messages"
+  // heading was removed as a duplicate of it.
+  await page.getByTestId("nav-messages").click();await expect(page.getByRole("heading",{name:"Messages",exact:true})).toBeVisible();await expect(page.locator("#messages .message-list-pane")).toBeVisible();
   await page.getByTestId("nav-product").click();await expect(page.locator("#product").getByRole("heading",{name:"Product"})).toBeVisible();
   await expect(page.getByTestId("nav-services")).toHaveCount(0);await expect(page.getByTestId("header-services")).toBeVisible();await expect(page.getByTestId("nav-setup")).toBeVisible();
 });

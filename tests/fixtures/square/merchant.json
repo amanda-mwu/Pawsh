@@ -1,0 +1,11 @@
+{
+  "merchant": {
+    "id": "MLSAMPLE00000001",
+    "business_name": "Sample Grooming Salon",
+    "country": "US",
+    "language_code": "en-US",
+    "currency": "USD",
+    "status": "ACTIVE",
+    "main_location_id": "LSAMPLE000000001"
+  }
+}

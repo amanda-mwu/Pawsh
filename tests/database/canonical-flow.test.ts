@@ -407,7 +407,10 @@ describeDatabase("canonical Pawsh workflow", () => {
       paidRevenueMinor:0,completedAppointments:0,servicesPerformed:0,totalPets:0,
       expectedRevenueMinor:0,outstandingMinor:0,billedRevenueMinor:0,salesMinor:0,
       discountMinor:0,netMinor:0,taxMinor:0,tipMinor:0,unattributedRevenueMinor:0,
-      unattributedTipMinor:0,commissionMinor:null
+      unattributedTipMinor:0,commissionMinor:null,
+      // Refunds are reported beside collected money rather than netted into it, so they are four
+      // more keys that must zero out under the groomer filter like every other aggregate here.
+      refundedMinor:0,refundedTipMinor:0,refundCount:0,netCollectedMinor:0
     });
     const invalid=await app.inject({method:"GET",url:"/api/reports?employeeIds=not-a-uuid",headers:{cookie:ownerCookie}});
     expect(invalid.statusCode).toBe(400);

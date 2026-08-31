@@ -89,6 +89,19 @@ function petName(record, fallback = "Unnamed pet") {
 function money(value = 0) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: state.me?.business?.currency || "USD" }).format(Number(value) / 100);
 }
+// Invoice statuses, in the operator's words. Mirrors `invoiceStatusLabels` in
+// packages/domain/src/enums.ts, which is the source of truth; this is the browser's copy because
+// app.js is served as a plain module with no bundler and cannot import from the workspace package.
+//
+// `partially_refunded` and `refunded` replace `paid` and only `paid`. An invoice that still owes
+// money never reaches either - it stays open or partially paid - so nothing here has to reason
+// about a refunded invoice that is also collectable.
+const INVOICE_STATUS_LABELS={draft:"Draft",open:"Open",partially_paid:"Partially paid",paid:"Paid",partially_refunded:"Partly refunded",refunded:"Refunded",void:"Void"};
+function invoiceStatusLabel(status){return INVOICE_STATUS_LABELS[status]||String(status||"").replaceAll("_"," ");}
+// Money that went back. Neither paid nor unpaid: calling it Paid hides the most important thing
+// that happened to the visit, and calling it Unpaid sends somebody to chase money the customer
+// already returned.
+function invoiceRefunded(status){return status==="refunded"||status==="partially_refunded";}
 function toast(message) {
   $("#toast").textContent = message; $("#toast").classList.add("show");
   setTimeout(() => $("#toast").classList.remove("show"), 2200);
@@ -308,9 +321,14 @@ function appointmentBadge(item){
   // salon acts on, so it takes the badge. Before that there is no invoice and the
   // lifecycle status is shown instead. Confirmed/unconfirmed has no data source yet.
   const invoiceStatus=item&&item.invoiceStatus;
-  if(invoiceStatus) return invoiceStatus==="paid"
-    ? {code:"PAI",label:"Paid",variant:"paid"}
-    : {code:"UNP",label:"Unpaid",variant:"unpaid"};
+  if(invoiceStatus){
+    // Named one at a time rather than defaulted, so a refunded invoice cannot fall through into
+    // "Unpaid" - which would put a groomer's calendar card in front of somebody as money to chase.
+    if(invoiceStatus==="paid")return {code:"PAI",label:"Paid",variant:"paid"};
+    if(invoiceStatus==="refunded")return {code:"REF",label:"Refunded",variant:"refunded"};
+    if(invoiceStatus==="partially_refunded")return {code:"PRF",label:"Partly refunded",variant:"partially-refunded"};
+    return {code:"UNP",label:"Unpaid",variant:"unpaid"};
+  }
   const badge=APPOINTMENT_BADGES[item&&item.status];
   return badge?{code:badge[0],label:badge[1],variant:item.status}:null;
 }
@@ -646,17 +664,62 @@ async function advanceAppointment(id, status, actionButton) {
     finally{if(actionButton?.isConnected){actionButton.disabled=false;actionButton.removeAttribute("aria-busy");}}
   });
 }
-function checkout(id) {
+/**
+ * The payment method list is the salon's, not a fixed four.
+ *
+ * `payments.method` is still the closed set of settlement types the ledger can tell apart, so the
+ * select offers the methods staff actually configured and the chosen one is mapped back to its
+ * settlement type on the way out. The tip presets write a dollar amount into the tip field rather
+ * than replacing it: a preset is a shortcut, and staff must still be able to type any amount.
+ */
+async function checkout(id) {
+  await ensureCheckoutPaymentOptions();
+  await ensureCheckoutTerminal();
+  const appointment=calendarAppointmentById(id);
+  const choices=checkoutMethodChoices();
+  const terminals=checkoutTerminal.data?.available?checkoutTerminal.data.devices:[];
+  const subtotal=Number(appointment?.servicesSubtotalMinor);
+  // Never guessed. Without the server's figure a percentage would be an invented one, so the
+  // presets stand down and say why instead.
+  const base=Number.isFinite(subtotal)&&subtotal>=0?subtotal:null;
+  const presets=checkoutTipPercents();
+  // A card terminal is a capture route rather than a settlement type: it is offered beside the
+  // salon's methods because that is the one decision the operator is making, and choosing it
+  // hands the tip to hardware that asks the customer directly.
+  const methodOptions=choices.map(choice=>[choice.value,choice.label]);
+  if(terminals.length)methodOptions.push([CHECKOUT_TERMINAL_METHOD,"Card terminal"]);
+  const methodField=methodOptions.length
+    ?select("method","Payment method",methodOptions,true)
+    :`<label class="wide">Payment method<select data-testid="field-method" name="method"><option value="" disabled selected>No payment method is enabled</option></select></label>`;
+  // Only when there is a choice to make. One paired terminal is not a decision.
+  const deviceField=terminals.length>1
+    ?`<label class="wide" data-checkout-device>Terminal<select data-testid="field-device" name="deviceId">`
+      +terminals.map(device=>`<option value="${device.id}">${escape(device.label)}</option>`).join("")
+      +`</select></label>`
+    :"";
+  const tipPresets=presets.length
+    ?`<div class="wide taxpay-tips" role="group" aria-label="Tip presets">`
+      +presets.map(percent=>`<button type="button" class="secondary compact taxpay-tip-preset" data-taxpay-tip="${percent}" aria-pressed="false"${base===null?` disabled aria-disabled="true" title="${escape(TAXPAY_TIP_BASE_MISSING)}"`:""}>${percent}%</button>`).join("")
+      +`<button type="button" class="secondary compact taxpay-tip-preset" data-taxpay-tip="none" aria-pressed="true">None</button></div>`
+    :"";
   openModal("Complete checkout",
     field("discount","Discount ($)","number",'min="0" step=".01" value="0"')+
+    tipPresets+
     field("tip","Tip ($)","number",'min="0" step=".01" value="0"')+
-    select("method","Payment method",[["cash","Cash"],["external_card","External card"],["check","Check"],["other","Other"]],true),
+    methodField+deviceField,
     async (form) => {
       const values=Object.fromEntries(form);
+      const onTerminal=String(values.method)===CHECKOUT_TERMINAL_METHOD;
+      const choice=onTerminal?null:choices.find(item=>String(item.value)===String(values.method));
+      if(!onTerminal&&!choice)throw new Error(methodOptions.length
+        ?"Choose a payment method."
+        :"No payment method is enabled. Enable one in Settings → Tax & payments.");
       const invoicePayload={
         discountMinor:Math.round(Number(values.discount||0)*100),
         discountType:Number(values.discount||0)>0?"manual":null,
-        tipMinor:Math.round(Number(values.tip||0)*100)
+        // Zero, always, for a terminal capture: the tip is raised onto the invoice afterwards by
+        // exactly what the customer chose on the device, and a guess here would have to be undone.
+        tipMinor:onTerminal?0:Math.round(Number(values.tip||0)*100)
       };
       let invoice;
       try{invoice=await financialMutation(`/api/appointments/${id}/checkout`,`checkout.create-invoice`,invoicePayload);}
@@ -666,10 +729,27 @@ function checkout(id) {
         }
         throw error;
       }
+      if(onTerminal&&Number(invoice.balanceMinor)>0){
+        const device=terminals.find(entry=>entry.id===String(values.deviceId))||terminals[0];
+        if(!device)throw new Error("No terminal is paired. Pair one in Settings → Tax & payments.");
+        let started;
+        try{
+          // No amount and no tip in this body: the server derives both, and the idempotency key
+          // that makes a retry safe is derived from the row it writes before Square is called.
+          started=await api(`/api/invoices/${invoice.id}/terminal-checkouts`,
+            {method:"POST",body:JSON.stringify({deviceId:device.id})});
+        }catch(error){
+          error.message=`Invoice created; the terminal did not start. ${error.message}`;
+          throw error;
+        }
+        // Deliberately not a receipt and not a success: nothing has been paid yet, and the modal
+        // that opens next says exactly what the terminal is doing.
+        return {message:"Sent to the terminal",afterClose:()=>openTerminalCapture(started,device.label)};
+      }
       if(Number(invoice.balanceMinor)>0){
         try{
           await financialMutation(`/api/invoices/${invoice.id}/payments`,`payment.record`,{
-            amountMinor:Number(invoice.balanceMinor),expectedBalanceMinor:Number(invoice.balanceMinor),method:values.method
+            amountMinor:Number(invoice.balanceMinor),expectedBalanceMinor:Number(invoice.balanceMinor),method:choice.settlementType
           });
         }catch(error){
           error.message=`Invoice created; payment remains pending. ${error.message}`;
@@ -682,17 +762,343 @@ function checkout(id) {
       catch(error){error.message="Payment recorded successfully. Receipt is temporarily unavailable.";throw error;}
       return ()=>showReceipt(receipt);
     });
+  bindCheckoutTips(base);
+  bindCheckoutCapture();
 }
+/**
+ * Choosing a card terminal takes the tip controls out of the DOM.
+ *
+ * Removed, not disabled. A greyed-out tip field still asserts that a tip belongs on this screen,
+ * and the terminal is about to ask the customer for one - so the operator would be looking at two
+ * places to enter the same number, one of which does nothing. The nodes are kept and put back if
+ * the operator changes their mind, because rebuilding them would lose whatever they had typed.
+ */
+function bindCheckoutCapture(){
+  const host=$("#modal-fields");if(!host)return;
+  const method=host.querySelector('[data-testid="field-method"]');if(!method)return;
+  const presets=host.querySelector(".taxpay-tips");
+  const tipField=host.querySelector('[data-testid="field-tip"]')?.closest("label");
+  const device=host.querySelector("[data-checkout-device]");
+  const anchor=document.createComment("checkout-tip");
+  (presets||tipField)?.before(anchor);
+  const note=document.createElement("p");
+  note.className="wide fine checkout-terminal-note";
+  note.setAttribute("data-testid","checkout-terminal-note");
+  note.textContent="Tip is taken on the terminal";
+  const deviceAnchor=document.createComment("checkout-device");
+  device?.before(deviceAnchor);
+  device?.remove();
+  const submit=$("[data-testid=\"modal-submit\"]");
+  const apply=()=>{
+    const onTerminal=String(method.value)===CHECKOUT_TERMINAL_METHOD;
+    if(onTerminal){
+      presets?.remove();tipField?.remove();
+      if(!note.isConnected)anchor.after(note);
+      if(device&&!device.isConnected)deviceAnchor.after(device);
+    }else{
+      note.remove();device?.remove();
+      if(tipField&&!tipField.isConnected)anchor.after(tipField);
+      if(presets&&!presets.isConnected)anchor.after(presets);
+    }
+    // "Save" is what every other dialog does. This one hands a request to a card reader that is
+    // about to ask a customer for money, and the button should say so before it is pressed.
+    if(submit)submit.textContent=onTerminal?"Send to terminal":"Save";
+  };
+  method.addEventListener("change",apply);
+  apply();
+}
+function bindCheckoutTips(base){
+  const host=$("#modal-fields");if(!host)return;
+  const tipInput=host.querySelector('[data-testid="field-tip"]');
+  const discountInput=host.querySelector('[data-testid="field-discount"]');
+  const buttons=[...host.querySelectorAll("[data-taxpay-tip]")];
+  if(!tipInput||!discountInput||!buttons.length)return;
+  // What the visit charges for the work, less the operator's discount — the taxable subtotal the
+  // invoice is built from. The service prices are never re-summed here: the server already owns
+  // that total and sends it with the appointment, and a second opinion about it is a bug waiting.
+  const baseMinor=()=>Math.max(0,Number(base||0)-Math.round(Number(discountInput.value||0)*100));
+  const amountFor=percent=>Math.round(baseMinor()*Number(percent)/100);
+  let active="none";
+  const sync=()=>buttons.forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.taxpayTip===active)));
+  buttons.forEach(button=>button.addEventListener("click",()=>{
+    active=button.dataset.taxpayTip;
+    tipInput.value=active==="none"?"0":(amountFor(active)/100).toFixed(2);
+    sync();
+  }));
+  // A typed amount is the operator's own, so no preset claims it — unless they cleared it, which
+  // is what "None" means.
+  tipInput.addEventListener("input",()=>{
+    active=Math.round(Number(tipInput.value||0)*100)===0?"none":null;sync();
+  });
+  // A discount moves the base a percentage is taken of, so a chosen preset follows it.
+  discountInput.addEventListener("input",()=>{
+    if(active&&active!=="none"&&base!==null)tipInput.value=(amountFor(active)/100).toFixed(2);
+    sync();
+  });
+  sync();
+}
+// The refunds already asked for against one payment, newest last.
+//
+// Read off the receipt rather than fetched per payment: the receipt already carries them, and a
+// request per row would make opening a receipt cost one call per payment on it.
+function receiptRefundsFor(receipt,paymentId){
+  return (receipt.refunds||[]).filter(refund=>refund.paymentId===paymentId);
+}
+
+// What is left to refund on a payment, as the receipt can see it.
+//
+// Pending refunds count against it. They have moved no money yet, but the money is spoken for, and
+// offering it again would invite a second refund of the same funds - which the server would refuse,
+// but only after the operator had typed an amount and pressed a button expecting it to work.
+function receiptRefundableMinor(receipt,payment){
+  const committed=receiptRefundsFor(receipt,payment.id)
+    .filter(refund=>refund.status!=="failed")
+    .reduce((sum,refund)=>sum+Number(refund.amountMinor||0),0);
+  return Math.max(0,Number(payment.amountMinor||0)-committed);
+}
+
+// One refund, as a line under the payment it came out of.
+//
+// NOTHING HERE SAYS "REFUNDED" UNTIL THE SERVER SAYS `settled`, which it only does once the
+// retrieved Square refund reported COMPLETED. A pending refund says it is waiting and offers the
+// same "check with the processor" recovery the terminal capture offers, because the webhook that
+// would have settled it can be missed.
+function receiptRefundRow(refund){
+  const detail=refund.failed&&refund.failureReason?escape(refund.failureReason)
+    :refund.inFlight?"Waiting for the card processor to confirm."
+    :refund.reason?escape(refund.reason)
+    :"";
+  const tip=refund.tipRefundedMinor
+    ? ` · ${money(refund.tipRefundedMinor)} of this came out of the tip`
+    :"";
+  const when=refund.settledAt||refund.createdAt;
+  const action=refund.inFlight&&allowed("checkout.perform")
+    ? `<button type="button" class="text-button refund-refresh" data-refund-id="${refund.id}">Check refund</button>`
+    :"";
+  return `<div class="receipt-refund is-${escape(refund.status)}" data-testid="receipt-refund" data-refund-status="${escape(refund.status)}">`
+    +`<span><strong>${escape(refund.label)}</strong>`
+    +`<small>${escape(new Date(when).toLocaleDateString())}${tip}</small>`
+    +(detail?`<small class="fine">${detail}</small>`:"")
+    +`</span>`
+    // A minus sign, because this is money leaving. Only a settled refund is shown as an amount
+    // that has moved; a pending one is shown in brackets so nobody reads it as done.
+    +`<strong class="receipt-refund-amount">${refund.settled?`-${money(refund.amountMinor)}`:`(${money(refund.amountMinor)})`}</strong>`
+    +action
+    +`</div>`;
+}
+
 function showReceipt(receipt) {
   const invoice=receipt.invoice;
-  const payments=receipt.payments.map(payment=>`<div><span>${escape(payment.method.replace("_"," "))} · ${escape(payment.status)}</span><strong>${money(payment.amountMinor)}</strong>${payment.status==="recorded"&&allowed("checkout.perform")?`<button type="button" class="text-button void-payment" data-payment-id="${payment.id}">Void record</button>`:""}</div>`).join("");
-  openModal(`Receipt #${invoice.invoiceNumber}`,`<div class="wide receipt" data-testid="receipt"><p><strong>${escape(invoice.businessName)}</strong></p><p>${escape(clientName(invoice))}</p>${receipt.items.map(item=>`<div><span>${escape(item.description)}</span><strong>${money(item.amountMinor)}</strong></div>`).join("")}<div><span>Subtotal</span><strong>${money(invoice.subtotalMinor)}</strong></div><div><span>Discount</span><strong>-${money(invoice.discountMinor)}</strong></div><div><span>Tax</span><strong>${money(invoice.taxMinor)}</strong></div><div><span>Tip</span><strong>${money(invoice.tipMinor)}</strong></div><div class="receipt-total"><span>Total</span><strong>${money(invoice.totalMinor)}</strong></div><div><span>Balance</span><strong>${money(invoice.balanceMinor)}</strong></div><h4>Payment records</h4>${payments||"<p>No payment recorded.</p>"}</div>`,async()=>{});
-  $$(".void-payment").forEach(button=>button.addEventListener("click",()=>voidPayment(button.dataset.paymentId,invoice.id)));
+  // A payment taken on a terminal is named as one. "External card" is the settlement type the
+  // ledger records, and it is what a manually keyed card payment says too; on a receipt somebody
+  // reads at a counter, the difference between the two is the difference between money Pawsh can
+  // point at in a card processor and money it cannot.
+  //
+  // THE ACTION ON A PAYMENT DEPENDS ON WHETHER PAWSH TOOK THE MONEY. A terminal payment offers
+  // Refund and never Void, because voiding it would delete the record while the customer's card
+  // stayed charged - and the server refuses it now, so offering the button would only be a way to
+  // reach an error. Everything else offers Void, which is still the right correction for a
+  // mis-keyed cash, cheque or external-card record: Pawsh never moved that money and cannot.
+  const payments=receipt.payments.map(payment=>{
+    const refundable=receiptRefundableMinor(receipt,payment);
+    // Nothing left to refund has two different causes and they must not share a sentence. If a
+    // refund is still in flight the money is only spoken for, not returned, and "Fully refunded"
+    // would be a claim the row directly below it contradicts - so that case says nothing here and
+    // lets the refund row speak for itself.
+    const inFlight=receiptRefundsFor(receipt,payment.id).some(refund=>refund.status==="pending");
+    const action=payment.status!=="recorded"||!allowed("checkout.perform")?""
+      :payment.provider
+        ?(refundable>0
+          ? `<button type="button" class="text-button refund-payment" data-payment-id="${payment.id}" data-testid="refund-payment">Refund</button>`
+          : inFlight
+            ? ""
+            : `<span class="fine" data-testid="refund-exhausted">Fully refunded</span>`)
+        :`<button type="button" class="text-button void-payment" data-payment-id="${payment.id}" data-payment-provider="">Void record</button>`;
+    return `<div><span>${escape(payment.provider==="square"?"card terminal":payment.method.replace("_"," "))} · ${escape(payment.status)}</span><strong>${money(payment.amountMinor)}</strong>${action}</div>`
+      +receiptRefundsFor(receipt,payment.id).map(receiptRefundRow).join("");
+  }).join("");
+  // Shown only when there is one. A permanent "Refunded $0.00" row would read as a fact about the
+  // visit rather than about the product, on every receipt a salon ever prints.
+  const refundedLine=receipt.refundedMinor
+    ? `<div class="receipt-refunded" data-testid="receipt-refunded"><span>Refunded</span><strong>-${money(receipt.refundedMinor)}</strong></div>`
+    :"";
+  openModal(`Receipt #${invoice.invoiceNumber}`,`<div class="wide receipt" data-testid="receipt"><p><strong>${escape(invoice.businessName)}</strong></p><p>${escape(clientName(invoice))}</p>${receipt.items.map(item=>`<div><span>${escape(item.description)}</span><strong>${money(item.amountMinor)}</strong></div>`).join("")}<div><span>Subtotal</span><strong>${money(invoice.subtotalMinor)}</strong></div><div><span>Discount</span><strong>-${money(invoice.discountMinor)}</strong></div><div><span>Tax</span><strong>${money(invoice.taxMinor)}</strong></div><div><span>Tip</span><strong>${money(invoice.tipMinor)}</strong></div><div class="receipt-total"><span>Total</span><strong>${money(invoice.totalMinor)}</strong></div><div><span>Balance</span><strong>${money(invoice.balanceMinor)}</strong></div>${refundedLine}<h4>Payment records</h4>${payments||"<p>No payment recorded.</p>"}</div>`,async()=>{});
+  $$(".void-payment").forEach(button=>button.addEventListener("click",()=>voidPayment(button.dataset.paymentId,invoice.id,button.dataset.paymentProvider)));
+  $$(".refund-payment").forEach(button=>button.addEventListener("click",()=>runDetached(()=>openRefundDialog(
+    invoice.id,receipt.payments.find(payment=>payment.id===button.dataset.paymentId)))));
+  $$(".refund-refresh").forEach(button=>button.addEventListener("click",()=>runDetached(()=>
+    refreshRefund(button.dataset.refundId,invoice.id))));
 }
-async function voidPayment(paymentId,invoiceId) {
-  const reason=prompt("Reason for voiding this manual payment record:");
+
+// Re-reads the receipt and shows it again, which is how every refund outcome comes back to the
+// operator: the row it produced is on the receipt, whatever that row says.
+//
+// The 50ms hand-off is the same one the rest of this file uses when one dialog replaces another;
+// closing and reopening `#modal` in the same tick leaves the browser without a frame to run the
+// close transition in.
+async function reopenReceipt(invoiceId,message){
+  const receipt=await api(`/api/invoices/${invoiceId}/receipt`);
+  $("#modal").close();
+  if(message)toast(message);
+  setTimeout(()=>showReceipt(receipt),50);
+  if(state.me)runDetached(()=>refresh());
+}
+
+/**
+ * The sentence shown before a refund is confirmed, which is where the tip rule becomes visible.
+ *
+ * THE TIP IS REFUNDED LAST, and the operator has to be told that before they press the button
+ * rather than discover it on the receipt afterwards. Square hands Pawsh one amount and does not
+ * split it, so this split is a decision Pawsh makes: the service amount absorbs a refund first,
+ * the tip is only reached once the service portion is exhausted, and a full refund returns the tip
+ * in full. Splitting proportionally would take part of a groomer's earned gratuity on the first
+ * dollar refunded, for a service complaint that was not theirs.
+ *
+ * The rule itself is not reimplemented here. The server sends `serviceRemainingMinor` - how much
+ * of the service amount is still unrefunded - and the tip portion is whatever a refund exceeds it
+ * by. The server recomputes the authoritative split under a lock when the refund is claimed; this
+ * is only what the operator is shown.
+ */
+function refundTipSentence(refundState,amountMinor){
+  if(!Number.isFinite(amountMinor)||amountMinor<=0)return "Enter an amount to refund.";
+  if(amountMinor>refundState.refundableMinor){
+    return `Only ${money(refundState.refundableMinor)} is left to refund on this payment.`;
+  }
+  if(!refundState.paymentTipMinor)return `Refunding ${money(amountMinor)}.`;
+  const tipMinor=Math.max(0,amountMinor-refundState.serviceRemainingMinor);
+  if(tipMinor<=0){
+    return `Refunding ${money(amountMinor)} — the ${money(refundState.paymentTipMinor)} tip is not included.`;
+  }
+  if(tipMinor>=amountMinor){
+    return `Refunding ${money(amountMinor)} — all of it comes out of the ${money(refundState.paymentTipMinor)} tip.`;
+  }
+  return `Refunding ${money(amountMinor)} — ${money(tipMinor)} of this comes out of the ${money(refundState.paymentTipMinor)} tip.`;
+}
+
+/**
+ * Asks for an amount and a reason, shows what the refund would do, and sends it.
+ *
+ * The refundable figure is re-read from the server rather than taken off the open receipt, so a
+ * refund somebody else issued while this receipt was on screen is accounted for before the
+ * operator types anything. It is sent back as `expectedRefundableMinor` so the server can tell
+ * "this operator asked for too much" from "this screen was out of date" and say the right sentence
+ * for each.
+ */
+async function openRefundDialog(invoiceId,payment){
+  if(!payment)return;
+  let refundState;
+  try{refundState=await api(`/api/payments/${payment.id}/refunds`);}
+  catch(error){toast(error.message);return;}
+  if(!refundState.refundable||refundState.refundableMinor<=0){
+    toast("There is nothing left to refund on this payment.");
+    return;
+  }
+  const maxAmount=(refundState.refundableMinor/100).toFixed(2);
+  openStackedDialog({
+    title:"Refund this payment",
+    // Defaulted to the whole remaining amount, because a full refund is what a salon is doing
+    // almost every time it opens this. A partial one is a deliberate edit rather than the norm.
+    body:`<p>This payment was taken on a card terminal. Refunding it sends the money back to the `
+      +`customer's card.</p>`
+      +`<div class="refund-fields">`
+      +`<label>Amount<input type="number" name="refundAmount" data-testid="field-refundAmount" `
+      +`inputmode="decimal" step="0.01" min="0.01" max="${maxAmount}" value="${maxAmount}" required></label>`
+      +`<label>Reason (optional)<input type="text" name="refundReason" `
+      +`data-testid="field-refundReason" maxlength="192" placeholder="Groom cut short"></label>`
+      +`</div>`
+      +`<p class="fine" data-testid="refund-tip-line" role="status" aria-live="polite">`
+      +`${escape(refundTipSentence(refundState,refundState.refundableMinor))}</p>`
+      +`<p class="fine">${money(refundState.refundableMinor)} of ${money(refundState.paymentAmountMinor)} is still refundable.</p>`
+      +`<p class="error" role="alert"></p>`,
+    confirmLabel:"Refund",
+    dismissLabel:"Cancel",
+    onConfirm:async host=>{
+      const error=host.querySelector(".error");error.textContent="";
+      const amountMinor=Math.round(Number(host.querySelector('[name="refundAmount"]').value)*100);
+      if(!Number.isFinite(amountMinor)||amountMinor<=0){
+        error.textContent="Enter an amount to refund.";return false;
+      }
+      if(amountMinor>refundState.refundableMinor){
+        error.textContent=`Only ${money(refundState.refundableMinor)} is left to refund on this payment.`;
+        return false;
+      }
+      const reason=host.querySelector('[name="refundReason"]').value.trim();
+      try{
+        const refund=await runOnce(`refund:${payment.id}`,()=>financialMutation(
+          `/api/payments/${payment.id}/refunds`,"payment.refund",
+          {amountMinor,expectedRefundableMinor:refundState.refundableMinor,reason:reason||null}));
+        // `runOnce` returns nothing when the same refund is already in flight, which is a
+        // double-tap rather than an outcome. Leave the dialog exactly as it is.
+        if(!refund)return false;
+        // A refund is never announced as done on the strength of having been sent. `settled` is
+        // set only where the retrieved Square refund reported COMPLETED.
+        const message=refund.settled
+          ? `Refunded ${money(refund.amountMinor)} to the customer's card`
+          : "Refund sent. Pawsh will confirm it with the card processor.";
+        setTimeout(()=>runDetached(()=>reopenReceipt(invoiceId,message)),0);
+        return true;
+      }catch(problem){
+        // A refund row that exists but could not be confirmed is not a validation failure - it is
+        // a state the receipt has to show. Closing and re-rendering puts it in front of the
+        // operator; leaving them in this dialog would offer them a second refund of money that may
+        // already be on its way back.
+        if(problem.data&&problem.data.refund){
+          setTimeout(()=>runDetached(()=>reopenReceipt(invoiceId,problem.message)),0);
+          return true;
+        }
+        error.textContent=problem.message;
+        return false;
+      }
+    }
+  });
+  const host=$("#stacked-dialog-body");
+  const amountField=host.querySelector('[name="refundAmount"]');
+  const tipLine=host.querySelector('[data-testid="refund-tip-line"]');
+  amountField.addEventListener("input",()=>{
+    tipLine.textContent=refundTipSentence(refundState,Math.round(Number(amountField.value)*100));
+  });
+  amountField.focus();
+  amountField.select();
+}
+
+/**
+ * Re-reads one refund from Square and applies whatever it says now.
+ *
+ * The recovery path for the notification that never arrived, and the same code the background
+ * worker runs - so pressing this cannot reach an outcome the worker could not have reached on its
+ * own. It also finishes a refund whose request to Square got no answer, because the server re-sends
+ * the stored idempotency key and Square returns the refund it already made rather than a second one.
+ */
+async function refreshRefund(refundId,invoiceId){
+  await runOnce(`refund-refresh:${refundId}`,async()=>{
+    try{
+      const refund=await api(`/api/payment-refunds/${refundId}/refresh`,{method:"POST"});
+      await reopenReceipt(invoiceId,refund.settled
+        ? `Refunded ${money(refund.amountMinor)} to the customer's card`
+        : refund.failed
+          ? "The refund did not go through. Nothing was returned to the customer."
+          : "Still waiting on the card processor.");
+    }catch(error){
+      if(error.data&&error.data.refund){await reopenReceipt(invoiceId,error.message);return;}
+      toast(error.message);
+    }
+  });
+}
+
+async function voidPayment(paymentId,invoiceId,provider) {
+  const reason=prompt("Reason for voiding this payment record:");
   if(!reason)return;
-  if(!confirm("Void this Pawsh payment record? This does not refund external funds."))return;
+  // Voiding is a Pawsh bookkeeping act and has never moved money. It is now offered only for
+  // payments Pawsh did not take through a processor - cash, a cheque, "other", a card keyed by
+  // hand into somebody else's terminal - which is exactly the case it is right for: the salon
+  // mis-typed a number and is correcting its own book. A terminal payment is refunded instead,
+  // and the server refuses to void one, so the `provider` branch here is a belt-and-braces
+  // warning for a button the receipt no longer renders.
+  const warning=provider
+    ? "This payment was taken on a card terminal, so it has to be refunded rather than voided."
+    : "Void this Pawsh payment record? This does not refund external funds.";
+  if(provider){toast(warning);return;}
+  if(!confirm(warning))return;
   await runOnce(`void:${paymentId}`,async()=>{
     try{
       await financialMutation(`/api/payments/${paymentId}/void`,`payment.void`,{reason});
@@ -1434,7 +1840,7 @@ async function showCustomerHistory(id) {
     const combined=[...(historyData.upcoming?.items||[]),...(historyData.history?.items||[])]
       .sort((left,right)=>new Date(right.startAt)-new Date(left.startAt));
     const appointments=combined.map(item=>`<div><span>${new Intl.DateTimeFormat([],{timeZone:item.schedulingTimezone||schedulingZone()}).format(new Date(item.startAt))} / ${escape(petName({petName:item.petName}))}</span><strong>${escape(item.status.replace("_"," "))}</strong></div>`).join("")||"<p>No appointments yet.</p>";
-    const invoices=historyData.invoices.map(item=>`<div><span>Invoice ${escape(item.invoiceNumber)}</span><span><strong>${money(item.totalMinor)} / ${escape(item.status)}</strong><button type="button" class="text-button history-receipt" data-invoice-id="${item.id}">Receipt</button></span></div>`).join("")||`<p>${allowed("payments.view")?"No invoices yet.":"Financial history requires payment access."}</p>`;
+    const invoices=historyData.invoices.map(item=>`<div><span>Invoice ${escape(item.invoiceNumber)}</span><span><strong>${money(item.totalMinor)} / ${escape(invoiceStatusLabel(item.status))}</strong><button type="button" class="text-button history-receipt" data-invoice-id="${item.id}">Receipt</button></span></div>`).join("")||`<p>${allowed("payments.view")?"No invoices yet.":"Financial history requires payment access."}</p>`;
     const petDocuments=allowed("pets.care.view")?historyData.pets.map(pet=>`<div><span>${escape(petName(pet))}${pet.archivedAt?" (archived)":""}</span><button type="button" class="text-button history-pet-documents" data-pet-id="${pet.id}">Documents</button></div>`).join(""):"";
     openModal(`${clientName(historyData.customer)} history`,`<div class="wide history-list">${petDocuments?`<h4>Pet Care documents</h4>${petDocuments}`:""}<h4>Appointments</h4>${appointments}<h4>Transactions</h4>${invoices}</div>`,async()=>{});
     $$(".history-pet-documents").forEach(button=>button.addEventListener("click",()=>showPetDocuments(button.dataset.petId)));
@@ -1784,8 +2190,17 @@ function openModal(title, fields, submit, options={}) {
     const form=event.currentTarget;const button=form.querySelector('[type="submit"]');const original=button.textContent;
     button.disabled=true;button.textContent="Saving…";form.setAttribute("aria-busy","true");
     try {
-      const afterClose=await submit(new FormData(form));
-      if(state.me)await refresh(); $("#modal").close(); toast(`${title} saved`);
+      // A submit may return a function to run after the dialog closes, or {afterClose,message}
+      // when the honest sentence is not "<title> saved". Starting a terminal payment saves
+      // nothing yet, and saying it did would be the first of several small lies.
+      const outcome=await submit(new FormData(form));
+      // The object form is recognised only by the presence of `afterClose`, so a submit that
+      // simply returns the server's reply - which may carry any field at all, `message` included -
+      // cannot accidentally rewrite what this dialog says it did.
+      const descriptor=outcome&&typeof outcome==="object"&&"afterClose" in outcome?outcome:null;
+      const afterClose=typeof outcome==="function"?outcome:descriptor?.afterClose;
+      const message=descriptor?.message||`${title} saved`;
+      if(state.me)await refresh(); $("#modal").close(); toast(message);
       if(typeof afterClose==="function")runDetached(afterClose);
     }
     catch (error) {
@@ -2251,8 +2666,8 @@ const actions = {
     field("name","Salon name","text",`required value="${escape(state.me.business.name)}"`,true)+
     field("timezone","IANA timezone","text",`required value="${escape(state.me.business.timezone)}"`)+
     field("currency","Currency","text",`required maxlength="3" value="${escape(state.me.business.currency)}"`)+
-    field("taxRate","Tax rate (%)","number",`required min="0" max="100" step=".01" value="${Number(state.me.business.taxRateBasisPoints)/100}"`)+
-    field("reminderHours","Reminder lead (hours)","number",`required min="0" value="${Number(state.me.business.reminderLeadMinutes)/60}"`),
+    field("taxRate","Tax rate (%)","number",`readonly aria-readonly="true" min="0" max="100" step=".01" value="${Number(state.me.business.taxRateBasisPoints)/100}"`)+
+    field("reminderHours","Reminder lead (hours)","number",`required min="0" value="${Number(state.me.business.reminderLeadMinutes)/60}"`)+`<p class="wide fine">The rate in force is chosen in Settings &rarr; Tax &amp; payments. It is shown here because it is what new invoices charge.</p>`,
     async(form)=>{
       const values=Object.fromEntries(form);
       if(values.timezone!==state.me.business.timezone&&state.appointments.some(item=>new Date(item.startAt)>new Date())&&!confirm("Changing this location's timezone affects how new and rescheduled appointment times are interpreted. Existing appointment instants will not be moved."))return;
@@ -3301,7 +3716,1038 @@ async function applyAvailabilityClosure(localDate,closed,{announce=true}={}){
   }
 }
 
-function renderSettingsCategory(category=settingsPathCategory(),{history="replace"}={}){const definition=settingsCategories.find(([id])=>id===category)||settingsCategories[0],[id,title]=definition,nav=$("#settings-navigation"),content=$("#settings-content");if(!nav||!content)return;nav.innerHTML=settingsCategories.map(([key,label])=>`<button type="button" data-settings-category="${key}" class="${key===id?"active":""}" ${key===id?'aria-current="page"':""}>${escape(label)}</button>`).join("");let html="";if(id==="account")html=settingsLink("Account","Personal identity and password security remain in your canonical account workspace.","Manage profile & security","profile-account");else if(id==="staff")html=settingsLink("Staff","Groomer records, operational eligibility, and active status remain in Salon.","Open Salon team","setup");else if(id==="business")html=`<article class="settings-panel"><h3>Business</h3><p>Manage the workspace name and authoritative timezone, currency, tax rate, and reminder lead time.</p><button type="button" class="primary compact settings-business-action">Edit business settings</button></article>`;else if(id==="availability")html=`<div id="availability-root" class="availability-root"></div>`;else if(id==="permissions")html=allowed("team.manage")?`<article class="settings-panel"><div class="panel-head"><div><h3>Permissions</h3><p>Manage workspace membership and server-authorized access.</p></div><button type="button" class="secondary compact settings-invite">+ Invite</button></div><div id="member-list" class="simple-list"></div><h4>Pending access requests</h4><div id="access-request-list" class="simple-list"></div></article>`:settingsPlaceholder(id,title);else if(id==="services")html=settingsLink("Services","Service names, pricing, durations, and availability have one canonical workspace.","Open Services","services");else if(id==="pet-options")html=`<div id="pet-options-workspace" class="pet-options-workspace"></div>`;else if(id==="tax-payments")html=`<article class="settings-panel"><h3>Tax & payments</h3><p>The server-authoritative tax rate is part of Business settings. Payment recording remains in checkout.</p><button type="button" class="primary compact settings-business-action">Manage tax settings</button></article>`;else if(id==="automated-messages")html=`<article class="settings-panel"><h3>Automated messages</h3><p>Pawsh’s durable reminder/outbox flow uses the configured reminder lead time. Template and channel management are deferred.</p><button type="button" class="primary compact settings-business-action">Manage reminder timing</button></article>`;else html=settingsPlaceholder(id,title);content.innerHTML=`<div class="settings-content-head"><p class="eyebrow">Settings</p><h2>${escape(title)}</h2></div>${html}`;nav.querySelectorAll("[data-settings-category]").forEach(button=>button.addEventListener("click",()=>renderSettingsCategory(button.dataset.settingsCategory,{history:"push"})));content.querySelectorAll(".settings-canonical-link").forEach(button=>button.addEventListener("click",()=>showView(button.dataset.target)));content.querySelectorAll(".settings-business-action").forEach(button=>button.addEventListener("click",actions["business-settings"]));content.querySelector(".settings-invite")?.addEventListener("click",actions["invite-member"]);if(id==="permissions")renderSetup();if(id==="pet-options")renderPetOptions();if(id==="availability"){renderAvailability();ensureAvailabilityData();}if(history!=="none")globalThis.history[history==="push"?"pushState":"replaceState"]({view:"admin-settings",settingsCategory:id},"",`/settings/${id}`);content.focus({preventScroll:true});}
+// ---------------------------------------------------------------------------
+// Settings → Tax & payments
+//
+// Three tabs over one payload. Every write answers with that same whole-screen read, so there is
+// one parser and one render path: a save applies what the server returned rather than patching
+// the copy this page happens to be holding. That matters most on the tax tab, where putting a
+// rate in force moves three things at once — the rate standing down, the rate taking over, and
+// the number invoices snapshot.
+//
+// What this screen does NOT do is connect anything. Pawsh has no OAuth flow, no credential store
+// and no tokenization, so a card processor recorded here is a note about how the salon takes
+// payment. There is deliberately no connection status, no Connect button and no disabled
+// placeholder for one: a control for a state the server has no concept of still asserts the
+// concept exists and is merely pending.
+// ---------------------------------------------------------------------------
+const TAXPAY_TABS=[["method","Method"],["tax","Tax"],["processors","Card processors"]];
+// Mirrors the column default on `card_processors`, so the tips dialog opens on the values a new
+// processor was created with even if the payload ever arrives without them.
+const TAXPAY_FALLBACK_TIPS=[15,18,20];
+// What the payment method select offered before it was configurable. Reading the configured
+// methods needs settings.manage, which somebody taking payment may not have, so that refusal
+// falls back to the four settlement types the ledger records rather than to an empty select.
+const CHECKOUT_FALLBACK_METHODS=[["cash","Cash"],["external_card","External card"],["check","Check"],["other","Other"]];
+// The value the payment-method select carries for "take this on the card terminal". Not a
+// settlement type and not a payment method id - it names a capture route, and the server decides
+// what the resulting payment settles as.
+const CHECKOUT_TERMINAL_METHOD="terminal-capture";
+const TAXPAY_TIP_BASE_MISSING="The visit total has not loaded, so a percentage cannot be worked out. Enter the tip amount instead.";
+const taxPayState={tab:"method",data:null,error:null,loading:false,restoreFocus:null,feesProcessorId:null,terminalProcessorId:null};
+// Checkout's own, narrower read. `/api/settings/tax-payments` is gated on settings.manage and
+// stays that way; a cashier holds checkout.perform instead, so the method list and the tip
+// presets come from an endpoint scoped to that and carrying nothing else.
+const checkoutOptions={data:null,unavailable:false};
+let terminalDrawerOrigin=null;
+const PENCIL_ICON=`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16v4Z"/><path d="M14 6l4 4"/></svg>`;
+const TRASH_ICON=`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 7V5h4v2M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/></svg>`;
+const ARROW_UP_ICON=`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>`;
+const ARROW_DOWN_ICON=`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>`;
+
+function taxPayMethods(){return taxPayState.data?.paymentMethods||[];}
+function taxPayRates(){return taxPayState.data?.taxRates||[];}
+function taxPayProcessors(){return taxPayState.data?.cardProcessors||[];}
+function taxPayProcessor(id){return taxPayProcessors().find(processor=>processor.id===id)||null;}
+function taxPayDefaultProcessor(){const list=taxPayProcessors();return list.find(processor=>processor.isDefault)||list[0]||null;}
+function taxPaySettlementTypes(){return taxPayState.data?.settlementTypes||[];}
+function taxPaySettlementLabel(value){return taxPaySettlementTypes().find(type=>type.value===value)?.label||String(value||"");}
+function taxPayProviderLabel(value){return (taxPayState.data?.cardProcessorProviders||[]).find(provider=>provider.value===value)?.label||String(value||"");}
+// Basis points read back as the percent an operator typed, without the trailing zeros that make
+// 8.00% look like a different number from 8%.
+function taxPayPercent(basisPoints){return (Number(basisPoints||0)/100).toFixed(2).replace(/\.?0+$/,"")||"0";}
+
+async function loadTaxPayments(){
+  taxPayState.loading=true;taxPayState.error=null;
+  try{taxPayState.data=await api("/api/settings/tax-payments");}
+  catch(error){taxPayState.error=error;}
+  finally{taxPayState.loading=false;}
+}
+function ensureTaxPaymentsData(){
+  if(!allowed("settings.manage"))return;
+  if(taxPayState.data||taxPayState.loading||taxPayState.error)return;
+  runDetached(async()=>{await loadTaxPayments();renderTaxPayments();});
+}
+/**
+ * The single parser every write goes through.
+ *
+ * The rate in force is mirrored onto `businesses.tax_rate_basis_points` in the same transaction,
+ * and that column is what Business settings and every new invoice read. Applying it here keeps
+ * the session's copy from showing the rate that was standing a moment ago.
+ */
+function applyTaxPayments(payload){
+  if(!payload||!Array.isArray(payload.paymentMethods))return payload;
+  taxPayState.data=payload;taxPayState.error=null;
+  // Enabling a method, reordering the list or changing a processor's tips all change what
+  // checkout should offer, so the cashier-facing copy is dropped rather than left to go stale.
+  checkoutOptions.data=null;checkoutOptions.unavailable=false;
+  checkoutTerminal.data=null;checkoutTerminal.unavailable=false;
+  const basisPoints=Number(payload.taxRateBasisPoints);
+  if(state.me?.business&&Number.isFinite(basisPoints))state.me.business.taxRateBasisPoints=basisPoints;
+  return payload;
+}
+async function taxPayWrite(path,options){return applyTaxPayments(await api(path,options));}
+// Writes made straight from a control rather than from a dialog. A refusal is the server's answer
+// to something the operator can see, so it is announced and the screen is re-read: the toggle or
+// radio that moved has to go back to what the server actually holds.
+function taxPayAction(key,path,options,message,{rerender=true}={}){
+  return runOnce(key,async()=>{
+    try{
+      await taxPayWrite(path,options);
+      if(rerender)renderTaxPayments();
+      if(message)toast(message);
+    }catch(error){
+      toast(error.message);
+      await loadTaxPayments();renderTaxPayments();
+    }
+  });
+}
+
+function taxPayTabsMarkup(){
+  return `<div class="settings-tabs" role="tablist" aria-label="Tax and payments" data-testid="taxpay-tabs">`
+    +TAXPAY_TABS.map(([id,label])=>{
+      const active=taxPayState.tab===id;
+      return `<button type="button" role="tab" id="taxpay-tab-${id}" class="settings-tab${active?" active":""}" data-taxpay-tab="${id}" data-testid="taxpay-tab-${id}" aria-selected="${active}" aria-controls="taxpay-panel" tabindex="${active?0:-1}">${escape(label)}</button>`;
+    }).join("")
+    +`</div>`;
+}
+function taxPayErrorMarkup(){
+  const error=taxPayState.error;
+  const message=error?.status===403?"You do not have permission to view this."
+    :error?.status?error.message
+    :"Could not load tax and payment settings. Check your connection and try again.";
+  return `<div class="availability-error" data-testid="taxpay-error"><h4>This could not load</h4><p>${escape(message)}</p>`
+    +`<button type="button" class="secondary compact" data-taxpay-retry>Try again</button></div>`;
+}
+function taxPayLoadingRow(columns){return `<tr><td class="empty" colspan="${columns}">Loading…</td></tr>`;}
+function taxPayTableMarkup(testid,head,body){
+  return `<div class="taxpay-table-wrap" data-allow-horizontal-scroll>`
+    +`<table class="taxpay-table" data-testid="${testid}">${head}<tbody>${body}</tbody></table></div>`;
+}
+function taxPayFootMarkup(attribute,label,testid){
+  return `<div class="taxpay-foot"><button type="button" class="primary compact" ${attribute} data-testid="${testid}">${escape(label)}</button></div>`;
+}
+
+// --- Tab 1: Method -------------------------------------------------------
+// Position moves through two arrows rather than a drag. The only drag in Pawsh is the calendar,
+// where a pointer-only affordance is backed by a menu action; a drag here would have no keyboard
+// equivalent at all, and the list is short enough that a step at a time is faster anyway.
+function taxPayMethodRow(method,index,total){
+  const name=escape(method.name);
+  const type=escape(taxPaySettlementLabel(method.settlementType));
+  const arrow=(direction,label,icon,blocked)=>`<button type="button" class="icon-button" data-taxpay-move="${direction}" data-taxpay-method="${method.id}" aria-label="Move ${name} ${label}" title="Move ${label}"${blocked?` disabled aria-disabled="true"`:""}>${icon}</button>`;
+  // A built-in method is editable, just not renamable or retypable. The processor it settles
+  // through is exactly what the Processor column is for, and Card is the row that most needs to
+  // say it. Deletion stays off: recorded payments display through these four.
+  const edit=`<button type="button" class="icon-button" data-taxpay-method-edit="${method.id}" aria-label="Edit ${name}" title="Edit">${PENCIL_ICON}</button>`;
+  const actions=method.builtIn?edit
+    :edit+`<button type="button" class="icon-button danger" data-taxpay-method-delete="${method.id}" aria-label="Delete ${name}" title="Delete">${TRASH_ICON}</button>`;
+  return `<tr data-taxpay-method-row="${method.id}">`
+    +`<td><span class="taxpay-order">${arrow("up","up",ARROW_UP_ICON,index===0)}${arrow("down","down",ARROW_DOWN_ICON,index===total-1)}</span></td>`
+    +`<td><span class="taxpay-name"><strong>${name}</strong>${method.builtIn?`<small>Built-in</small>`:""}<small class="taxpay-inline-type">${type}</small></span></td>`
+    +`<td class="taxpay-col-type">${type}</td>`
+    +`<td class="taxpay-col-processor">${method.processorLabel?escape(method.processorLabel):"—"}</td>`
+    +`<td><label class="taxpay-switch"><span class="visually-hidden">Enable ${name}</span><input type="checkbox" role="switch" class="pref-toggle" data-taxpay-method-enabled="${method.id}"${method.enabled?" checked":""}></label></td>`
+    +`<td><span class="taxpay-actions">${actions}</span></td></tr>`;
+}
+function taxPayMethodMarkup(){
+  if(taxPayState.error)return taxPayErrorMarkup();
+  const note=`<p class="fine settings-note">Every method records as one of the four settlement types the ledger can tell apart. The name is what staff pick at checkout; the settlement type is what reporting counts. Enabled methods appear at checkout in this order.</p>`;
+  const methods=taxPayMethods();
+  if(taxPayState.data&&!methods.length){
+    return `<div class="taxpay-empty" data-testid="taxpay-method-empty"><p>No payment method is recorded. Add the ones staff pick at checkout.</p>`
+      +`<button type="button" class="primary compact" data-taxpay-method-add data-testid="taxpay-method-add">+ Add method</button></div>`+note;
+  }
+  const head=`<thead><tr><th scope="col">Order</th><th scope="col">Method</th>`
+    +`<th scope="col" class="taxpay-col-type">Records as</th><th scope="col" class="taxpay-col-processor">Processor</th>`
+    +`<th scope="col">Enabled</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>`;
+  const body=taxPayState.data?methods.map((method,index)=>taxPayMethodRow(method,index,methods.length)).join(""):taxPayLoadingRow(6);
+  return taxPayTableMarkup("taxpay-method-table",head,body)
+    +taxPayFootMarkup("data-taxpay-method-add","+ Add method","taxpay-method-add")+note;
+}
+
+// --- Tab 2: Tax ----------------------------------------------------------
+// "In force" is a radio group, not a switch per row: exactly one is the native semantic, and it
+// is the same rule the partial unique index on `tax_rates` enforces. A checkbox would let the
+// screen express two rates in force, or none, neither of which the server will store.
+function taxPayRateRow(rate){
+  const name=escape(rate.name);
+  // Editing is offered on every rate, the one in force included. Without it a typo in the live
+  // rate would be unfixable here: it cannot be deleted, and a replacement cannot take its name.
+  const edit=`<button type="button" class="icon-button" data-taxpay-rate-edit="${rate.id}" aria-label="Edit ${name}" title="Edit">${PENCIL_ICON}</button>`;
+  const remove=rate.isDefault
+    ?`<button type="button" class="icon-button danger" disabled aria-disabled="true" aria-label="Delete ${name}" title="The rate in force cannot be deleted. Put another rate in force first.">${TRASH_ICON}</button>`
+    :`<button type="button" class="icon-button danger" data-taxpay-rate-delete="${rate.id}" aria-label="Delete ${name}" title="Delete">${TRASH_ICON}</button>`;
+  return `<tr data-taxpay-rate-row="${rate.id}"${rate.isDefault?' class="is-inforce"':""}>`
+    +`<td><strong>${name}</strong></td>`
+    +`<td class="taxpay-rate">${escape(taxPayPercent(rate.rateBasisPoints))}%</td>`
+    +`<td><label class="taxpay-inforce"><input type="radio" name="taxpay-inforce" value="${rate.id}" data-taxpay-inforce="${rate.id}"${rate.isDefault?" checked":""}>`
+    +`<span class="visually-hidden">Charge ${name} on new invoices</span>`
+    +(rate.isDefault?`<span class="taxpay-inforce-mark" aria-hidden="true">In force</span>`:"")
+    +`</label></td>`
+    +`<td><span class="taxpay-actions">${edit}${remove}</span></td></tr>`;
+}
+function taxPayTaxMarkup(){
+  if(taxPayState.error)return taxPayErrorMarkup();
+  const note=`<p class="fine settings-note">Changing which rate is in force applies to invoices created from then on. Invoices already created keep the rate they were charged at.</p>`;
+  const rates=taxPayRates();
+  if(taxPayState.data&&!rates.length){
+    return `<div class="taxpay-empty" data-testid="taxpay-rate-empty"><p>No tax rate is recorded. Add the rate this salon charges so invoices can say what they charged and why.</p>`
+      +`<button type="button" class="primary compact" data-taxpay-rate-add data-testid="taxpay-rate-add">+ Add rate</button></div>`+note;
+  }
+  const head=`<thead><tr><th scope="col">Rate</th><th scope="col">Rate %</th><th scope="col">In force</th>`
+    +`<th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>`;
+  const body=taxPayState.data?rates.map(taxPayRateRow).join(""):taxPayLoadingRow(4);
+  return taxPayTableMarkup("taxpay-rate-table",head,body)
+    +taxPayFootMarkup("data-taxpay-rate-add","+ Add rate","taxpay-rate-add")+note;
+}
+
+// --- Tab 3: Card processors ----------------------------------------------
+function taxPayProcessorRow(processor){
+  const label=escape(taxPayProviderLabel(processor.provider));
+  const action=(attribute,text)=>`<button type="button" class="secondary compact" data-taxpay-${attribute}="${processor.id}" aria-label="${escape(text)} for ${label}">${escape(text)}</button>`;
+  const remove=`<button type="button" class="icon-button danger" data-taxpay-processor-delete="${processor.id}" aria-label="Delete ${label}" title="Delete">${TRASH_ICON}</button>`;
+  return `<li class="taxpay-processor" data-taxpay-processor-row="${processor.id}">`
+    +`<span class="taxpay-processor-name">${label}${processor.isDefault?`<span class="taxpay-default-mark">Default</span>`:""}</span>`
+    +`<label class="taxpay-location">Location label`
+    // Free text, never a selector. Pawsh does not talk to the provider, so it cannot enumerate
+    // the locations that provider knows about; offering a list would imply it had asked.
+    +`<input type="text" maxlength="80" autocomplete="off" placeholder="Front desk" value="${escape(processor.locationLabel||"")}" data-taxpay-location="${processor.id}"></label>`
+    +`<span class="taxpay-processor-actions">${action("terminals","Terminal setting")}${action("fees","Processing fees")}${action("tips","Default tips")}${remove}</span>`
+    +`</li>`;
+}
+function taxPayProcessorMarkup(){
+  if(taxPayState.error)return taxPayErrorMarkup();
+  if(!taxPayState.data)return `<p class="availability-note is-quiet" aria-busy="true">Loading card processors…</p>`;
+  const processors=taxPayProcessors();
+  if(!processors.length){
+    return `<div class="taxpay-empty" data-testid="taxpay-processor-empty"><p>No card processor recorded. Add the one your salon uses so receipts and reporting can name it.</p>`
+      +`<button type="button" class="primary compact" data-taxpay-processor-add data-testid="taxpay-processor-add">+ Add processor</button></div>`
+      +squareConnectionMarkup();
+  }
+  const current=taxPayDefaultProcessor();
+  // The choice is over the processors this salon has recorded, named from the closed provider set.
+  // Offering a provider with no row behind it would make this control a hidden create.
+  const chooser=`<label class="taxpay-default-processor">Default processor`
+    +`<select data-taxpay-default-processor data-testid="taxpay-default-processor">`
+    +processors.map(processor=>`<option value="${processor.id}"${processor.id===current?.id?" selected":""}>${escape(taxPayProviderLabel(processor.provider))}</option>`).join("")
+    +`</select></label>`
+    +`<p class="fine">The processor an external-card payment is assumed to settle through, for receipts and reporting.</p>`;
+  return chooser
+    +`<ul class="taxpay-processor-list">${processors.map(taxPayProcessorRow).join("")}</ul>`
+    +taxPayFootMarkup("data-taxpay-processor-add","+ Add processor","taxpay-processor-add")
+    // Square is the one processor Pawsh can actually talk to, so its state sits under the list
+    // rather than inside a row: connecting is an account-level act, and the terminals it produces
+    // are live sessions rather than inventory.
+    +squareConnectionMarkup();
+}
+
+function taxPayMarkup(){
+  if(!allowed("settings.manage")){
+    return `<article class="settings-panel taxpay-panel" id="taxpay-panel"><p>Managing tax and payment settings needs the Settings permission.</p></article>`;
+  }
+  const body=taxPayState.tab==="tax"?taxPayTaxMarkup()
+    :taxPayState.tab==="processors"?taxPayProcessorMarkup()
+    :taxPayMethodMarkup();
+  return taxPayTabsMarkup()
+    // One line of provenance, in ordinary muted type. A banner, an icon or a tint would make the
+    // absence of an integration look like a warning about one.
+    +(taxPayState.tab==="processors"?`<p class="taxpay-provenance" data-testid="taxpay-provenance">This records how your salon takes card payments. Pawsh does not process them.</p>`:"")
+    +`<article class="settings-panel taxpay-panel" id="taxpay-panel" role="tabpanel" aria-labelledby="taxpay-tab-${taxPayState.tab}">${body}</article>`;
+}
+// renderSettingsCategory replaces the whole settings pane on every nav click, so this re-reads
+// module state rather than assuming anything about what is currently on screen.
+function renderTaxPayments(){
+  const root=$("#taxpay-root");if(!root)return;
+  root.innerHTML=taxPayMarkup();
+  bindTaxPayments(root);
+  if(taxPayState.tab==="processors")ensureSquareState();
+  const wanted=taxPayState.restoreFocus;taxPayState.restoreFocus=null;
+  if(!wanted)return;
+  const target=root.querySelector(wanted);
+  if(target)target.focus();
+}
+function selectTaxPayTab(tab,{focus=true}={}){
+  if(taxPayState.tab===tab)return;
+  taxPayState.tab=tab;renderTaxPayments();
+  if(focus)$(`#taxpay-tab-${tab}`)?.focus();
+}
+function taxPayMoveMethod(id,direction){
+  const ids=taxPayMethods().map(method=>method.id);
+  const index=ids.indexOf(id),target=index+direction;
+  if(index<0||target<0||target>=ids.length)return;
+  [ids[index],ids[target]]=[ids[target],ids[index]];
+  // The arrow that was pressed may become the disabled end-of-list one, so the fallback is this
+  // row's other arrow: a keyboard reorder must not drop focus back to the document.
+  taxPayState.restoreFocus=`[data-taxpay-move][data-taxpay-method="${id}"]:not([disabled])`;
+  return taxPayAction("taxpay:order","/api/settings/payment-methods/order",
+    {method:"PUT",body:JSON.stringify({ids})},"Checkout order updated");
+}
+function taxPayConfirmDelete({title,body,confirmLabel,path,message}){
+  openStackedDialog({title,body:`${body}<p class="error" role="alert"></p>`,confirmLabel,dismissLabel:"Cancel",
+    onConfirm:async host=>{
+      const error=host.querySelector(".error");error.textContent="";
+      try{await taxPayWrite(path,{method:"DELETE"});}
+      catch(problem){error.textContent=problem.message;return false;}
+      renderTaxPayments();toast(message);return true;
+    }});
+}
+function bindTaxPayments(root){
+  // Arrows move focus, Enter and Space commit. Activating on focus would fetch nothing here, but
+  // it would still swap the panel out from under someone simply passing along the bar.
+  root.querySelector('[role="tablist"]')?.addEventListener("keydown",event=>{
+    const buttons=[...root.querySelectorAll("[data-taxpay-tab]")],index=buttons.indexOf(document.activeElement);
+    if(index<0)return;
+    if(event.key==="Enter"||event.key===" "||event.key==="Spacebar"){event.preventDefault();selectTaxPayTab(buttons[index].dataset.taxpayTab);return;}
+    if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;
+    event.preventDefault();
+    const next=event.key==="Home"?0:event.key==="End"?buttons.length-1:(index+(event.key==="ArrowRight"?1:-1)+buttons.length)%buttons.length;
+    buttons[next]?.focus();
+  });
+  root.querySelectorAll("[data-taxpay-tab]").forEach(button=>button.addEventListener("click",()=>selectTaxPayTab(button.dataset.taxpayTab,{focus:false})));
+  root.querySelector("[data-taxpay-retry]")?.addEventListener("click",()=>{
+    taxPayState.error=null;taxPayState.data=null;renderTaxPayments();ensureTaxPaymentsData();
+  });
+  root.querySelectorAll("[data-taxpay-move]").forEach(button=>button.addEventListener("click",()=>{
+    runDetached(()=>taxPayMoveMethod(button.dataset.taxpayMethod,button.dataset.taxpayMove==="up"?-1:1));
+  }));
+  root.querySelectorAll("[data-taxpay-method-enabled]").forEach(input=>input.addEventListener("change",()=>{
+    const id=input.dataset.taxpayMethodEnabled,enabled=input.checked;
+    runDetached(()=>taxPayAction(`taxpay:method:${id}`,`/api/settings/payment-methods/${id}`,
+      {method:"PATCH",body:JSON.stringify({enabled})},enabled?"Method offered at checkout":"Method hidden at checkout"));
+  }));
+  root.querySelectorAll("[data-taxpay-method-add]").forEach(button=>button.addEventListener("click",()=>openTaxPayMethodEditor(null)));
+  root.querySelectorAll("[data-taxpay-method-edit]").forEach(button=>button.addEventListener("click",()=>openTaxPayMethodEditor(button.dataset.taxpayMethodEdit)));
+  root.querySelectorAll("[data-taxpay-method-delete]").forEach(button=>button.addEventListener("click",()=>{
+    const method=taxPayMethods().find(item=>item.id===button.dataset.taxpayMethodDelete);
+    taxPayConfirmDelete({title:`Delete ${method?.name??"this method"}?`,
+      body:"<p>It stops being offered at checkout. Payments already recorded keep the settlement type they were taken as.</p>",
+      confirmLabel:"Delete",path:`/api/settings/payment-methods/${button.dataset.taxpayMethodDelete}`,message:"Payment method deleted"});
+  }));
+  root.querySelectorAll("[data-taxpay-inforce]").forEach(input=>input.addEventListener("change",()=>{
+    if(!input.checked)return;
+    const id=input.dataset.taxpayInforce;
+    runDetached(()=>taxPayAction(`taxpay:rate:${id}`,`/api/settings/tax-rates/${id}`,
+      {method:"PATCH",body:JSON.stringify({isDefault:true})},"Rate in force updated"));
+  }));
+  root.querySelectorAll("[data-taxpay-rate-add]").forEach(button=>button.addEventListener("click",()=>openTaxPayRateEditor(null)));
+  root.querySelectorAll("[data-taxpay-rate-edit]").forEach(button=>button.addEventListener("click",()=>openTaxPayRateEditor(button.dataset.taxpayRateEdit)));
+  root.querySelectorAll("[data-taxpay-rate-delete]").forEach(button=>button.addEventListener("click",()=>{
+    const rate=taxPayRates().find(item=>item.id===button.dataset.taxpayRateDelete);
+    taxPayConfirmDelete({title:`Delete ${rate?.name??"this rate"}?`,
+      body:"<p>Invoices already created keep the rate they were charged at.</p>",
+      confirmLabel:"Delete",path:`/api/settings/tax-rates/${button.dataset.taxpayRateDelete}`,message:"Tax rate deleted"});
+  }));
+  root.querySelectorAll("[data-taxpay-processor-add]").forEach(button=>button.addEventListener("click",openTaxPayProcessorEditor));
+  root.querySelectorAll("[data-taxpay-processor-delete]").forEach(button=>button.addEventListener("click",()=>{
+    const processor=taxPayProcessor(button.dataset.taxpayProcessorDelete);
+    const provider=taxPayProviderLabel(processor?.provider);
+    // Deleting the default is allowed: the server hands the default to the processor recorded
+    // first rather than refusing, so the copy says what will happen instead of warning it cannot.
+    const successor=processor?.isDefault&&taxPayProcessors().length>1
+      ?"<p>Another recorded processor becomes the default.</p>":"";
+    taxPayConfirmDelete({title:`Delete ${provider}?`,
+      body:`<p>The processing fees and terminals recorded under it go too. No payment was ever taken through this record, so nothing already in the ledger changes.</p>${successor}`,
+      confirmLabel:"Delete",path:`/api/settings/card-processors/${button.dataset.taxpayProcessorDelete}`,
+      message:"Card processor deleted"});
+  }));
+  root.querySelector("[data-taxpay-default-processor]")?.addEventListener("change",event=>{
+    const id=event.target.value;
+    taxPayState.restoreFocus="[data-taxpay-default-processor]";
+    runDetached(()=>taxPayAction(`taxpay:processor:${id}`,`/api/settings/card-processors/${id}`,
+      {method:"PATCH",body:JSON.stringify({isDefault:true})},"Default processor updated"));
+  });
+  // Saved on commit, and deliberately without a re-render: change fires as focus leaves, so
+  // redrawing the list here would pull the ground out from under whatever was tabbed to next.
+  root.querySelectorAll("[data-taxpay-location]").forEach(input=>input.addEventListener("change",()=>{
+    const id=input.dataset.taxpayLocation;
+    runDetached(()=>taxPayAction(`taxpay:processor:${id}`,`/api/settings/card-processors/${id}`,
+      {method:"PATCH",body:JSON.stringify({locationLabel:input.value.trim()||null})},"Processor location saved",{rerender:false}));
+  }));
+  root.querySelectorAll("[data-taxpay-terminals]").forEach(button=>button.addEventListener("click",event=>
+    openTerminalDrawer(button.dataset.taxpayTerminals,event.currentTarget)));
+  root.querySelectorAll("[data-taxpay-fees]").forEach(button=>button.addEventListener("click",()=>openTaxPayFees(button.dataset.taxpayFees)));
+  root.querySelectorAll("[data-taxpay-tips]").forEach(button=>button.addEventListener("click",()=>openTaxPayTips(button.dataset.taxpayTips)));
+  bindSquare(root);
+}
+
+// --- Editors -------------------------------------------------------------
+function openTaxPayMethodEditor(methodId){
+  const method=methodId?taxPayMethods().find(item=>item.id===methodId):null;
+  const types=taxPaySettlementTypes().map(type=>[type.value,type.label]);
+  // A built-in method IS one of the four settlement types, and recorded payments display through
+  // it, so its name and type are read-only text rather than inputs that look editable and fail.
+  const identity=method?.builtIn
+    ?`<p class="wide fine"><strong>${escape(method.name)}</strong> records as <strong>${escape(taxPaySettlementLabel(method.settlementType))}</strong>. A built-in method's name and settlement type are fixed, because payments already recorded display through them.</p>`
+    :field("name","Method name","text",`required maxlength="60" value="${escape(method?.name||"")}"`)
+      +select("settlementType","Records as",types,false,method?.settlementType||"");
+  openModal(method?"Edit payment method":"New payment method",
+    identity+field("processorLabel","Processor (optional)","text",`maxlength="60" value="${escape(method?.processorLabel||"")}"`,true),
+    async form=>{
+      const values=Object.fromEntries(form);
+      const processorLabel=String(values.processorLabel||"").trim()||null;
+      const payload=method?.builtIn?{processorLabel}
+        :{name:String(values.name||"").trim(),settlementType:String(values.settlementType||""),processorLabel};
+      await taxPayWrite(method?`/api/settings/payment-methods/${method.id}`:"/api/settings/payment-methods",
+        method?{method:"PATCH",body:JSON.stringify(payload)}
+          :{method:"POST",body:JSON.stringify({...payload,enabled:true})});
+      return ()=>renderTaxPayments();
+    });
+}
+function openTaxPayRateEditor(rateId){
+  const rate=rateId?taxPayRates().find(item=>item.id===rateId):null;
+  // Percent in, basis points out — the same convention as the tax field in Business settings,
+  // because it is ultimately the same number.
+  openModal(rate?"Edit tax rate":"New tax rate",
+    field("name","Rate name","text",`required maxlength="80" value="${escape(rate?.name||"")}"`)
+    +field("rate","Rate (%)","number",`required min="0" max="100" step=".01" value="${rate?escape(taxPayPercent(rate.rateBasisPoints)):"0"}"`)
+    // Correcting the rate in force moves the number invoices snapshot, which is a different act
+    // from correcting one that is standing by, and the operator is told which one they are doing.
+    +(rate?.isDefault?`<p class="wide fine">This is the rate in force, so a new percentage is what invoices created from then on will charge. Invoices already created keep the rate they were charged at.</p>`:""),
+    async form=>{
+      const payload={
+        name:String(form.get("name")||"").trim(),
+        rateBasisPoints:Math.round(Number(form.get("rate")||0)*100)
+      };
+      await taxPayWrite(rate?`/api/settings/tax-rates/${rate.id}`:"/api/settings/tax-rates",
+        {method:rate?"PATCH":"POST",body:JSON.stringify(payload)});
+      return ()=>renderTaxPayments();
+    });
+}
+function openTaxPayProcessorEditor(){
+  const providers=(taxPayState.data?.cardProcessorProviders||[]).map(provider=>[provider.value,provider.label]);
+  openModal("New card processor",
+    select("provider","Processor",providers,false,"")
+    +field("locationLabel","Location label (optional)","text",'maxlength="80"')
+    +`<p class="wide fine">Recording a processor does not connect Pawsh to it. Nothing here is a key, a token or a pairing code.</p>`,
+    async form=>{
+      await taxPayWrite("/api/settings/card-processors",{method:"POST",body:JSON.stringify({
+        provider:String(form.get("provider")||""),
+        locationLabel:String(form.get("locationLabel")||"").trim()||null
+      })});
+      return ()=>renderTaxPayments();
+    });
+}
+
+// --- Processing fees -----------------------------------------------------
+// The shared dialog with its Save hidden: a fee is added or removed the moment it is asked for,
+// so there is nothing left for a Save button to commit.
+function taxPayFeesBody(processorId){
+  const processor=taxPayProcessor(processorId);
+  const fees=processor?.fees||[];
+  const note=`<p class="fine settings-note">Recorded for your reference. Pawsh does not calculate or deduct processing fees, and they do not change what a client is charged.</p>`;
+  const foot=`<div class="taxpay-foot"><button type="button" class="primary compact" data-taxpay-fee-add data-testid="taxpay-fee-add">+ Add fee</button></div>`;
+  if(!fees.length){
+    return `<div class="wide"><div class="taxpay-empty" data-testid="taxpay-fee-empty"><p>No processing fee recorded for ${escape(taxPayProviderLabel(processor?.provider))}.</p></div>${foot}${note}</div>`;
+  }
+  const head=`<thead><tr><th scope="col">Fee</th><th scope="col">Rate %</th><th scope="col">Flat</th>`
+    +`<th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>`;
+  const body=fees.map(fee=>`<tr><td><strong>${escape(fee.name)}</strong></td>`
+    +`<td class="taxpay-rate">${escape(taxPayPercent(fee.rateBasisPoints))}%</td>`
+    +`<td class="taxpay-rate">${escape(money(fee.centAmountMinor))}</td>`
+    +`<td><span class="taxpay-actions"><button type="button" class="icon-button danger" data-taxpay-fee-delete="${fee.id}" aria-label="Delete ${escape(fee.name)}" title="Delete">${TRASH_ICON}</button></span></td></tr>`).join("");
+  return `<div class="wide">${taxPayTableMarkup("taxpay-fee-table",head,body)}${foot}${note}</div>`;
+}
+function renderTaxPayFees(){
+  const host=$("#modal-fields");
+  if(!host||!taxPayState.feesProcessorId)return;
+  host.innerHTML=taxPayFeesBody(taxPayState.feesProcessorId);
+  bindTaxPayFees(host);
+}
+function bindTaxPayFees(host){
+  const processorId=taxPayState.feesProcessorId;
+  host.querySelector("[data-taxpay-fee-add]")?.addEventListener("click",()=>{
+    openStackedDialog({title:"Add processing fee",
+      body:`<label>Fee name<input type="text" name="feeName" maxlength="60" required></label>`
+        +`<label>Rate (%)<input type="number" name="feeRate" min="0" max="100" step=".01" value="0"></label>`
+        +`<label>Flat amount ($)<input type="number" name="feeFlat" min="0" step=".01" value="0"></label>`
+        +`<p class="error" role="alert"></p>`,
+      confirmLabel:"Add fee",dismissLabel:"Cancel",
+      onConfirm:async body=>{
+        const error=body.querySelector(".error");error.textContent="";
+        const name=String(body.querySelector('[name="feeName"]').value||"").trim();
+        if(!name){error.textContent="Enter a fee name.";return false;}
+        try{
+          await taxPayWrite(`/api/settings/card-processors/${processorId}/fees`,{method:"POST",body:JSON.stringify({
+            name,
+            rateBasisPoints:Math.round(Number(body.querySelector('[name="feeRate"]').value||0)*100),
+            centAmountMinor:Math.round(Number(body.querySelector('[name="feeFlat"]').value||0)*100)
+          })});
+        }catch(problem){error.textContent=problem.message;return false;}
+        renderTaxPayFees();renderTaxPayments();toast("Processing fee added");return true;
+      }});
+  });
+  host.querySelectorAll("[data-taxpay-fee-delete]").forEach(button=>button.addEventListener("click",()=>{
+    runDetached(async()=>{
+      try{
+        await taxPayWrite(`/api/settings/card-processors/${processorId}/fees/${button.dataset.taxpayFeeDelete}`,{method:"DELETE"});
+        renderTaxPayFees();renderTaxPayments();toast("Processing fee removed");
+      }catch(error){$("#modal-error").textContent=error.message;}
+    });
+  }));
+}
+function openTaxPayFees(processorId){
+  const processor=taxPayProcessor(processorId);if(!processor)return;
+  taxPayState.feesProcessorId=processorId;
+  openModal(`Processing fees — ${taxPayProviderLabel(processor.provider)}`,taxPayFeesBody(processorId),null,{cancelLabel:"Done"});
+  bindTaxPayFees($("#modal-fields"));
+}
+
+// --- Default tips --------------------------------------------------------
+// Written out rather than built with select(), which injects a required "Choose…" empty option.
+// A tip preset always has a value, so there is no unset state for that option to represent.
+function taxPayTipSelect(index,value){
+  const options=Array.from({length:101},(_,percent)=>`<option value="${percent}"${percent===Number(value)?" selected":""}>${percent}%</option>`).join("");
+  return `<label>Tip option ${index+1}<select data-testid="field-tip-preset-${index+1}" name="tip${index+1}">${options}</select></label>`;
+}
+function openTaxPayTips(processorId){
+  const processor=taxPayProcessor(processorId);if(!processor)return;
+  const tips=Array.isArray(processor.tipPercents)&&processor.tipPercents.length===3?processor.tipPercents:TAXPAY_FALLBACK_TIPS;
+  openModal(`Default tips — ${taxPayProviderLabel(processor.provider)}`,
+    tips.map((value,index)=>taxPayTipSelect(index,value)).join("")
+    +`<p class="wide fine settings-note">These three presets appear at checkout. Staff can still enter any amount.</p>`,
+    async form=>{
+      await taxPayWrite(`/api/settings/card-processors/${processorId}`,{method:"PATCH",body:JSON.stringify({
+        tipPercents:[0,1,2].map(index=>Number(form.get(`tip${index+1}`)||0))
+      })});
+      return ()=>renderTaxPayments();
+    });
+}
+
+// --- Terminal drawer -----------------------------------------------------
+// An inventory list of the machines on the counter, so staff can tell them apart. Adding one
+// pairs nothing: there is no session to open and nothing to send.
+/** True when this drawer is for a Square processor that is actually connected. */
+function terminalDrawerIsSquare(){
+  return taxPayProcessor(taxPayState.terminalProcessorId)?.provider==="square"&&squareConnected();
+}
+function terminalDrawerBody(){
+  const processor=taxPayProcessor(taxPayState.terminalProcessorId);
+  // A paired Square device and an inventory row describe the same machine, and showing both would
+  // ask a salon to keep two lists of one counter in step by hand. Where Pawsh can see the real
+  // pairing, that is the list; the inventory table stays for the three processors it cannot.
+  if(terminalDrawerIsSquare()){
+    return squareDeviceListMarkup()
+      +`<p class="fine settings-note">These are the terminals Pawsh is paired with. Add and pair them under Card processors.</p>`;
+  }
+  const terminals=processor?.terminals||[];
+  const note=`<p class="fine settings-note">Terminals are recorded so staff can tell devices apart. Pawsh does not pair with, or send anything to, a terminal.</p>`;
+  if(!terminals.length){
+    return `<div class="taxpay-empty" data-testid="taxpay-terminal-empty"><p>No terminal recorded. Add the machines on your counter so staff can tell them apart.</p></div>${note}`;
+  }
+  const head=`<thead><tr><th scope="col">Terminal</th><th scope="col">Location</th><th scope="col">Device code</th>`
+    +`<th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>`;
+  const body=terminals.map(terminal=>`<tr><td><strong>${escape(terminal.name)}</strong></td>`
+    +`<td>${terminal.locationLabel?escape(terminal.locationLabel):"—"}</td>`
+    +`<td>${terminal.deviceCode?escape(terminal.deviceCode):"—"}</td>`
+    +`<td><span class="taxpay-actions"><button type="button" class="icon-button danger" data-taxpay-terminal-delete="${terminal.id}" aria-label="Delete ${escape(terminal.name)}" title="Delete">${TRASH_ICON}</button></span></td></tr>`).join("");
+  return taxPayTableMarkup("taxpay-terminal-table",head,body)+note;
+}
+function renderTerminalDrawer(){
+  if(!taxPayState.terminalProcessorId)return;
+  const processor=taxPayProcessor(taxPayState.terminalProcessorId);
+  // The drawer's accessible name says whose terminals these are; with several processors
+  // recorded, "Terminal setting" on its own names nothing anybody can identify.
+  $("#terminal-drawer-title").textContent=processor?`Terminal setting — ${taxPayProviderLabel(processor.provider)}`:"Terminal setting";
+  $("#terminal-drawer-body").innerHTML=terminalDrawerBody();
+  // "+ Add terminal" here writes an inventory row, which is not what adding a Square terminal
+  // means. Rather than have one button do two different things, it stands down and the Square
+  // panel keeps the only control that pairs anything.
+  const add=$("#terminal-add");if(add)add.hidden=terminalDrawerIsSquare();
+}
+function openTerminalDrawer(processorId,origin){
+  const drawer=$("#terminal-drawer");if(!drawer||!taxPayProcessor(processorId))return;
+  taxPayState.terminalProcessorId=processorId;
+  terminalDrawerOrigin=origin||document.activeElement;
+  $("#terminal-drawer-status").textContent="";
+  renderTerminalDrawer();
+  if(!drawer.open)drawer.showModal();
+  drawer.querySelector(".drawer-head .close")?.focus();
+}
+function openTerminalEditor(){
+  const processorId=taxPayState.terminalProcessorId;if(!processorId)return;
+  openModal("Add terminal",
+    field("name","Terminal name","text",'required maxlength="60"')
+    +field("locationLabel","Location (optional)","text",'maxlength="80"')
+    +field("deviceCode","Device code (optional)","text",'maxlength="40"',true),
+    async form=>{
+      await taxPayWrite(`/api/settings/card-processors/${processorId}/terminals`,{method:"POST",body:JSON.stringify({
+        name:String(form.get("name")||"").trim(),
+        locationLabel:String(form.get("locationLabel")||"").trim()||null,
+        deviceCode:String(form.get("deviceCode")||"").trim()||null
+      })});
+      return ()=>{
+        renderTerminalDrawer();renderTaxPayments();
+        $("#terminal-drawer-status").textContent="Terminal added.";
+      };
+    });
+}
+function setupTerminalDrawer(){
+  const drawer=$("#terminal-drawer");if(!drawer)return;
+  // app.js binds every `.close` in the document to `#modal.close()` at load. This drawer's own
+  // close is bound here rather than left to that, which would dismiss the wrong dialog.
+  drawer.querySelector(".drawer-head .close")?.addEventListener("click",()=>drawer.close());
+  // Clicking the backdrop dismisses it: the click lands on the dialog itself, never on its panel.
+  drawer.addEventListener("click",event=>{if(event.target===drawer)drawer.close();});
+  drawer.addEventListener("close",()=>{
+    // Adding a terminal re-renders the list behind the drawer, so the button that opened it is
+    // usually a detached node by the time this runs. The row is found again by processor id, and
+    // the captured element is only the fallback for a list that is no longer on screen at all.
+    const processorId=taxPayState.terminalProcessorId;
+    taxPayState.terminalProcessorId=null;
+    $("#terminal-drawer-status").textContent="";
+    const target=$(`[data-taxpay-terminals="${processorId}"]`)
+      ||(terminalDrawerOrigin?.isConnected?terminalDrawerOrigin:null);
+    terminalDrawerOrigin=null;
+    target?.focus();
+  });
+  $("#terminal-add")?.addEventListener("click",openTerminalEditor);
+  $("#terminal-drawer-body").addEventListener("click",event=>{
+    const button=event.target.closest?.("[data-taxpay-terminal-delete]");
+    if(!button)return;
+    const processorId=taxPayState.terminalProcessorId;
+    runDetached(async()=>{
+      try{
+        await taxPayWrite(`/api/settings/card-processors/${processorId}/terminals/${button.dataset.taxpayTerminalDelete}`,{method:"DELETE"});
+        renderTerminalDrawer();renderTaxPayments();
+        $("#terminal-drawer-status").textContent="Terminal removed.";
+      }catch(error){$("#terminal-drawer-status").textContent=error.message;}
+    });
+  });
+}
+
+// --- Square terminals ----------------------------------------------------
+/**
+ * The Square half of Tax & payments, and the capture modal at checkout.
+ *
+ * WHAT SALON STAFF SEE HAS NO SQUARE IN IT. The owner connected Square, so the settings panel says
+ * so plainly. The groomer at the counter chooses "Card terminal", watches a device they named
+ * themselves, and is never shown a merchant id, a checkout id or the word Square.
+ *
+ * NOTHING SAYS PAID BEFORE THE PAYMENT IS REAL. The server computes `settled`, and only a
+ * reconciled Square Payment produces it. This file renders a total, a tip figure and a receipt
+ * button from that flag alone - there is no client-side optimism and no local guess at a tip,
+ * because the tip is a number the customer chooses on the hardware and nobody here knows it until
+ * the payment has been read back.
+ *
+ * THE MODAL WATCHES OUR OWN ROW, NOT SQUARE. Webhooks are the production mechanism. The poll below
+ * reads a local endpoint that makes no outbound call, so an open modal costs a database read every
+ * couple of seconds and nothing at Square. Reaching Square is recovery, and it happens only when a
+ * person presses the button that says so.
+ */
+const squareState={data:null,loading:false,error:null,locations:null};
+// Checkout's own narrow read of which terminals it may use, cached like the payment options and
+// dropped whenever settings change so a terminal paired in another tab shows up.
+const checkoutTerminal={data:null,unavailable:false};
+const terminalCapture={checkoutId:null,invoiceId:null,deviceLabel:"",data:null,timer:null,polls:0};
+// Roughly five minutes of two-and-a-half-second polls. A customer who has not tapped by then is
+// not going to be rescued by another poll, and the modal says so rather than spinning forever.
+const TERMINAL_CAPTURE_MAX_POLLS=120;
+const TERMINAL_CAPTURE_INTERVAL_MS=2500;
+
+function squareConnection(){return squareState.data?.connection||null;}
+function squareConnected(){return squareConnection()?.status==="connected";}
+function squareDevices(){return squareState.data?.devices||[];}
+
+async function loadSquareState(){
+  squareState.loading=true;squareState.error=null;
+  try{squareState.data=await api("/api/integrations/square");}
+  catch(error){squareState.error=error;}
+  finally{squareState.loading=false;}
+}
+function ensureSquareState(){
+  if(!allowed("settings.manage"))return;
+  if(squareState.data||squareState.loading||squareState.error)return;
+  runDetached(async()=>{await loadSquareState();renderTaxPayments();});
+}
+async function reloadSquareState(){
+  await loadSquareState();
+  // A terminal paired or removed changes what checkout may offer.
+  checkoutTerminal.data=null;checkoutTerminal.unavailable=false;
+  renderTaxPayments();
+  if(taxPayState.terminalProcessorId)renderTerminalDrawer();
+}
+
+/** How long a pairing code has left, in the words a person would use. */
+function squarePairWindow(pairBy){
+  if(!pairBy)return "";
+  const remaining=new Date(pairBy).getTime()-Date.now();
+  if(!Number.isFinite(remaining)||remaining<=0)return "";
+  const minutes=Math.ceil(remaining/60000);
+  return minutes<=1?"Expires in under a minute":`Expires in about ${minutes} minutes`;
+}
+function squareLocationName(locationId){
+  return (state.locations||[]).find(location=>location.id===locationId)?.name||"";
+}
+
+function squareDeviceRow(device){
+  const label=escape(device.label);
+  const place=squareLocationName(device.locationId);
+  const status=device.pairingStatus;
+  const pill=status==="paired"?`<span class="square-pill is-paired">Paired</span>`
+    :status==="unpaired"?`<span class="square-pill is-waiting">Waiting to pair</span>`
+    :`<span class="square-pill is-expired">Code expired</span>`;
+  // The code is shown only while it can still be typed in. The server withholds it once `pair_by`
+  // has passed, so there is nothing here to render for a dead code and nothing to mislabel.
+  const code=device.pairingCode
+    ? `<p class="square-code" data-testid="square-code-${device.id}"><span class="sr-only">Pairing code </span>`
+      +`<strong>${escape(device.pairingCode)}</strong>`
+      +`<span class="fine">${escape(squarePairWindow(device.pairBy))}</span></p>`
+    : "";
+  const hint=status==="paired"?`Ready to take payments.`
+    :status==="unpaired"?`Type this code into the terminal.`
+    :`Get a new code to pair this terminal.`;
+  // One detail cell, not two. A row that emits a code and a hint as separate grid children wraps
+  // its own actions onto a third line the moment the code is present, which is exactly the row a
+  // salon is looking at while somebody waits at the terminal.
+  const detail=`<span class="square-device-detail">${code}<span class="fine">${hint}</span></span>`;
+  const actions=[
+    status==="paired"
+      ? `<button type="button" class="secondary compact" data-square-code="${device.id}">Pair again</button>`
+      : `<button type="button" class="secondary compact" data-square-code="${device.id}">Get a code</button>`,
+    status==="unpaired"
+      ? `<button type="button" class="secondary compact" data-square-check="${device.id}">Check pairing</button>`
+      : "",
+    `<button type="button" class="icon-button danger" data-square-remove="${device.id}" aria-label="Remove ${label}" title="Remove">${TRASH_ICON}</button>`
+  ].join("");
+  return `<li class="square-device" data-square-device="${device.id}">`
+    +`<span class="square-device-name"><strong>${label}</strong>${place?`<span class="fine">${escape(place)}</span>`:""}</span>`
+    +pill+detail
+    +`<span class="square-device-actions">${actions}</span></li>`;
+}
+
+function squareDeviceListMarkup(){
+  const devices=squareDevices();
+  if(!devices.length){
+    return `<div class="taxpay-empty" data-testid="square-device-empty">`
+      +`<p>No terminal paired yet. Add the machine on your counter, then type the code it gives you into the terminal.</p></div>`;
+  }
+  return `<ul class="square-device-list" data-testid="square-device-list">${devices.map(squareDeviceRow).join("")}</ul>`;
+}
+
+/**
+ * The connection block on the Card processors tab.
+ *
+ * Unconfigured says the reason the server gave and offers no button. A connect button that leads
+ * nowhere is worse than no button: it makes a deployment problem look like something the salon
+ * did wrong.
+ */
+function squareConnectionMarkup(){
+  if(squareState.error){
+    return `<section class="square-panel" data-testid="square-panel"><h4>Square terminals</h4>`
+      +`<p class="fine">${escape(squareState.error.status===403?"You do not have permission to view this.":squareState.error.message)}</p></section>`;
+  }
+  if(!squareState.data){
+    return `<section class="square-panel" data-testid="square-panel"><h4>Square terminals</h4>`
+      +`<p class="availability-note is-quiet" aria-busy="true">Loading…</p></section>`;
+  }
+  if(!squareState.data.configured){
+    return `<section class="square-panel" data-testid="square-panel"><h4>Square terminals</h4>`
+      +`<p class="fine" data-testid="square-unconfigured">${escape(squareState.data.reason||"Square is not available on this deployment.")}</p></section>`;
+  }
+  const connection=squareConnection();
+  const head=`<div class="square-head"><h4>Square terminals</h4>`
+    +(connection?.status==="connected"?`<span class="square-pill is-paired" data-testid="square-status">Connected</span>`
+      :connection?.status==="revoked"?`<span class="square-pill is-expired" data-testid="square-status">Access withdrawn</span>`
+      :`<span class="square-pill is-waiting" data-testid="square-status">Not connected</span>`)
+    +`</div>`;
+  if(!connection||connection.status!=="connected"){
+    const reason=connection?.status==="revoked"
+      ? `<p class="fine">Square withdrew this connection, so terminals cannot take payments until you connect again.</p>`
+      : `<p class="fine">Connect Square to take card payments on a Square terminal. Pawsh never sees or stores a card number.</p>`;
+    return `<section class="square-panel" data-testid="square-panel">${head}${reason}`
+      +`<div class="square-actions"><button type="button" class="primary compact" data-square-connect data-testid="square-connect">`
+      +`${connection?.status==="revoked"?"Reconnect Square":"Connect Square"}</button></div></section>`;
+  }
+  return `<section class="square-panel" data-testid="square-panel">${head}`
+    +`<p class="fine">Merchant ${escape(connection.merchantId)} · ${escape(connection.environment)}</p>`
+    +squareDeviceListMarkup()
+    +`<div class="square-actions">`
+    +`<button type="button" class="primary compact" data-square-device-add data-testid="square-device-add">+ Add terminal</button>`
+    +`<button type="button" class="text-button destructive" data-square-disconnect data-testid="square-disconnect">Disconnect Square</button>`
+    +`</div></section>`;
+}
+
+function bindSquare(root){
+  root.querySelector("[data-square-connect]")?.addEventListener("click",()=>runDetached(async()=>{
+    const started=await api("/api/integrations/square/connect",{method:"POST"});
+    // A full navigation, not a popup: Square's consent screen is the merchant's own login and
+    // must be seen in the address bar it belongs to.
+    globalThis.location.assign(started.authorizeUrl);
+  }));
+  root.querySelector("[data-square-disconnect]")?.addEventListener("click",()=>{
+    openStackedDialog({
+      title:"Disconnect Square?",
+      body:"<p>Terminals stop taking payments immediately. Payments already recorded are unchanged.</p>",
+      confirmLabel:"Disconnect",
+      onConfirm:async()=>{
+        try{await api("/api/integrations/square/disconnect",{method:"POST"});await reloadSquareState();toast("Square disconnected");}
+        catch(error){toast(error.message);return false;}
+      }
+    });
+  });
+  root.querySelector("[data-square-device-add]")?.addEventListener("click",openSquareDeviceEditor);
+  root.querySelectorAll("[data-square-code]").forEach(button=>button.addEventListener("click",()=>{
+    const device=squareDevices().find(entry=>entry.id===button.dataset.squareCode);
+    const issue=async()=>{
+      try{
+        await api(`/api/integrations/square/devices/${button.dataset.squareCode}/code`,{method:"POST"});
+        await reloadSquareState();toast("Pairing code ready");
+      }catch(error){toast(error.message);return false;}
+    };
+    // Re-pairing replaces the pairing, so the terminal stops working until the new code is typed
+    // in. That is a thing to be told before it happens, not after.
+    if(device?.pairingStatus==="paired"){
+      openStackedDialog({
+        title:`Pair ${device.label} again?`,
+        body:"<p>This terminal stops taking payments until somebody types the new code into it.</p>",
+        confirmLabel:"Get a new code",onConfirm:issue
+      });
+      return;
+    }
+    runDetached(issue);
+  }));
+  root.querySelectorAll("[data-square-check]").forEach(button=>button.addEventListener("click",()=>runDetached(async()=>{
+    try{
+      const device=await api(`/api/integrations/square/devices/${button.dataset.squareCheck}/refresh`,{method:"POST"});
+      await reloadSquareState();
+      toast(device.pairingStatus==="paired"?"Terminal paired":"Still waiting for the code to be typed in");
+    }catch(error){toast(error.message);}
+  })));
+  root.querySelectorAll("[data-square-remove]").forEach(button=>button.addEventListener("click",()=>{
+    const device=squareDevices().find(entry=>entry.id===button.dataset.squareRemove);
+    openStackedDialog({
+      title:`Remove ${device?.label??"this terminal"}?`,
+      body:"<p>It stops being offered at checkout. Payments already taken on it are unchanged.</p>",
+      confirmLabel:"Remove",
+      onConfirm:async()=>{
+        try{
+          await api(`/api/integrations/square/devices/${button.dataset.squareRemove}`,{method:"DELETE"});
+          await reloadSquareState();toast("Terminal removed");
+        }catch(error){toast(error.message);return false;}
+      }
+    });
+  }));
+}
+
+/**
+ * Naming a terminal.
+ *
+ * The Square location list is fetched live every time this opens, and never cached: a stale copy
+ * of somebody else's locations offers a place that has closed or hides one that opened this
+ * morning, and the salon cannot tell which.
+ */
+function openSquareDeviceEditor(){
+  runDetached(async()=>{
+    let listing;
+    try{listing=await api("/api/integrations/square/locations");}
+    catch(error){toast(error.message);return;}
+    const usable=listing.locations.filter(location=>location.usable);
+    if(!usable.length){
+      openStackedDialog({
+        title:"No usable Square location",
+        body:`<p>None of the locations on this Square account settles in ${escape(listing.currency)}, which is what this salon invoices in.</p>`,
+        dismissLabel:"Close"
+      });
+      return;
+    }
+    const places=(state.locations||[]).map(location=>[location.id,location.name]);
+    openModal("Add terminal",
+      field("label","Terminal name","text",'required maxlength="60" placeholder="Front desk"')
+      +(places.length>1?select("locationId","Salon location",places,false,state.me?.locationId||""):"")
+      +select("squareLocationId","Square location",usable.map(location=>[location.id,location.name||location.id]),true),
+      async form=>{
+        await api("/api/integrations/square/devices",{method:"POST",body:JSON.stringify({
+          label:String(form.get("label")||"").trim(),
+          locationId:String(form.get("locationId")||places[0]?.[0]||""),
+          squareLocationId:String(form.get("squareLocationId")||"")
+        })});
+        return {message:"Terminal added",afterClose:()=>runDetached(reloadSquareState)};
+      });
+  });
+}
+
+// --- Taking a payment on a terminal --------------------------------------
+
+async function ensureCheckoutTerminal(){
+  if(checkoutTerminal.data||checkoutTerminal.unavailable)return;
+  try{checkoutTerminal.data=await api("/api/checkout/terminal");}
+  catch{checkoutTerminal.unavailable=true;}
+}
+
+function stopTerminalCapturePoll(){
+  if(terminalCapture.timer)globalThis.clearTimeout(terminalCapture.timer);
+  terminalCapture.timer=null;
+}
+
+/**
+ * Watches our own row while the customer is at the terminal.
+ *
+ * A local read with no outbound call, so this costs a database query and nothing at Square. The
+ * webhook drain is what moves the row; this is what notices. It stops the moment the checkout is
+ * no longer in flight, and gives up with an honest "unknown" rather than polling forever.
+ */
+function scheduleTerminalCapturePoll(){
+  stopTerminalCapturePoll();
+  if(!terminalCapture.checkoutId)return;
+  if(terminalCapture.polls>=TERMINAL_CAPTURE_MAX_POLLS)return;
+  terminalCapture.timer=globalThis.setTimeout(()=>{
+    runDetached(async()=>{
+      if(!terminalCapture.checkoutId)return;
+      terminalCapture.polls+=1;
+      try{
+        terminalCapture.data=await api(`/api/square/terminal-checkouts/${terminalCapture.checkoutId}`);
+      }catch{
+        // A read that failed is not an outcome. The screen keeps whatever it last knew.
+        scheduleTerminalCapturePoll();return;
+      }
+      renderTerminalCapture();
+      if(terminalCapture.data?.inFlight)scheduleTerminalCapturePoll();
+    });
+  },TERMINAL_CAPTURE_INTERVAL_MS);
+}
+
+function terminalCaptureBody(){
+  const data=terminalCapture.data;
+  if(!data)return `<p class="availability-note is-quiet" aria-busy="true">Sending to the terminal…</p>`;
+  const exhausted=!data.inFlight?false:terminalCapture.polls>=TERMINAL_CAPTURE_MAX_POLLS;
+  const label=exhausted?"Unknown":data.label;
+  const tone=data.settled?"is-paid":data.needsReview?"is-review"
+    :data.inFlight&&!exhausted?"is-waiting":"is-stopped";
+  const lines=[];
+  if(data.settled){
+    // The only place a total and a tip appear, and only once a real payment produced them.
+    lines.push(`<div class="square-capture-line"><span>Tip</span><strong data-testid="terminal-capture-tip">${money(data.tipMinor||0)}</strong></div>`);
+    lines.push(`<div class="square-capture-line is-total"><span>Paid</span><strong data-testid="terminal-capture-paid">${money(data.paidTotalMinor||0)}</strong></div>`);
+  }else{
+    lines.push(`<div class="square-capture-line is-total"><span>Amount due</span><strong data-testid="terminal-capture-amount">${money(data.amountMinor)}</strong></div>`);
+  }
+  const explain=data.settled?`<p class="fine">Paid on the terminal, including the tip the customer chose.</p>`
+    :data.needsReview?`<p class="fine" data-testid="terminal-capture-review">The terminal reported something that does not match this invoice, so nothing has been recorded. A manager needs to check this before taking payment again.</p>`
+    :exhausted?`<p class="fine">Pawsh has not heard back. Check the terminal, then use Check the terminal below.</p>`
+    :data.status==="failed"?`<p class="fine">${escape(data.lastError||"The payment did not go through. Nothing was charged.")}</p>`
+    :data.status==="canceled"?`<p class="fine">Nothing was charged. You can start again or take payment another way.</p>`
+    :`<p class="fine">Ask the customer to tap, insert or swipe. The terminal asks them for the tip.</p>`;
+  return `<p class="square-capture-status ${tone}" data-testid="terminal-capture-status">${escape(label)}</p>`
+    +`<p class="square-capture-device" data-testid="terminal-capture-device">${escape(terminalCapture.deviceLabel)}</p>`
+    +lines.join("")
+    +explain;
+}
+
+function renderTerminalCapture(){
+  const dialog=$("#terminal-capture");if(!dialog)return;
+  $("#terminal-capture-body").innerHTML=terminalCaptureBody();
+  const data=terminalCapture.data;
+  // The dialog's own name moves with the outcome. Leaving it on "Taking payment" after the money
+  // has landed is the kind of small stale label that makes an operator doubt the screen.
+  $("#terminal-capture-title").textContent=data?.settled?"Payment taken"
+    :data?.needsReview?"Needs review"
+    :data&&!data.inFlight?"Payment stopped"
+    :"Taking payment";
+  const cancel=$("[data-testid=\"terminal-capture-cancel\"]");
+  const receipt=$("[data-testid=\"terminal-capture-receipt\"]");
+  const refresh=$("[data-testid=\"terminal-capture-refresh\"]");
+  cancel.hidden=!data?.inFlight;
+  receipt.hidden=!data?.settled;
+  refresh.hidden=Boolean(data?.settled);
+}
+
+/** Opens the capture modal for a checkout that has just been started, or reopened for review. */
+function openTerminalCapture(checkout,deviceLabel){
+  const dialog=$("#terminal-capture");if(!dialog)return;
+  terminalCapture.checkoutId=checkout.id;
+  terminalCapture.invoiceId=checkout.invoiceId;
+  terminalCapture.deviceLabel=deviceLabel||"";
+  terminalCapture.data=checkout;
+  terminalCapture.polls=0;
+  renderTerminalCapture();
+  if(!dialog.open)dialog.showModal();
+  dialog.querySelector(".drawer-head .close")?.focus();
+  if(checkout.inFlight)scheduleTerminalCapturePoll();
+}
+
+function setupTerminalCapture(){
+  const dialog=$("#terminal-capture");if(!dialog)return;
+  dialog.querySelector(".drawer-head .close")?.addEventListener("click",()=>dialog.close());
+  $("[data-testid=\"terminal-capture-close\"]")?.addEventListener("click",()=>dialog.close());
+  dialog.addEventListener("close",()=>{
+    stopTerminalCapturePoll();
+    terminalCapture.checkoutId=null;terminalCapture.data=null;
+    runDetached(()=>refresh());
+  });
+  // Recovery, and only when a person asks: this is the one control here that reaches Square.
+  $("[data-testid=\"terminal-capture-refresh\"]")?.addEventListener("click",()=>runDetached(async()=>{
+    if(!terminalCapture.checkoutId)return;
+    try{
+      terminalCapture.data=await api(`/api/square/terminal-checkouts/${terminalCapture.checkoutId}/refresh`,{method:"POST"});
+      terminalCapture.polls=0;
+    }catch(error){
+      if(error.data?.checkout)terminalCapture.data=error.data.checkout;
+      toast(error.message);
+    }
+    renderTerminalCapture();
+    if(terminalCapture.data?.inFlight)scheduleTerminalCapturePoll();
+  }));
+  $("[data-testid=\"terminal-capture-cancel\"]")?.addEventListener("click",()=>runDetached(async()=>{
+    if(!terminalCapture.checkoutId)return;
+    stopTerminalCapturePoll();
+    try{
+      // Cancelling is a request, not a result: the server asks the terminal, reconciles, and
+      // reports whatever actually happened - which may be that the card already went through.
+      terminalCapture.data=await api(`/api/square/terminal-checkouts/${terminalCapture.checkoutId}/cancel`,{method:"POST"});
+    }catch(error){toast(error.message);}
+    renderTerminalCapture();
+    if(terminalCapture.data?.inFlight)scheduleTerminalCapturePoll();
+  }));
+  $("[data-testid=\"terminal-capture-receipt\"]")?.addEventListener("click",()=>runDetached(async()=>{
+    const invoiceId=terminalCapture.invoiceId;if(!invoiceId)return;
+    const receipt=await api(`/api/invoices/${invoiceId}/receipt`);
+    dialog.close();
+    setTimeout(()=>showReceipt(receipt),50);
+  }));
+}
+
+// --- Checkout ------------------------------------------------------------
+/**
+ * Checkout reads the same settings, quietly.
+ *
+ * The only endpoint that names the configured payment methods requires settings.manage, which
+ * somebody taking payment may not hold. A refusal is therefore not an error to show: checkout
+ * keeps the four settlement types it offered before this screen existed, and says nothing about
+ * a configuration it was not allowed to read.
+ */
+async function ensureCheckoutPaymentOptions(){
+  if(checkoutOptions.data||checkoutOptions.unavailable)return;
+  try{checkoutOptions.data=await api("/api/checkout/payment-options");}
+  catch{checkoutOptions.unavailable=true;}
+}
+function checkoutMethodChoices(){
+  const methods=checkoutOptions.data?.paymentMethods;
+  // The fallback is for a read that genuinely broke - offline, or an account without
+  // checkout.perform - not for ordinary staff, who now have their own door to this list. It
+  // keeps the four settlement types the select offered before any of it was configurable, so a
+  // failure costs the operator the salon's labels rather than the ability to take payment.
+  if(!Array.isArray(methods))return CHECKOUT_FALLBACK_METHODS.map(([value,label])=>({value,label,settlementType:value}));
+  return methods.map(method=>({value:method.id,label:method.name,settlementType:method.settlementType}));
+}
+function checkoutTipPercents(){
+  // null is the server saying this salon has recorded no card processor, which is not three
+  // zeroes and not "ask again": there are no configured presets, so none are offered and the
+  // preset row does not render at all. A processor always carries exactly three.
+  const tips=checkoutOptions.data?.tipPercents;
+  return Array.isArray(tips)?tips.map(Number):[];
+}
+function renderSettingsCategory(category=settingsPathCategory(),{history="replace"}={}){const definition=settingsCategories.find(([id])=>id===category)||settingsCategories[0],[id,title]=definition,nav=$("#settings-navigation"),content=$("#settings-content");if(!nav||!content)return;nav.innerHTML=settingsCategories.map(([key,label])=>`<button type="button" data-settings-category="${key}" class="${key===id?"active":""}" ${key===id?'aria-current="page"':""}>${escape(label)}</button>`).join("");let html="";if(id==="account")html=settingsLink("Account","Personal identity and password security remain in your canonical account workspace.","Manage profile & security","profile-account");else if(id==="staff")html=settingsLink("Staff","Groomer records, operational eligibility, and active status remain in Salon.","Open Salon team","setup");else if(id==="business")html=`<article class="settings-panel"><h3>Business</h3><p>Manage the workspace name and authoritative timezone, currency, tax rate, and reminder lead time.</p><button type="button" class="primary compact settings-business-action">Edit business settings</button></article>`;else if(id==="availability")html=`<div id="availability-root" class="availability-root"></div>`;else if(id==="permissions")html=allowed("team.manage")?`<article class="settings-panel"><div class="panel-head"><div><h3>Permissions</h3><p>Manage workspace membership and server-authorized access.</p></div><button type="button" class="secondary compact settings-invite">+ Invite</button></div><div id="member-list" class="simple-list"></div><h4>Pending access requests</h4><div id="access-request-list" class="simple-list"></div></article>`:settingsPlaceholder(id,title);else if(id==="services")html=settingsLink("Services","Service names, pricing, durations, and availability have one canonical workspace.","Open Services","services");else if(id==="pet-options")html=`<div id="pet-options-workspace" class="pet-options-workspace"></div>`;else if(id==="tax-payments")html=`<div id="taxpay-root" class="taxpay-root"></div>`;else if(id==="automated-messages")html=`<article class="settings-panel"><h3>Automated messages</h3><p>Pawsh’s durable reminder/outbox flow uses the configured reminder lead time. Template and channel management are deferred.</p><button type="button" class="primary compact settings-business-action">Manage reminder timing</button></article>`;else html=settingsPlaceholder(id,title);content.innerHTML=`<div class="settings-content-head"><p class="eyebrow">Settings</p><h2>${escape(title)}</h2></div>${html}`;nav.querySelectorAll("[data-settings-category]").forEach(button=>button.addEventListener("click",()=>renderSettingsCategory(button.dataset.settingsCategory,{history:"push"})));content.querySelectorAll(".settings-canonical-link").forEach(button=>button.addEventListener("click",()=>showView(button.dataset.target)));content.querySelectorAll(".settings-business-action").forEach(button=>button.addEventListener("click",actions["business-settings"]));content.querySelector(".settings-invite")?.addEventListener("click",actions["invite-member"]);if(id==="permissions")renderSetup();if(id==="pet-options")renderPetOptions();if(id==="availability"){renderAvailability();ensureAvailabilityData();}if(id==="tax-payments"){renderTaxPayments();ensureTaxPaymentsData();}if(history!=="none")globalThis.history[history==="push"?"pushState":"replaceState"]({view:"admin-settings",settingsCategory:id},"",`/settings/${id}`);content.focus({preventScroll:true});}
 
 async function openClientProfile(customerId,{petId=null,appointmentId=null,returnView=null}={}){
   if(returnView)state.clientProfileReturnView=returnView;
@@ -4089,7 +5535,10 @@ function historyRowMarkup(item,{pets,payments,selectedId}){
   const total=services.length&&prices.length===services.length?money(prices.reduce((sum,value)=>sum+Number(value),0)):"—";
   const pet=pets.find(entry=>entry.id===item.petId);
   const paid=payments.get(item.id);
-  const payment=paid?`<span class="history-chip chip-${paid.invoiceStatus==="paid"?"paid":"unpaid"}">${paid.invoiceStatus==="paid"?"Paid":`Unpaid ${money(paid.invoiceBalanceMinor||0)}`}</span>`:"";
+  const paymentStatus=paid?paid.invoiceStatus:null;
+  const payment=!paid?""
+    :invoiceRefunded(paymentStatus)?`<span class="history-chip chip-refunded">${escape(invoiceStatusLabel(paymentStatus))}</span>`
+    :`<span class="history-chip chip-${paymentStatus==="paid"?"paid":"unpaid"}">${paymentStatus==="paid"?"Paid":`Unpaid ${money(paid.invoiceBalanceMinor||0)}`}</span>`;
   return `<tr class="history-row${item.id===selectedId?" active":""}">`
     +`<td class="history-id"><button type="button" class="text-button" data-profile-appointment="${clientAttr(item.id)}" aria-haspopup="dialog" aria-label="Open appointment #${escape(String(item.id).slice(0,8))}">#${escape(String(item.id).slice(0,8))}</button></td>`
     +`<td class="history-status"><span class="history-chip chip-${clientAttr(item.status)}">${escape(item.status.replace("_"," "))}</span>${payment}</td>`
@@ -4380,7 +5829,12 @@ function clientSalesSummaryMarkup(data){
   return `<div class="profile-summary" data-testid="client-summary">`
     +`<article class="summary-tile"><p class="summary-label">Total</p>`
       +`<p class="summary-figure" data-testid="summary-total">${money(summary.invoicedMinor)}</p>`
-      +`<p class="summary-detail">${line("Paid",money(summary.paidMinor))}${line("Invoices",summary.invoiceCount)}</p></article>`
+      // `Paid` is what this client was charged and settled; it is NOT reduced by refunds, because
+      // the invoice balance does not move when money goes back and quietly redefining it would
+      // change every figure this tile has ever shown. What went back is its own line, and it only
+      // appears once there is one - a permanent "Refunded: $0.00" would read as a fact about the
+      // client rather than about the product.
+      +`<p class="summary-detail">${line("Paid",money(summary.paidMinor))}${summary.refundedMinor?line("Refunded",money(summary.refundedMinor)):""}${line("Invoices",summary.invoiceCount)}</p></article>`
     +`<article class="summary-tile"><p class="summary-label">Outstanding</p>`
       +`<p class="summary-figure${summary.outstandingMinor?" owing":""}" data-testid="summary-outstanding">${money(summary.outstandingMinor)}</p>`
       +`<p class="summary-detail">${line("Unclosed appointments",summary.unclosedTotal,summary.unclosedTotal?"owing":"")}</p></article>`
@@ -4522,7 +5976,7 @@ function renderClientProfile(){
           : "")
         +`</div>`
       : "")
-    +(allowed("payments.view")&&data.invoices.length?`<section class="profile-invoices"><h4>Invoices</h4>${data.invoices.slice(0,20).map(invoice=>`<div><span>${escape(invoice.invoiceNumber)} · ${escape(new Date(invoice.createdAt).toLocaleDateString())}</span><strong>${money(invoice.totalMinor)} · ${escape(invoice.status)}</strong></div>`).join("")}</section>`:"")
+    +(allowed("payments.view")&&data.invoices.length?`<section class="profile-invoices"><h4>Invoices</h4>${data.invoices.slice(0,20).map(invoice=>`<div><span>${escape(invoice.invoiceNumber)} · ${escape(new Date(invoice.createdAt).toLocaleDateString())}</span><strong>${money(invoice.totalMinor)} · ${escape(invoiceStatusLabel(invoice.status))}</strong></div>`).join("")}</section>`:"")
     +clientAgreementsPanelMarkup(profile.agreements)
     +`</section>`;
 
@@ -4808,7 +6262,10 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
   // rather than unpaid, and the two read very differently to whoever is looking at the row.
   const billing=!item.invoiceStatus?{label:"Not invoiced",tone:"muted"}
     :item.invoiceStatus==="paid"?{label:"Paid",tone:"paid"}
-    :{label:`${String(item.invoiceStatus).replaceAll("_"," ")}${item.invoiceBalanceMinor?` · ${money(item.invoiceBalanceMinor)} due`:""}`,tone:"owing"};
+    // A refunded invoice owes nothing, so it never carries a "due" figure and never wears the
+    // owing colour. It reads as information, because that is what it is.
+    :invoiceRefunded(item.invoiceStatus)?{label:invoiceStatusLabel(item.invoiceStatus),tone:"refunded"}
+    :{label:`${invoiceStatusLabel(item.invoiceStatus)}${item.invoiceBalanceMinor?` · ${money(item.invoiceBalanceMinor)} due`:""}`,tone:"owing"};
   // A UUID is not a counter, so this is presented as a reference rather than an invented number.
   const reference=String(item.id).slice(0,8);
   const activity={items:null,failed:false};
@@ -5040,4 +6497,6 @@ if (inviteToken || resetToken) {
   $("#auth-form input[name=password]").autocomplete="new-password";
 }
 setupBreedDrawer();
+setupTerminalDrawer();
+setupTerminalCapture();
 bootstrap();

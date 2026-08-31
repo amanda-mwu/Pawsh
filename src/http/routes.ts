@@ -1,13 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type postgres from "postgres";
 import { z, type ZodType } from "zod";
 import type { Config } from "../config.js";
-import type { Database } from "../db/client.js";
+import { setTenant, type Database } from "../db/client.js";
 import { DocumentStorageError, sha256, type DocumentStorage } from "../storage/documents.js";
-import { canTransition, type AppointmentStatus } from "@pawsh/domain";
+import { canTransition, invoiceSettledStatuses, type AppointmentStatus } from "@pawsh/domain";
 import { calculateInvoice } from "@pawsh/domain";
 import { canonicalHash } from "../domain/canonical.js";
+import { applyInvoiceSettlement } from "../domain/invoice-settlement.js";
+import { refundPresentation } from "../domain/refunds.js";
 import { safePdfFilename } from "../domain/filenames.js";
 import { maxPhotoBytes, readPhotoShape, safePhotoFilename } from "../domain/images.js";
 import { localDateBounds, localDateForInstant, resolveWallTime, validateTimeZone } from "../domain/time.js";
@@ -32,7 +34,11 @@ import {
   customerChildParams,customerAddressCreateSchema,customerAddressUpdateSchema,
   customerContactCreateSchema,customerContactUpdateSchema,
   petVaccinationCreateSchema,petVaccinationUpdateSchema,petDeceasedSchema,
-  locationParams,closureDayQuerySchema,closureDaysSchema
+  locationParams,closureDayQuerySchema,closureDaysSchema,
+  cardProcessorFeeParams,cardProcessorTerminalParams,paymentMethodCreateSchema,
+  paymentMethodUpdateSchema,paymentMethodOrderSchema,taxRateCreateSchema,taxRateUpdateSchema,
+  cardProcessorCreateSchema,cardProcessorUpdateSchema,cardProcessorFeeSchema,
+  cardProcessorTerminalSchema
 } from "./schemas.js";
 import { availabilityRefusalCodes } from "../domain/availability.js";
 import { sealSecret } from "../security/secrets.js";
@@ -46,6 +52,9 @@ import {
   type PetCareRecord
 } from "@pawsh/domain";
 import { normalizeBreedSearch } from "@pawsh/domain";
+import {
+  cardProcessorProviderLabels, cardProcessorProviders, paymentMethodLabels, paymentMethods
+} from "@pawsh/domain";
 import {provisionBusinessCatalog} from "../domain/catalog-seed.js";
 import {resolveServicePrices} from "../domain/service-pricing.js";
 
@@ -256,12 +265,22 @@ export interface FinancialHooks {
   afterFinancialCommit?: (operation: FinancialOperation) => Promise<void>;
 }
 
-type FinancialOperation = "checkout.create-invoice" | "payment.record" | "payment.void";
+export type FinancialOperation =
+  | "checkout.create-invoice" | "payment.record" | "payment.void" | "payment.refund";
 type SchedulingOperation = "appointment.create" | "appointment.reschedule";
 type SchedulingCanonicalVersion = "appointment.create:v2" | "appointment.reschedule:v2";
 type SchedulingResultVersion = "appointment.create.result:v1" | "appointment.reschedule.result:v1";
 
-class FinancialRequestError extends Error {
+/**
+ * Exported so the Square routes can raise and claim the same way every other money route does.
+ *
+ * A refund is a financial operation and must be replay-protected exactly as a payment and a void
+ * are - same `Idempotency-Key` header, same `financial_idempotency_requests` row, same
+ * `error.name` the application error handler already maps to a status and a code. Re-implementing
+ * any of that beside the Square client would be a second definition of "the same request", and
+ * the two would eventually disagree about a double-tapped refund button.
+ */
+export class FinancialRequestError extends Error {
   constructor(readonly status: number, readonly code: string, message: string, readonly details?: unknown) {
     super(message);
     this.name = "FinancialRequestError";
@@ -395,19 +414,19 @@ async function authorizeSchedulingReplay(tx:Transaction,context:{businessId:stri
   }
 }
 
-function idempotencyKey(request: { headers: Record<string, unknown> }): string {
+export function idempotencyKey(request: { headers: Record<string, unknown> }): string {
   const value = request.headers["idempotency-key"];
   const parsed = z.string().uuid().safeParse(value);
   if (!parsed.success) throw new FinancialRequestError(400, "IDEMPOTENCY_KEY_REQUIRED", "A valid Idempotency-Key header is required");
   return parsed.data;
 }
 
-interface FinancialClaim {
+export interface FinancialClaim {
   id: string;
   existingResult: unknown | null;
 }
 
-async function claimFinancialRequest(
+export async function claimFinancialRequest(
   tx: Transaction,
   input: { businessId: string; actorId: string; operation: FinancialOperation; key: string; hash: string }
 ): Promise<FinancialClaim> {
@@ -434,7 +453,7 @@ async function claimFinancialRequest(
   return { id: existing.id, existingResult: existing.resultMetadata };
 }
 
-async function completeFinancialRequest(
+export async function completeFinancialRequest(
   tx: Transaction,
   input: { id: string; resultType: string; resourceId: string; result: unknown }
 ): Promise<void> {
@@ -494,6 +513,12 @@ function appointmentCalendarRows(db: Database, scope: SqlFragment) {
         aps.duration_minutes_snapshot, 'priceMinor', aps.price_minor_snapshot,
         'serviceId', aps.service_id
       )) filter (where aps.id is not null), '[]') as services,
+      -- What checkout will charge for the work itself, from the same immutable snapshots the
+      -- invoice is built from. The checkout modal opens before the invoice exists, so anything
+      -- it has to express as a share of the visit - a tip preset, most obviously - needs this
+      -- number, and re-deriving it in the client would be a second opinion about a total the
+      -- server already owns. The invoice taxable subtotal is this minus the operator's discount.
+      coalesce(sum(aps.price_minor_snapshot),0)::int as services_subtotal_minor,
       inv.status as invoice_status, inv.balance_minor as invoice_balance_minor
     from appointments a
     join customers c on c.id=a.customer_id
@@ -577,7 +602,12 @@ async function customerSalesSummary(
   db: Database,
   input: { businessId: string; customerId: string }
 ): Promise<Record<string, unknown>> {
-  const [[money], statuses, [unclosed]] = await Promise.all([
+  // `paidMinor` is what this customer was charged and settled. It is deliberately NOT reduced by
+  // refunds: `balance_minor` does not move when money goes back, so `total - balance` still means
+  // exactly what it always meant, and quietly redefining it would change every historical figure
+  // this panel has ever shown. What money went back is a separate number, reported separately, so
+  // the tile can say both rather than blending them into one that means neither.
+  const [[money], [returned], statuses, [unclosed]] = await Promise.all([
     db<{ invoicedMinor: number; outstandingMinor: number; paidMinor: number; invoiceCount: number }[]>`
       select coalesce(sum(total_minor),0)::int invoiced_minor,
         coalesce(sum(balance_minor),0)::int outstanding_minor,
@@ -585,6 +615,13 @@ async function customerSalesSummary(
         count(*)::int invoice_count
       from invoices
       where business_id=${input.businessId} and customer_id=${input.customerId} and status<>'void'
+    `,
+    db<{ refundedMinor: number }[]>`
+      select coalesce(sum(refund.amount_minor),0)::int refunded_minor
+      from payment_refunds refund
+      join invoices invoice on invoice.business_id=refund.business_id and invoice.id=refund.invoice_id
+      where refund.business_id=${input.businessId} and refund.status='completed'
+        and invoice.customer_id=${input.customerId} and invoice.status<>'void'
     `,
     db<{ status: string; count: number }[]>`
       select status,count(*)::int count from appointments
@@ -607,6 +644,7 @@ async function customerSalesSummary(
   return {
     invoicedMinor: money?.invoicedMinor ?? 0,
     paidMinor: money?.paidMinor ?? 0,
+    refundedMinor: returned?.refundedMinor ?? 0,
     outstandingMinor: money?.outstandingMinor ?? 0,
     invoiceCount: money?.invoiceCount ?? 0,
     appointmentTotal,
@@ -620,10 +658,6 @@ async function customerSalesSummary(
     },
     unclosedTotal: unclosed?.count ?? 0
   };
-}
-
-async function setTenant(tx: Transaction, businessId: string): Promise<void> {
-  await tx`select set_config('app.business_id', ${businessId}, true)`;
 }
 
 // Client note thread projection. `authorName` always resolves to something renderable: the
@@ -1263,7 +1297,7 @@ function salonClosedError(closure: { localDate: string; reason: string | null })
   );
 }
 
-async function record(
+export async function record(
   tx: Transaction,
   input: {
     businessId: string;
@@ -1323,6 +1357,260 @@ function sessionCookie(config: Config) {
     sameSite: "lax" as const,
     maxAge: 60 * 60 * 24 * 14,
     signed: false
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tax and payment configuration
+//
+// One read serves the whole Settings -> Tax & Payment screen and every write returns that same
+// read, because the writes ripple: making a tax rate the default un-defaults another AND moves
+// `businesses.tax_rate_basis_points`, and reordering one payment method renumbers the list. A
+// client that patched its local copy from a single returned row would be wrong about the rest.
+// ---------------------------------------------------------------------------
+
+/**
+ * What the screen is told about connecting a processor, in the same payload it draws from.
+ *
+ * Pawsh has no OAuth flow, no credential store, no tokenization and no PCI scope, so there is no
+ * connected state to report and nothing here can create one. The client is told that rather than
+ * left to infer it from a missing field or discover it by trying, and the server is the one
+ * saying it, so the day a real integration lands this flips in one place.
+ */
+const cardProcessingConnectivity = {
+  connectable: false,
+  reason: "Pawsh does not connect to card processors. There is no OAuth flow, no credential " +
+    "store and no tokenization, so a processor recorded here is configuration this salon keeps " +
+    "for its own reference and a terminal is an inventory record of a device on the counter - " +
+    "neither is a paired or connected session."
+} as const;
+
+// Matches the column defaults on `card_processors`. Named here because an insert that omits the
+// columns cannot also report what the database chose without a second read.
+const defaultTipPercents = [15, 18, 20] as const;
+
+interface TaxRateRow {
+  id: string; name: string; rateBasisPoints: number; isDefault: boolean;
+  createdAt: Date; updatedAt: Date;
+}
+interface PaymentMethodRow {
+  id: string; name: string; settlementType: string; enabled: boolean; sortOrder: number;
+  processorLabel: string | null; builtIn: boolean; createdAt: Date; updatedAt: Date;
+}
+interface CardProcessorRow {
+  id: string; provider: string; isDefault: boolean; locationLabel: string | null;
+  tipPercent1: number; tipPercent2: number; tipPercent3: number;
+  createdAt: Date; updatedAt: Date;
+}
+interface CardProcessorFeeRow {
+  id: string; processorId: string; name: string; rateBasisPoints: number;
+  centAmountMinor: number; createdAt: Date; updatedAt: Date;
+}
+interface CardProcessorTerminalRow {
+  id: string; processorId: string; name: string; locationLabel: string | null;
+  deviceCode: string | null; createdAt: Date; updatedAt: Date;
+}
+
+/** Everything the Tax & Payment screen renders, in one read. */
+async function taxPaymentSettings(db: Database, businessId: string) {
+  const [business] = await db<{ currency: string; taxRateBasisPoints: number }[]>`
+    select currency,tax_rate_basis_points from businesses where id=${businessId}
+  `;
+  const [methods, rates, processors, fees, terminals] = await Promise.all([
+    db<PaymentMethodRow[]>`
+      select id,name,settlement_type,enabled,sort_order,processor_label,built_in,created_at,updated_at
+      from payment_methods where business_id=${businessId}
+      order by sort_order,lower(name),id
+    `,
+    db<TaxRateRow[]>`
+      select id,name,rate_basis_points,is_default,created_at,updated_at
+      from tax_rates where business_id=${businessId}
+      order by is_default desc,lower(name),id
+    `,
+    db<CardProcessorRow[]>`
+      select id,provider,is_default,location_label,tip_percent_1,tip_percent_2,tip_percent_3,
+        created_at,updated_at
+      from card_processors where business_id=${businessId}
+      order by is_default desc,provider,id
+    `,
+    db<CardProcessorFeeRow[]>`
+      select id,processor_id,name,rate_basis_points,cent_amount_minor,created_at,updated_at
+      from card_processor_fees where business_id=${businessId}
+      order by lower(name),id
+    `,
+    db<CardProcessorTerminalRow[]>`
+      select id,processor_id,name,location_label,device_code,created_at,updated_at
+      from card_processor_terminals where business_id=${businessId}
+      order by lower(name),id
+    `
+  ]);
+  const feesByProcessor = new Map<string, CardProcessorFeeRow[]>();
+  for (const fee of fees) {
+    const owned = feesByProcessor.get(fee.processorId);
+    if (owned) owned.push(fee); else feesByProcessor.set(fee.processorId, [fee]);
+  }
+  const terminalsByProcessor = new Map<string, CardProcessorTerminalRow[]>();
+  for (const terminal of terminals) {
+    const owned = terminalsByProcessor.get(terminal.processorId);
+    if (owned) owned.push(terminal); else terminalsByProcessor.set(terminal.processorId, [terminal]);
+  }
+  return {
+    currency: business?.currency ?? "USD",
+    // The column every invoice snapshots at creation. The rate in force below is mirrored onto
+    // it, so the two can never disagree; it is reported so the screen can show what invoices
+    // will actually carry rather than infer it.
+    taxRateBasisPoints: business?.taxRateBasisPoints ?? 0,
+    taxRates: rates.map((rate) => ({
+      id: rate.id, name: rate.name, rateBasisPoints: rate.rateBasisPoints,
+      isDefault: rate.isDefault, createdAt: rate.createdAt, updatedAt: rate.updatedAt
+    })),
+    paymentMethods: methods.map((method) => ({
+      id: method.id, name: method.name, settlementType: method.settlementType,
+      enabled: method.enabled, sortOrder: method.sortOrder,
+      processorLabel: method.processorLabel, builtIn: method.builtIn,
+      createdAt: method.createdAt, updatedAt: method.updatedAt
+    })),
+    cardProcessors: processors.map((processor) => ({
+      id: processor.id, provider: processor.provider, isDefault: processor.isDefault,
+      locationLabel: processor.locationLabel,
+      tipPercents: [processor.tipPercent1, processor.tipPercent2, processor.tipPercent3],
+      fees: (feesByProcessor.get(processor.id) ?? []).map((fee) => ({
+        id: fee.id, processorId: fee.processorId, name: fee.name,
+        rateBasisPoints: fee.rateBasisPoints, centAmountMinor: fee.centAmountMinor,
+        createdAt: fee.createdAt, updatedAt: fee.updatedAt
+      })),
+      terminals: (terminalsByProcessor.get(processor.id) ?? []).map((terminal) => ({
+        id: terminal.id, processorId: terminal.processorId, name: terminal.name,
+        locationLabel: terminal.locationLabel, deviceCode: terminal.deviceCode,
+        createdAt: terminal.createdAt, updatedAt: terminal.updatedAt
+      })),
+      createdAt: processor.createdAt, updatedAt: processor.updatedAt
+    })),
+    cardProcessing: cardProcessingConnectivity,
+    // The two closed sets the screen has to offer, named by the server so the client never keeps
+    // its own copy of a database check constraint.
+    settlementTypes: paymentMethods.map((value) => ({ value, label: paymentMethodLabels[value] })),
+    cardProcessorProviders: cardProcessorProviders.map((value) => ({
+      value, label: cardProcessorProviderLabels[value]
+    }))
+  };
+}
+
+/**
+ * Serializes the writes that move a "there is exactly one of these" flag.
+ *
+ * `tax_rate_single_default` and `card_processor_single_default` are partial unique indexes, so
+ * two concurrent default switches would otherwise race between the clear and the set, and one
+ * of them would surface as an integrity violation instead of the save it asked for.
+ */
+async function lockTaxPaymentSettings(tx: Transaction, businessId: string): Promise<void> {
+  await tx`select pg_advisory_xact_lock(hashtextextended(${"tax-payment-settings:" + businessId},0))`;
+}
+
+/** Stands down whichever rate is in force, so the incoming one can take its place. */
+async function clearDefaultTaxRate(tx: Transaction, businessId: string): Promise<void> {
+  await tx`
+    update tax_rates set is_default=false,updated_at=now()
+    where business_id=${businessId} and is_default
+  `;
+}
+
+/**
+ * Mirrors the rate in force onto `businesses.tax_rate_basis_points`, in the same transaction.
+ *
+ * That column is what invoice creation snapshots, and it stays the authority. Without this the
+ * settings screen would be a second, disagreeing answer to "what tax do we charge": the rate a
+ * salon marked as in force, and the rate its next invoice actually carries.
+ */
+async function applyDefaultTaxRate(
+  tx: Transaction, businessId: string, rateBasisPoints: number
+): Promise<void> {
+  await tx`
+    update businesses set tax_rate_basis_points=${rateBasisPoints},updated_at=now()
+    where id=${businessId}
+  `;
+}
+
+/**
+ * The same mirror in the other direction, for the business settings form that writes the tax
+ * rate directly. Either screen may set the rate; neither may leave the other showing a
+ * different number.
+ */
+async function mirrorBusinessTaxRate(
+  tx: Transaction, businessId: string, rateBasisPoints: number
+): Promise<void> {
+  const updated = await tx<{ id: string }[]>`
+    update tax_rates set rate_basis_points=${rateBasisPoints},updated_at=now()
+    where business_id=${businessId} and is_default
+    returning id
+  `;
+  if (updated.length) return;
+  // A business with no rate in force is only reachable for one created before this table
+  // existed. Naming the row after the rate is how the backfill named it.
+  await tx`
+    insert into tax_rates (business_id,name,rate_basis_points,is_default)
+    values (${businessId},${rateBasisPoints === 0 ? "No tax" : "Sales tax"},${rateBasisPoints},true)
+    on conflict do nothing
+  `;
+}
+
+/**
+ * What a tax/payment write decided, before it becomes a reply.
+ *
+ * The refusals are the interesting half: each one names a rule the screen has to explain to a
+ * salon owner ("you cannot delete the rate you are charging"), so it carries a stable code and
+ * not only a sentence.
+ */
+type TaxPaymentOutcome =
+  | { status: "ok"; createdId?: string }
+  | { status: "notFound"; message: string }
+  | { status: "refused"; httpStatus: number; code: string; message: string };
+
+function refuseTaxPayment(code: string, message: string, httpStatus = 409): TaxPaymentOutcome {
+  return { status: "refused", httpStatus, code, message };
+}
+
+/**
+ * What a groomer needs at checkout, and nothing else.
+ *
+ * The settings payload above is gated on `settings.manage`, which most of the people who
+ * actually take money do not have. Left there, a salon's configured method names, their order
+ * and its tip presets would be invisible to the staff they exist for, and the checkout modal
+ * would fall back to the four raw settlement types - making the whole screen decorative for
+ * everyone but the owner.
+ *
+ * So this is a second, deliberately narrower read of the same configuration rather than a
+ * loosening of the first. It carries the enabled methods in the order the settings screen shows
+ * them and the default processor's tip presets. It does not carry disabled methods, processing
+ * fees, terminals, location labels, providers or anything about tax: a staff member who cannot
+ * manage settings must not be able to read the salon's payment configuration through a side
+ * door, and checkout does not need any of it - tax is applied by the server from the business
+ * row, never by the client.
+ */
+async function checkoutPaymentOptions(db: Database, businessId: string) {
+  const [methods, processors] = await Promise.all([
+    db<{ id: string; name: string; settlementType: string }[]>`
+      select id,name,settlement_type from payment_methods
+      where business_id=${businessId} and enabled
+      order by sort_order,lower(name),id
+    `,
+    db<{ tipPercent1: number; tipPercent2: number; tipPercent3: number }[]>`
+      select tip_percent_1,tip_percent_2,tip_percent_3 from card_processors
+      where business_id=${businessId} and is_default
+      limit 1
+    `
+  ]);
+  const processor = processors[0];
+  return {
+    paymentMethods: methods.map((method) => ({
+      id: method.id, name: method.name, settlementType: method.settlementType
+    })),
+    // Null, not an empty array: "this salon has recorded no processor, so offer no presets" is
+    // a different thing for the modal to render than a processor whose presets it should read,
+    // and a client branching on length could not tell them apart.
+    tipPercents: processor
+      ? [processor.tipPercent1, processor.tipPercent2, processor.tipPercent3]
+      : null
   };
 }
 
@@ -1778,6 +2066,10 @@ export function registerRoutes(
         update locations set name=${input.name}, timezone=${timezone}, version=version+1, updated_at=now()
         where id=${location.id}
       `;
+      // This form writes the tax rate directly, so the rate in force on the Tax & Payment
+      // screen is moved with it. Two screens may set the rate; neither may leave the other
+      // showing a different number.
+      await mirrorBusinessTaxRate(tx, context.businessId, input.taxRateBasisPoints);
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "business.settings.update",
         resourceType: "business", resourceId: context.businessId,
@@ -1785,6 +2077,602 @@ export function registerRoutes(
       });
       return updated;
     });
+  });
+
+  /**
+   * Settings -> Tax & Payment.
+   *
+   * One read for the whole screen, narrow writes underneath it, and every write answering with
+   * that same read: a default switch moves three things at once (the rate that stands down, the
+   * rate that takes over, and `businesses.tax_rate_basis_points`), so a reply that returned only
+   * the row the caller named would leave the client holding a stale copy of the other two.
+   *
+   * `cardProcessing.connectable` is reported by the server rather than assumed by the client.
+   * Nothing here can connect a processor, and the screen is told so in the payload it draws
+   * from instead of discovering it by trying.
+   */
+  async function taxPaymentReply(
+    reply: FastifyReply, businessId: string, outcome: TaxPaymentOutcome, successStatus = 200
+  ) {
+    if (outcome.status === "notFound") return reply.code(404).send({ error: outcome.message });
+    if (outcome.status === "refused") {
+      return reply.code(outcome.httpStatus).send({ code: outcome.code, error: outcome.message });
+    }
+    const settings = await taxPaymentSettings(db, businessId);
+    return reply.code(successStatus).send(
+      outcome.createdId ? { createdId: outcome.createdId, ...settings } : settings
+    );
+  }
+
+  app.get("/api/settings/tax-payments", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request) => {
+    const context = auth(request);
+    return taxPaymentSettings(db, context.businessId);
+  });
+
+  app.post("/api/settings/payment-methods", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const input = body(paymentMethodCreateSchema, request.body);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [taken] = await tx<{ id: string }[]>`
+        select id from payment_methods
+        where business_id=${context.businessId} and lower(btrim(name))=lower(btrim(${input.name}))
+      `;
+      if (taken) return refuseTaxPayment("PAYMENT_METHOD_NAME_TAKEN", "A payment method with that name already exists.");
+      // New methods land at the end of the list. The reorder endpoint is what moves them.
+      const [last] = await tx<{ sortOrder: number }[]>`
+        select coalesce(max(sort_order),0) as sort_order from payment_methods
+        where business_id=${context.businessId}
+      `;
+      const [method] = await tx<{ id: string }[]>`
+        insert into payment_methods
+          (business_id,name,settlement_type,enabled,sort_order,processor_label,built_in)
+        values (${context.businessId},${input.name},${input.settlementType},${input.enabled},
+          ${(last?.sortOrder ?? 0) + 10},${input.processorLabel ?? null},false)
+        returning id
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "payment_method.create",
+        resourceType: "payment_method", resourceId: method!.id,
+        after: { name: input.name, settlementType: input.settlementType, enabled: input.enabled }
+      });
+      return { status: "ok", createdId: method!.id };
+    });
+    return taxPaymentReply(reply, context.businessId, outcome, 201);
+  });
+
+  app.patch("/api/settings/payment-methods/:id", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(paymentMethodUpdateSchema, request.body);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [method] = await tx<{
+        id: string; name: string; settlementType: string; enabled: boolean;
+        processorLabel: string | null; builtIn: boolean;
+      }[]>`
+        select id,name,settlement_type,enabled,processor_label,built_in from payment_methods
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!method) return { status: "notFound", message: "Payment method not found" };
+      // A built-in method IS one of the four settlement types the ledger records, and recorded
+      // payments of that type display through it. Its label and its type are therefore fixed;
+      // only its availability, its position and the processor it settles through can move.
+      if (method.builtIn && (input.name !== undefined || input.settlementType !== undefined)) {
+        return refuseTaxPayment("PAYMENT_METHOD_BUILT_IN",
+          "A built-in method's name and payment type are fixed, because recorded payments display through them. It can be disabled or reordered.");
+      }
+      if (input.name !== undefined) {
+        const [taken] = await tx<{ id: string }[]>`
+          select id from payment_methods
+          where business_id=${context.businessId} and id<>${id}
+            and lower(btrim(name))=lower(btrim(${input.name}))
+        `;
+        if (taken) return refuseTaxPayment("PAYMENT_METHOD_NAME_TAKEN", "A payment method with that name already exists.");
+      }
+      const processorLabel = input.processorLabel === undefined
+        ? method.processorLabel : input.processorLabel ?? null;
+      await tx`
+        update payment_methods set
+          name=${input.name ?? method.name},
+          settlement_type=${input.settlementType ?? method.settlementType},
+          enabled=${input.enabled ?? method.enabled},
+          processor_label=${processorLabel},
+          updated_at=now()
+        where business_id=${context.businessId} and id=${id}
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "payment_method.update",
+        resourceType: "payment_method", resourceId: id,
+        before: {
+          name: method.name, settlementType: method.settlementType, enabled: method.enabled,
+          processorLabel: method.processorLabel
+        },
+        after: {
+          name: input.name ?? method.name,
+          settlementType: input.settlementType ?? method.settlementType,
+          enabled: input.enabled ?? method.enabled, processorLabel
+        }
+      });
+      return { status: "ok" };
+    });
+    return taxPaymentReply(reply, context.businessId, outcome);
+  });
+
+  app.delete("/api/settings/payment-methods/:id", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [method] = await tx<{ id: string; name: string; builtIn: boolean }[]>`
+        select id,name,built_in from payment_methods
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!method) return { status: "notFound", message: "Payment method not found" };
+      if (method.builtIn) {
+        return refuseTaxPayment("PAYMENT_METHOD_BUILT_IN",
+          "Built-in methods cannot be deleted, because recorded payments display through them. Disable it instead.");
+      }
+      // A configured method is a label over a settlement type; `payments.method` stores the
+      // type, never this row's id. Removing one therefore cannot orphan a recorded payment.
+      await tx`delete from payment_methods where business_id=${context.businessId} and id=${id}`;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "payment_method.delete",
+        resourceType: "payment_method", resourceId: id, before: { name: method.name }
+      });
+      return { status: "ok" };
+    });
+    return taxPaymentReply(reply, context.businessId, outcome);
+  });
+
+  /**
+   * The whole list, in the order it should appear.
+   *
+   * A partial order is refused rather than applied: a caller that names some of the methods
+   * cannot know what the rest should be renumbered to, and applying it anyway is how two
+   * methods end up sharing a position.
+   */
+  app.put("/api/settings/payment-methods/order", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const input = body(paymentMethodOrderSchema, request.body);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const owned = await tx<{ id: string }[]>`
+        select id from payment_methods where business_id=${context.businessId} for update
+      `;
+      const ownedIds = new Set(owned.map((method) => method.id));
+      const requested = new Set(input.ids);
+      const complete = requested.size === input.ids.length
+        && requested.size === ownedIds.size
+        && input.ids.every((methodId) => ownedIds.has(methodId));
+      if (!complete) {
+        return refuseTaxPayment("PAYMENT_METHOD_ORDER_INCOMPLETE",
+          "The order must list every payment method exactly once.", 400);
+      }
+      for (const [position, methodId] of input.ids.entries()) {
+        await tx`
+          update payment_methods set sort_order=${(position + 1) * 10},updated_at=now()
+          where business_id=${context.businessId} and id=${methodId}
+        `;
+      }
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "payment_method.reorder",
+        resourceType: "business", resourceId: context.businessId, after: { order: input.ids }
+      });
+      return { status: "ok" };
+    });
+    return taxPaymentReply(reply, context.businessId, outcome);
+  });
+
+  app.post("/api/settings/tax-rates", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const input = body(taxRateCreateSchema, request.body);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      await lockTaxPaymentSettings(tx, context.businessId);
+      const [taken] = await tx<{ id: string }[]>`
+        select id from tax_rates
+        where business_id=${context.businessId} and lower(btrim(name))=lower(btrim(${input.name}))
+      `;
+      if (taken) return refuseTaxPayment("TAX_RATE_NAME_TAKEN", "A tax rate with that name already exists.");
+      const [existing] = await tx<{ count: number }[]>`
+        select count(*)::int as count from tax_rates where business_id=${context.businessId}
+      `;
+      // The first rate a business records is the one in force: an empty list has no default to
+      // preserve, and a business charging a rate no row explains is exactly the disagreement
+      // this table exists to remove.
+      const makeDefault = input.isDefault || (existing?.count ?? 0) === 0;
+      if (makeDefault) await clearDefaultTaxRate(tx, context.businessId);
+      const [rate] = await tx<{ id: string }[]>`
+        insert into tax_rates (business_id,name,rate_basis_points,is_default,created_by)
+        values (${context.businessId},${input.name},${input.rateBasisPoints},${makeDefault},
+          ${context.userId})
+        returning id
+      `;
+      if (makeDefault) await applyDefaultTaxRate(tx, context.businessId, input.rateBasisPoints);
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "tax_rate.create",
+        resourceType: "tax_rate", resourceId: rate!.id,
+        after: { name: input.name, rateBasisPoints: input.rateBasisPoints, isDefault: makeDefault }
+      });
+      return { status: "ok", createdId: rate!.id };
+    });
+    return taxPaymentReply(reply, context.businessId, outcome, 201);
+  });
+
+  app.patch("/api/settings/tax-rates/:id", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(taxRateUpdateSchema, request.body);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      await lockTaxPaymentSettings(tx, context.businessId);
+      const [rate] = await tx<{
+        id: string; name: string; rateBasisPoints: number; isDefault: boolean;
+      }[]>`
+        select id,name,rate_basis_points,is_default from tax_rates
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!rate) return { status: "notFound", message: "Tax rate not found" };
+      // Clearing the flag outright is refused rather than quietly applied: the business still
+      // charges whatever `businesses.tax_rate_basis_points` says, so the screen would show no
+      // rate in force while every invoice carried one. A default moves by naming its successor.
+      if (input.isDefault === false && rate.isDefault) {
+        return refuseTaxPayment("TAX_RATE_DEFAULT_REQUIRED",
+          "A business always charges some rate, so one rate is always in force. Make another rate the default instead of clearing this one.");
+      }
+      if (input.name !== undefined) {
+        const [taken] = await tx<{ id: string }[]>`
+          select id from tax_rates
+          where business_id=${context.businessId} and id<>${id}
+            and lower(btrim(name))=lower(btrim(${input.name}))
+        `;
+        if (taken) return refuseTaxPayment("TAX_RATE_NAME_TAKEN", "A tax rate with that name already exists.");
+      }
+      const isDefault = rate.isDefault || input.isDefault === true;
+      if (input.isDefault === true && !rate.isDefault) await clearDefaultTaxRate(tx, context.businessId);
+      const rateBasisPoints = input.rateBasisPoints ?? rate.rateBasisPoints;
+      await tx`
+        update tax_rates set
+          name=${input.name ?? rate.name},
+          rate_basis_points=${rateBasisPoints},
+          is_default=${isDefault},
+          updated_at=now()
+        where business_id=${context.businessId} and id=${id}
+      `;
+      // Editing the rate in force, or promoting a rate to it, moves the number invoices
+      // snapshot. Both paths mirror, in this transaction, or they do not happen at all.
+      if (isDefault) await applyDefaultTaxRate(tx, context.businessId, rateBasisPoints);
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "tax_rate.update",
+        resourceType: "tax_rate", resourceId: id,
+        before: { name: rate.name, rateBasisPoints: rate.rateBasisPoints, isDefault: rate.isDefault },
+        after: { name: input.name ?? rate.name, rateBasisPoints, isDefault }
+      });
+      return { status: "ok" };
+    });
+    return taxPaymentReply(reply, context.businessId, outcome);
+  });
+
+  app.delete("/api/settings/tax-rates/:id", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      await lockTaxPaymentSettings(tx, context.businessId);
+      const [rate] = await tx<{ id: string; name: string; isDefault: boolean }[]>`
+        select id,name,is_default from tax_rates
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!rate) return { status: "notFound", message: "Tax rate not found" };
+      if (rate.isDefault) {
+        return refuseTaxPayment("TAX_RATE_IN_FORCE",
+          "The rate in force cannot be deleted, because it is the rate invoices are charging. Make another rate the default first.");
+      }
+      await tx`delete from tax_rates where business_id=${context.businessId} and id=${id}`;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "tax_rate.delete",
+        resourceType: "tax_rate", resourceId: id,
+        before: { name: rate.name }
+      });
+      return { status: "ok" };
+    });
+    return taxPaymentReply(reply, context.businessId, outcome);
+  });
+
+  /**
+   * Records which processor a salon uses. It does not connect one, and there is no request body
+   * field through which it could: no key, no token, no pairing code.
+   */
+  app.post("/api/settings/card-processors", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const input = body(cardProcessorCreateSchema, request.body);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      await lockTaxPaymentSettings(tx, context.businessId);
+      const [taken] = await tx<{ id: string }[]>`
+        select id from card_processors
+        where business_id=${context.businessId} and provider=${input.provider}
+      `;
+      if (taken) {
+        return refuseTaxPayment("CARD_PROCESSOR_EXISTS",
+          "That processor is already configured. Edit the existing one instead.");
+      }
+      const [existing] = await tx<{ count: number }[]>`
+        select count(*)::int as count from card_processors where business_id=${context.businessId}
+      `;
+      const makeDefault = input.isDefault || (existing?.count ?? 0) === 0;
+      if (makeDefault) {
+        await tx`
+          update card_processors set is_default=false,updated_at=now()
+          where business_id=${context.businessId} and is_default
+        `;
+      }
+      const tips = input.tipPercents ?? defaultTipPercents;
+      const [processor] = await tx<{ id: string }[]>`
+        insert into card_processors
+          (business_id,provider,is_default,location_label,tip_percent_1,tip_percent_2,tip_percent_3)
+        values (${context.businessId},${input.provider},${makeDefault},${input.locationLabel ?? null},
+          ${tips[0]!},${tips[1]!},${tips[2]!})
+        returning id
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "card_processor.create",
+        resourceType: "card_processor", resourceId: processor!.id,
+        after: { provider: input.provider, isDefault: makeDefault, locationLabel: input.locationLabel ?? null }
+      });
+      return { status: "ok", createdId: processor!.id };
+    });
+    return taxPaymentReply(reply, context.businessId, outcome, 201);
+  });
+
+  /**
+   * `provider` is deliberately not editable. It is this row's identity - unique per business,
+   * and what the fees and terminals recorded underneath it describe - so changing it would
+   * silently repoint them at a machine and a price list that were never theirs. Switching
+   * processors is a delete and a create.
+   */
+  app.patch("/api/settings/card-processors/:id", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(cardProcessorUpdateSchema, request.body);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      await lockTaxPaymentSettings(tx, context.businessId);
+      const [processor] = await tx<{
+        id: string; provider: string; isDefault: boolean; locationLabel: string | null;
+        tipPercent1: number; tipPercent2: number; tipPercent3: number;
+      }[]>`
+        select id,provider,is_default,location_label,tip_percent_1,tip_percent_2,tip_percent_3
+        from card_processors where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!processor) return { status: "notFound", message: "Card processor not found" };
+      // Same reasoning as the tax default: a list of processors with none of them the one the
+      // salon actually uses is a state the screen cannot render honestly. Name a successor.
+      if (input.isDefault === false && processor.isDefault) {
+        return refuseTaxPayment("CARD_PROCESSOR_DEFAULT_REQUIRED",
+          "One processor is always the default. Make another one the default instead of clearing this one.");
+      }
+      const isDefault = processor.isDefault || input.isDefault === true;
+      if (input.isDefault === true && !processor.isDefault) {
+        await tx`
+          update card_processors set is_default=false,updated_at=now()
+          where business_id=${context.businessId} and is_default and id<>${id}
+        `;
+      }
+      const locationLabel = input.locationLabel === undefined
+        ? processor.locationLabel : input.locationLabel ?? null;
+      const tips = input.tipPercents
+        ?? [processor.tipPercent1, processor.tipPercent2, processor.tipPercent3];
+      await tx`
+        update card_processors set
+          is_default=${isDefault},
+          location_label=${locationLabel},
+          tip_percent_1=${tips[0]!},tip_percent_2=${tips[1]!},tip_percent_3=${tips[2]!},
+          updated_at=now()
+        where business_id=${context.businessId} and id=${id}
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "card_processor.update",
+        resourceType: "card_processor", resourceId: id,
+        before: {
+          isDefault: processor.isDefault, locationLabel: processor.locationLabel,
+          tipPercents: [processor.tipPercent1, processor.tipPercent2, processor.tipPercent3]
+        },
+        after: { isDefault, locationLabel, tipPercents: tips }
+      });
+      return { status: "ok" };
+    });
+    return taxPaymentReply(reply, context.businessId, outcome);
+  });
+
+  app.delete("/api/settings/card-processors/:id", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      await lockTaxPaymentSettings(tx, context.businessId);
+      const [processor] = await tx<{ id: string; provider: string; isDefault: boolean }[]>`
+        select id,provider,is_default from card_processors
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!processor) return { status: "notFound", message: "Card processor not found" };
+      // The composite foreign keys cascade, so its fees and terminals go with it. Nothing else
+      // references a processor: no payment was ever taken through this row.
+      await tx`delete from card_processors where business_id=${context.businessId} and id=${id}`;
+      // Deleting the default promotes the oldest survivor rather than leaving a salon with
+      // several processors configured and no answer to "which one do we use?".
+      if (processor.isDefault) {
+        await tx`
+          update card_processors set is_default=true,updated_at=now()
+          where business_id=${context.businessId} and id=(
+            select id from card_processors where business_id=${context.businessId}
+            order by created_at,id limit 1
+          )
+        `;
+      }
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "card_processor.delete",
+        resourceType: "card_processor", resourceId: id,
+        before: { provider: processor.provider, isDefault: processor.isDefault }
+      });
+      return { status: "ok" };
+    });
+    return taxPaymentReply(reply, context.businessId, outcome);
+  });
+
+  app.post("/api/settings/card-processors/:id/fees", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(cardProcessorFeeSchema, request.body);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      // Scoped to this tenant, so another salon's processor id is a 404 and never a parent.
+      const [processor] = await tx<{ id: string }[]>`
+        select id from card_processors where business_id=${context.businessId} and id=${id}
+      `;
+      if (!processor) return { status: "notFound", message: "Card processor not found" };
+      const [fee] = await tx<{ id: string }[]>`
+        insert into card_processor_fees
+          (business_id,processor_id,name,rate_basis_points,cent_amount_minor)
+        values (${context.businessId},${id},${input.name},${input.rateBasisPoints},
+          ${input.centAmountMinor})
+        returning id
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "card_processor.fee.create", resourceType: "card_processor_fee",
+        resourceId: fee!.id,
+        after: {
+          processorId: id, name: input.name, rateBasisPoints: input.rateBasisPoints,
+          centAmountMinor: input.centAmountMinor
+        }
+      });
+      return { status: "ok", createdId: fee!.id };
+    });
+    return taxPaymentReply(reply, context.businessId, outcome, 201);
+  });
+
+  app.delete("/api/settings/card-processors/:id/fees/:feeId", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id, feeId } = cardProcessorFeeParams.parse(request.params);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [fee] = await tx<{ id: string; name: string }[]>`
+        delete from card_processor_fees
+        where business_id=${context.businessId} and processor_id=${id} and id=${feeId}
+        returning id,name
+      `;
+      if (!fee) return { status: "notFound", message: "Processing fee not found" };
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "card_processor.fee.delete", resourceType: "card_processor_fee",
+        resourceId: feeId, before: { processorId: id, name: fee.name }
+      });
+      return { status: "ok" };
+    });
+    return taxPaymentReply(reply, context.businessId, outcome);
+  });
+
+  /**
+   * A terminal row is an inventory record of a device that exists on the counter, so staff can
+   * tell two machines apart. It is not a paired session, and creating one pairs nothing.
+   */
+  app.post("/api/settings/card-processors/:id/terminals", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(cardProcessorTerminalSchema, request.body);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [processor] = await tx<{ id: string }[]>`
+        select id from card_processors where business_id=${context.businessId} and id=${id}
+      `;
+      if (!processor) return { status: "notFound", message: "Card processor not found" };
+      const [terminal] = await tx<{ id: string }[]>`
+        insert into card_processor_terminals
+          (business_id,processor_id,name,location_label,device_code,created_by)
+        values (${context.businessId},${id},${input.name},${input.locationLabel ?? null},
+          ${input.deviceCode ?? null},${context.userId})
+        returning id
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "card_processor.terminal.create", resourceType: "card_processor_terminal",
+        resourceId: terminal!.id,
+        after: {
+          processorId: id, name: input.name, locationLabel: input.locationLabel ?? null,
+          deviceCode: input.deviceCode ?? null
+        }
+      });
+      return { status: "ok", createdId: terminal!.id };
+    });
+    return taxPaymentReply(reply, context.businessId, outcome, 201);
+  });
+
+  app.delete("/api/settings/card-processors/:id/terminals/:terminalId", {
+    preHandler: [authenticate, requirePermission("settings.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id, terminalId } = cardProcessorTerminalParams.parse(request.params);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [terminal] = await tx<{ id: string; name: string }[]>`
+        delete from card_processor_terminals
+        where business_id=${context.businessId} and processor_id=${id} and id=${terminalId}
+        returning id,name
+      `;
+      if (!terminal) return { status: "notFound", message: "Terminal not found" };
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "card_processor.terminal.delete", resourceType: "card_processor_terminal",
+        resourceId: terminalId, before: { processorId: id, name: terminal.name }
+      });
+      return { status: "ok" };
+    });
+    return taxPaymentReply(reply, context.businessId, outcome);
+  });
+
+  /**
+   * The checkout modal's view of the payment configuration.
+   *
+   * Gated on `checkout.perform` rather than `settings.manage`, because the audience is the
+   * groomer taking the money, not the owner configuring it. Narrow by construction: see
+   * `checkoutPaymentOptions`. An empty list is a legitimate answer - a salon may disable every
+   * method - so it is an empty array and not a refusal.
+   */
+  app.get("/api/checkout/payment-options", {
+    preHandler: [authenticate, requirePermission("checkout.perform")]
+  }, async (request) => {
+    const context = auth(request);
+    return checkoutPaymentOptions(db, context.businessId);
   });
 
   app.get("/api/members", {
@@ -5310,10 +6198,15 @@ export function registerRoutes(
     const [recent]=await db<{id:string}[]>`
       select id from appointments where business_id=${context.businessId} and pet_id=${id}
         and status<>'cancelled' order by start_at desc,id desc limit 1`;
+    // `invoiceSettledStatuses`, not `'paid'`. A visit that was paid for and then partly refunded
+    // is still evidence of a settled service selection - the customer chose those services and
+    // the money was collected - and reading only `paid` would make a salon's default services
+    // silently go stale the first time it issues a refund.
     const [lastPaid]=await db<{id:string;startAt:Date}[]>`
       select appointment.id,appointment.start_at from appointments appointment
       join invoices invoice on invoice.business_id=appointment.business_id
-        and invoice.appointment_id=appointment.id and invoice.status='paid'
+        and invoice.appointment_id=appointment.id
+        and invoice.status in ${db(invoiceSettledStatuses as string[])}
       where appointment.business_id=${context.businessId} and appointment.pet_id=${id}
         and appointment.status<>'cancelled'
       order by appointment.start_at desc,appointment.id desc limit 1`;
@@ -6644,12 +7537,15 @@ export function registerRoutes(
            ${input.externalReference ?? null}, ${context.userId})
         returning *
       `;
-      const balance = invoice.balanceMinor - input.amountMinor;
-      await tx`
-        update invoices set balance_minor=${balance},
-          status=${balance === 0 ? "paid" : "partially_paid"}, updated_at=now()
-        where id=${id} and business_id=${context.businessId}
-      `;
+      // The same resolver the void route and the refund transaction use, so no write path can
+      // rename an invoice differently from the others. It matters here in one narrow case that is
+      // nonetheless real: an invoice whose card payment was refunded and whose cash payment was
+      // then voided is collectable again, and a payment that settles it must land on a refunded
+      // status rather than write `paid` over the fact that money went back.
+      const settlement = await applyInvoiceSettlement(tx, {
+        businessId: context.businessId, invoiceId: id, recomputeBalance: true
+      });
+      const balance = settlement?.balanceMinor ?? invoice.balanceMinor - input.amountMinor;
       await financialHooks.beforeFinancialAudit?.("payment.record");
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "payment.record",
@@ -6677,8 +7573,10 @@ export function registerRoutes(
     const requestHash = canonicalHash({ version: 1, paymentId: id, reason: input.reason.trim() });
     const outcome = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [payment] = await tx<{ invoiceId: string; amountMinor: number; status: string }[]>`
-        select invoice_id, amount_minor, status from payments
+      const [payment] = await tx<{
+        invoiceId: string; amountMinor: number; status: string; provider: string | null;
+      }[]>`
+        select invoice_id, amount_minor, status, provider from payments
         where business_id=${context.businessId} and id=${id} for update
       `;
       if (!payment) return null;
@@ -6688,25 +7586,41 @@ export function registerRoutes(
       if (payment.status !== "recorded") {
         throw new FinancialRequestError(409, "PAYMENT_ALREADY_VOIDED", "Payment is already voided");
       }
+      // VOIDING A PROVIDER PAYMENT IS REFUSED, AND REFUNDING IS THE WAY BACK.
+      //
+      // A void deletes a Pawsh record of money; it does not move any. That is exactly right for
+      // cash, a cheque, "other", or a card keyed by hand into somebody else's terminal - the
+      // salon mis-typed a number and is correcting its own book, and taking that away would leave
+      // them with no correction path at all. It is wrong for a payment Pawsh took through a
+      // processor: the customer's card really was charged, and voiding the record would leave the
+      // invoice claiming nothing was paid while the money sits in the merchant account.
+      //
+      // It also removes a defect rather than merely a temptation. The balance below is recomputed
+      // as `total_minor - sum(recorded)`, and a Terminal payment's invoice had `total_minor`
+      // raised by the tip the customer left on the device. Voiding it reversed the payment and
+      // never the raise, so the invoice was left inflated by exactly the tip - asking the customer
+      // for gratuity they had already given.
+      if (payment.provider) {
+        throw new FinancialRequestError(409, "PAYMENT_REQUIRES_REFUND",
+          "This payment was taken on a card terminal, so it cannot be voided. Refund it instead "
+          + "and the money goes back to the customer's card.");
+      }
       await tx`
         update payments set status='voided',voided_by=${context.userId},voided_at=now(),
           void_reason=${input.reason} where business_id=${context.businessId} and id=${id}
       `;
-      const [invoice] = await tx<{ totalMinor: number }[]>`
+      await tx`
         select total_minor from invoices where business_id=${context.businessId}
           and id=${payment.invoiceId} for update
       `;
-      const [sum] = await tx<{ paid: number }[]>`
-        select coalesce(sum(amount_minor),0)::integer as paid from payments
-        where business_id=${context.businessId} and invoice_id=${payment.invoiceId} and status='recorded'
-      `;
-      const balance = (invoice?.totalMinor ?? 0) - (sum?.paid ?? 0);
-      await tx`
-        update invoices set balance_minor=${balance},
-          status=${balance === (invoice?.totalMinor ?? 0) ? "open" : balance === 0 ? "paid" : "partially_paid"},
-          updated_at=now()
-        where business_id=${context.businessId} and id=${payment.invoiceId}
-      `;
+      // One resolver for both callers, so a void and a refund cannot disagree about what an
+      // invoice carrying both is called. Voiding a cash payment on an invoice whose card payment
+      // was already refunded puts money back on the table, and this returns an outstanding status
+      // for it rather than leaving a refunded label over a live balance.
+      const settlement = await applyInvoiceSettlement(tx, {
+        businessId: context.businessId, invoiceId: payment.invoiceId, recomputeBalance: true
+      });
+      const balance = settlement?.balanceMinor ?? 0;
       await financialHooks.beforeFinancialAudit?.("payment.void");
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "payment.void",
@@ -6733,11 +7647,38 @@ export function registerRoutes(
       where i.business_id=${context.businessId} and i.id=${id}
     `;
     if (!invoice) return reply.code(404).send({ error: "Invoice not found" });
-    const [items, payments] = await Promise.all([
+    // Refunds are read beside the payments, never instead of them. The original payment stays
+    // visible exactly as it was recorded - it is what the customer's card was charged - and the
+    // refund is a second line that says what went back. `tipRefundedMinor` is reported because the
+    // split is a Pawsh decision the operator was shown before confirming, so it has to still be
+    // there afterwards.
+    const [items, payments, refundRows] = await Promise.all([
       db`select * from invoice_items where business_id=${context.businessId} and invoice_id=${id} order by line_position,id`,
-      db`select * from payments where business_id=${context.businessId} and invoice_id=${id} order by recorded_at,id`
+      db`select * from payments where business_id=${context.businessId} and invoice_id=${id} order by recorded_at,id`,
+      db<{
+        id: string; paymentId: string; amountMinor: number; tipRefundedMinor: number;
+        currency: string; status: "pending" | "completed" | "failed"; reason: string | null;
+        providerRefundId: string | null; failureReason: string | null;
+        createdAt: Date; settledAt: Date | null;
+      }[]>`select id,payment_id,amount_minor,tip_refunded_minor,currency,status,reason,
+           provider_refund_id,failure_reason,created_at,settled_at
+         from payment_refunds where business_id=${context.businessId} and invoice_id=${id}
+         order by created_at,id`
     ]);
-    return { invoice, items, payments };
+    // The presented shape, not the row. `settled` is the only thing a client may render as
+    // "refunded" and it comes from one function shared with the Square routes, so a receipt and a
+    // refund response can never disagree about whether money has actually gone back. The Square
+    // refund id is dropped on the way out: a screen has no use for it, and a value a client holds
+    // is a value a client can send back.
+    const refunds = refundRows.map(({ providerRefundId, ...refund }) => ({
+      ...refund, ...refundPresentation({ status: refund.status, providerRefundId })
+    }));
+    // Only a completed refund has moved money, so only completed refunds are summed. A pending one
+    // is shown on its own line and counts toward nothing.
+    const refundedMinor = refunds
+      .filter((refund) => refund.status === "completed")
+      .reduce((sum, refund) => sum + Number(refund.amountMinor ?? 0), 0);
+    return { invoice, items, payments, refunds, refundedMinor };
   });
 
   app.get("/api/dashboard", {
@@ -6761,6 +7702,20 @@ export function registerRoutes(
       from appointments a
       where a.business_id=${context.businessId} and a.location_id=${location.id}
     `;
+    // `todaysSalesMinor` is money collected today and is NOT reduced by refunds: `balance_minor`
+    // does not move when money goes back, so this figure means precisely what it has always meant.
+    // `outstandingMinor` is likewise untouched - the refunded statuses are not in its filter, and
+    // they should not be, because a refunded invoice owes nothing.
+    //
+    // What changes with refunds is that "collected" and "kept" have stopped being the same number,
+    // so `todaysRefundedMinor` is reported alongside rather than subtracted into it. A silently
+    // net figure would make every panel disagree with every receipt and with Square's own
+    // dashboard, and nobody would be able to say which one was wrong.
+    //
+    // It counts refunds against TODAY'S invoices, bucketed by `i.created_at` exactly as
+    // `todaysSalesMinor` is, so the two subtract. It is not "refunds issued today" - a refund
+    // settled this morning against last week's invoice belongs to last week's sales, and
+    // subtracting it from today's would take money off a day that never collected it.
     const [finance] = await db`
       select
         coalesce(sum(i.total_minor-i.balance_minor) filter (
@@ -6771,7 +7726,16 @@ export function registerRoutes(
       join appointments a on a.id=i.appointment_id
       where i.business_id=${context.businessId} and a.location_id=${location.id}
     `;
-    return { ...metrics, ...finance };
+    const [refunded] = await db`
+      select coalesce(sum(r.amount_minor),0) as todays_refunded_minor
+      from payment_refunds r
+      join invoices i on i.business_id=r.business_id and i.id=r.invoice_id
+      join appointments a on a.id=i.appointment_id
+      where r.business_id=${context.businessId} and a.location_id=${location.id}
+        and r.status='completed'
+        and i.created_at>=${bounds.from} and i.created_at<${bounds.to}
+    `;
+    return { ...metrics, ...finance, ...refunded };
   });
 
   app.get("/api/reports", {
@@ -6837,7 +7801,8 @@ export function registerRoutes(
       and i.status<>'void' and i.created_at>=${from} and i.created_at<${to} and ${appointmentScope}`;
     const completedAppointmentsScope=db`a.business_id=${context.businessId} and a.location_id=${location.id}::uuid
       and a.status='completed' and a.start_at>=${from} and a.start_at<${to} and ${appointmentScope}`;
-    const [revenue, employees, servicesPerformed, operations, money, attribution, paymentMethodRows] = await Promise.all([
+    const [revenue, employees, servicesPerformed, operations, money, attribution, paymentMethodRows,
+      refundRows] = await Promise.all([
       db<{date:string;revenueMinor:string|number}[]>`
         select (i.created_at at time zone l.timezone)::date as date,sum(i.total_minor-i.balance_minor)::bigint as revenue_minor
         from invoices i join appointments a on a.id=i.appointment_id join locations l on l.id=a.location_id
@@ -6894,6 +7859,32 @@ export function registerRoutes(
         from payments p join invoices i on i.id=p.invoice_id join appointments a on a.id=i.appointment_id
         where p.business_id=${context.businessId} and p.status='recorded' and ${reportedInvoices}
         group by p.method order by amount_minor desc,p.method
+      `,
+      // REFUNDS ARE REPORTED, NOT NETTED. `paidRevenueMinor` is `sum(total_minor - balance_minor)`
+      // and refunds do not move `balance_minor`, so that figure still means exactly what it has
+      // always meant: money collected. Silently subtracting refunds from it would redefine every
+      // historical number this endpoint has ever returned, and would leave
+      // `sum(paymentMethods[].amountMinor) === totals.paidRevenueMinor` - an invariant this
+      // endpoint documents - quietly false.
+      //
+      // What refunds change is that "collected" and "kept" are no longer the same number. So the
+      // refunded total is its own figure, and `netCollectedMinor` states the subtraction ONCE,
+      // here, rather than leaving every reader of this payload to do it differently.
+      //
+      // BUCKETED BY THE INVOICE, exactly as `paidRevenueMinor` is - `${reportedInvoices}` and
+      // nothing else - so the two cover the same set of invoices and `netCollectedMinor` is a
+      // subtraction that means something. Bucketing refunds by their own `settled_at` instead
+      // would read more naturally as "refunds issued this week" and would be the wrong number
+      // here: a refund settled inside the window against an invoice raised outside it would be
+      // subtracted from revenue that is not in this report. The date on a refund is on the refund
+      // row, where a screen that wants to list them can read it.
+      db<{refundedMinor:string;refundCount:number;tipRefundedMinor:string}[]>`
+        select coalesce(sum(r.amount_minor),0)::bigint as refunded_minor,
+          coalesce(sum(r.tip_refunded_minor),0)::bigint as tip_refunded_minor,
+          count(*)::int as refund_count
+        from payment_refunds r join invoices i on i.business_id=r.business_id and i.id=r.invoice_id
+        join appointments a on a.id=i.appointment_id
+        where r.business_id=${context.businessId} and r.status='completed' and ${reportedInvoices}
       `
     ]);
     // bigint sums arrive as strings from postgres.js; the wire contract is integer minor units.
@@ -6907,8 +7898,14 @@ export function registerRoutes(
     const byEmployee=new Map(attribution.map((row)=>[row.id,row]));
     const attributedRevenueMinor=attribution.reduce((sum,row)=>sum+minor(row.revenueMinor),0);
     const attributedTipMinor=attribution.reduce((sum,row)=>sum+minor(row.tipMinor),0);
+    const refundedMinor=minor(refundRows[0]?.refundedMinor);
     const totals={
       paidRevenueMinor,
+      refundedMinor,
+      refundedTipMinor:minor(refundRows[0]?.tipRefundedMinor),
+      refundCount:refundRows[0]?.refundCount??0,
+      /** Collected minus given back. The one place this subtraction is stated. */
+      netCollectedMinor:paidRevenueMinor-refundedMinor,
       completedAppointments:operations[0]?.completedAppointments??0,
       servicesPerformed:servicesPerformed.reduce((sum,row)=>sum+Number(row.performed),0),
       totalPets:operations[0]?.totalPets??0,

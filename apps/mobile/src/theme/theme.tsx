@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useMemo } from "react";
 import { useColorScheme } from "react-native";
-import type { AppointmentStatus } from "@pawsh/domain";
+import type { AppointmentStatus, PaymentBadgeVariant } from "@pawsh/domain";
 import { darkPalette, lightPalette, type Palette } from "./tokens";
 
 export interface Theme {
@@ -29,7 +29,7 @@ export function useTheme(): Theme {
  * Payment badges are keyed separately because an invoice replaces the lifecycle badge entirely;
  * see `resolveAppointmentBadge()` in the shared domain.
  */
-const statusFills: Record<AppointmentStatus | "paid" | "unpaid", keyof Palette> = {
+const statusFills: Record<AppointmentStatus | PaymentBadgeVariant, keyof Palette> = {
   scheduled: "ink",
   checked_in: "info",
   in_service: "warning",
@@ -37,9 +37,13 @@ const statusFills: Record<AppointmentStatus | "paid" | "unpaid", keyof Palette> 
   cancelled: "dangerFill",
   no_show: "dangerFill",
   paid: "success",
-  unpaid: "warning"
+  unpaid: "warning",
+  // Refunds are not a failure and not a success. They read as information, in the same slot the
+  // lifecycle badge would have used, rather than borrowing the green that means money was kept.
+  partially_refunded: "info",
+  refunded: "info"
 };
 
-export function badgeFill(colors: Palette, variant: AppointmentStatus | "paid" | "unpaid"): string {
+export function badgeFill(colors: Palette, variant: AppointmentStatus | PaymentBadgeVariant): string {
   return colors[statusFills[variant]];
 }

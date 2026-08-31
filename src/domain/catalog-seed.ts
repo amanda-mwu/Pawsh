@@ -40,4 +40,37 @@ export async function provisionBusinessCatalog(sql:Sql,businessId:string):Promis
  const prices:{business_id:string;service_id:string;pricing_class:string;weight_tier_code:string;price_minor:number}[]=[];
  for(const service of defaultServices){const id=ids.get(service.key);if(!id||!service.prices)continue;for(const [dimension,value] of Object.entries(service.prices)){if(Array.isArray(value))for(let i=0;i<value.length;i++)prices.push({business_id:businessId,service_id:id,pricing_class:dimension,weight_tier_code:`TIER_${i+1}`,price_minor:value[i]!});else prices.push({business_id:businessId,service_id:id,pricing_class:"STANDARD",weight_tier_code:dimension,price_minor:value});}}
  if(prices.length)await sql`insert into service_price_tiers ${sql(prices,"business_id","service_id","pricing_class","weight_tier_code","price_minor")} on conflict (service_id,pricing_class,weight_tier_code) do nothing`;
+ await provisionTaxAndPaymentSettings(sql,businessId);
+}
+
+/**
+ * The tax and payment configuration a salon starts with.
+ *
+ * Migration 0034 gave every business that already existed the four settlement types as built-in
+ * payment methods and its current tax rate as the rate in force. A business created afterwards
+ * has to arrive the same way, or its first visit to Settings -> Tax & Payment would show a blank
+ * screen implying it charges no tax and takes no payments - while checkout happily records both.
+ *
+ * Idempotent, so re-running the provisioner over an existing business adds nothing.
+ */
+export async function provisionTaxAndPaymentSettings(sql:Sql,businessId:string):Promise<void>{
+ const methods=[
+  {name:"Cash",settlement_type:"cash",sort_order:10},
+  {name:"Card",settlement_type:"external_card",sort_order:20},
+  {name:"Check",settlement_type:"check",sort_order:30},
+  {name:"Other",settlement_type:"other",sort_order:40}
+ ].map(method=>({business_id:businessId,...method,enabled:true,built_in:true}));
+ await sql`insert into payment_methods ${sql(methods,"business_id","name","settlement_type","sort_order","enabled","built_in")} on conflict do nothing`;
+ // Named after the rate the business is already charging, exactly as the backfill named it, and
+ // inserted only when nothing is in force - never as a second default.
+ await sql`
+  insert into tax_rates (business_id,name,rate_basis_points,is_default)
+  select business.id,
+   case when business.tax_rate_basis_points=0 then 'No tax' else 'Sales tax' end,
+   business.tax_rate_basis_points,true
+  from businesses business
+  where business.id=${businessId}
+   and not exists (select 1 from tax_rates rate where rate.business_id=business.id)
+  on conflict do nothing
+ `;
 }

@@ -1,5 +1,9 @@
 import { test,expect,login,completeAppointment,appointmentAction } from "./fixtures/tenant.js";
 
+// The method select offers the salon's own configured methods, which carry generated ids, so these
+// specs pick the one a groomer would read rather than the settlement type underneath it. Every new
+// business is provisioned with the four built-in methods, so "Cash" is always there.
+
 const key=()=>crypto.randomUUID();
 
 test("@regression-checkout duplicate UI and incompatible invoice intent reconcile",async({page,request,tenant})=>{
@@ -12,7 +16,7 @@ test("@regression-checkout duplicate UI and incompatible invoice intent reconcil
   await page.getByTestId("nav-calendar").click();
   await (await appointmentAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"appointment-completed")).click();
   await page.getByTestId("field-tip").fill("1");
-  await page.getByTestId("field-method").selectOption("cash");
+  await page.getByTestId("field-method").selectOption({label:"Cash"});
   const submit=page.getByTestId("modal-submit");
   let release!:()=>void;let entered!:()=>void;
   const arrived=new Promise<void>((resolve)=>{entered=resolve;});
@@ -35,7 +39,7 @@ test("@regression-checkout two-context stale payment refreshes without overpayme
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
   await (await appointmentAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"appointment-completed")).click();
-  await page.getByTestId("field-method").selectOption("cash");
+  await page.getByTestId("field-method").selectOption({label:"Cash"});
   let release!:()=>void;
   let entered!:()=>void;
   const arrived=new Promise<void>((resolve)=>{entered=resolve;});
@@ -59,7 +63,7 @@ test("@regression-checkout receipt failure preserves committed payment and retri
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
   await (await appointmentAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"appointment-completed")).click();
-  await page.getByTestId("field-method").selectOption("cash");
+  await page.getByTestId("field-method").selectOption({label:"Cash"});
   await page.route("**/api/invoices/*/receipt",(route)=>route.fulfill({status:429,contentType:"application/json",body:JSON.stringify({error:"temporary"})}));
   await page.getByTestId("modal-submit").click();
   await expect(page.locator("#modal-error")).toContainText("Payment recorded successfully. Receipt is temporarily unavailable.");

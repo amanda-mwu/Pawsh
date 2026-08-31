@@ -136,5 +136,87 @@ describe("database migrations", () => {
     expect(businessBreeds).toContain("a pet cannot reference a breed owned by another business");
     // Pets are never cascaded: dropping a pet's breed_id would silently reprice it to STANDARD.
     expect(businessBreeds).not.toContain("references breeds(pet_type_id, id) on delete cascade");
+
+    // Square Terminal. Each of these, lost, turns a payment integration into a way to charge a
+    // card twice, to keep a credential the merchant revoked, or to reach another salon's device.
+    const square = await readMigration("0036_square_terminal_integration.sql");
+    // The structural guarantee against double-posting under webhook retries.
+    expect(square).toContain(
+      "create unique index payment_provider_reference\n  on payments (business_id, provider, provider_payment_id) where provider is not null"
+    );
+    // A provider with no reference sits outside that index, so it must not be representable.
+    expect(square).toContain("payment_provider_identity");
+    // Credentials are business-scoped and never per location.
+    expect(square).toContain("business_id uuid not null unique references businesses(id)");
+    // A revoked or disconnected connection holds no tokens at all.
+    expect(square).toContain("square_connection_token_presence");
+    // A revocation event carries a merchant and nothing else, so the lookup must not assume one
+    // merchant maps to one business.
+    expect(square).toContain("create index square_connection_merchant");
+    expect(square).not.toContain("create unique index square_connection_merchant");
+    // Tenant-qualified foreign keys: a checkout cannot reach another business's invoice, device
+    // or payment.
+    expect(square).toContain("foreign key (business_id, invoice_id) references invoices(business_id, id)");
+    expect(square).toContain("foreign key (business_id, device_id) references square_devices(business_id, id)");
+    expect(square).toContain("foreign key (business_id, payment_id) references payments(business_id, id)");
+    expect(square).toContain("foreign key (business_id, location_id) references locations(business_id, id)");
+    // A device cannot claim to be paired without the device id and the moment it happened.
+    expect(square).toContain("square_device_pairing_consistency");
+    // The webhook inbox dedupes in the database, and its policy admits the rows that arrive
+    // before a tenant is known.
+    expect(square).toContain("event_id text not null unique");
+    expect(square).toContain("create policy tenant_isolation on square_webhook_events");
+    // The inbox is gated on the CONTEXT, not on the column. An unconditional "or business_id is
+    // null" arm would let any salon's session read every unresolved row - other merchants' ids,
+    // device codes and raw payloads - so that exact shape must never come back.
+    expect(square).not.toContain("using (business_id is null or business_id =");
+    // Admitted only when there is no tenant context at all - the receiver and the drain.
+    expect(square).toContain("nullif(current_setting('app.business_id', true), '') is null");
+    expect(square).toContain("or business_id = nullif(current_setting('app.business_id', true), '')::uuid");
+    // There is no second ledger: payments is the ledger.
+    expect(square).not.toContain("create table square_payments");
+    // The chosen Square location lives on the device row; the list is fetched live.
+    expect(square).not.toContain("create table square_locations");
+
+    const refunds = await readMigration("0038_payment_refunds.sql");
+    // A refund is its own row. A negative payment is unrepresentable and must stay that way, and
+    // widening `payment_status` would break the void route's `sum(amount_minor) where
+    // status='recorded'` arithmetic and every report that trusts it.
+    expect(refunds).toContain("create table payment_refunds");
+    expect(refunds).toContain("amount_minor integer not null check (amount_minor > 0)");
+    expect(refunds).not.toContain("alter type payment_status");
+    // Tenant-qualified foreign keys on both sides: a refund cannot reach another business's
+    // payment or invoice. `payments_business_scoped_key` from 0036 is what makes the first one
+    // expressible at all.
+    expect(refunds).toContain("foreign key (business_id, payment_id) references payments(business_id, id)");
+    expect(refunds).toContain("foreign key (business_id, invoice_id) references invoices(business_id, id)");
+    // Two rows claiming one Square refund are two rows counting the same money twice.
+    expect(refunds).toContain(
+      "create unique index payment_refund_provider_reference\n"
+      + "  on payment_refunds (business_id, provider, provider_refund_id) where provider is not null"
+    );
+    // A key is one request, so re-deriving it must find the row that already holds it.
+    expect(refunds).toContain("create unique index payment_refund_idempotency_per_business");
+    // Two concurrent refunds of one payment must not both believe they are attempt two, which is
+    // the one way two different requests could derive the same key.
+    expect(refunds).toContain("unique (business_id, payment_id, attempt)");
+    // Square's Refunds API caps the key at 45 characters; Terminal allows 64 and this is not that.
+    expect(refunds).toContain("idempotency_key text not null check (char_length(idempotency_key) between 1 and 45)");
+    // A completed refund must carry its provider reference; the rows allowed to name a provider
+    // without one are those that have not been given one yet or never will be.
+    expect(refunds).toContain("payment_refund_provider_identity");
+    expect(refunds).toContain("status in ('pending', 'failed')");
+    // Settled exactly when completed, and the tip can never be more of a refund than the refund is.
+    expect(refunds).toContain("payment_refund_settlement_time");
+    expect(refunds).toContain("payment_refund_tip_within_amount");
+    // The invoice's own money does not move. Nothing here alters a total, a tip or a balance.
+    expect(refunds).not.toContain("alter table invoices");
+    expect(refunds).not.toContain("update invoices");
+    // An invoice whose money went back is not a paid invoice.
+    expect(refunds).toContain("alter type invoice_status add value if not exists 'partially_refunded'");
+    expect(refunds).toContain("alter type invoice_status add value if not exists 'refunded'");
+    // Refunding is replay-protected like every other financial operation.
+    expect(refunds).toContain("'payment.refund'");
+    expect(refunds).toContain("create policy tenant_isolation on payment_refunds");
   });
 });

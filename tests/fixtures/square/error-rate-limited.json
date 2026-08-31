@@ -1,0 +1,9 @@
+{
+  "errors": [
+    {
+      "category": "RATE_LIMIT_ERROR",
+      "code": "RATE_LIMITED",
+      "detail": "Too many requests. Retry after a short delay."
+    }
+  ]
+}

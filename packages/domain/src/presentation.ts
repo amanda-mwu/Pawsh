@@ -15,21 +15,31 @@ import { appointmentStatusBadges, type StatusBadge } from "./labels.js";
 import type { Permission } from "./permissions.js";
 
 /**
- * The two payment badges, which replace the lifecycle badge once an invoice exists.
+ * The payment badges, which replace the lifecycle badge once an invoice exists.
  *
- * Only `paid` is paid; every other invoice status — `open`, `partially_paid`, `draft`, `void` —
- * reads as unpaid, because the question a salon acts on is whether money is still owed.
+ * Only `paid` is paid; `open`, `partially_paid`, `draft` and `void` all read as unpaid, because
+ * the question a salon acts on is whether money is still owed.
+ *
+ * `refunded` and `partially_refunded` are neither, and collapsing them into either one would be a
+ * lie in a different direction each time. Calling a refund "Paid" hides the single most important
+ * thing that happened to that visit. Calling it "Unpaid" sends somebody to chase a customer for
+ * money that was collected and then deliberately given back. So they get their own badges and the
+ * calendar says what actually happened.
  */
-export const paymentBadges: Record<"paid" | "unpaid", StatusBadge> = {
+export type PaymentBadgeVariant = "paid" | "unpaid" | "partially_refunded" | "refunded";
+
+export const paymentBadges: Record<PaymentBadgeVariant, StatusBadge> = {
   paid: { code: "PAI", label: "Paid" },
-  unpaid: { code: "UNP", label: "Unpaid" }
+  unpaid: { code: "UNP", label: "Unpaid" },
+  partially_refunded: { code: "PRF", label: "Partly refunded" },
+  refunded: { code: "REF", label: "Refunded" }
 };
 
 export interface AppointmentBadge extends StatusBadge {
   /** `payment` when an invoice exists and took precedence, `lifecycle` otherwise. */
   kind: "lifecycle" | "payment";
   /** The value the badge was derived from, for a client that keys a colour off it. */
-  variant: AppointmentStatus | "paid" | "unpaid";
+  variant: AppointmentStatus | PaymentBadgeVariant;
 }
 
 /**
@@ -45,7 +55,13 @@ export function resolveAppointmentBadge(appointment: {
 }): AppointmentBadge | null {
   const invoiceStatus = appointment.invoiceStatus;
   if (invoiceStatus) {
-    const variant = invoiceStatus === "paid" ? "paid" : "unpaid";
+    // Named one at a time rather than defaulted, so the day a seventh invoice status is added the
+    // compiler asks what badge it carries instead of quietly filing it under "Unpaid".
+    const variant: PaymentBadgeVariant =
+      invoiceStatus === "paid" ? "paid"
+        : invoiceStatus === "refunded" ? "refunded"
+          : invoiceStatus === "partially_refunded" ? "partially_refunded"
+            : "unpaid";
     return { ...paymentBadges[variant], kind: "payment", variant };
   }
   const status = appointment.status;

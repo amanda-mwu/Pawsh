@@ -248,6 +248,28 @@
       <button type="button" class="primary compact" id="breed-add" data-testid="breed-add">Add Pet Breed</button>
     </div>
   </dialog>
+  <dialog id="terminal-drawer" class="drawer" aria-labelledby="terminal-drawer-title" data-testid="terminal-drawer">
+    <div class="drawer-head">
+      <div><p class="eyebrow">Card processor</p><h3 id="terminal-drawer-title">Terminal setting</h3></div>
+      <button type="button" class="close" aria-label="Close">&#215;</button>
+    </div>
+    <div id="terminal-drawer-body" class="drawer-body"></div>
+    <p id="terminal-drawer-status" class="fine drawer-status" role="status" aria-live="polite"></p>
+    <div class="drawer-foot"><button type="button" class="primary compact" id="terminal-add">+ Add terminal</button></div>
+  </dialog>
+  <dialog id="terminal-capture" class="drawer square-capture" aria-labelledby="terminal-capture-title" data-testid="terminal-capture">
+    <div class="drawer-head">
+      <div><p class="eyebrow">Card terminal</p><h3 id="terminal-capture-title">Taking payment</h3></div>
+      <button type="button" class="close" aria-label="Close">&#215;</button>
+    </div>
+    <div id="terminal-capture-body" class="drawer-body" role="status" aria-live="polite"></div>
+    <div class="drawer-foot square-capture-foot">
+      <button type="button" class="text-button destructive" data-testid="terminal-capture-cancel">Cancel payment</button>
+      <button type="button" class="secondary compact" data-testid="terminal-capture-refresh">Check the terminal</button>
+      <button type="button" class="primary compact" data-testid="terminal-capture-receipt" hidden>View receipt</button>
+      <button type="button" class="secondary compact" data-testid="terminal-capture-close">Close</button>
+    </div>
+  </dialog>
   <dialog id="modal" data-testid="modal">
     <form id="modal-form">
       <div class="modal-head"><div><p class="eyebrow">Pawsh workflow</p><h3 id="modal-title">Dialog</h3></div><button type="button" class="close" aria-label="Close">×</button></div>

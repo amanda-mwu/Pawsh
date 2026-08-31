@@ -1,0 +1,31 @@
+{
+  "merchant_id": "MLSAMPLE00000001",
+  "type": "payment.updated",
+  "event_id": "44444444-4444-4444-8444-444444444444",
+  "created_at": "2026-08-31T09:31:45Z",
+  "data": {
+    "type": "payment",
+    "id": "PAYSAMPLE00000001",
+    "object": {
+      "payment": {
+        "id": "PAYSAMPLE00000001",
+        "amount_money": {
+          "amount": 6500,
+          "currency": "USD"
+        },
+        "tip_money": {
+          "amount": 1000,
+          "currency": "USD"
+        },
+        "total_money": {
+          "amount": 7500,
+          "currency": "USD"
+        },
+        "status": "COMPLETED",
+        "source_type": "CARD",
+        "location_id": "LSAMPLE000000001",
+        "terminal_checkout_id": "CHKSAMPLE00000001"
+      }
+    }
+  }
+}

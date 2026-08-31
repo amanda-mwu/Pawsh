@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { loadConfig, normalizeAppOrigin } from "../../src/config.js";
 import { createDocumentStorage, MemoryDocumentStorage } from "../../src/storage/documents.js";
@@ -9,6 +10,11 @@ const base = {
   DOCUMENT_STORAGE_ADAPTER: "s3",
   DOCUMENT_STORAGE_BUCKET: "pawsh-private-test",
   DOCUMENT_STORAGE_REGION: "us-west-2",
+  // Production requires somewhere sealed to keep third-party credentials, so a production
+  // configuration without these is refused. Key material is generated per run: this file has
+  // never held a key, and a fixed one here would be a key somebody could copy into a deployment.
+  PAWSH_INTEGRATION_ENCRYPTION_KEYS: `1:${randomBytes(32).toString("base64")}`,
+  PAWSH_INTEGRATION_ENCRYPTION_KEY_ACTIVE: "1",
 };
 
 describe("runtime configuration", () => {

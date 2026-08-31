@@ -1,0 +1,8 @@
+{
+  "access_token": "EAAAl0SAMPLEsandboxACCESStoken1111111111111111111111",
+  "token_type": "bearer",
+  "expires_at": "2026-10-29T18:22:41Z",
+  "merchant_id": "MLSAMPLE00000001",
+  "refresh_token": "EQAAl0SAMPLEsandboxREFRESHtoken000000000000000000000",
+  "short_lived": false
+}

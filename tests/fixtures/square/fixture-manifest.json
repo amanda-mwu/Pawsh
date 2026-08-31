@@ -1,0 +1,163 @@
+{
+  "format": "pawsh-square-fixtures-v1",
+  "synthetic": true,
+  "source": "Hand-written from the published Square Connect v2 request and response shapes. No body here was captured from a live Square account, no identifier belongs to a real merchant, location, device or payment, and no value is a credential.",
+  "squareApiVersion": "2026-08-19",
+  "webhookSigning": "Webhook fixtures are stored as raw bytes and signed at test time with a fixture-only key. No Square signature key appears in this repository, and the bytes below are the bytes the verifier must see.",
+  "fixtures": [
+    {
+      "name": "device-code.json",
+      "sha256": "bd2301e1ceabe81de699905ff7e69d7e025a278b0ea8fac4e8f24dbceeba98e6",
+      "size": 298,
+      "schema": "squareDeviceCodeResponse",
+      "expected": "CreateDeviceCode and RetrieveDeviceCode: `pair_by` is parsed from here, never assumed"
+    },
+    {
+      "name": "error-access-token-expired.json",
+      "sha256": "e97f88457ca03bec2e0be33b7125fdf27996af0e416565fcb9d132b14d7ccc4e",
+      "size": 162,
+      "schema": "squareErrorBody",
+      "expected": "maps to access_token_expired: refresh and retry"
+    },
+    {
+      "name": "error-access-token-revoked.json",
+      "sha256": "35176a1bf1dfbad06118329d534a437d5c712aa417226afeb6b84c5c5b1f93f9",
+      "size": 173,
+      "schema": "squareErrorBody",
+      "expected": "maps to access_token_revoked: stop, and mark the connection revoked"
+    },
+    {
+      "name": "error-idempotency-key-reused.json",
+      "sha256": "5f0e66e8a3e630707181450fe91dd16b90630884be1b678e04ae805bfb65c79a",
+      "size": 224,
+      "schema": "squareErrorBody",
+      "expected": "maps to idempotency_key_reused: our bug, must surface"
+    },
+    {
+      "name": "error-insufficient-scopes.json",
+      "sha256": "c89c1b7a0917e2f60181ae44f5a4bff37d03aa41a774f040af3ad462d65d1d2c",
+      "size": 179,
+      "schema": "squareErrorBody",
+      "expected": "maps to insufficient_scopes: never retried, the token is valid and not allowed"
+    },
+    {
+      "name": "error-rate-limited.json",
+      "sha256": "3e8ccd87db545abc42678615b9c2bc4aaad2a61e2ca52597bd4b0ae4de6acf75",
+      "size": 166,
+      "schema": "squareErrorBody",
+      "expected": "maps to rate_limited: back off"
+    },
+    {
+      "name": "locations.json",
+      "sha256": "2c3182ad993f98c5497d1615e7ef53bc2c09e1bcc60b4e86f588ffcf980486aa",
+      "size": 355,
+      "schema": "squareLocations",
+      "expected": "the location list fetched live during pairing; never mirrored into a table"
+    },
+    {
+      "name": "merchant.json",
+      "sha256": "ddf3f858e1b8bf1b91fd08743951b234536143c45ade5c96c62b1f82a9e03549",
+      "size": 241,
+      "schema": "squareMerchant",
+      "expected": "MERCHANT_PROFILE_READ: the merchant behind a connection"
+    },
+    {
+      "name": "oauth-token-refreshed.json",
+      "sha256": "a94d7ddae9e40fe65622c2bbec6f093f10958463cabf310b81a195490c8241c4",
+      "size": 279,
+      "schema": "squareToken",
+      "expected": "refresh_token grant: a new access token, the same non-rotating refresh token"
+    },
+    {
+      "name": "oauth-token-status.json",
+      "sha256": "8e0b61ab12518d416d108b2eed6915e1f2d4e6ca78fe60026e3c37f5d4253cc5",
+      "size": 261,
+      "schema": "squareTokenStatus",
+      "expected": "the scopes the merchant actually granted, which the token response does not report"
+    },
+    {
+      "name": "oauth-token.json",
+      "sha256": "42dff478dcd4970cde200bf9432b396fed8870f8ea295e315f175c3869dd57d0",
+      "size": 279,
+      "schema": "squareToken",
+      "expected": "authorization_code exchange: access token, refresh token, merchant and expiry"
+    },
+    {
+      "name": "payment.json",
+      "sha256": "b516d92d9300ed23b840f2d495eb989e6aa440f3145033768546348e6261dc32",
+      "size": 560,
+      "schema": "squarePaymentResponse",
+      "expected": "the retrieved Payment: amount, tip and total, and the only thing this integration posts from"
+    },
+    {
+      "name": "refund-completed.json",
+      "sha256": "08c1d4577506855fd0ba434a2b482ab0a465dd5b322e71fc4c905cf4b8c9e1a0",
+      "size": 403,
+      "schema": "squareRefundResponse",
+      "expected": "the retrieved Refund: the only thing in this integration allowed to say money went back"
+    },
+    {
+      "name": "refund-failed.json",
+      "sha256": "1f28d60ba22ae28077db2aa77b6e1964edc0e537a876ec2a97d6371dd5b06e74",
+      "size": 332,
+      "schema": "squareRefundResponse",
+      "expected": "REJECTED: terminal, releases the headroom it was holding, and the row is kept forever"
+    },
+    {
+      "name": "refund-pending.json",
+      "sha256": "d3a72b4133501caad279fcde68a160a14e739db011ec429ce275a94777763cb2",
+      "size": 401,
+      "schema": "squareRefundResponse",
+      "expected": "POST /v2/refunds: the create names the refund and reports PENDING; it is never itself proof the money moved"
+    },
+    {
+      "name": "terminal-checkout-canceled.json",
+      "sha256": "5485618016bce46e6d303b4d83848065831249e76d49c5dd7a51b1fdeedd53a1",
+      "size": 365,
+      "schema": "squareTerminalCheckoutResponse",
+      "expected": "a cancellation with Square's own reason, which the screen shows as timed out rather than as a decision"
+    },
+    {
+      "name": "terminal-checkout.json",
+      "sha256": "13ee42c9f7b4f8c992700c4b7528209bc493fb93a367911faff36e458fe20bf8",
+      "size": 423,
+      "schema": "squareTerminalCheckoutResponse",
+      "expected": "a completed checkout: a wake-up call naming a payment, never itself the financial authority"
+    },
+    {
+      "name": "webhook-device-code-paired.json",
+      "sha256": "4fe2a1928d1bd619527ee865b8f12702c712cb42cd60ff3479b7e599d27a7c18",
+      "size": 695,
+      "schema": "squareWebhookDeviceCodePaired",
+      "expected": "handled: resolves a device row through the device code id"
+    },
+    {
+      "name": "webhook-oauth-authorization-revoked.json",
+      "sha256": "1127d81364ba112ec0a7109de819892a20c40c45574883d9da238bca278c2637",
+      "size": 405,
+      "schema": "squareWebhookRevocation",
+      "expected": "handled: merchant id is the only tenant key it carries"
+    },
+    {
+      "name": "webhook-payment-updated.json",
+      "sha256": "d6b421016191d74b59b711ab143d34515bcd41f334cf44d0001cd9419e51afc8",
+      "size": 744,
+      "schema": "squareWebhookEnvelope",
+      "expected": "stored and marked processed-noop; reconciled in a later phase"
+    },
+    {
+      "name": "webhook-refund-updated.json",
+      "sha256": "dd0624eef6a8a5b5edc9fd6fa7d463e5990bd51a67bdc233e4efccc158ca7e57",
+      "size": 556,
+      "schema": "squareWebhookRefund",
+      "expected": "handled: a wake-up naming one refund, which is then re-read from Square"
+    },
+    {
+      "name": "webhook-terminal-checkout-updated.json",
+      "sha256": "8391970868727cc5bab4601fdfcda8b99a0695be613e0a59c23496f3b8e26de9",
+      "size": 696,
+      "schema": "squareWebhookEnvelope",
+      "expected": "stored and marked processed-noop; reconciled in a later phase"
+    }
+  ]
+}

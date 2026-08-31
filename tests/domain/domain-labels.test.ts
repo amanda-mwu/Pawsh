@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   appointmentStatuses, appointmentStatusBadges, appointmentStatusLabel,
-  formatMinor, invoiceStatuses, invoiceStatusLabels, invoiceOutstandingStatuses,
+  formatMinor, invoiceSettledStatuses, invoiceStatuses, invoiceStatusLabels,
+  invoiceOutstandingStatuses, paymentBadges, resolveAppointmentBadge,
   paymentMethods, paymentMethodLabels, paymentStatuses, paymentStatusLabels,
   permissionLabels, permissions, petHealthIssueLabels, petHealthIssues,
   poundsFromOunces, pricingClasses, pricingClassLabels, pricingModes, pricingModeLabels,
@@ -57,6 +58,55 @@ describe("domain label completeness", () => {
     expectExactKeys(pricingClassLabels, pricingClasses);
     for (const status of invoiceOutstandingStatuses) {
       expect(invoiceStatuses).toContain(status);
+    }
+  });
+
+  it("keeps the outstanding and settled invoice statuses disjoint and exhaustive", () => {
+    // Every status an invoice can hold after checkout is in exactly one of the two lists. A value
+    // in neither is a value some read path will forget; a value in both is a contradiction, and it
+    // would be the refunded ones - an invoice that owes nothing must never look collectable.
+    for (const status of invoiceSettledStatuses) {
+      expect(invoiceStatuses).toContain(status);
+      expect(invoiceOutstandingStatuses).not.toContain(status);
+    }
+    expect([...invoiceOutstandingStatuses, ...invoiceSettledStatuses].sort())
+      .toEqual([...invoiceStatuses].filter((status) => !["draft", "void"].includes(status)).sort());
+  });
+});
+
+describe("the payment badge an invoice carries", () => {
+  it("labels every badge variant it can produce and nothing else", () => {
+    expectExactKeys(paymentBadges, ["paid", "unpaid", "partially_refunded", "refunded"]);
+    for (const badge of Object.values(paymentBadges)) {
+      expect(badge.code).toMatch(/^[A-Z]{3}$/);
+      expect(badge.label.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("never calls a refunded invoice paid, and never calls it unpaid", () => {
+    // Both mistakes are one-line mistakes and both are lies. "Paid" hides the most important thing
+    // that happened to the visit; "Unpaid" sends somebody to chase a customer for money that was
+    // collected and then deliberately given back.
+    expect(resolveAppointmentBadge({ status: "completed", invoiceStatus: "refunded" }))
+      .toMatchObject({ code: "REF", variant: "refunded", kind: "payment" });
+    expect(resolveAppointmentBadge({ status: "completed", invoiceStatus: "partially_refunded" }))
+      .toMatchObject({ code: "PRF", variant: "partially_refunded", kind: "payment" });
+  });
+
+  it("still reads every unsettled status as unpaid, and only `paid` as paid", () => {
+    expect(resolveAppointmentBadge({ status: "completed", invoiceStatus: "paid" }))
+      .toMatchObject({ code: "PAI" });
+    for (const status of ["open", "partially_paid", "draft", "void"] as const) {
+      expect(resolveAppointmentBadge({ status: "completed", invoiceStatus: status }))
+        .toMatchObject({ code: "UNP" });
+    }
+  });
+
+  it("gives every invoice status a badge, so none can fall through unlabelled", () => {
+    for (const status of invoiceStatuses) {
+      const badge = resolveAppointmentBadge({ status: "completed", invoiceStatus: status });
+      expect(badge, status).not.toBeNull();
+      expect(paymentBadges[badge!.variant as keyof typeof paymentBadges]).toBeDefined();
     }
   });
 });

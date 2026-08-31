@@ -1,0 +1,18 @@
+{
+  "locations": [
+    {
+      "id": "LSAMPLE000000001",
+      "name": "Front Counter",
+      "status": "ACTIVE",
+      "currency": "USD",
+      "timezone": "America/Los_Angeles"
+    },
+    {
+      "id": "LSAMPLE000000002",
+      "name": "Mobile Van",
+      "status": "ACTIVE",
+      "currency": "USD",
+      "timezone": "America/Los_Angeles"
+    }
+  ]
+}

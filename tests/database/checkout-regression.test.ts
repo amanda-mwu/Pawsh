@@ -94,10 +94,22 @@ describeDatabase("D4 checkout, stale state, and error paths",()=>{
   it("uses immutable snapshots, rejects incompatible intent, and settles zero totals",async()=>{
     const appointmentId=await createCompleted(2);
     await db`update services set base_price_minor=9900 where business_id=${businessId} and id=${serviceId}`;
+    // The checkout modal opens before the invoice exists, so what it can offer as a share of the
+    // visit - a tip preset - has to come from the appointment payload it already holds. That
+    // number is the same snapshot sum the invoice is built from, and it follows the snapshot
+    // rather than the service's current price, which was just raised to 9900.
+    const beforeInvoice=await app.inject({method:"GET",url:`/api/appointments/${appointmentId}`,headers:{cookie:ownerCookie}});
+    expect(beforeInvoice.statusCode).toBe(200);
+    expect(beforeInvoice.json().servicesSubtotalMinor).toBe(8500);
+    expect(beforeInvoice.json().services.reduce((sum:number,service:{priceMinor:number})=>sum+Number(service.priceMinor),0)).toBe(8500);
+
     const requestKey=key();
     const first=await checkout(appointmentId,undefined,requestKey);
     expect(first.statusCode).toBe(201);
     expect(first.json()).toMatchObject({subtotalMinor:8500,discountMinor:500,tipMinor:1500,totalMinor:10160,status:"open"});
+    // The base the modal computed and the base the server charged are the same number, and a
+    // preset taken against `servicesSubtotalMinor - discount` is a share of what is owed.
+    expect(first.json().subtotalMinor).toBe(beforeInvoice.json().servicesSubtotalMinor);
     const replay=await checkout(appointmentId,undefined,requestKey,memberCookie);
     expect(replay.statusCode).toBe(200);
     expect(replay.json().id).toBe(first.json().id);

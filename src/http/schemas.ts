@@ -4,6 +4,7 @@ import { rabiesVerificationMethods, rabiesVerificationStatuses } from "@pawsh/do
 import { petHealthIssues } from "@pawsh/domain";
 import { permissions } from "@pawsh/domain";
 import {pricingClasses,weightTiers} from "@pawsh/domain";
+import {cardProcessorProviders,paymentMethods} from "@pawsh/domain";
 
 export const idParams = z.object({ id: z.string().uuid() });
 export const locationParams = z.object({ locationId: z.string().uuid() });
@@ -618,6 +619,127 @@ export const appointmentServicesSchema = z.object({
 export const voidPaymentSchema = z.object({
   reason: z.string().trim().min(3).max(500)
 });
+
+/**
+ * Asking for a refund.
+ *
+ * There is no payment id, no provider, no Square refund id and no tip field. The payment is named
+ * by the path, the provider identity is read out of the payment row server side, and the split
+ * between the service amount and the tip is Pawsh's decision rather than the caller's - a request
+ * body that could name the tip portion would let a client refund a groomer's gratuity while
+ * leaving the disputed service unrefunded.
+ *
+ * `expectedRefundableMinor` mirrors `expectedBalanceMinor` on a payment: it is what the screen
+ * believed was still refundable, so the server can tell "this operator asked for too much" from
+ * "somebody else refunded part of this while the dialog was open" and say the right sentence for
+ * each. `reason` is optional and capped at Square's own 192 characters, because it is forwarded.
+ */
+export const paymentRefundSchema = z.object({
+  amountMinor: z.number().int().positive(),
+  expectedRefundableMinor: z.number().int().nonnegative(),
+  reason: z.string().trim().min(1).max(192).nullish()
+});
+
+// ---------------------------------------------------------------------------
+// Tax and payment configuration
+//
+// Three things a salon configures - the tax it charges, the payment methods it offers, and the
+// card processors it uses - and one it cannot: connecting a processor. Nothing here accepts a
+// credential, a token or a pairing code, because Pawsh has nowhere to put one.
+//
+// Every bound below matches the check constraint on the column it writes, so a value the schema
+// accepts is a value the database accepts, and neither is the only place the rule is stated.
+// ---------------------------------------------------------------------------
+
+export const cardProcessorFeeParams = z.object({
+  id: z.string().uuid(),
+  feeId: z.string().uuid()
+});
+
+export const cardProcessorTerminalParams = z.object({
+  id: z.string().uuid(),
+  terminalId: z.string().uuid()
+});
+
+// A configured method is a label over one of the four settlement types the ledger can tell
+// apart, so `settlementType` reuses the payment enum rather than restating it.
+export const paymentMethodCreateSchema = z.object({
+  name: z.string().trim().min(1).max(60),
+  settlementType: z.enum(paymentMethods),
+  enabled: z.boolean().default(true),
+  processorLabel: z.preprocess(blankToNull, z.string().trim().min(1).max(60).nullish())
+}).strict();
+
+// Partial by design, like the other settings-owned records. `sortOrder` is deliberately absent:
+// position is set by the reorder endpoint, which is the only caller that can see the whole list
+// and therefore the only one that can leave it without gaps or ties.
+export const paymentMethodUpdateSchema = z.object({
+  name: z.string().trim().min(1).max(60).optional(),
+  settlementType: z.enum(paymentMethods).optional(),
+  enabled: z.boolean().optional(),
+  processorLabel: z.preprocess(blankToNull, z.string().trim().min(1).max(60).nullish()).optional()
+}).strict().refine(
+  (value) => Object.keys(value).length > 0,
+  { message: "At least one payment method change is required" }
+);
+
+// The whole list, in the order it should appear. A partial order is refused rather than applied,
+// because moving one row without knowing the others is how two methods end up sharing a position.
+export const paymentMethodOrderSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(200)
+}).strict();
+
+export const taxRateCreateSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  // Basis points, matching `businesses.tax_rate_basis_points` - the column every invoice
+  // snapshots at creation, which the default rate is mirrored onto.
+  rateBasisPoints: z.number().int().min(0).max(10_000),
+  isDefault: z.boolean().default(false)
+}).strict();
+
+export const taxRateUpdateSchema = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
+  rateBasisPoints: z.number().int().min(0).max(10_000).optional(),
+  isDefault: z.boolean().optional()
+}).strict().refine(
+  (value) => Object.keys(value).length > 0,
+  { message: "At least one tax rate change is required" }
+);
+
+// `provider` is the processor's identity here - it is unique per business and cannot be edited,
+// because editing it would silently repoint the fees and terminals recorded underneath it.
+export const cardProcessorCreateSchema = z.object({
+  provider: z.enum(cardProcessorProviders),
+  isDefault: z.boolean().default(false),
+  locationLabel: z.preprocess(blankToNull, z.string().trim().min(1).max(80).nullish()),
+  // Three tip presets, whole percents, always given together: they are one control on the
+  // checkout screen rather than three independent numbers.
+  tipPercents: z.array(z.number().int().min(0).max(100)).length(3).optional()
+}).strict();
+
+export const cardProcessorUpdateSchema = z.object({
+  isDefault: z.boolean().optional(),
+  locationLabel: z.preprocess(blankToNull, z.string().trim().min(1).max(80).nullish()).optional(),
+  tipPercents: z.array(z.number().int().min(0).max(100)).length(3).optional()
+}).strict().refine(
+  (value) => Object.keys(value).length > 0,
+  { message: "At least one card processor change is required" }
+);
+
+// A processing fee is a percentage plus a flat amount: "2.6% + 10c" is one fee, not two.
+export const cardProcessorFeeSchema = z.object({
+  name: z.string().trim().min(1).max(60),
+  rateBasisPoints: z.number().int().min(0).max(10_000),
+  centAmountMinor: z.number().int().min(0).max(100_000).default(0)
+}).strict();
+
+// An inventory record of a device on the counter. `deviceCode` is recorded so staff can tell two
+// machines apart; nothing sends it anywhere, because there is nowhere to send it.
+export const cardProcessorTerminalSchema = z.object({
+  name: z.string().trim().min(1).max(60),
+  locationLabel: z.preprocess(blankToNull, z.string().trim().min(1).max(80).nullish()),
+  deviceCode: z.preprocess(blankToNull, z.string().trim().min(1).max(40).nullish())
+}).strict();
 
 export function normalizeEmail(value: string): string {
   return value.trim().toLowerCase();

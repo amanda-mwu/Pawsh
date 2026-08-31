@@ -258,11 +258,16 @@ describeDatabase("reports analytics dashboard",()=>{
     expect(operational.totals.servicesPerformed).toBe(1);
 
     const stranger=await money(`&employeeIds=${crypto.randomUUID()}`);
+    // Exhaustive on purpose: a figure added to `totals` without a decision about what it means
+    // for an empty report has to fail here rather than appear on a dashboard as a silent zero.
+    // `refundedMinor` and `netCollectedMinor` are the Phase G additions - collected money is still
+    // `paidRevenueMinor`, and what went back is stated separately rather than netted into it.
     expect(stranger.totals).toEqual({
       paidRevenueMinor:0,completedAppointments:0,servicesPerformed:0,totalPets:0,
       expectedRevenueMinor:0,outstandingMinor:0,billedRevenueMinor:0,salesMinor:0,
       discountMinor:0,netMinor:0,taxMinor:0,tipMinor:0,unattributedRevenueMinor:0,
-      unattributedTipMinor:0,commissionMinor:null
+      unattributedTipMinor:0,commissionMinor:null,
+      refundedMinor:0,refundedTipMinor:0,refundCount:0,netCollectedMinor:0
     });
     expect(stranger.revenue).toEqual([]);
     expect(stranger.paymentMethods).toEqual([]);

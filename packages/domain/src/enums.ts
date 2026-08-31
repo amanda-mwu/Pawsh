@@ -11,7 +11,17 @@
  * and `migrations/0012_service_pricing_and_breed_catalog.sql` (pricing_mode, category).
  */
 
-export const invoiceStatuses = ["draft", "open", "partially_paid", "paid", "void"] as const;
+/**
+ * `partially_refunded` and `refunded` were added by migration 0038 and they replace `paid`, only
+ * ever `paid`. An invoice whose money went back is not a paid invoice, and a screen that says
+ * "Paid" over a refund is telling the operator something false at the exact moment they are
+ * trying to work out what happened. An invoice that still owes money never reaches either value:
+ * it stays `open` or `partially_paid`, because the question those two answer is "is this
+ * collectable" and a refund does not change that answer.
+ */
+export const invoiceStatuses = [
+  "draft", "open", "partially_paid", "paid", "partially_refunded", "refunded", "void"
+] as const;
 export type InvoiceStatus = (typeof invoiceStatuses)[number];
 
 export const invoiceStatusLabels: Record<InvoiceStatus, string> = {
@@ -19,11 +29,24 @@ export const invoiceStatusLabels: Record<InvoiceStatus, string> = {
   open: "Open",
   partially_paid: "Partially paid",
   paid: "Paid",
+  partially_refunded: "Partly refunded",
+  refunded: "Refunded",
   void: "Void"
 };
 
 /** An invoice still owing money. Anything else is settled or was never chargeable. */
 export const invoiceOutstandingStatuses: readonly InvoiceStatus[] = ["open", "partially_paid"];
+
+/**
+ * The statuses that mean the invoice was settled - whether or not some of it later went back.
+ *
+ * A refunded invoice owes nothing, so anywhere that asks "was this visit paid for" must include
+ * the refunded values or it will start reporting settled visits as unpaid the day a salon issues
+ * its first refund.
+ */
+export const invoiceSettledStatuses: readonly InvoiceStatus[] = [
+  "paid", "partially_refunded", "refunded"
+];
 
 export const paymentStatuses = ["recorded", "voided"] as const;
 export type PaymentStatus = (typeof paymentStatuses)[number];
@@ -41,6 +64,22 @@ export const paymentMethodLabels: Record<PaymentMethod, string> = {
   external_card: "Card",
   check: "Check",
   other: "Other"
+};
+
+/**
+ * The card processors a salon can record.
+ *
+ * Configuration only. Pawsh does not talk to any of these providers, so this list names what a
+ * salon may say it uses; it never names something it is connected to.
+ */
+export const cardProcessorProviders = ["square", "stripe", "clover_cardpointe", "authorize_net"] as const;
+export type CardProcessorProvider = (typeof cardProcessorProviders)[number];
+
+export const cardProcessorProviderLabels: Record<CardProcessorProvider, string> = {
+  square: "Square",
+  stripe: "Stripe",
+  clover_cardpointe: "Clover / CardPointe",
+  authorize_net: "Authorize.net"
 };
 
 export const pricingModes = [

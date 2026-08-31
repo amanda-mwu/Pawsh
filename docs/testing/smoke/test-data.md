@@ -30,3 +30,39 @@ The seed is idempotent and refuses to run unless all safeguards pass:
 The script prints the target before mutation. No password or production
 credential is committed. A production QA tenant must be provisioned through
 normal product workflows.
+
+## Directory volume
+
+Six clients read well but cannot exercise the directory itself. `npm run
+db:seed-directory` adds a bounded block of extra clients to the same
+`Pawsh QA Grooming` tenant so paging, the 10/20/50/100 page-size choice, the
+status filter, the visit-based sorts, and popup notes all have something to work
+on. It shares every safeguard of `npm run db:seed` and refuses to run unless the
+canonical tenant already exists.
+
+`PAWSH_QA_DIRECTORY_CLIENTS` sets the block size (default 45, maximum 400). The
+clients cycle through four shapes — a plain active client, one with two pets, one
+with no pet, and an archived one — so roughly a quarter land in the inactive
+filter. Every fourth client carries a note and every eighth is flagged as a
+popup note; every third client with a pet gets one past or upcoming visit so the
+last-visit and next-appointment columns and their sort orders are not a column of
+dashes.
+
+Each pet is a complete profile rather than a name and a breed: pet type, a
+canonical breed from the taxonomy (with roughly one in eleven recording an
+uncatalogued `breed_other` instead), hair length, coat colour, fixed status,
+weight, a birthday or an approximate age, coat, grooming, behaviour, medical and
+safety notes, health issues, an emergency contact and a vet. Rabies cycles
+through all four states a pet can be in — staff-verified and current,
+owner-reported and current, expired, and nothing on file — and non-rabies
+vaccinations are recorded separately, because the vaccinations table refuses the
+name "Rabies": rabies lives on the pet with its own verification trail. Most pets
+also carry a pet note, some pinned. No photos or documents are attached, because
+no file was ever uploaded.
+
+Everything it writes is identifiable: emails are
+`directory-###@pawsh-test.example`, and notes and appointment notes are prefixed
+`QA directory:`. The seed is idempotent, and
+`npm run db:seed-directory -- --remove` takes the block back out again. Removal
+refuses if any appointment on those clients was not written by the seed, so
+work done by hand during QA is never silently deleted.

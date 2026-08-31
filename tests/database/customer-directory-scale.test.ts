@@ -29,4 +29,12 @@ describeDatabase("bounded customer directory",()=>{
   ])("searches by %s",async(_label,query)=>{const response=await app.inject({method:"GET",url:`/api/customers?paged=true&q=${encodeURIComponent(query)}`,headers:{cookie:ownerCookie}});expect(response.statusCode).toBe(200);expect(response.json().items).toHaveLength(1);expect(response.json().items[0].firstName).toBe("Client321");});
 
   it("sorts deterministically and rejects cross-tenant leakage",async()=>{const descending=await app.inject({method:"GET",url:"/api/customers?paged=true&sort=name&direction=desc&pageSize=10",headers:{cookie:ownerCookie}});expect(descending.statusCode).toBe(200);expect(descending.json().items).toHaveLength(10);expect(descending.json().items.every((item:{email:string})=>item.email.endsWith("@scale.test"))).toBe(true);});
+  // The directory offers 10/20/50/100 per page, so 100 has to be servable and anything past it
+  // still refused: the page size is an attacker-controlled multiplier on a joined query.
+  it("serves the largest offered page size and refuses anything beyond it",async()=>{
+    const largest=await app.inject({method:"GET",url:"/api/customers?paged=true&pageSize=100",headers:{cookie:ownerCookie}});
+    expect(largest.statusCode).toBe(200);expect(largest.json().pageSize).toBe(100);expect(largest.json().items).toHaveLength(100);
+    const beyond=await app.inject({method:"GET",url:"/api/customers?paged=true&pageSize=250",headers:{cookie:ownerCookie}});
+    expect(beyond.statusCode).toBe(400);
+  });
 });

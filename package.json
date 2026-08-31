@@ -51,6 +51,7 @@
     "db:verify": "node --import ./scripts/load-env.mjs --import tsx scripts/local-db.ts verify",
     "db:reset": "node --import ./scripts/load-env.mjs --import tsx scripts/local-db.ts reset && npm run db:migrate",
     "db:seed": "node --import ./scripts/load-env.mjs scripts/seed-local.mjs",
+    "db:seed-directory": "node --import ./scripts/load-env.mjs scripts/seed-local.mjs directory",
     "db:verify-restore": "node --import tsx scripts/verify-restored-db.ts",
     "validate": "npm run check:runtime && npm run lint && npm run typecheck && npm test && npm run build",
     "validate:runtime": "npm run check:runtime && npm run db:migrate && npm run test:db",

@@ -534,7 +534,7 @@ describeDatabase("client note thread and client preferences", () => {
         method: "GET", url: "/api/customers?paged=true", headers: { cookie: ownerCookie }
       });
       expect(paged.statusCode).toBe(200);
-      expect(paged.json()).toMatchObject({ page: 1, pageSize: 25 });
+      expect(paged.json()).toMatchObject({ page: 1, pageSize: 20 });
       expect(Object.keys(paged.json().items[0] as Record<string, unknown>)).toEqual(
         expect.arrayContaining(["id", "firstName", "lastName", "phone", "email", "archivedAt",
           "lastVisit", "nextAppointment", "preferredEmployeeId", "preferredEmployeeName", "pets"])

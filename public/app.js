@@ -2,7 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const inviteToken = new URLSearchParams(location.search).get("invite");
 const resetToken = new URLSearchParams(location.search).get("reset");
-const state = { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:25}, pets: [], dogBreeds: [], petTypes: [], breedsByType:{}, employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointments:[],selectedGroomerIds:null,pendingGroomerIds:null,filterInitialized:false,displayMode:"calendar",view:"week",bookingPreset:null,bookingGroomerId:null,bookingCustomerId:null,bookingPetId:null,opened:false,preferences:null}, clientProfile:null,clientProfileReturnView:"customers", messageClientId:null, reportMode:"charts",reminders:{type:"appointment_reminder",items:[],supported:true}, members: [], accessRequests:[], workspaces:[], locations: [], reports: null, login: false };
+const state = { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:20}, pets: [], dogBreeds: [], petTypes: [], breedsByType:{}, employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointments:[],selectedGroomerIds:null,pendingGroomerIds:null,filterInitialized:false,displayMode:"calendar",view:"week",bookingPreset:null,bookingGroomerId:null,bookingCustomerId:null,bookingPetId:null,opened:false,preferences:null}, clientProfile:null,clientProfileReturnView:"customers", messageClientId:null, reportMode:"charts",reminders:{type:"appointment_reminder",items:[],supported:true}, members: [], accessRequests:[], workspaces:[], locations: [], reports: null, login: false };
 const pendingActions = new Set();
 let customerSearchSequence = 0;
 let calendarDetailOrigin = null;
@@ -177,7 +177,7 @@ async function refresh() {
   const safe = (permission) => owner || allowed.has(permission);
   const requests = [
     safe("reports.view") ? api("/api/dashboard") : {},
-    safe("customers.view") ? api("/api/customers?paged=true&page=1&pageSize=25") : {items:[],total:0,page:1,pageSize:25},
+    safe("customers.view") ? api("/api/customers?paged=true&page=1&pageSize=20") : {items:[],total:0,page:1,pageSize:20},
     state.pets,
     api("/api/employees"), api("/api/services"),
     safe("appointments.view") ? api(`/api/appointments?localDate=${businessDate()}&days=8`) : [],
@@ -765,7 +765,7 @@ function renderCustomersEnhanced() {
       +`<td class="clients-status"><span class="status-dot ${customer.archivedAt?"inactive":""}">${customer.archivedAt?"Inactive":"Active"}</span></td>`
       +`<td class="clients-actions"><details class="row-menu"><summary class="row-menu-trigger" aria-expanded="false" data-testid="client-row-actions" aria-label="Actions for ${attr(name)}"><span aria-hidden="true">⋯</span></summary><div class="row-menu-list" role="group" aria-label="Actions for ${attr(name)}"><button type="button" class="row-menu-item customer-detail" data-testid="client-profile-action" data-id="${customer.id}">Client profile</button><button type="button" class="row-menu-item customer-history" data-testid="client-appointment-history" data-id="${customer.id}">Appointment history</button>${petActions}</div></details></td></tr>`;
   }).join(""):`<tr><td colspan="9" class="empty">No customers match these filters.</td></tr>`;
-  const pages=Math.max(1,Math.ceil(directory.total/directory.pageSize));$("#customer-page-status").textContent=`Page ${directory.page} of ${pages} · ${directory.total} customers`;$("#customer-prev").disabled=directory.page<=1;$("#customer-next").disabled=directory.page>=pages;
+  renderCustomerPager();
   $$(".customer-detail").forEach(button=>button.addEventListener("click",()=>openClientProfile(button.dataset.id,{returnView:"customers"})));$$(".customer-history").forEach(button=>button.addEventListener("click",()=>showCustomerHistory(button.dataset.id)));
   $$(".directory-row").forEach(row=>{row.addEventListener("click",event=>{if(!event.target.closest("button,a,input,select,summary,details"))openClientProfile(row.dataset.customerId,{returnView:"customers"});});row.addEventListener("keydown",event=>{if(event.target===row&&(event.key==="Enter"||event.key===" ")){event.preventDefault();openClientProfile(row.dataset.customerId,{returnView:"customers"});}});});
   $$(".row-pet-action").forEach(button=>button.addEventListener("click",async()=>{const data=await api(`/api/customers/${button.dataset.customerId}/history`);state.pets=[...state.pets.filter(pet=>pet.customerId!==button.dataset.customerId),...data.pets];if(button.dataset.actionName==="profile")editPet(button.dataset.id);else if(button.dataset.actionName==="care")editPetCare(button.dataset.id);else showPetDocuments(button.dataset.id);}));
@@ -778,7 +778,42 @@ function renderCustomersEnhanced() {
   }));
   bindClientRowMenus();
 }
-async function loadCustomerDirectory(page=1){const params=new URLSearchParams({paged:"true",page:String(page),pageSize:"25",q:$("#customer-search").value,status:$("#customer-status").value,upcoming:$("#customer-upcoming").value,sort:$("#customer-sort").value});const result=await api(`/api/customers?${params}`);state.customerDirectory=result;state.customers=result.items;renderCustomersEnhanced();}
+const CUSTOMER_PAGE_SIZES=[10,20,50,100];
+function customerPageSize(){const chosen=Number($("#customer-page-size")?.value);return CUSTOMER_PAGE_SIZES.includes(chosen)?chosen:20;}
+function customerDirectoryParams(page){return new URLSearchParams({paged:"true",page:String(page),pageSize:String(customerPageSize()),q:$("#customer-search").value,status:$("#customer-status").value,upcoming:$("#customer-upcoming").value,sort:$("#customer-sort").value});}
+/**
+ * The page numbers worth drawing: the ends, the current page and its neighbours, and a gap
+ * marker for everything skipped. A 700-client directory is 35 pages, and a row of 35 buttons
+ * is not navigation.
+ */
+function pagerWindow(page,pages){
+  const wanted=new Set([1,pages,page,page-1,page+1]);
+  if(page<=4)for(let number=2;number<=5;number++)wanted.add(number);
+  if(page>=pages-3)for(let number=pages-4;number<pages;number++)wanted.add(number);
+  const numbers=[...wanted].filter(number=>number>=1&&number<=pages).sort((first,second)=>first-second);
+  const cells=[];let previous=0;
+  for(const number of numbers){if(previous&&number-previous>1)cells.push(null);cells.push(number);previous=number;}
+  return cells;
+}
+function renderCustomerPager(){
+  const directory=state.customerDirectory;
+  const pages=Math.max(1,Math.ceil(directory.total/directory.pageSize));
+  const page=Math.min(Math.max(1,directory.page),pages);
+  const first=directory.total?(page-1)*directory.pageSize+1:0;
+  const last=Math.min(page*directory.pageSize,directory.total);
+  // The count reads as a range rather than a page number: "which clients am I looking at" is
+  // the question a directory answers, and the page number is only how you got here.
+  $("#customer-page-status").textContent=directory.total
+    ?`${first}–${last} of ${directory.total} client${directory.total===1?"":"s"}`
+    :"No clients";
+  $("#customer-pages").innerHTML=pagerWindow(page,pages).map(number=>number===null
+    ?`<span class="pager-gap" aria-hidden="true">…</span>`
+    :`<button type="button" class="pager-page${number===page?" current":""}" data-customer-page="${number}"${number===page?` aria-current="page"`:""} aria-label="Page ${number}">${number}</button>`).join("");
+  $$("[data-customer-page]").forEach(button=>button.addEventListener("click",()=>
+    runDetached(()=>loadCustomerDirectory(Number(button.dataset.customerPage)))));
+  $("#customer-prev").disabled=page<=1;$("#customer-next").disabled=page>=pages;
+}
+async function loadCustomerDirectory(page=1){const result=await api(`/api/customers?${customerDirectoryParams(page)}`);state.customerDirectory=result;state.customers=result.items;renderCustomersEnhanced();}
 async function showCustomerDetail(id){try{const data=await api(`/api/customers/${id}/history`);state.pets=[...state.pets.filter(pet=>pet.customerId!==id),...data.pets];if(!state.customers.some(customer=>customer.id===id))state.customers.push(data.customer);const pets=data.pets.map(pet=>`<div class="customer-pet-row"><span><strong>${escape(petName(pet))}</strong><small>${escape(pet.breed||"Breed not provided")} · ${pet.weightOunces?`${Number(pet.weightOunces)/16} lb`:"Weight not provided"}</small><small>${pet.vaccinationExpiresOn?`Rabies expires ${String(pet.vaccinationExpiresOn).slice(0,10)}`:"Rabies expiration not provided"}${pet.safetyAlerts?` · Safety: ${escape(pet.safetyAlerts)}`:""}</small></span><span>${allowed("pets.edit")?`<button type="button" class="text-button detail-edit-pet" data-id="${pet.id}">Profile</button>`:""}${allowed("pets.care.view")?`<button type="button" class="text-button detail-care" data-id="${pet.id}">Care & history</button>`:""}</span></div>`).join("")||"<p>No pets yet.</p>";openModal(`${clientName(data.customer)}`,`<div class="wide customer-detail"><p><strong>${escape(data.customer.phone||"No phone")}</strong> · ${escape(data.customer.email||"No email")}</p><div class="customer-detail-actions">${allowed("customers.edit")?`<button type="button" class="text-button detail-edit-customer">Edit customer</button><button type="button" class="text-button detail-archive-customer">Archive</button>`:""}<button type="button" class="text-button detail-history">Full history</button></div><h4>Pets</h4>${pets}</div>`,async()=>{});const next=callback=>{$("#modal").close();setTimeout(callback,50);};$(".detail-edit-customer")?.addEventListener("click",()=>next(()=>editCustomer(id)));$(".detail-archive-customer")?.addEventListener("click",()=>next(()=>archiveCustomer(id)));$(".detail-history")?.addEventListener("click",()=>next(()=>showCustomerHistory(id)));$$(".detail-edit-pet").forEach(button=>button.addEventListener("click",()=>next(()=>editPet(button.dataset.id))));$$(".detail-care").forEach(button=>button.addEventListener("click",()=>next(()=>editPetCare(button.dataset.id))));}catch(error){toast(error.message);}}
 function renderSetupEnhanced() {
   renderSetup();
@@ -3276,6 +3311,7 @@ async function openClientProfile(customerId,{petId=null,appointmentId=null,retur
   // page the operator had stepped to for a different client would show rows that are not loaded.
   state.clientProfile={data,notes,agreements,notesExpanded:previous?.notesExpanded||false,tab:previous?.tab||"pets",petId:petId||data.pets[0]?.id||null,appointmentId,historyView:{page:1,pageSize:HISTORY_INITIAL_ROWS},historyLoading:false};
   state.pets=[...state.pets.filter(pet=>pet.customerId!==customerId),...data.pets];activateView("client-profile");renderClientProfile();
+  showClientPopupNotes();
 }
 // ---------------------------------------------------------------------------
 // Pet profile
@@ -3865,6 +3901,22 @@ async function loadClientNotes(customerId){
     return {items:result.items||[],total:Number(result.total)||0,failed:false};
   }catch(error){return {items:[],total:0,failed:true,message:error.message};}
 }
+/**
+ * A popup note is the salon flagging something to be read before anybody acts on this client, so
+ * it is shown when the profile opens rather than left to be found in the thread. It fires on an
+ * open only: reloading after an edit must not throw the dialog back in the operator's face.
+ */
+function showClientPopupNotes(){
+  const profile=state.clientProfile;if(!profile)return;
+  const popups=(profile.notes.items||[]).filter(note=>note.pinned);
+  if(!popups.length)return;
+  openModal(popups.length===1?"Popup note":`Popup notes (${popups.length})`,
+    `<div class="wide popup-notes" data-testid="client-popup-notes">`
+    +popups.map(note=>`<article class="popup-note"><p class="popup-note-body">${escape(note.body)}</p>`
+      +`<p class="note-meta">${escape(noteStamp(note.createdAt))} by ${escape(note.authorName||"Unknown")}</p></article>`).join("")
+    +`</div>`,
+    null,{cancelLabel:"OK"});
+}
 async function reloadClientProfile(){
   const profile=state.clientProfile;if(!profile)return;
   const customerId=profile.data.customer.id;
@@ -3880,10 +3932,12 @@ function noteStamp(value){
   return `${new Intl.DateTimeFormat([],{dateStyle:"full"}).format(when)} ${new Intl.DateTimeFormat([],{timeStyle:"short"}).format(when)}`;
 }
 function clientNoteMarkup(note,editable){
-  const menu=editable?`<details class="row-menu note-menu"><summary class="row-menu-trigger" aria-expanded="false" aria-label="Actions for note by ${clientAttr(note.authorName)}"><span aria-hidden="true">⋯</span></summary><div class="row-menu-list" role="group" aria-label="Actions for note by ${clientAttr(note.authorName)}"><button type="button" class="row-menu-item note-edit" data-note-id="${clientAttr(note.id)}">Edit</button><button type="button" class="row-menu-item note-pin" data-note-id="${clientAttr(note.id)}">${note.pinned?"Unpin":"Pin to top"}</button><button type="button" class="row-menu-item note-delete" data-note-id="${clientAttr(note.id)}">Delete</button></div></details>`:"";
-  // The reference product calls a pinned note a "popup note". Pawsh has no popup surface, so the
-  // marker states the behaviour that actually exists: the note is pinned to the top of the thread.
-  const marker=note.pinned?`<span class="note-pinned">[pinned]</span> `:"";
+  const menu=editable?`<details class="row-menu note-menu"><summary class="row-menu-trigger" aria-expanded="false" aria-label="Actions for note by ${clientAttr(note.authorName)}"><span aria-hidden="true">⋯</span></summary><div class="row-menu-list" role="group" aria-label="Actions for note by ${clientAttr(note.authorName)}"><button type="button" class="row-menu-item note-edit" data-note-id="${clientAttr(note.id)}">Edit</button><button type="button" class="row-menu-item note-pin" data-note-id="${clientAttr(note.id)}">${note.pinned?"Stop showing as popup":"Show as popup note"}</button><button type="button" class="row-menu-item note-delete" data-note-id="${clientAttr(note.id)}">Delete</button></div></details>`:"";
+  // A popup note is the one the salon wants read before anybody acts on this client: it sorts to
+  // the top of the thread, carries the alert mark, and opens with the profile.
+  const marker=note.pinned
+    ?`<span class="note-popup-flag" role="img" aria-label="Popup note" title="Shown as a popup when this client opens"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5"/><path d="M12 16.4v.2"/></svg></span> `
+    :"";
   return `<article class="client-note${note.pinned?" pinned":""}"><div class="note-body">${marker}${escape(note.body)}</div><p class="note-meta">${escape(noteStamp(note.createdAt))} by ${escape(note.authorName||"Unknown")}${note.updatedAt&&note.updatedAt!==note.createdAt?" · edited":""}</p>${menu}</article>`;
 }
 function clientNotesMarkup(profile){
@@ -3900,7 +3954,8 @@ function clientNotesMarkup(profile){
 }
 function clientNoteFields(note){
   return `<label class="wide">Note<textarea name="body" required maxlength="5000" rows="6">${escape(note?.body||"")}</textarea></label>`
-    +`<label class="inline-check"><input type="checkbox" name="pinned"${note?.pinned?" checked":""}> Pin to the top of the thread</label>`;
+    +`<label class="inline-check"><input type="checkbox" name="pinned"${note?.pinned?" checked":""}> Show as popup note</label>`
+    +`<p class="field-hint wide">A popup note opens with this client's profile and sorts to the top of the thread.</p>`;
 }
 function addClientNote(){
   const profile=state.clientProfile;if(!profile)return;
@@ -3924,7 +3979,7 @@ async function toggleClientNotePin(noteId){
   const profile=state.clientProfile,note=profile?.notes.items.find(item=>item.id===noteId);if(!note)return;
   try{
     await api(`/api/customers/${profile.data.customer.id}/notes/${noteId}`,{method:"PATCH",body:JSON.stringify({pinned:!note.pinned})});
-    await reloadClientProfile();toast(note.pinned?"Note unpinned":"Note pinned");
+    await reloadClientProfile();toast(note.pinned?"Note no longer pops up":"Note will pop up with this profile");
   }catch(error){toast(error.message);}
 }
 async function deleteClientNote(noteId){
@@ -4036,7 +4091,7 @@ function historyRowMarkup(item,{pets,payments,selectedId}){
   const paid=payments.get(item.id);
   const payment=paid?`<span class="history-chip chip-${paid.invoiceStatus==="paid"?"paid":"unpaid"}">${paid.invoiceStatus==="paid"?"Paid":`Unpaid ${money(paid.invoiceBalanceMinor||0)}`}</span>`:"";
   return `<tr class="history-row${item.id===selectedId?" active":""}">`
-    +`<td class="history-id"><button type="button" class="text-button" data-profile-appointment="${clientAttr(item.id)}" aria-pressed="${item.id===selectedId}">#${escape(String(item.id).slice(0,8))}</button></td>`
+    +`<td class="history-id"><button type="button" class="text-button" data-profile-appointment="${clientAttr(item.id)}" aria-haspopup="dialog" aria-label="Open appointment #${escape(String(item.id).slice(0,8))}">#${escape(String(item.id).slice(0,8))}</button></td>`
     +`<td class="history-status"><span class="history-chip chip-${clientAttr(item.status)}">${escape(item.status.replace("_"," "))}</span>${payment}</td>`
     +`<td class="history-date">${escape(new Intl.DateTimeFormat([],{dateStyle:"medium",timeZone:zone}).format(start))}<span>${escape(new Intl.DateTimeFormat([],{weekday:"short",hour:"numeric",minute:"2-digit",timeZone:zone}).format(start))}</span></td>`
     +`<td class="history-pets"><strong>${escape(item.petName||"—")}</strong>${pet?.breed?`<span>(${escape(pet.breed)})</span>`:""}</td>`
@@ -4336,27 +4391,16 @@ function clientSalesSummaryMarkup(data){
     +`</div>`;
 }
 
-function renderClientProfile(){
-  const profile=state.clientProfile;if(!profile)return;
-  const {data}=profile,customer=data.customer;
-  const pet=data.pets.find(item=>item.id===profile.petId)||data.pets[0];
-  // The table carries a Pets column and the counts are client-scoped, so neither list is
-  // narrowed to the selected pet: the headings, the tables and the paging all agree.
-  const upcoming=data.upcoming?.items||[];
-  const history=data.history?.items||[];
-  const selected=[...upcoming,...history].find(item=>item.id===profile.appointmentId)||null;
-  const tab=profile.tab==="preference"?"preference":"pets";
-  const payments=appointmentPaymentIndex();
-  const name=`${clientName(customer)}`;
-  const view=historyView(),historyTotal=Number(data.history?.total||0);
-  // The profile arrives with a few rows beyond the opening window so growing it costs no round
-  // trip. Only the first page can hold that surplus; every other page came from a targeted
-  // request and is already exactly the window.
-  const historyRows=view.page===1?history.slice(0,view.pageSize):history;
-  const shown=view.pageSize*(view.page-1)+historyRows.length;
-
-  const left=`<section class="client-profile-left">`
-    +`<button type="button" class="text-button client-profile-back">← Back</button>`
+/**
+ * The client summary column: identity, contact, notes and the pets/preference tabs. It is the
+ * left column of the client profile and the right column of Messages, because an operator
+ * reading a conversation needs the same card as one reading the profile — one markup, one set
+ * of bindings, no second version of the client to keep in step.
+ */
+function clientSummaryMarkup(profile,{back=true}={}){
+  const {data}=profile,customer=data.customer,tab=profile.tab==="preference"?"preference":"pets";
+  return `<section class="client-profile-left">`
+    +(back?`<button type="button" class="text-button client-profile-back">← Back</button>`:"")
     +(customer.archivedAt?`<p class="profile-banner">This client is marked inactive. History is kept and new bookings are blocked.</p>`:"")
     +agreementBannerMarkup(profile.agreements,customer.id)
     +`<div class="client-identity"><span class="client-avatar" aria-hidden="true">${escape(Array.from(clientName(customer,"?"))[0]?.toUpperCase()||"?")}</span><div><p class="eyebrow">Basic Info</p><h2>${escape(clientName(customer))}</h2></div>${allowed("customers.edit")?`<button type="button" class="secondary compact client-edit">Edit</button>`:""}</div>`
@@ -4371,52 +4415,18 @@ function renderClientProfile(){
     +`${data.pets.map(petCardMarkup).join("")||`<p class="note-empty">No pets yet.</p>`}</div>`
     +`<div class="profile-panel" role="tabpanel" id="client-panel-preference" aria-labelledby="client-tab-preference" tabindex="0"${tab==="preference"?"":" hidden"}>${clientPreferenceMarkup(customer)}</div>`
     +`</section>`;
+}
 
-  const appointmentTable=(rows,caption)=>`<div class="history-table-wrap" data-allow-horizontal-scroll><table class="history-table"><caption class="visually-hidden">${escape(caption)}</caption><thead><tr><th scope="col">ID</th><th scope="col">Status</th><th scope="col">Date</th><th scope="col">Pets</th><th scope="col">Items</th><th scope="col">Total Sales</th><th scope="col">Duration</th><th scope="col">Groomer</th></tr></thead><tbody>${rows.map(item=>historyRowMarkup(item,{pets:data.pets,payments,selectedId:selected?.id})).join("")}</tbody></table></div>`;
-
-  const right=`<section class="client-profile-right">`
-    +clientSalesSummaryMarkup(data)
-    +`<div class="panel-head"><div><p class="eyebrow">Appointments</p><h3>Upcoming (${escape(String(data.upcoming?.total??upcoming.length))})</h3></div><button type="button" class="primary compact profile-book-new">Book New</button></div>`
-    +(upcoming.length
-      ? appointmentTable(upcoming,`Upcoming appointments for ${name}`)
-      : `<p class="note-empty">No upcoming appointments for this client.</p>`)
-    +`<div class="panel-head history-head"><h3>History (${escape(String(historyTotal))})</h3>${
-      historyTotal>view.pageSize
-        ? `<div class="history-pager"><button type="button" class="history-step" data-history-step="-1" aria-label="Newer appointments"${view.page<=1?" disabled":""}>‹</button>`
-          +`<span data-testid="history-page">Page ${escape(String(view.page))} of ${escape(String(historyPageCount()))}</span>`
-          +`<button type="button" class="history-step" data-history-step="1" aria-label="Older appointments"${view.page>=historyPageCount()?" disabled":""}>›</button></div>`
-        : ""
-    }</div>`
-    +(historyRows.length
-      ? appointmentTable(historyRows,`Appointment history for ${name}`)
-      : `<p class="note-empty">No past appointments recorded for this client.</p>`)
-    +(historyTotal>view.pageSize
-      ? `<div class="history-more"><span data-testid="history-shown">Showing ${escape(String(Math.min(shown,historyTotal)))} of ${escape(String(historyTotal))}</span>`
-        +(view.pageSize<historyTotal
-          ? `<button type="button" class="secondary compact history-view-all"${profile.historyLoading?" disabled":""}>Load ${escape(String(Math.min(HISTORY_ROW_STEP,historyTotal-view.pageSize)))} more</button>`
-          : "")
-        +`</div>`
-      : "")
-    +(selected?`<article class="profile-appointment-detail"><h4>Selected appointment</h4><p><strong>Groomer:</strong> ${escape(selected.employeeName)}</p>${selected.notes?`<p><strong>Notes:</strong> ${escape(selected.notes)}</p>`:""}</article>`:"")
-    +(allowed("payments.view")&&data.invoices.length?`<section class="profile-invoices"><h4>Invoices</h4>${data.invoices.slice(0,20).map(invoice=>`<div><span>${escape(invoice.invoiceNumber)} · ${escape(new Date(invoice.createdAt).toLocaleDateString())}</span><strong>${money(invoice.totalMinor)} · ${escape(invoice.status)}</strong></div>`).join("")}</section>`:"")
-    +clientAgreementsPanelMarkup(profile.agreements)
-    +`</section>`;
-
-  $("#client-profile-content").innerHTML=left+right;
+// Bindings for the summary column, wherever it is rendered. Every handler re-renders through
+// renderClientProfile(), which redraws whichever surface is currently showing the column.
+function bindClientSummary(profile){
+  const customer=profile.data.customer;
   bindNoteMenus();
   bindClientAgreements(customer.id);
 
-  $(".client-profile-back").addEventListener("click",()=>showView(state.clientProfileReturnView||"customers"));
+  $(".client-profile-back")?.addEventListener("click",()=>showView(state.clientProfileReturnView||"customers"));
   $(".client-edit")?.addEventListener("click",()=>editCustomer(customer.id));
   $(".preferred-groomer")?.addEventListener("click",openPreferredGroomer);
-  $(".profile-book-new").addEventListener("click",()=>{state.calendar.bookingCustomerId=customer.id;state.calendar.bookingPetId=pet?.id||null;actions["new-appointment"]();});
-  $(".history-view-all")?.addEventListener("click",()=>runDetached(loadMoreClientHistory));
-  $$(".history-step").forEach(button=>button.addEventListener("click",()=>
-    runDetached(()=>stepClientHistory(Number(button.dataset.historyStep)))));
-  $$('[data-profile-appointment]').forEach(button=>button.addEventListener("click",()=>{
-    profile.appointmentId=profile.appointmentId===button.dataset.profileAppointment?null:button.dataset.profileAppointment;renderClientProfile();
-  }));
-
   $(".note-add")?.addEventListener("click",addClientNote);
   $(".notes-retry")?.addEventListener("click",()=>runDetached(reloadClientProfile));
   $(".note-toggle")?.addEventListener("click",()=>{profile.notesExpanded=!profile.notesExpanded;renderClientProfile();});
@@ -4463,6 +4473,72 @@ function renderClientProfile(){
     if(!Number.isInteger(weeks)||weeks<1||weeks>104){toast("Booking frequency must be a whole number of weeks between 1 and 104");renderClientProfile();return;}
     runDetached(()=>saveClientPreference({bookingFrequencyWeeks:weeks},"Booking frequency"));
   });
+}
+
+function renderClientProfile(){
+  // The summary column is shared with Messages, so a note, tab or pet change made there must
+  // redraw that pane rather than the profile view standing hidden behind it.
+  if(document.body.dataset.view==="messages")return renderMessageClientPane();
+  const profile=state.clientProfile;if(!profile)return;
+  const {data}=profile,customer=data.customer;
+  const pet=data.pets.find(item=>item.id===profile.petId)||data.pets[0];
+  // The table carries a Pets column and the counts are client-scoped, so neither list is
+  // narrowed to the selected pet: the headings, the tables and the paging all agree.
+  const upcoming=data.upcoming?.items||[];
+  const history=data.history?.items||[];
+  const payments=appointmentPaymentIndex();
+  const name=`${clientName(customer)}`;
+  const view=historyView(),historyTotal=Number(data.history?.total||0);
+  // The profile arrives with a few rows beyond the opening window so growing it costs no round
+  // trip. Only the first page can hold that surplus; every other page came from a targeted
+  // request and is already exactly the window.
+  const historyRows=view.page===1?history.slice(0,view.pageSize):history;
+  const shown=view.pageSize*(view.page-1)+historyRows.length;
+
+  const left=clientSummaryMarkup(profile);
+
+  const appointmentTable=(rows,caption)=>`<div class="history-table-wrap" data-allow-horizontal-scroll><table class="history-table"><caption class="visually-hidden">${escape(caption)}</caption><thead><tr><th scope="col">ID</th><th scope="col">Status</th><th scope="col">Date</th><th scope="col">Pets</th><th scope="col">Items</th><th scope="col">Total Sales</th><th scope="col">Duration</th><th scope="col">Groomer</th></tr></thead><tbody>${rows.map(item=>historyRowMarkup(item,{pets:data.pets,payments,selectedId:profile.appointmentId})).join("")}</tbody></table></div>`;
+
+  const right=`<section class="client-profile-right">`
+    +clientSalesSummaryMarkup(data)
+    +`<div class="panel-head"><div><p class="eyebrow">Appointments</p><h3>Upcoming (${escape(String(data.upcoming?.total??upcoming.length))})</h3></div><button type="button" class="primary compact profile-book-new">Book New</button></div>`
+    +(upcoming.length
+      ? appointmentTable(upcoming,`Upcoming appointments for ${name}`)
+      : `<p class="note-empty">No upcoming appointments for this client.</p>`)
+    +`<div class="panel-head history-head"><h3>History (${escape(String(historyTotal))})</h3>${
+      historyTotal>view.pageSize
+        ? `<div class="history-pager"><button type="button" class="history-step" data-history-step="-1" aria-label="Newer appointments"${view.page<=1?" disabled":""}>‹</button>`
+          +`<span data-testid="history-page">Page ${escape(String(view.page))} of ${escape(String(historyPageCount()))}</span>`
+          +`<button type="button" class="history-step" data-history-step="1" aria-label="Older appointments"${view.page>=historyPageCount()?" disabled":""}>›</button></div>`
+        : ""
+    }</div>`
+    +(historyRows.length
+      ? appointmentTable(historyRows,`Appointment history for ${name}`)
+      : `<p class="note-empty">No past appointments recorded for this client.</p>`)
+    +(historyTotal>view.pageSize
+      ? `<div class="history-more"><span data-testid="history-shown">Showing ${escape(String(Math.min(shown,historyTotal)))} of ${escape(String(historyTotal))}</span>`
+        +(view.pageSize<historyTotal
+          ? `<button type="button" class="secondary compact history-view-all"${profile.historyLoading?" disabled":""}>Load ${escape(String(Math.min(HISTORY_ROW_STEP,historyTotal-view.pageSize)))} more</button>`
+          : "")
+        +`</div>`
+      : "")
+    +(allowed("payments.view")&&data.invoices.length?`<section class="profile-invoices"><h4>Invoices</h4>${data.invoices.slice(0,20).map(invoice=>`<div><span>${escape(invoice.invoiceNumber)} · ${escape(new Date(invoice.createdAt).toLocaleDateString())}</span><strong>${money(invoice.totalMinor)} · ${escape(invoice.status)}</strong></div>`).join("")}</section>`:"")
+    +clientAgreementsPanelMarkup(profile.agreements)
+    +`</section>`;
+
+  $("#client-profile-content").innerHTML=left+right;
+  $(".profile-book-new").addEventListener("click",()=>{state.calendar.bookingCustomerId=customer.id;state.calendar.bookingPetId=pet?.id||null;actions["new-appointment"]();});
+  $(".history-view-all")?.addEventListener("click",()=>runDetached(loadMoreClientHistory));
+  $$(".history-step").forEach(button=>button.addEventListener("click",()=>
+    runDetached(()=>stepClientHistory(Number(button.dataset.historyStep)))));
+  // The appointment id opens the same detail dialog the calendar opens, so one visit reads the
+  // same way from either side. The profile's own return view is carried into the dialog so
+  // "View client" comes back the way the operator arrived rather than to the calendar.
+  $$('[data-profile-appointment]').forEach(button=>button.addEventListener("click",event=>
+    runDetached(()=>openCalendarAppointment(button.dataset.profileAppointment,event.currentTarget,
+      {returnView:state.clientProfileReturnView||"customers"}))));
+
+  bindClientSummary(profile);
 }
 // ---------------------------------------------------------------------------
 // Appointment photos
@@ -4717,9 +4793,15 @@ function appointmentActivityMarkup(state){
     `<li>${escape(appointmentActivityLine(entry))}</li>`).join("")}</ol>`;
 }
 
-async function openCalendarAppointment(id,origin=null){
-  const item=calendarAppointmentById(id);if(!item)return;
-  calendarDetailOrigin=origin||document.activeElement;hideCalendarHover();
+async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}){
+  // Client history reaches back past any calendar window the operator has loaded, so a visit
+  // the calendar has never held is refetched in the same projection rather than being
+  // unopenable from a profile.
+  const source=origin||document.activeElement;
+  let item=calendarAppointmentById(id);
+  if(!item){try{item=await api(`/api/appointments/${id}`);}catch(error){toast(error.message);return;}}
+  if(!item)return;
+  calendarDetailOrigin=source;hideCalendarHover();
   const model=appointmentPresentation(item);
   const serviceRows=model.serviceSnapshots.map(service=>`<div><span><strong>${escape(service.name)}</strong><small>${Number(service.durationMinutes)} min</small></span><strong>${service.priceMinor===null||service.priceMinor===undefined?"Price unavailable":money(service.priceMinor)}</strong></div>`).join("");
   // The invoice state is the honest paid badge: an appointment with no invoice is unbilled
@@ -4766,7 +4848,7 @@ async function openCalendarAppointment(id,origin=null){
   dialog.querySelector(".modal-head .close").setAttribute("aria-label","Close appointment details");
   dialog.querySelector(".modal-head .close").focus();
   const next=callback=>{dialog.close();setTimeout(callback,50);};
-  dialog.querySelectorAll(".appointment-detail-client").forEach(button=>button.addEventListener("click",()=>next(()=>openClientProfile(item.customerId,{petId:item.petId,appointmentId:item.id,returnView:"calendar"}))));
+  dialog.querySelectorAll(".appointment-detail-client").forEach(button=>button.addEventListener("click",()=>next(()=>openClientProfile(item.customerId,{petId:item.petId,appointmentId:item.id,returnView}))));
   dialog.querySelector(".appointment-detail-move")?.addEventListener("click",()=>next(()=>moveAppointment(id)));
   dialog.querySelector(".appointment-detail-services-action")?.addEventListener("click",()=>next(()=>adjustServices(id)));
 
@@ -4824,7 +4906,34 @@ async function openCalendarAppointment(id,origin=null){
   renderCards();
 }
 function renderMessages(){const query=($("#message-search")?.value||"").trim().toLowerCase(),clients=state.customerDirectory.items.filter(item=>`${clientName(item)} ${item.phone||""} ${item.email||""}`.toLowerCase().includes(query));$("#message-client-list").innerHTML=clients.map(item=>`<button type="button" class="message-client ${item.id===state.messageClientId?"active":""}" data-message-client="${item.id}"><span><strong>${escape(clientName(item))}</strong><small>${escape(item.phone||item.email||"No contact details")}</small></span></button>`).join("")||`<p class="empty">No clients match.</p>`;$$('[data-message-client]').forEach(button=>button.addEventListener("click",()=>selectMessageClient(button.dataset.messageClient)));}
-async function selectMessageClient(id){const data=await api(`/api/customers/${id}/history`);state.messageClientId=id;renderMessages();const name=`${clientName(data.customer)}`;$("#message-thread").innerHTML=`<header><a class="message-client-link" href="/clients/${id}" target="_blank" rel="noopener">${escape(name)}</a></header><div class="message-disabled-state"><h3>Messaging is not connected</h3><p>No conversation history, inbound webhook, SMS provider, delivery status, or scheduler is configured.</p></div><footer><textarea disabled aria-label="Message composer" placeholder="Messaging unavailable"></textarea><button type="button" class="primary" disabled>Send</button></footer>`;$("#message-client-context").innerHTML=`<p class="eyebrow">Client</p><h3>${escape(name)}</h3><dl class="profile-facts"><div><dt>Phone</dt><dd>${escape(data.customer.phone||"Not provided")}</dd></div><div><dt>Email</dt><dd>${escape(data.customer.email||"Not provided")}</dd></div></dl><h4>Pets</h4>${data.pets.map(pet=>`<button type="button" class="context-pet" data-context-pet="${pet.id}"><strong>${escape(petName(pet))}</strong><span>${escape(pet.breed||"Breed not provided")}</span></button>`).join("")||"<p>No pets.</p>"}<button type="button" class="secondary compact open-context-profile">Open full profile</button>`;$(".open-context-profile").addEventListener("click",()=>openClientProfile(id,{returnView:"messages"}));}
+/**
+ * Selecting a conversation loads the client the same way the profile does, because the pane
+ * beside the thread is the profile's own summary column rather than a second, thinner copy of
+ * the client. `state.clientProfile` is the one record both surfaces read.
+ */
+async function selectMessageClient(id){
+  const [data,notes,agreements]=await Promise.all([
+    api(`/api/customers/${id}/history`),loadClientNotes(id),loadClientAgreements(id)]);
+  const previous=state.clientProfile?.data.customer.id===id?state.clientProfile:null;
+  state.messageClientId=id;
+  state.clientProfile={data,notes,agreements,notesExpanded:previous?.notesExpanded||false,
+    tab:previous?.tab||"pets",petId:previous?.petId||data.pets[0]?.id||null,appointmentId:null,
+    historyView:{page:1,pageSize:HISTORY_INITIAL_ROWS},historyLoading:false};
+  state.pets=[...state.pets.filter(pet=>pet.customerId!==id),...data.pets];
+  renderMessages();
+  const name=clientName(data.customer);
+  $("#message-thread").innerHTML=`<header><a class="message-client-link" href="/clients/${id}" target="_blank" rel="noopener">${escape(name)}</a></header><div class="message-disabled-state"><h3>Messaging is not connected</h3><p>No conversation history, inbound webhook, SMS provider, delivery status, or scheduler is configured.</p></div><footer><textarea disabled aria-label="Message composer" placeholder="Messaging unavailable"></textarea><button type="button" class="primary" disabled>Send</button></footer>`;
+  renderMessageClientPane();
+}
+function renderMessageClientPane(){
+  const profile=state.clientProfile,pane=$("#message-client-context");
+  if(!profile||!pane)return;
+  pane.innerHTML=clientSummaryMarkup(profile,{back:false})
+    +`<div class="context-actions"><button type="button" class="secondary compact open-context-profile">Open full profile</button></div>`;
+  bindClientSummary(profile);
+  pane.querySelector(".open-context-profile").addEventListener("click",()=>
+    runDetached(()=>openClientProfile(profile.data.customer.id,{returnView:"messages"})));
+}
 const reminderTabs=[["appointment_reminder","Appointment Reminder","supported"],["secondary_reminder","Secondary Reminder","deferred"],["same_day_reminder","Same-Day Reminder","deferred"],["rebook_reminder","Rebook Reminder","deferred"],["vaccination_reminder","Vaccination Reminder","supported"],["birthday_reminder","Pet Birthday Reminder","deferred"]];
 async function loadReminders(type=state.reminders.type){state.reminders.type=type;const result=await api(`/api/reminders?type=${encodeURIComponent(type)}`);state.reminders={type,items:result.items,supported:result.supported};renderReminders();}
 function renderReminders(){const {type,items,supported}=state.reminders;$("#reminder-tabs").innerHTML=reminderTabs.map(([id,label])=>`<button type="button" role="tab" data-reminder-tab="${id}" aria-selected="${id===type}">${escape(label)}</button>`).join("");$$('[data-reminder-tab]').forEach(button=>button.addEventListener("click",()=>loadReminders(button.dataset.reminderTab)));if(!supported){$("#reminder-content").innerHTML=`<div class="reminder-empty"><p class="eyebrow">Deferred</p><h3>${escape(reminderTabs.find(([id])=>id===type)?.[1]||"Reminder")}</h3><p>This reminder type has no Pawsh scheduling or delivery backend yet. No records or actions are fabricated.</p></div>`;return;}$("#reminder-content").innerHTML=`<div class="reminder-table-wrap"><table class="reminder-table"><thead><tr><th>Record ID</th><th>Status</th><th>Time</th><th>Client</th><th>Reminder Status</th><th>Action</th><th>Logs</th></tr></thead><tbody>${items.map(item=>`<tr><td><code>${escape(String(item.appointmentId||item.id).slice(0,8))}</code></td><td><span class="status-dot">${escape(item.appointmentStatus||"Scheduled")}</span></td><td>${new Intl.DateTimeFormat([],{dateStyle:"medium",timeStyle:"short"}).format(new Date(item.scheduledOccurrence))}</td><td>${escape([item.firstName,item.lastName].filter(Boolean).join(" ")||"Staff notification")}</td><td><span class="badge ${escape(item.reminderStatus)}">${escape(item.reminderStatus.replace("_"," "))}</span></td><td>${["pending","failed"].includes(item.reminderStatus)&&allowed("appointments.edit")?`<button type="button" class="secondary compact reminder-send" data-reminder-id="${item.id}">${item.reminderStatus==="failed"?"Retry":"Send"}</button>`:"—"}</td><td><button type="button" class="icon-action reminder-logs" data-reminder-id="${item.id}" aria-label="Show reminder logs" aria-expanded="false">+</button></td></tr><tr class="reminder-log-row" data-reminder-logs="${item.id}" hidden><td colspan="7">${item.logs.length?item.logs.map(log=>`<div class="reminder-log"><time>${new Date(log.createdAt).toLocaleString()}</time><span>${escape(item.channel)} · ${escape(item.destination)}</span><strong>${escape(log.outcome)}</strong>${log.safeFailureReason?`<small>${escape(log.safeFailureReason)}</small>`:""}</div>`).join(""):`<span class="empty">No delivery attempts yet.</span>`}</td></tr>`).join("")||`<tr><td colspan="7" class="empty">No reminders in this workspace.</td></tr>`}</tbody></table></div>`;$$('.reminder-logs').forEach(button=>button.addEventListener("click",()=>{const row=$(`[data-reminder-logs="${button.dataset.reminderId}"]`),open=row.hidden;row.hidden=!open;button.textContent=open?"−":"+";button.setAttribute("aria-expanded",String(open));}));$$('.reminder-send').forEach(button=>button.addEventListener("click",async()=>{button.disabled=true;try{await api(`/api/reminders/${button.dataset.reminderId}/send`,{method:"POST"});toast("Reminder queued for delivery");await loadReminders();}catch(error){toast(error.message);button.disabled=false;}}));}
@@ -4873,6 +4982,8 @@ function activateView(view,{history="push"}={}) {
   const target=$(`#${view}`);if(!target||$(`[data-view="${view}"]`)?.hidden)return;
   const canonicalPath=view==="client-profile"&&state.clientProfile?`/clients/${state.clientProfile.data.customer.id}`:viewPaths[view];if(canonicalPath&&history!=="none"&&view!=="admin-settings"&&location.pathname!==canonicalPath){globalThis.history[history==="replace"?"replaceState":"pushState"]({view},"",canonicalPath);}
   $$(".view").forEach(v=>v.hidden=v.id!==view); $$("nav button").forEach(b=>{const active=b.dataset.view===view;b.classList.toggle("active",active);if(active)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current");});const servicesHeader=$("[data-testid=header-services]");servicesHeader?.classList.toggle("active",view==="services");if(view==="services")servicesHeader?.setAttribute("aria-current","page");else servicesHeader?.removeAttribute("aria-current"); $("#page-kicker").textContent=view==="profile-account"?"Your account":view==="admin-settings"?"Administration":"Daily operations"; $("#page-title").textContent={dashboard:"Dashboard",calendar:"Calendar",customers:"Clients",messages:"Messages",reminders:"Reminders","sales-expense":"Sales & Expense",product:"Product",services:"Services",setup:"Salon","admin-settings":"Settings",reports:"Report","profile-account":"Profile & Account"}[view];
+  // The active view is published on the body so density can be set per screen in CSS.
+  document.body.dataset.view=view;
   if(view==="client-profile"){$("#page-title").textContent="Client Profile";$("#page-kicker").textContent="Relationships";}
   if(view==="intake-submissions"){$("#page-title").textContent="Intake Form Submissions";$("#page-kicker").textContent="Client intake";}
   return true;
@@ -4880,15 +4991,14 @@ function activateView(view,{history="push"}={}) {
 $$(".close").forEach((button)=>button.addEventListener("click",()=>$("#modal").close()));
 $("#modal").addEventListener("close",()=>{const dialog=$("#modal");dialog.classList.remove("appointment-detail-dialog");dialog.querySelector(".modal-head .close").setAttribute("aria-label","Close");if(calendarDetailOrigin?.isConnected)calendarDetailOrigin.focus();calendarDetailOrigin=null;});
 $("#archived-care-records")?.addEventListener("click",showArchivedCareRecords);
-$("#customer-search").addEventListener("input", async (event)=>{
+$("#customer-search").addEventListener("input", async ()=>{
   const sequence=++customerSearchSequence;
   await new Promise(resolve=>setTimeout(resolve,180));if(sequence!==customerSearchSequence)return;
-  const params=new URLSearchParams({paged:"true",page:"1",pageSize:"25",q:event.target.value,status:$("#customer-status").value,upcoming:$("#customer-upcoming").value,sort:$("#customer-sort").value});
-  const customers=await api(`/api/customers?${params}`);
+  const customers=await api(`/api/customers?${customerDirectoryParams(1)}`);
   if(sequence!==customerSearchSequence)return;
   state.customerDirectory=customers;state.customers=customers.items;renderCustomersEnhanced();
 });
-[$("#customer-status"),$("#customer-upcoming"),$("#customer-sort")].forEach(control=>control.addEventListener("change",()=>loadCustomerDirectory(1)));
+[$("#customer-status"),$("#customer-upcoming"),$("#customer-sort"),$("#customer-page-size")].forEach(control=>control.addEventListener("change",()=>loadCustomerDirectory(1)));
 $("#customer-prev").addEventListener("click",()=>loadCustomerDirectory(state.customerDirectory.page-1));$("#customer-next").addEventListener("click",()=>loadCustomerDirectory(state.customerDirectory.page+1));
 function printRangeDefaults(){if(state.calendar.view==="day"||state.calendar.view==="month")return [state.calendar.selectedDate,state.calendar.selectedDate];return [state.calendar.weekStart,dateShift(state.calendar.weekStart,6)];}
 function printableAgenda(items){const sorted=items.slice().sort((a,b)=>new Date(a.startAt)-new Date(b.startAt));return sorted.length?sorted.map(item=>{const model=appointmentPresentation(item);return `<article class="print-appointment"><header><strong>${escape(model.groomer)}</strong><span>${escape(model.dateLabel)} · ${escape(model.timeRange)}</span></header><div><p><b>Pet:</b> ${escape(petName({petName:model.petName}))}${model.breed?` · ${escape(model.breed)}`:""}</p><p><b>Services:</b> ${model.services.map(escape).join(", ")}</p><p><b>Client:</b> ${escape(model.customerName)}${item.customerPhone?` · ${escape(item.customerPhone)}`:""}</p>${item.notes?`<p><b>Appointment note:</b> ${escape(item.notes)}</p>`:""}</div></article>`;}).join(""):`<p>No appointments in this print range.</p>`;}

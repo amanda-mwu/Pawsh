@@ -66,7 +66,7 @@ const customerDirectoryQuerySchema=z.object({
   q:z.string().trim().max(200).optional(),
   search:z.string().trim().max(200).optional(),
   page:z.coerce.number().int().min(1).max(100_000).default(1),
-  pageSize:z.coerce.number().int().min(10).max(50).default(25),
+  pageSize:z.coerce.number().int().min(10).max(100).default(20),
   status:z.enum(["active","inactive","all"]).default("active"),
   upcoming:z.enum(["any","yes","no"]).default("any"),
   sort:z.enum(["name","lastVisit","nextAppointment"]).default("name"),

@@ -84,9 +84,16 @@ header>.header-services{margin-left:auto;min-height:40px;padding:8px 14px;border
 .header-icon-button{display:grid;place-items:center;width:42px;height:42px;padding:0;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--ink)}.header-icon-button svg{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.header-icon-button:hover,.header-icon-button:focus-visible{border-color:var(--line);background:var(--mint)}
 .empty-workspace{display:grid;place-items:center;align-content:center;min-height:360px;padding:32px;text-align:center}.empty-workspace h3,.empty-workspace p{margin:4px}.empty-workspace p{max-width:560px;color:var(--muted)}.empty-icon{display:grid;place-items:center;width:48px;height:48px;margin-bottom:8px;border-radius:50%;background:var(--mint);font-size:24px}
 .messages-workspace{display:grid;grid-template-columns:270px minmax(320px,1fr) 280px;min-height:calc(100vh - 145px);border:1px solid var(--line);border-radius:14px;background:var(--paper);overflow:hidden}.message-list-pane,.message-context{position:static;width:auto;height:auto;padding:16px;border-right:1px solid var(--line);background:#f1f3f1;overflow:auto}.message-context{border-right:0;border-left:1px solid var(--line);background:var(--paper)}.message-list-pane h3{margin:2px 0 12px}.message-filters{display:flex;gap:4px;overflow:auto;margin:10px 0}.message-filters button,.report-mode button,.profile-tabs button{min-height:36px;padding:6px 9px;border:1px solid var(--line);background:var(--paper);font-size:11px;font-weight:700}.message-filters button[aria-pressed=true],.report-mode button[aria-pressed=true],.profile-tabs button[aria-selected=true]{background:var(--brand);color:var(--on-brand)}.message-client-list{display:grid}.message-client{display:flex;width:100%;min-height:58px;padding:9px;border:0;border-bottom:1px solid var(--line);background:transparent;text-align:left}.message-client:hover,.message-client:focus-visible,.message-client.active{background:var(--mint)}.message-client span{display:grid;gap:3px}.message-client small{color:var(--muted)}.message-thread{display:grid;grid-template-rows:auto 1fr auto;min-width:0}.message-thread>header,.message-thread>footer{padding:14px 18px;border-bottom:1px solid var(--line)}.message-thread>footer{display:grid;grid-template-columns:1fr auto;gap:8px;border-top:1px solid var(--line);border-bottom:0}.message-thread textarea{min-height:64px}.message-client-link{color:var(--ink);font-size:17px;font-weight:800}.message-disabled-state{display:grid;place-items:center;align-content:center;padding:28px;text-align:center;color:var(--muted)}.context-pet{display:grid;width:100%;min-height:50px;margin:6px 0;padding:8px;border:1px solid var(--line);border-radius:8px;background:#fff;text-align:left}.context-pet span{color:var(--muted);font-size:11px}
-.client-profile-workspace{display:grid;grid-template-columns:minmax(280px,36%) minmax(0,1fr);min-height:calc(100vh - 150px);border:1px solid var(--line);border-radius:14px;background:var(--paper);overflow:hidden}.client-profile-left,.client-profile-right{padding:24px;overflow:auto}.client-profile-left{border-right:1px solid var(--line);background:#f1f3f1}.profile-facts{display:grid;gap:8px}.profile-facts div{display:grid;gap:2px}.profile-facts dt{color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase}.profile-facts dd{margin:0}.profile-tabs{display:flex;margin:20px 0 10px}.profile-pets,.profile-appointment-list{display:grid;gap:6px}.pet-profile-card,.profile-appointment-row{display:grid;width:100%;min-height:58px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;text-align:left}.pet-profile-card.active,.profile-appointment-row.active{border-color:var(--ink);box-shadow:inset 3px 0 var(--ink)}.pet-profile-card span,.pet-profile-card small{color:var(--muted);font-size:11px}.pet-profile-card .warning-text{color:#b3261e}.profile-appointment-row{grid-template-columns:1fr auto;align-items:center;min-height:44px}.profile-appointment-row strong{text-transform:capitalize}.profile-appointment-detail{margin-top:14px;padding:16px;border:1px solid var(--line);border-radius:10px}.profile-appointment-detail p{margin:6px 0}
+.client-profile-workspace{display:grid;grid-template-columns:minmax(280px,36%) minmax(0,1fr);min-height:calc(100vh - 150px);border:1px solid var(--line);border-radius:14px;background:var(--paper);overflow:hidden}.client-profile-left,.client-profile-right{padding:24px;overflow:auto}.client-profile-left{border-right:1px solid var(--line);background:#f1f3f1}.profile-facts{display:grid;gap:8px}.profile-facts div{display:grid;gap:2px}.profile-facts dt{color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase}.profile-facts dd{margin:0}.profile-tabs{display:flex;margin:20px 0 10px}.profile-pets,.profile-appointment-list{display:grid;gap:6px}.pet-profile-card,.profile-appointment-row{display:grid;width:100%;min-height:58px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;text-align:left}.pet-profile-card.active,.profile-appointment-row.active{border-color:var(--ink);box-shadow:inset 3px 0 var(--ink)}.pet-profile-card span,.pet-profile-card small{color:var(--muted);font-size:11px}.pet-profile-card .warning-text{color:#b3261e}.profile-appointment-row{grid-template-columns:1fr auto;align-items:center;min-height:44px}.profile-appointment-row strong{text-transform:capitalize}
 .report-mode{display:flex}.report-mode button:first-child{border-radius:8px 0 0 8px}.report-mode button:last-child{border-radius:0 8px 8px 0}.report-filters{display:flex;align-items:end;gap:10px;margin-bottom:14px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--paper)}.report-filters label{display:grid;gap:4px;font-size:11px;font-weight:700}.report-table-wrap{overflow:auto;border:1px solid var(--line);border-radius:10px}
 @media(max-width:1000px){.messages-workspace{grid-template-columns:240px 1fr}.message-context{grid-column:1/-1;border-top:1px solid var(--line);border-left:0}.client-profile-workspace{grid-template-columns:1fr 1.4fr}}
+/* Messages shows the client profile's own summary column, so the shared section drops the framing
+   it needs as a profile pane and takes the padding of the context pane it sits in. The pane is
+   widened to the profile column's proportions: a client card reads badly in 280px. */
+.messages-workspace{grid-template-columns:270px minmax(320px,1fr) 330px}
+#message-client-context{background:var(--paper)}
+#message-client-context .client-profile-left{padding:0;border-right:0;background:transparent;overflow:visible}
+#message-client-context .context-actions{margin-top:14px}
 @media(max-width:700px){.messages-workspace,.client-profile-workspace{display:block;min-height:0}.message-list-pane,.message-thread,.message-context,.client-profile-left,.client-profile-right{min-height:0;max-height:none;border:0;border-bottom:1px solid var(--line)}.message-thread{min-height:420px}.report-filters{align-items:stretch;flex-direction:column}.header-icon-button{width:40px;height:40px}.client-profile-left,.client-profile-right{padding:16px}}
 
 /* Client and reminder operations. */
@@ -119,7 +126,7 @@ header>.header-services{margin-left:auto;min-height:40px;padding:8px 14px;border
 /* One shared calendar preview and one shared appointment detail dialog. */
 #calendar-hover-preview.appointment-hover:not([hidden]){display:block;max-width:280px;pointer-events:none}#calendar-hover-preview .hover-summary{margin-bottom:0;padding-top:8px;border-top:1px solid var(--line)}
 .appointment-detail-dialog{width:min(680px,calc(100vw - 28px))}.appointment-detail-dialog #modal-form{--detail-pad-y:20px;--detail-pad-x:22px;padding:0 var(--detail-pad-x) var(--detail-pad-y);max-height:min(86vh,760px);overflow:auto}.appointment-detail{display:grid;grid-template-columns:1fr 1fr;gap:12px}.appointment-detail>header,.appointment-detail>.appointment-detail-services,.appointment-detail>.appointment-detail-summary,.appointment-detail>footer{grid-column:1/-1}.appointment-detail>header h3,.appointment-detail>header p,.appointment-detail section h4,.appointment-detail section p{margin:0}.appointment-detail>section{display:grid;gap:5px;padding:11px;border:1px solid var(--line);border-radius:9px;background:#ffffff}.appointment-detail-services>div{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-top:1px solid var(--line)}.appointment-detail-services>div span{display:grid}.appointment-detail-services small{color:var(--muted)}.appointment-detail-summary{display:flex!important;grid-template-columns:none!important;justify-content:space-between;align-items:center;background:var(--mint)!important}.appointment-detail>footer{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}.detail-warning{color:#b3261e}.appointment-detail-dialog .modal-head{position:sticky;top:0;z-index:2;background:var(--paper);margin:0 0 var(--space-3);padding:var(--detail-pad-y) 0 var(--space-3)}
-@media(max-width:580px){.appointment-detail-dialog{width:calc(100vw - 16px);max-height:calc(100vh - 16px);margin:auto}.appointment-detail{grid-template-columns:1fr}.appointment-detail>header,.appointment-detail>.appointment-detail-services,.appointment-detail>.appointment-detail-summary,.appointment-detail>footer{grid-column:auto}}
+@media(max-width:580px){.appointment-detail{grid-template-columns:1fr}.appointment-detail>header,.appointment-detail>.appointment-detail-services,.appointment-detail>.appointment-detail-summary,.appointment-detail>footer{grid-column:auto}}
 
 /* ── Pawsh operational density pass ───────────────────────────────────────────
    Shared tokens + normalization of the control, surface and spacing language.
@@ -192,6 +199,16 @@ label{gap:5px;margin-bottom:12px}
 .modal-actions{margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
 dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 
+/* The appointment detail is a working view rather than a form, so it takes the whole screen:
+   the operator reads a visit alongside nothing else, and the sections spread across the width
+   instead of being squeezed into a 680px column. */
+.appointment-detail-dialog{width:100vw;max-width:none;height:100dvh;max-height:none;margin:0;border-radius:0}
+.appointment-detail-dialog #modal-form{--detail-pad-x:clamp(22px,4vw,56px);height:100dvh;max-height:none;box-sizing:border-box}
+.appointment-detail{align-content:start;min-width:0;width:100%;max-width:1600px;margin-inline:auto}
+/* Only a viewport with room for them gets more than one column: a phone keeps the single
+   stacked column it already had, which the full-screen width must not widen back out. */
+@media(min-width:581px){.appointment-detail{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}}
+
 /* Client profile + pet profile density. */
 .client-profile-left,.client-profile-right{padding:18px}
 .client-identity{margin:10px 0}
@@ -203,9 +220,55 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 .pet-profile-card{min-height:0;padding:9px 11px;border-radius:var(--radius-sm)}
 .pet-profile-card:hover{border-color:#e2e6e2;background:#ffffff}
 .profile-appointment-row{border-radius:var(--radius-sm)}
-.profile-appointment-detail{margin-top:12px;padding:12px;border-radius:var(--radius-sm)}
 .pet-profile-facts div{padding:8px 9px;border-radius:6px}
 .pet-profile-facts dd{font-size:13px}
+
+/* Client screens are working surfaces rather than reading views, so on a desktop they take
+   tighter page gutters and give the width back to the record. */
+@media(min-width:901px){
+  body[data-view="customers"] main,body[data-view="client-profile"] main,body[data-view="messages"] main{padding:24px clamp(16px,1.8vw,28px)}
+  body[data-view="customers"] header,body[data-view="client-profile"] header,body[data-view="messages"] header{margin-bottom:18px}
+}
+.client-profile-workspace{grid-template-columns:minmax(250px,25%) minmax(0,1fr);min-height:calc(100vh - 132px)}
+.client-profile-left,.client-profile-right{padding:16px 18px}
+
+/* On a desktop the shell is a fixed frame: the sidebar stays put and each surface scrolls inside
+   itself. `html`/`body` carry `overflow-x:hidden`, which stops the sidebar's `position:sticky`
+   from holding, so the frame is made explicit rather than left to depend on it. The directory
+   then keeps its toolbar, column headers and pager in view while only the rows move. */
+@media(min-width:901px){
+  .app-shell{height:100vh;overflow:hidden}
+  aside{position:static;height:100%;overflow-y:auto}
+  main{overflow-y:auto}
+  body[data-view="customers"] main,body[data-view="messages"] main{display:flex;flex-direction:column;overflow:hidden}
+  /* Messages is a three-pane workspace, so it takes the frame the same way the directory does:
+     the conversation list, the thread and the client context each scroll inside their own pane
+     rather than pushing the page down. */
+  body[data-view="messages"] #messages{display:flex;flex-direction:column;flex:1;min-height:0}
+  body[data-view="messages"] .messages-workspace{flex:1;min-height:0}
+  body[data-view="messages"] .message-list-pane{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;overflow:hidden}
+  /* `align-content:start` keeps each conversation its own height: the list is a grid filling the
+     pane, so without it a single search result stretches to the full column. */
+  body[data-view="messages"] .message-client-list{min-height:0;overflow:auto;align-content:start}
+  body[data-view="messages"] .message-thread{min-height:0}
+  body[data-view="customers"] #customers{display:flex;flex-direction:column;flex:1;min-height:0}
+  body[data-view="customers"] .directory-controls,
+  body[data-view="customers"] .directory-pagination{flex:none}
+  body[data-view="customers"] .directory-table-wrap{flex:1;min-height:0}
+}
+
+/* Directory paging: a windowed row of page numbers between two arrows, plus the page size. */
+.directory-pagination{gap:14px;flex-wrap:wrap}
+.pager,.pager-pages{display:flex;align-items:center;gap:4px}
+.pager-page,.pager-arrow{min-width:32px;height:32px;padding:0 8px;border:1px solid transparent;border-radius:var(--radius-sm);background:transparent;color:var(--ink);font-size:13px}
+.pager-page:hover:not(.current),.pager-arrow:hover:not(:disabled){background:var(--mint)}
+.pager-page.current{border-color:var(--brand);color:var(--brand);font-weight:700}
+.pager-arrow{display:grid;place-items:center;padding:0}
+.pager-arrow svg{display:block;width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.pager-arrow:disabled{color:var(--muted);opacity:.45}
+.pager-gap{padding:0 2px;color:var(--muted)}
+.pager-size{margin:0}
+.pager-size select{height:32px;padding:0 8px;font-size:13px}
 
 /* Coarse pointers grow the small in-table icon affordances to a full touch target. */
 @media(pointer:coarse){
@@ -671,7 +734,8 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 .client-note{position:relative;padding:10px 40px 10px 12px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--paper)}
 .client-note.pinned{border-color:var(--brand);box-shadow:inset 3px 0 var(--brand)}
 .note-body{color:var(--ink);font-size:13px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
-.note-pinned{color:var(--brand);font-weight:700}
+.note-popup-flag{display:inline-flex;vertical-align:-2px;color:var(--brand)}
+.note-popup-flag svg{display:block;width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .note-meta{margin:5px 0 0;color:var(--muted);font-size:11px;line-height:1.35}
 .note-empty,.note-truncated{margin:var(--space-2) 0 0;color:var(--muted);font-size:12px}
 .note-failure{display:grid;gap:var(--space-2);justify-items:start;padding:10px 12px;border:1px solid var(--danger-line);border-radius:var(--radius-sm);background:var(--danger-tint)}
@@ -707,7 +771,11 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 .pet-fact-grid dd{margin:0;min-width:0;color:var(--ink);overflow-wrap:anywhere}
 .pet-card-notes{margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid var(--line)}
 .pet-note{margin:0 0 4px;color:var(--ink);font-size:12.5px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
-.pet-note.alert .note-pinned{color:var(--danger)}
+.pet-note.alert .note-popup-flag{color:var(--danger)}
+.field-hint{margin:6px 0 0;color:var(--muted);font-size:12px}
+.popup-notes{display:grid;gap:var(--space-2)}
+.popup-note{padding:12px 14px;border:1px solid var(--line);border-left:3px solid var(--danger);border-radius:var(--radius-sm);background:var(--paper)}
+.popup-note-body{margin:0 0 6px;white-space:pre-wrap}
 
 /* Preferences. The saved-not-enforced chip is real text, not a decoration: it is read out with the
    control's own label because the whole row is the label. */

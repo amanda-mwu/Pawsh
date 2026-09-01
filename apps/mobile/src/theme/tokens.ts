@@ -181,7 +181,12 @@ export const groomerSlots: readonly GroomerSlotColors[] = [
   { accent: "#46769b", tint: "#ecf3f8" },
   { accent: "#397f7a", tint: "#ecf8f7" },
   { accent: "#a96e4c", tint: "#f8f1ec" },
-  { accent: "#716033", tint: "#f8f5ec" }
+  { accent: "#716033", tint: "#f8f5ec" },
+  { accent: "#683253", tint: "#f4eff2" },
+  { accent: "#62321d", tint: "#f3f0ee" },
+  { accent: "#445386", tint: "#eff1f5" },
+  { accent: "#8f4d50", tint: "#f5eff0" },
+  { accent: "#005c6e", tint: "#ebf2f3" }
 ];
 
 /**

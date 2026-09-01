@@ -2,6 +2,7 @@ import {
   addOnServiceCategories,
   appointmentPrimaryActions,
   groomerHashSlotCount,
+  groomerPaletteSize,
   groomerSlotIndex,
   permissionForTransition,
   resolveAppointmentBadge,
@@ -46,10 +47,11 @@ describe("groomer identity", () => {
     expect(groomerSlotIndex("")).toBeNull();
   });
 
-  it("has a colour for every slot the hash can produce", () => {
-    // The hash modulus, not the palette size. `groomerPaletteSize` is ten; these tokens are the
-    // five the hash can deal, and extending them to the full palette is outstanding mobile work.
-    // What must never regress is that every slot the hash CAN produce has a colour here.
+  it("has a colour for every slot the palette can store", () => {
+    // A slot assigned on the Staff screen reaches this array directly, so the tokens have to
+    // cover the whole palette, not just the five the hash can deal. The hash floor is asserted
+    // separately: a slot the hash CAN produce losing its colour is the worse regression.
+    expect(groomerSlots.length).toBe(groomerPaletteSize);
     expect(groomerSlots.length).toBeGreaterThanOrEqual(groomerHashSlotCount);
   });
 });

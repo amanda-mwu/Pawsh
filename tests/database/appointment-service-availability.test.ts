@@ -24,17 +24,24 @@ describeDatabase("appointment service availability",()=>{
     petId=(await app.inject({method:"POST",url:"/api/pets",headers:{cookie:ownerCookie},payload:{customerId,name:"Booking Pet",species:"dog"}})).json().id;
   });
   afterAll(async()=>{await app.close();await db.end();});
-  const createAppointment=(serviceIds:string[],localStart:string)=>app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},payload:{locationId,customerId,petId,employeeId,serviceIds,localStart,expectedLocationVersion:1}});
+  const createAppointment=(serviceIds:string[],localStart:string,groomerId:string=employeeId)=>app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},payload:{locationId,customerId,petId,employeeId:groomerId,serviceIds,localStart,expectedLocationVersion:1}});
 
+  // `employee_services` is a per-groomer service restriction and an EMPTY set means unrestricted.
+  // "Second Groomer" has no rows, so a service nobody was assigned to is bookable with them,
+  // which is the property this test is about. "Assigned Groomer" is restricted to Primary Groom,
+  // and asking them for the add-on is now refused rather than quietly allowed.
   it("books a service without a per-service groomer assignment",async()=>{
     const price=await app.inject({method:"POST",url:"/api/pricing/resolve",headers:{cookie:ownerCookie},payload:{petId,serviceIds:[addonId]}});
     expect(price.statusCode).toBe(200);expect(price.json()[0]).toMatchObject({name:"Test Paw Balm",status:"resolved",durationMinutes:15});
-    const booking=await createAppointment([addonId],"2034-04-17T09:00");
+    const booking=await createAppointment([addonId],"2034-04-17T09:00",secondEmployeeId);
     expect(booking.statusCode).toBe(201);
+    const restricted=await createAppointment([addonId],"2034-04-17T09:30",employeeId);
+    expect(restricted.statusCode).toBe(409);
+    expect(restricted.json()).toMatchObject({code:"EMPLOYEE_SERVICE_NOT_OFFERED",unsupportedServiceIds:[addonId]});
   });
 
   it("books multiple assigned services including an add-on and sums durations",async()=>{
-    const booking=await createAppointment([primaryId,addonId],"2034-04-17T10:00");
+    const booking=await createAppointment([primaryId,addonId],"2034-04-17T10:00",secondEmployeeId);
     expect(booking.statusCode).toBe(201);
     const [stored]=await db<{minutes:number;count:number}[]>`select extract(epoch from (appointment.end_at-appointment.start_at))/60 minutes,count(service.id)::int count from appointments appointment join appointment_services service on service.appointment_id=appointment.id and service.business_id=appointment.business_id where appointment.business_id=${businessId} and appointment.id=${booking.json().id} group by appointment.id`;
     expect(Number(stored?.minutes)).toBe(45);expect(stored?.count).toBe(2);

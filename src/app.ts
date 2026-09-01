@@ -64,6 +64,13 @@ export const uniqueViolations: Record<string, { code: string; error: string }> =
   card_processor_single_default: {
     code: "CARD_PROCESSOR_DEFAULT_CONFLICT",
     error: "Another processor was made the default at the same moment. Refresh and try again."
+  },
+  // One workspace account belongs to at most one staff member. The Staff route checks for the
+  // claim first and refuses with this same code, so reaching here means two managers linked the
+  // same account at the same moment.
+  employees_business_id_membership_id_key: {
+    code: "MEMBERSHIP_ALREADY_LINKED",
+    error: "That account was linked to another team member at the same moment. Refresh and try again."
   }
 };
 

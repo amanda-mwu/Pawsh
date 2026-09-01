@@ -258,5 +258,36 @@ describe("database migrations", () => {
     // Retention is NOT added, and must not be added without a replay window: `event_id` being
     // unique is the only thing refusing a replayed notification.
     expect(recovery).not.toContain("delete from square_webhook_events");
+
+    // 0040 adds exactly two staff fields. What it must NOT add is as load-bearing as what it
+    // does: each of the absences below is a product decision that a later migration adding the
+    // column would quietly reverse.
+    const staffFields = await readMigration("0040_staff_profile_fields.sql");
+    // The colour slot is optional - null keeps the hash-derived colour every existing workspace
+    // already sees - and its range is the durable outer bound, not today's five tokens and not
+    // the eight-to-ten being designed. Pinning it to either would need a second migration to add
+    // one colour; the palette's real size is enforced by the API against `groomerSlotCount`.
+    expect(staffFields).toContain("add column color_slot smallint");
+    expect(staffFields).toContain("check (color_slot is null or color_slot between 0 and 15)");
+    // A colour is a label, not an identity: two groomers may share one.
+    expect(staffFields).not.toContain("unique index employee_color_slot");
+    // The staff phone is stored the way every other phone in this schema is stored - the typed
+    // text plus a digits-only normalisation - so there is one convention and not two.
+    expect(staffFields).toContain("add column phone text");
+    expect(staffFields).toContain("add column normalized_phone text");
+    expect(staffFields).toContain("employee_phone_normalization");
+    // `display_name` stays the one name a groomer has; it is read in ~25 places.
+    expect(staffFields).not.toContain("add column first_name");
+    expect(staffFields).not.toContain("add column last_name");
+    // The Staff screen's Email is the LINKED ACCOUNT's, reached through `membership_id`. A
+    // column here would be a second copy of `users.email` with no sync path, and the eight
+    // attribution joins would keep using the membership while the card showed something else.
+    expect(staffFields).not.toContain("add column email");
+    // `active` is the only activation concept and 0027's availability tables are the only owner
+    // of when a groomer is bookable. A second toggle would be a rule with two answers.
+    expect(staffFields).not.toContain("enable_booking");
+    // `employees` is covered by the 0001 `tenant_isolation` do-block; this migration only adds
+    // columns, so declaring a policy here would duplicate one that already exists.
+    expect(staffFields).not.toContain("create policy tenant_isolation on employees");
   });
 });

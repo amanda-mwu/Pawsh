@@ -13,7 +13,7 @@ import { refundPresentation, type RefundStatus } from "../domain/refunds.js";
 import { safePdfFilename } from "../domain/filenames.js";
 import { maxPhotoBytes, readPhotoShape, safePhotoFilename } from "../domain/images.js";
 import { localDateBounds, localDateForInstant, resolveWallTime, validateTimeZone } from "../domain/time.js";
-import { permissionPresets, permissions } from "@pawsh/domain";
+import { can, permissionPresets, permissions } from "@pawsh/domain";
 import { auth, authentication, issueToken, platformAuthentication, requirePermission, sessionToken, tokenHash } from "./context.js";
 import {
   appointmentSchema, checkoutSchema, customerSchema, employeeSchema, employeeUpdateSchema,
@@ -993,6 +993,64 @@ async function ensureBookingResourcesAvailable(
   if(services.length!==new Set(input.serviceIds).size)throw new Error("One or more selected services are unavailable");
   const inactive=services.find(service=>!service.active);
   if(inactive)throw new Error(`${inactive.name} is inactive and cannot be booked.`);
+}
+
+/**
+ * Refuses to assign a groomer a service they do not offer.
+ *
+ * `employee_services` has existed since 0001 and until now meant nothing: the API wrote it, one
+ * read endpoint returned it, and no code path in `src/domain` or the booking route consulted it.
+ * A salon that ticked "Beth does baths only" got a checkbox and no behaviour.
+ *
+ * THE EMPTY SET IS UNRESTRICTED, AND THAT IS THE WHOLE COMPATIBILITY STORY. Every existing
+ * workspace either has no `employee_services` rows at all — in which case nothing here can fire —
+ * or has rows somebody deliberately ticked, which is precisely the rule they were asking for. A
+ * groomer with rows is restricted to them; a groomer with none can be booked for anything. There
+ * is no third state and no flag, because "restricted to nothing" is not a thing a salon means.
+ *
+ * WHAT THIS IS CHECKED ON, AND WHAT IT IS NOT. It runs where a service is being ASSIGNED to a
+ * groomer: creating an appointment, changing an appointment's services, and rescheduling only
+ * when the reschedule also reassigns the appointment to a different groomer. It deliberately does
+ * NOT run when a reschedule keeps the same groomer. Restrictions are edited after appointments
+ * exist, and refusing to move an already-booked appointment because a rule was added to its
+ * groomer last week would strand it on a day the salon may have closed, with no way out but
+ * deleting the rule. Existing assignments are grandfathered; new ones are checked.
+ *
+ * The failure is a 409 with its own code, following `SCHEDULING_CONFLICT` and
+ * `AGREEMENT_CHANNEL_UNSUPPORTED`: the request is well-formed and the caller is authorized, the
+ * combination is simply refused, and the details name exactly which services so a picker can grey
+ * them out rather than making the operator guess.
+ */
+async function ensureGroomersOfferServices(
+  tx:Transaction,
+  input:{businessId:string;employeeIds:readonly string[];serviceIds:readonly string[]}
+):Promise<void>{
+  const restricted=await tx<{employeeId:string;displayName:string;offeredServiceIds:string[]}[]>`
+    select employee.id as employee_id, employee.display_name,
+      array_agg(offered.service_id) as offered_service_ids
+    from employees employee
+    join employee_services offered
+      on offered.business_id=employee.business_id and offered.employee_id=employee.id
+    where employee.business_id=${input.businessId}
+      and employee.id in ${tx(input.employeeIds as string[])}
+    group by employee.id
+  `;
+  if(!restricted.length)return;
+  const requested=[...new Set(input.serviceIds)];
+  for(const employee of restricted){
+    const offered=new Set(employee.offeredServiceIds);
+    const unsupportedServiceIds=requested.filter(serviceId=>!offered.has(serviceId));
+    if(!unsupportedServiceIds.length)continue;
+    const names=await tx<{name:string}[]>`
+      select name from services
+      where business_id=${input.businessId} and id in ${tx(unsupportedServiceIds)} order by name
+    `;
+    const unsupportedServiceNames=names.map(service=>service.name);
+    throw new SchedulingRequestError(409,"EMPLOYEE_SERVICE_NOT_OFFERED",
+      `${employee.displayName} is not set up for ${unsupportedServiceNames.join(", ")}.`,
+      {employeeId:employee.employeeId,employeeName:employee.displayName,
+        unsupportedServiceIds,unsupportedServiceNames});
+  }
 }
 
 async function groomersAvailable(
@@ -2686,13 +2744,35 @@ export function registerRoutes(
     return checkoutPaymentOptions(db, context.businessId);
   });
 
+  /**
+   * The workspace's memberships — both the Permissions screen's list and the Staff screen's
+   * account picker.
+   *
+   * EXTENDED RATHER THAN COMPLEMENTED. A second endpoint would have been the same join over the
+   * same table behind the same `team.manage` guard, and the two would have drifted the first time
+   * a status or an owner rule changed. The additive fields are `employeeId` and
+   * `employeeDisplayName`: which staff member, if any, has already claimed this account.
+   *
+   * The claimed rows are RETURNED, not filtered out, and the picker excludes them itself. A
+   * server-side filter would need to know which employee is being edited in order to keep that
+   * employee's own current link in the list, and it would leave the operator staring at a missing
+   * name with no way to find out where it went. With the claim named, the picker can offer the
+   * unclaimed accounts, keep the row belonging to the employee on screen, and say "already linked
+   * to Sam" about the rest.
+   *
+   * `unique (business_id, membership_id)` on `employees` is what makes the left join at most
+   * one-to-one, and it is the same constraint the write path relies on.
+   */
   app.get("/api/members", {
     preHandler: [authenticate, requirePermission("team.manage")]
   }, async (request) => {
     const context = auth(request);
     return db`
-      select m.id, u.email, m.is_owner, m.permissions, m.status, m.created_at
-      from business_memberships m join users u on u.id = m.user_id
+      select m.id, u.email, m.is_owner, m.permissions, m.status, m.created_at,
+        e.id as employee_id, e.display_name as employee_display_name
+      from business_memberships m
+      join users u on u.id = m.user_id
+      left join employees e on e.business_id = m.business_id and e.membership_id = m.id
       where m.business_id = ${context.businessId}
       order by m.is_owner desc, u.email
     `;
@@ -2993,16 +3073,128 @@ export function registerRoutes(
     return reply.code(204).send();
   });
 
+  interface EmployeeRosterRow {
+    id: string;
+    businessId: string;
+    membershipId: string | null;
+    displayName: string;
+    active: boolean;
+    colorSlot: number | null;
+    createdAt: Date;
+    updatedAt: Date;
+    serviceIds: string[];
+    phone: string | null;
+    accountEmail: string | null;
+    accountIsOwner: boolean | null;
+    accountStatus: string | null;
+  }
+
+  /**
+   * The staff roster, in two shapes.
+   *
+   * This route is `authenticate` only, and it has to stay that way: the calendar needs the roster
+   * to draw a column per groomer, and a groomer with nothing but `calendar.view` is exactly who
+   * needs it. It used to `select e.*`, which meant every column ever added to `employees` was
+   * published to every authenticated session regardless of permission — fine while the table held
+   * a name and a flag, wrong the moment it held a person's phone number.
+   *
+   * So the columns are enumerated, and they are split:
+   *
+   *   ROSTER (any authenticated session) — id, businessId, displayName, active, colorSlot,
+   *   serviceIds, timestamps, and `membershipId`. Everything here is needed to render a calendar
+   *   or a groomer picker and none of it is contact information. `membershipId` stays in the
+   *   roster deliberately: it is an opaque, tenant-scoped identifier that says only "this
+   *   employee is linked to some account", and it is what the mobile app's `resolveMyEmployeeId`
+   *   matches against the session's own membership to answer "which groomer am I". Gating it
+   *   would take the "Mine" filter away from every groomer, which is the one session type that
+   *   needs it most.
+   *
+   *   ACCOUNT AND CONTACT (`team.manage` only) — `phone`, and the linked account's email, owner
+   *   flag and status. This is HR data with no calendar use: a person's phone number and the
+   *   email address of the human behind the login. `team.manage` is the permission that already
+   *   guards `GET /api/members`, which is where the same email is readable, so the two surfaces
+   *   agree rather than one of them being a way around the other.
+   *
+   * Gated twice on purpose: the SQL does not read the values for a session that may not see them,
+   * and the response for that session is built from a named field list rather than by deleting
+   * keys, so a column added to the select later cannot leak by being forgotten about.
+   */
   app.get("/api/employees", { preHandler: authenticate }, async (request) => {
     const context = auth(request);
-    return db`
-      select e.*,
-        coalesce(array_agg(es.service_id) filter (where es.service_id is not null),'{}') as service_ids
-      from employees e left join employee_services es on es.employee_id=e.id
+    const managesTeam = can(context, "team.manage");
+    const roster = await db<EmployeeRosterRow[]>`
+      select e.id, e.business_id, e.membership_id, e.display_name, e.active, e.color_slot,
+        e.created_at, e.updated_at,
+        coalesce(array_agg(es.service_id) filter (where es.service_id is not null),'{}') as service_ids,
+        case when ${managesTeam} then e.phone end as phone,
+        case when ${managesTeam} then account.email end as account_email,
+        case when ${managesTeam} then membership.is_owner end as account_is_owner,
+        case when ${managesTeam} then membership.status::text end as account_status
+      from employees e
+      left join employee_services es on es.employee_id=e.id
+      left join business_memberships membership
+        on membership.business_id=e.business_id and membership.id=e.membership_id
+      left join users account on account.id=membership.user_id
       where e.business_id=${context.businessId}
-      group by e.id order by e.active desc,e.display_name
+      group by e.id, membership.id, account.id
+      order by e.active desc,e.display_name
     `;
+    if (managesTeam) return roster;
+    return roster.map((employee) => ({
+      id: employee.id,
+      businessId: employee.businessId,
+      membershipId: employee.membershipId,
+      displayName: employee.displayName,
+      active: employee.active,
+      colorSlot: employee.colorSlot,
+      serviceIds: employee.serviceIds,
+      createdAt: employee.createdAt,
+      updatedAt: employee.updatedAt
+    }));
   });
+
+  /**
+   * Refuses a link to a workspace account the operator may not link this employee to.
+   *
+   * THE FOREIGN KEY DOES NOT DO THIS. `employees_membership_id_fkey` references
+   * `business_memberships(id)` alone, not `(business_id, id)` — it is one of the few references
+   * to a tenant-scoped table in this schema that is not tenant-qualified — and referential
+   * integrity checks are not subject to row-level security. Without this check, a `team.manage`
+   * session that learned another salon's membership id could attach it to one of its own
+   * employees, and every attribution join would then resolve that salon's staff name into this
+   * one's report cards. The check is here rather than in the schema because 0040 adds no table
+   * and rewriting a foreign key on a live `employees` table is a heavier change than the hole
+   * warrants; the API is the only writer.
+   *
+   * `unique (business_id, membership_id)` already makes the link one-to-one, so a claimed
+   * membership is refused with a code the picker can act on rather than a bare 409 from the
+   * index. The index still stands behind it for the concurrent case; see `uniqueViolations`.
+   *
+   * A `disabled` membership is not linkable. It is the same bar `hasCurrentPermission` applies:
+   * an account that can no longer act in this workspace is not an account to attribute work to.
+   */
+  async function assertMembershipLinkable(
+    tx: Transaction,
+    input: { businessId: string; membershipId: string; employeeId: string | null }
+  ): Promise<void> {
+    const [membership] = await tx<{ claimedBy: string | null; claimedByName: string | null }[]>`
+      select claimant.id as claimed_by, claimant.display_name as claimed_by_name
+      from business_memberships membership
+      left join employees claimant
+        on claimant.business_id=membership.business_id and claimant.membership_id=membership.id
+      where membership.business_id=${input.businessId} and membership.id=${input.membershipId}
+        and membership.status='active'
+    `;
+    if (!membership) {
+      throw new SchedulingRequestError(404, "MEMBERSHIP_NOT_LINKABLE",
+        "That workspace account is not available to link.");
+    }
+    if (membership.claimedBy && membership.claimedBy !== input.employeeId) {
+      throw new SchedulingRequestError(409, "MEMBERSHIP_ALREADY_LINKED",
+        `That account is already linked to ${membership.claimedByName}.`,
+        { membershipId: input.membershipId, employeeId: membership.claimedBy });
+    }
+  }
 
   app.post("/api/employees", {
     preHandler: [authenticate, requirePermission("team.manage")]
@@ -3011,9 +3203,14 @@ export function registerRoutes(
     const input = body(employeeSchema, request.body);
     const employee = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
+      if (input.membershipId) {
+        await assertMembershipLinkable(tx,
+          { businessId: context.businessId, membershipId: input.membershipId, employeeId: null });
+      }
       const [created] = await tx<{ id: string; displayName: string }[]>`
-        insert into employees (business_id, membership_id, display_name)
-        values (${context.businessId}, ${input.membershipId ?? null}, ${input.displayName})
+        insert into employees (business_id, membership_id, display_name, color_slot, phone, normalized_phone)
+        values (${context.businessId}, ${input.membershipId ?? null}, ${input.displayName},
+          ${input.colorSlot ?? null}, ${input.phone ?? null}, ${normalizePhone(input.phone)})
         returning id, display_name
       `;
       if (!created) throw new Error("Employee creation failed");
@@ -3040,17 +3237,34 @@ export function registerRoutes(
     const input = body(employeeUpdateSchema, request.body);
     const employee = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
+      if (input.membershipId) {
+        await assertMembershipLinkable(tx,
+          { businessId: context.businessId, membershipId: input.membershipId, employeeId: id });
+      }
       // A merge, field by field. Only what the caller actually sent is written; see
       // `employeeUpdateSchema` for why an omitted field must not be read as a cleared one.
       // `display_name` can use coalesce because it is `not null` and can never be sent as null;
-      // `membership_id` cannot, because null is a meaningful value an operator may choose.
-      const [updated] = await tx<{ id: string }[]>`
+      // the other three cannot, because null is a meaningful value an operator may choose:
+      // unlink the account, go back to the hash-derived colour, clear the number.
+      const [before] = await tx<{ membershipId: string | null }[]>`
+        select membership_id from employees
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      const [updated] = await tx<EmployeeRosterRow[]>`
         update employees set
           display_name=coalesce(${input.displayName ?? null},display_name),
           membership_id=case when ${input.membershipId !== undefined}
             then ${input.membershipId ?? null}::uuid else membership_id end,
+          color_slot=case when ${input.colorSlot !== undefined}
+            then ${input.colorSlot ?? null}::smallint else color_slot end,
+          phone=case when ${input.phone !== undefined}
+            then ${input.phone ?? null}::text else phone end,
+          normalized_phone=case when ${input.phone !== undefined}
+            then ${normalizePhone(input.phone)}::text else normalized_phone end,
           updated_at=now()
-        where business_id=${context.businessId} and id=${id} returning *
+        where business_id=${context.businessId} and id=${id}
+        returning id, business_id, membership_id, display_name, active, color_slot, phone,
+          created_at, updated_at
       `;
       if (!updated) return null;
       // Untouched unless the caller sent the field. An empty array is a deliberate "no
@@ -3064,7 +3278,23 @@ export function registerRoutes(
           `;
         }
       }
-      return updated;
+      // Linking or unlinking an account decides whose name appears on report cards, agreements,
+      // rabies verifications and photos from here on, so the change is recorded. Only the link
+      // is worth an audit trail; a colour or a typo fix is not.
+      if (input.membershipId !== undefined && (before?.membershipId ?? null) !== (input.membershipId ?? null)) {
+        await record(tx, {
+          businessId: context.businessId, actorId: context.userId, action: "employee.account.link",
+          resourceType: "employee", resourceId: id,
+          before: { membershipId: before?.membershipId ?? null },
+          after: { membershipId: input.membershipId ?? null },
+          eventType: "EmployeeUpdated"
+        });
+      }
+      const serviceIds = await tx<{ serviceId: string }[]>`
+        select service_id from employee_services
+        where business_id=${context.businessId} and employee_id=${id} order by service_id
+      `;
+      return { ...updated, serviceIds: serviceIds.map((row) => row.serviceId) };
     });
     if (!employee) return reply.code(404).send({ error: "Employee not found" });
     return employee;
@@ -7027,6 +7257,7 @@ export function registerRoutes(
       const resolved=resolveWallTime(input.localStart,location.timezone,input.disambiguation);
       await schedulingHooks.afterLocationLock?.({operation:"create",businessId:context.businessId,timezone:location.timezone,version:location.version});
       await ensureBookingResourcesAvailable(tx,{businessId:context.businessId,employeeIds,serviceIds:input.serviceIds});
+      await ensureGroomersOfferServices(tx,{businessId:context.businessId,employeeIds,serviceIds:input.serviceIds});
       const catalog=await resolveServicePrices(tx,{businessId:context.businessId,petId:input.petId,serviceIds:input.serviceIds});
       const unresolved=catalog.find(service=>service.status!=="resolved");
       if(unresolved)throw new Error(unresolved.status==="weight_required"?"Weight required to determine pricing.":unresolved.status==="quote_required"?`${unresolved.name} requires a quote before booking.`:`${unresolved.name} price requires admin confirmation.`);
@@ -7253,6 +7484,13 @@ export function registerRoutes(
       await lockSchedulingResources(tx, context.businessId, [...currentAssignments.map(row=>row.employeeId),...employeeIds]);
       const bookedServices=await tx<{serviceId:string}[]>`select service_id from appointment_services where business_id=${context.businessId} and appointment_id=${id}`;
       await ensureBookingResourcesAvailable(tx,{businessId:context.businessId,employeeIds,serviceIds:bookedServices.map(row=>row.serviceId)});
+      // Only a REASSIGNMENT is checked against the new groomer's service restriction. Moving an
+      // appointment in time keeps the assignment it already had, and a rule added after that
+      // booking must not strand it; see `ensureGroomersOfferServices`.
+      if(primaryEmployeeId!==current.employeeId){
+        await ensureGroomersOfferServices(tx,{businessId:context.businessId,employeeIds,
+          serviceIds:bookedServices.map(row=>row.serviceId)});
+      }
       const startAt = resolved.instant;
       const endAt = new Date(startAt.getTime() + (current.endAt.getTime() - current.startAt.getTime()));
       if (localDateForInstant(endAt,location.timezone) !== input.localStart.slice(0,10)) {
@@ -7392,6 +7630,8 @@ export function registerRoutes(
       `;
       if (invoice.length) throw new Error("Services cannot change after checkout begins");
       await ensureBookingResourcesAvailable(tx,{businessId:context.businessId,employeeIds:assigned.map(row=>row.employeeId),serviceIds:input.serviceIds});
+      await ensureGroomersOfferServices(tx,{businessId:context.businessId,
+        employeeIds:assigned.map(row=>row.employeeId),serviceIds:input.serviceIds});
       const catalog=await resolveServicePrices(tx,{businessId:context.businessId,petId:appointment.petId,serviceIds:input.serviceIds});
       const unresolved=catalog.find(service=>service.status!=="resolved");
       if(unresolved)throw new Error(unresolved.status==="weight_required"?"Weight required to determine pricing.":`${unresolved.name} price is unresolved.`);

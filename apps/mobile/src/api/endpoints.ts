@@ -39,6 +39,8 @@ export interface EmployeeSummary {
   id: string;
   displayName: string;
   membershipId: string | null;
+  /** The assigned calendar colour slot, or null to use the hash; see `resolveGroomerSlot`. */
+  colorSlot: number | null;
   active: boolean;
 }
 

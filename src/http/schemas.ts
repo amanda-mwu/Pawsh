@@ -5,6 +5,7 @@ import { petHealthIssues } from "@pawsh/domain";
 import { permissions } from "@pawsh/domain";
 import {pricingClasses,weightTiers} from "@pawsh/domain";
 import {cardProcessorProviders,paymentMethods} from "@pawsh/domain";
+import {groomerSlotCount} from "@pawsh/domain";
 
 export const idParams = z.object({ id: z.string().uuid() });
 export const locationParams = z.object({ locationId: z.string().uuid() });
@@ -484,15 +485,40 @@ export const breedRenameSchema=z.object({
 export const priceResolutionSchema=z.object({petId:z.string().uuid(),serviceIds:z.array(z.string().uuid()).min(1).max(30)}).strict();
 
 /**
+ * The calendar identity colour a groomer is assigned, or null for "use the hash".
+ *
+ * The database check is the durable outer bound (0-15). THIS is where the palette's real size is
+ * enforced, against the same `groomerSlotCount` the web and mobile clients render from, so adding
+ * a colour is a one-line change in `packages/domain` and never a migration. Null is not a missing
+ * value: it means "keep the hash-derived slot", which is what every existing employee has.
+ */
+const colorSlotField = z.number().int().min(0).max(groomerSlotCount - 1);
+
+/**
+ * A staff phone number, for the record only. Nothing dials or texts it - Pawsh has no SMS channel.
+ *
+ * Validated exactly like `customerSchema.phone` so the codebase has one phone convention: a blank
+ * string is a cleared field rather than a validation error, and the stored text is capped at the
+ * same 40 characters the column allows. The digits-only form is derived server-side by
+ * `normalizePhone`, never accepted from the client.
+ */
+const staffPhoneField = z.preprocess(blankToNull, z.string().trim().max(40).nullish());
+
+/**
  * Creating a team member.
  *
  * `serviceIds` defaults to the empty set because the overwhelmingly common case is a groomer who
  * does everything the salon offers; an empty set is "no restriction", not "restricted to nothing".
+ *
+ * `membershipId` LINKS an existing workspace account; it never grants one. Membership and
+ * permissions are created in Settings -> Permissions and nowhere else.
  */
 export const employeeSchema = z.object({
   displayName: z.string().trim().min(1).max(120),
   membershipId: z.string().uuid().nullish(),
-  serviceIds: z.array(z.string().uuid()).default([])
+  serviceIds: z.array(z.string().uuid()).default([]),
+  colorSlot: colorSlotField.nullish(),
+  phone: staffPhoneField
 });
 
 /**
@@ -512,6 +538,10 @@ export const employeeSchema = z.object({
  *   membershipId: null    -> the operator is unlinking the account, on purpose
  *   serviceIds omitted    -> the stored restriction is left exactly as it is
  *   serviceIds: []        -> the operator is clearing the restriction, on purpose
+ *   colorSlot omitted     -> the stored colour is left exactly as it is
+ *   colorSlot: null       -> back to the hash-derived colour, on purpose
+ *   phone omitted         -> the stored number is left exactly as it is
+ *   phone: null or ""     -> the operator is clearing the number, on purpose
  *
  * `.strict()` is deliberate: a client that misspells a field must be told, rather than have the
  * request silently succeed while changing nothing.
@@ -519,7 +549,9 @@ export const employeeSchema = z.object({
 export const employeeUpdateSchema = z.object({
   displayName: z.string().trim().min(1).max(120).optional(),
   membershipId: z.string().uuid().nullable().optional(),
-  serviceIds: z.array(z.string().uuid()).optional()
+  serviceIds: z.array(z.string().uuid()).optional(),
+  colorSlot: colorSlotField.nullable().optional(),
+  phone: z.preprocess(blankToNull, z.string().trim().max(40).nullable().optional())
 }).strict().refine(
   (value) => Object.values(value).some((field) => field !== undefined),
   { message: "At least one team member field is required" }

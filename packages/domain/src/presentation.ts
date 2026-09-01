@@ -166,3 +166,31 @@ export function groomerSlotIndex(id: string | null | undefined): number | null {
   }
   return hash % groomerSlotCount;
 }
+
+/**
+ * The identity slot a groomer actually gets: the one an operator assigned, or the hash.
+ *
+ * `employees.color_slot` is null for every groomer nobody has assigned a colour to, which is
+ * every groomer in every workspace that never opens the setting, so the hash stays the default
+ * and nothing about those calendars changes. An assigned slot simply wins.
+ *
+ * This exists so the override is resolved in ONE place. `groomerSlotIndex` carries a note that a
+ * groomer who is purple on the web and orange on a phone is two people to anyone reading both;
+ * two clients each deciding for themselves when the stored slot beats the hash is the same defect
+ * with an extra branch to get wrong.
+ *
+ * An out-of-range stored slot is ignored rather than rendered, because the database's check
+ * constraint is deliberately wider than the palette: it is the durable outer bound, and
+ * `groomerSlotCount` is how many colours actually exist today. A slot stored while the palette
+ * was larger falls back to the hash instead of asking for a token that is not there.
+ */
+export function resolveGroomerSlot(
+  id: string | null | undefined,
+  colorSlot: number | null | undefined
+): number | null {
+  if (typeof colorSlot === "number" && Number.isInteger(colorSlot)
+    && colorSlot >= 0 && colorSlot < groomerSlotCount) {
+    return colorSlot;
+  }
+  return groomerSlotIndex(id);
+}

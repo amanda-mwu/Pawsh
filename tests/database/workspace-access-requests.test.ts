@@ -13,12 +13,19 @@ describeDatabase("existing workspace access requests",()=>{
   let app:Awaited<ReturnType<typeof createApp>>;
   const suffix=crypto.randomUUID();
   const ownerEmail=`access-owner-${suffix}@example.test`;
-  let ownerCookie:string,businessId:string;
+  let ownerCookie:string,businessId:string,approvedRole:string;
 
   beforeAll(async()=>{
     db=createDatabase(config);app=await createApp(config,db,{runWorker:false,serveStatic:false});await app.ready();
     const signup=await app.inject({method:"POST",url:"/api/auth/signup",payload:{email:ownerEmail,password:"correct horse access owner",businessName:`Access Salon ${suffix}`}});
     ownerCookie=cookie(signup);businessId=signup.json().businessId;
+    // Approval now NAMES the role it grants. It used to grant the Groomer preset silently -
+    // a decision nobody made, on behalf of an owner who was only told they were approving
+    // somebody. The role is created here so every approval below can say what it is granting.
+    approvedRole=(await app.inject({method:"POST",url:"/api/roles",headers:{cookie:ownerCookie},
+      payload:{name:`Approved access ${suffix}`}})).json().id;
+    await app.inject({method:"PATCH",url:`/api/roles/${approvedRole}`,headers:{cookie:ownerCookie},
+      payload:{version:1,permissions:["calendar.view","appointments.view"]}});
   });
   afterAll(async()=>{await app.close();await db.end();});
 
@@ -51,11 +58,15 @@ describeDatabase("existing workspace access requests",()=>{
     const requesterEmail=`new-user-${suffix}@example.test`;await request(requesterEmail);
     const list=await app.inject({method:"GET",url:"/api/workspace-access-requests",headers:{cookie:ownerCookie}});
     const pending=list.json().find((item:{requesterEmail:string})=>item.requesterEmail===requesterEmail);
-    const approval=await app.inject({method:"POST",url:`/api/workspace-access-requests/${pending.id}/approve`,headers:{cookie:ownerCookie}});
+    // An approval must name a role. Without one there is no defensible default: the endpoint
+    // used to pick Groomer on the owner's behalf and never say so.
+    expect((await app.inject({method:"POST",url:`/api/workspace-access-requests/${pending.id}/approve`,headers:{cookie:ownerCookie},payload:{}})).statusCode).toBe(400);
+    const approval=await app.inject({method:"POST",url:`/api/workspace-access-requests/${pending.id}/approve`,headers:{cookie:ownerCookie},payload:{roleId:approvedRole}});
     expect(approval.statusCode).toBe(200);expect(approval.json()).toMatchObject({approved:true,membershipCreated:false,invitationCreated:true});
-    const invitationRow=await db<{permissions:string[];invitedBy:string}[]>`select permissions,invited_by from membership_invitations where business_id=${businessId} and normalized_email=${requesterEmail}`;
-    expect(invitationRow[0]?.permissions).not.toContain("team.manage");
-    expect(invitationRow[0]?.permissions).not.toContain("settings.manage");
+    const invitationRow=await db<{permissions:string[];roleId:string;invitedBy:string}[]>`select permissions,role_id,invited_by from membership_invitations where business_id=${businessId} and normalized_email=${requesterEmail}`;
+    // The requester gets exactly the role the approver chose, and no permission list of its own.
+    expect(invitationRow[0]?.roleId).toBe(approvedRole);
+    expect(invitationRow[0]?.permissions).toEqual([]);
   });
 
   it("adds an existing user exactly once, permits workspace selection, and enforces tenant boundaries",async()=>{
@@ -63,9 +74,11 @@ describeDatabase("existing workspace access requests",()=>{
     const otherSignup=await app.inject({method:"POST",url:"/api/auth/signup",payload:{email:existingEmail,password:"correct horse existing member",businessName:`Other Salon ${suffix}`}});
     const otherCookie=cookie(otherSignup);await request(existingEmail);
     const pending=(await app.inject({method:"GET",url:"/api/workspace-access-requests",headers:{cookie:ownerCookie}})).json().find((item:{requesterEmail:string})=>item.requesterEmail===existingEmail);
-    expect((await app.inject({method:"POST",url:`/api/workspace-access-requests/${pending.id}/approve`,headers:{cookie:otherCookie}})).statusCode).toBe(404);
-    expect((await app.inject({method:"POST",url:`/api/workspace-access-requests/${pending.id}/approve`,headers:{cookie:ownerCookie}})).statusCode).toBe(200);
-    expect((await app.inject({method:"POST",url:`/api/workspace-access-requests/${pending.id}/approve`,headers:{cookie:ownerCookie}})).statusCode).toBe(404);
+    // A role id from the approver's OWN business, so approving with another tenant's session
+    // fails on the request rather than on the role.
+    expect((await app.inject({method:"POST",url:`/api/workspace-access-requests/${pending.id}/approve`,headers:{cookie:otherCookie},payload:{roleId:approvedRole}})).statusCode).toBe(404);
+    expect((await app.inject({method:"POST",url:`/api/workspace-access-requests/${pending.id}/approve`,headers:{cookie:ownerCookie},payload:{roleId:approvedRole}})).statusCode).toBe(200);
+    expect((await app.inject({method:"POST",url:`/api/workspace-access-requests/${pending.id}/approve`,headers:{cookie:ownerCookie},payload:{roleId:approvedRole}})).statusCode).toBe(404);
     const workspaces=await app.inject({method:"GET",url:"/api/workspaces",headers:{cookie:otherCookie}});
     expect(workspaces.json()).toHaveLength(2);
     expect((await app.inject({method:"POST",url:"/api/workspaces/select",headers:{cookie:otherCookie},payload:{businessId}})).statusCode).toBe(200);

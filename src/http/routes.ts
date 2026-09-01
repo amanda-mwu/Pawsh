@@ -25,6 +25,7 @@ import {
   operationalUpdateSchema, voidPaymentSchema, appointmentMoveSchema, appointmentServicesSchema,
   passwordResetRequestSchema, passwordResetConfirmSchema, invitationSchema,
   invitationAcceptSchema, ownershipTransferSchema, petProfileUpdateSchema, petCareUpdateSchema,
+  workspaceAccessApprovalSchema,
   roleCreateSchema, roleUpdateSchema, memberRoleSchema,
   servicePricingSchema,petTypeParams,breedParams,breedSettingsSchema,priceResolutionSchema,
   breedCreateSchema,breedRenameSchema,
@@ -1982,9 +1983,10 @@ export function registerRoutes(
     const input = body(invitationAcceptSchema, request.body);
     const result = await db.begin(async (tx) => {
       const [invitation] = await tx<{
-        id: string; businessId: string; email: string; normalizedEmail: string; permissions: string[];
+        id: string; businessId: string; email: string; normalizedEmail: string;
+        permissions: string[]; roleId: string | null;
       }[]>`
-        select id,business_id,email,normalized_email,permissions from membership_invitations
+        select id,business_id,email,normalized_email,permissions,role_id from membership_invitations
         where token_hash=${tokenHash(input.token)} and accepted_at is null and revoked_at is null
           and expires_at>now() for update
       `;
@@ -2011,11 +2013,19 @@ export function registerRoutes(
         if (existingMembership.length) throw new Error("This user already belongs to the business");
       }
       if (!user) throw new Error("Invitation user creation failed");
+      // The membership takes the invitation's ROLE, so what the person arrives with is the role as
+      // it stands today rather than a snapshot taken when the invitation was written. The legacy
+      // permission list is carried only for an invitation that never named a role.
       const [membership] = await tx<{ id: string }[]>`
-        insert into business_memberships(business_id,user_id,permissions,status)
-        values (${invitation.businessId},${user.id},${invitation.permissions},'active') returning id
+        insert into business_memberships(business_id,user_id,permissions,role_id,status)
+        values (${invitation.businessId},${user.id},${invitation.permissions},
+          ${invitation.roleId},'active') returning id
       `;
-      await tx`update membership_invitations set accepted_at=now() where id=${invitation.id}`;
+      // The invitation is consumed, so it releases its role reference. Leaving it set would keep
+      // `on delete restrict` blocking that role's deletion on behalf of a row nothing can use.
+      await tx`
+        update membership_invitations set accepted_at=now(),role_id=null where id=${invitation.id}
+      `;
       const token = issueToken();
       await tx`
         insert into sessions(user_id,business_id,token_hash,expires_at)
@@ -3153,9 +3163,17 @@ export function registerRoutes(
     preHandler:[authenticate,requirePermission("team.manage")]
   },async(request,reply)=>{
     const context=auth(request);const {id}=idParams.parse(request.params);
+    // The role is now named by the approver. This endpoint used to grant the Groomer preset
+    // silently - a decision nobody made, taken on behalf of an owner who was only told they were
+    // approving somebody. That invisible grant is the thing roles exist to end.
+    const input=body(workspaceAccessApprovalSchema,request.body);
     const invitationToken=issueToken();
     const result=await db.begin(async tx=>{
       await setTenant(tx,context.businessId);
+      const [role]=await tx<{id:string}[]>`
+        select id from roles where business_id=${context.businessId} and id=${input.roleId}
+      `;
+      if(!role)return {error:"role-missing" as const};
       const [accessRequest]=await tx<{id:string;requesterName:string;requesterEmail:string;normalizedEmail:string;status:string}[]>`
         select id,requester_name,requester_email,normalized_email,status
         from workspace_access_requests where business_id=${context.businessId} and id=${id} for update
@@ -3169,25 +3187,28 @@ export function registerRoutes(
         `;
         if(existing){
           membershipId=existing.id;
+          // An owner being reactivated keeps their ownership and takes no role; anybody else takes
+          // the role the approver named.
           await tx`update business_memberships set status='active',
-              permissions=case when is_owner then permissions else ${permissionPresets.groomer as unknown as string[]} end,
+              role_id=case when is_owner then null else ${input.roleId}::uuid end,
               updated_at=now()
             where business_id=${context.businessId} and id=${existing.id}`;
         }else{
           const [created]=await tx<{id:string}[]>`
-            insert into business_memberships(business_id,user_id,permissions,status)
-            values (${context.businessId},${user.id},${permissionPresets.groomer as unknown as string[]},'active') returning id
+            insert into business_memberships(business_id,user_id,role_id,status)
+            values (${context.businessId},${user.id},${input.roleId},'active') returning id
           `;
           membershipId=created?.id??null;
         }
       }else{
         const [invitation]=await tx<{id:string}[]>`
           insert into membership_invitations
-            (business_id,email,normalized_email,token_hash,permissions,invited_by,expires_at)
+            (business_id,email,normalized_email,token_hash,role_id,invited_by,expires_at)
           values (${context.businessId},${accessRequest.requesterEmail},${accessRequest.normalizedEmail},${tokenHash(invitationToken)},
-            ${permissionPresets.groomer as unknown as string[]},${context.userId},now()+interval '7 days')
+            ${input.roleId},${context.userId},now()+interval '7 days')
           on conflict (business_id,normalized_email) do update set email=excluded.email,
-            token_hash=excluded.token_hash,permissions=excluded.permissions,invited_by=excluded.invited_by,
+            token_hash=excluded.token_hash,permissions=excluded.permissions,role_id=excluded.role_id,
+            invited_by=excluded.invited_by,
             expires_at=excluded.expires_at,accepted_at=null,revoked_at=null,created_at=now()
           returning id
         `;
@@ -3209,6 +3230,7 @@ export function registerRoutes(
       await record(tx,{businessId:context.businessId,actorId:context.userId,action:"workspace_access.approve",resourceType:"workspace_access_request",resourceId:id,after:{membershipId,invitationId},eventType:"WorkspaceAccessApproved"});
       return {approved:true,membershipCreated:Boolean(membershipId),invitationCreated:Boolean(invitationId),acceptancePath};
     });
+    if(result&&"error" in result)return reply.code(404).send({error:"Role not found"});
     if(!result)return reply.code(404).send({error:"Pending access request not found"});
     return result;
   });
@@ -3242,29 +3264,111 @@ export function registerRoutes(
     const normalized = normalizeEmail(input.email);
     const invitation = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [created] = await tx<{ id: string; email: string; permissions: string[]; expiresAt: Date }[]>`
+      // The role is resolved inside the caller's own business. The composite foreign key would
+      // refuse a cross-tenant reference anyway, but resolving it here turns a constraint violation
+      // into an ordinary 404.
+      if (input.roleId) {
+        const [role] = await tx<{ id: string }[]>`
+          select id from roles where business_id=${context.businessId} and id=${input.roleId}
+        `;
+        if (!role) return { error: "role-missing" as const };
+      }
+      // A role-bearing invitation stores no permission list. The list would be a second, frozen
+      // answer to "what will this person be able to do", and it would win the day somebody read
+      // the column instead of the role.
+      const granted = input.roleId ? [] : input.permissions;
+      const [created] = await tx<{
+        id: string; email: string; permissions: string[]; roleId: string | null; expiresAt: Date;
+      }[]>`
         insert into membership_invitations
-          (business_id,email,normalized_email,token_hash,permissions,invited_by,expires_at)
+          (business_id,email,normalized_email,token_hash,permissions,role_id,invited_by,expires_at)
         values (${context.businessId},${input.email.trim()},${normalized},${tokenHash(invitationToken)},
-          ${input.permissions},${context.userId},now()+interval '7 days')
+          ${granted},${input.roleId ?? null},${context.userId},now()+interval '7 days')
         on conflict (business_id,normalized_email) do update set
           email=excluded.email,token_hash=excluded.token_hash,permissions=excluded.permissions,
+          role_id=excluded.role_id,
           invited_by=excluded.invited_by,expires_at=excluded.expires_at,accepted_at=null,revoked_at=null,
           created_at=now()
-        returning id,email,permissions,expires_at
+        returning id,email,permissions,role_id,expires_at
       `;
       if (!created) throw new Error("Invitation creation failed");
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "membership.invite",
         resourceType: "membership_invitation", resourceId: created.id,
-        after: { email: created.email }, eventType: "MemberInvited"
+        after: { email: created.email, roleId: created.roleId }, eventType: "MemberInvited"
       });
-      return created;
+      return { created };
     });
+    if ("error" in invitation) return reply.code(404).send({ error: "Role not found" });
     return reply.code(201).send({
-      ...invitation,
+      ...invitation.created,
       acceptancePath: `/?invite=${encodeURIComponent(invitationToken)}`
     });
+  });
+
+  /**
+   * Invitations that are still live.
+   *
+   * "Live" is exactly `accepted_at is null and revoked_at is null` - the same predicate the role
+   * delete gate counts and the same one 0041 backfilled. An expired invitation is still listed,
+   * with its `expiresAt`, because it still holds its role reference and still blocks that role's
+   * deletion; hiding it would leave an owner unable to find what was in the way.
+   */
+  app.get("/api/members/invitations", {
+    preHandler: [authenticate, requirePermission("team.manage")]
+  }, async (request) => {
+    const context = auth(request);
+    const rows = await db<{
+      id: string; email: string; createdAt: Date; expiresAt: Date;
+      roleId: string | null; roleName: string | null; roleEnabled: boolean | null;
+    }[]>`
+      select v.id, v.email, v.created_at, v.expires_at,
+        r.id as role_id, r.name as role_name, r.enabled as role_enabled
+      from membership_invitations v
+      left join roles r on r.business_id=v.business_id and r.id=v.role_id
+      where v.business_id=${context.businessId}
+        and v.accepted_at is null and v.revoked_at is null
+      order by v.created_at desc limit 200
+    `;
+    return {
+      invitations: rows.map(({ roleId, roleName, roleEnabled, ...invitation }) => ({
+        ...invitation,
+        role: roleId ? { id: roleId, name: roleName ?? "", enabled: roleEnabled ?? false } : null
+      }))
+    };
+  });
+
+  /**
+   * Revoking an invitation.
+   *
+   * The role reference is cleared at the same time. A revoked invitation grants nothing, so a
+   * `role_id` left behind would keep `on delete restrict` blocking that role's deletion for a row
+   * nothing can ever use - and the delete gate, which counts live invitations, would not be able
+   * to explain why.
+   */
+  app.delete("/api/members/invitations/:id", {
+    preHandler: [authenticate, requirePermission("team.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    if (!context.isOwner) return reply.code(403).send({ error: "Only an Owner can revoke invitations" });
+    const { id } = idParams.parse(request.params);
+    const revoked = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [row] = await tx<{ id: string; email: string }[]>`
+        update membership_invitations set revoked_at=now(),role_id=null
+        where business_id=${context.businessId} and id=${id}
+          and accepted_at is null and revoked_at is null
+        returning id,email
+      `;
+      if (!row) return false;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "membership.invite.revoke",
+        resourceType: "membership_invitation", resourceId: id, before: { email: row.email }
+      });
+      return true;
+    });
+    if (!revoked) return reply.code(404).send({ error: "Live invitation not found" });
+    return reply.code(204).send();
   });
 
   app.patch("/api/members/:id/permissions", {

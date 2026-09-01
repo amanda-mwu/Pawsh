@@ -40,12 +40,45 @@ export const passwordChangeSchema = z.object({
   newPassword: passwordSchema
 }).strict();
 
+/**
+ * Inviting somebody to the workspace.
+ *
+ * `roleId` is the shape that survives. An invitation names the role the person will hold, so what
+ * they arrive with is the role's permissions AS THEY STAND ON THE DAY THEY ACCEPT - not a snapshot
+ * taken when the invitation was written. An invitation sent last week to somebody who accepts
+ * after the role was tightened must not hand them the looser set.
+ *
+ * `permissions` is the LEGACY shape and is accepted only until `membership_invitations.permissions`
+ * is dropped. It is still here because dropping it and the column in one step would make the
+ * riskiest change in the authorization path irreversible, which is the same reason 0041 left the
+ * columns populated. New callers must send `roleId`.
+ *
+ * Both are optional and at most one may be given: an invitation carrying a role AND a permission
+ * list is two different answers to "what will this person be able to do", and picking one silently
+ * is how the wrong one gets picked.
+ */
 export const invitationSchema = z.object({
   email: z.string().email().max(320),
+  roleId: z.string().uuid().nullish(),
   // Read from the domain tuple rather than restated here, so a new permission cannot be grantable
   // by the authorization layer while silently rejected at the invitation boundary.
   permissions: z.array(z.enum(permissions)).default([])
-});
+}).refine(
+  (value) => !(value.roleId && value.permissions.length > 0),
+  { message: "An invitation names a role or a permission list, not both", path: ["roleId"] }
+);
+
+/**
+ * Approving a workspace access request.
+ *
+ * `roleId` is REQUIRED, and that is the point of the endpoint changing at all. It used to grant
+ * the Groomer preset silently - a decision nobody made, taken on behalf of an owner who was only
+ * told they were approving somebody. Naming the role makes the grant visible at the moment it is
+ * made, which is what roles exist for.
+ */
+export const workspaceAccessApprovalSchema = z.object({
+  roleId: z.string().uuid()
+}).strict();
 
 export const invitationAcceptSchema = z.object({
   token: z.string().min(20).max(200),

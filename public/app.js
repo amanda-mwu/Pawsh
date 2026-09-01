@@ -645,7 +645,7 @@ function moveAppointment(id,preset={}) {
   // corrected where it was attempted instead of making the user find the target again.
   const local=preset.localStart||appointmentLocalValue(appointment);
   const assigned=preset.employeeId?[preset.employeeId]:(appointment.groomers||[]).map(item=>item.id);
-  openModal("Move appointment",groomerCheckboxes(assigned)+field("startAt","Start time","datetime-local",`required value="${escape(local)}"`)+disambiguationField(appointment.scheduledDisambiguation||""),form=>schedulingMutation(`/api/appointments/${id}/schedule`,{employeeId:form.get("employeeId"),localStart:form.get("startAt"),disambiguation:form.get("disambiguation")||undefined,expectedLocationVersion:state.me.business.locationVersion,version:appointment.version},"Reschedule"));
+  openModal("Move appointment",groomerCheckboxes(assigned,(appointment.services||[]).map(service=>service.serviceId))+field("startAt","Start time","datetime-local",`required value="${escape(local)}"`)+disambiguationField(appointment.scheduledDisambiguation||""),form=>schedulingMutation(`/api/appointments/${id}/schedule`,{employeeId:form.get("employeeId"),localStart:form.get("startAt"),disambiguation:form.get("disambiguation")||undefined,expectedLocationVersion:state.me.business.locationVersion,version:appointment.version},"Reschedule"));
 }
 async function terminalAppointment(id,status) {
   if(!confirm(status==="cancelled"?"Cancel this appointment?":"Mark this appointment as a no-show?"))return;
@@ -1520,8 +1520,23 @@ async function removeMember(id) {
   try { await api(`/api/members/${id}`,{method:"DELETE"});toast("Member access removed");await refresh(); }
   catch(error){toast(error.message);}
 }
-function groomerCheckboxes(selected=[]) {
-  return select("employeeId","Groomer",state.employees.filter(employee=>employee.active).map(employee=>[employee.id,employee.displayName]),true,selected[0]||"");
+// An employee with rows in employee_services is only set up for those, and the server refuses the
+// assignment at booking, service-change and groomer-change time. So every groomer picker takes the
+// services in play and renders the rest as disabled options carrying the reason - disabled rather
+// than absent, because a groomer who is simply missing reads as a data problem.
+function groomerServiceGap(employee,serviceIds) {
+  if(!employee.serviceIds?.length)return [];
+  return serviceIds.filter(serviceId=>!employee.serviceIds.includes(serviceId));
+}
+function groomerPickerOptions(serviceIds=[]) {
+  return state.employees.filter(employee=>employee.active).map(employee=>{
+    const gap=groomerServiceGap(employee,serviceIds)
+      .map(serviceId=>state.services.find(service=>service.id===serviceId)?.name).filter(Boolean);
+    return [employee.id,gap.length?`${employee.displayName} - not set up for ${gap.join(", ")}`:employee.displayName,gap.length>0];
+  });
+}
+function groomerCheckboxes(selected=[],serviceIds=[]) {
+  return select("employeeId","Groomer",groomerPickerOptions(serviceIds),true,selected[0]||"");
 }
 // The booking picker uses the catalog's own category order and collapsing, so core grooming
 // leads and the long tail of add-ons and cat services stays folded away. Before this the
@@ -2212,7 +2227,7 @@ function markBreedRefusal(error){
   if(hint){hint.textContent=error.message;hint.hidden=false;}
 }
 function select(name, label, options, wide = false, selectedValue = "", required = true) {
-  return `<label class="${wide ? "wide" : ""}">${label}<select data-testid="field-${name}" name="${name}" ${required?"required":""}><option value="">Choose…</option>${options.map(([v,l]) => `<option value="${v}" ${String(v)===String(selectedValue)?"selected":""}>${escape(l)}</option>`).join("")}</select></label>`;
+  return `<label class="${wide ? "wide" : ""}">${label}<select data-testid="field-${name}" name="${name}" ${required?"required":""}><option value="">Choose…</option>${options.map(([v,l,disabled]) => `<option value="${v}" ${disabled?"disabled":""} ${String(v)===String(selectedValue)?"selected":""}>${escape(l)}</option>`).join("")}</select></label>`;
 }
 function openModal(title, fields, submit, options={}) {
   $("#modal-title").textContent = title; $("#modal-fields").innerHTML = fields; $("#modal-error").textContent = "";
@@ -2499,8 +2514,20 @@ function bindBookingDetail() {
     updateBookingRabiesPreview();promptBookingVaccination();
   });
   bqa('input[name="serviceIds"]').forEach((input)=>
-    input.addEventListener("change",updateBookingPricePreview));
+    input.addEventListener("change",()=>{syncBookingGroomerOptions();updateBookingPricePreview();}));
   bindBookingServiceSections();
+  syncBookingGroomerOptions();
+}
+
+// Keeps the groomer list honest as the service selection changes. A groomer who stops being
+// offerable loses the selection rather than keeping it out of sight: the server would refuse it.
+function syncBookingGroomerOptions() {
+  const groomer=bq('[name="employeeId"]');if(!groomer)return;
+  const current=groomer.value;
+  const options=groomerPickerOptions(bqa('input[name="serviceIds"]:checked').map((input)=>input.value));
+  groomer.innerHTML=`<option value="">Choose…</option>`+options.map(([value,label,disabled])=>
+    `<option value="${value}" ${disabled?"disabled":""}>${escape(label)}</option>`).join("");
+  groomer.value=options.some(([value,,disabled])=>value===current&&!disabled)?current:"";
 }
 
 let bookingPriceSequence=0;
@@ -2561,6 +2588,7 @@ async function applyBookingDefaults() {
   bqa('input[name="serviceIds"]').forEach((input)=>{input.checked=selected.has(input.value);});
   syncBookingServiceCounts();
   revealCheckedBookingServices();
+  syncBookingGroomerOptions();
   updateBookingPricePreview();
 }
 

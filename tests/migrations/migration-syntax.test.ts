@@ -264,9 +264,9 @@ describe("database migrations", () => {
     // column would quietly reverse.
     const staffFields = await readMigration("0040_staff_profile_fields.sql");
     // The colour slot is optional - null keeps the hash-derived colour every existing workspace
-    // already sees - and its range is the durable outer bound, not today's five tokens and not
-    // the eight-to-ten being designed. Pinning it to either would need a second migration to add
-    // one colour; the palette's real size is enforced by the API against `groomerSlotCount`.
+    // already sees - and its range is the durable outer bound, not the ten colours the palette
+    // shipped with. Pinning it to the palette would need a second migration to add one colour;
+    // the palette's real size is enforced by the API against `groomerPaletteSize`.
     expect(staffFields).toContain("add column color_slot smallint");
     expect(staffFields).toContain("check (color_slot is null or color_slot between 0 and 15)");
     // A colour is a label, not an identity: two groomers may share one.

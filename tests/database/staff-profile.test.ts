@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { groomerSlotCount } from "@pawsh/domain";
+import { groomerPaletteSize } from "@pawsh/domain";
 import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
@@ -307,12 +307,12 @@ describeDatabase("staff profile, account linking and service restrictions", () =
     });
 
     /**
-     * The database check is the durable outer bound; the palette's real size is `groomerSlotCount`
-     * and it is enforced here, so adding a colour is a change in `packages/domain` and never a
-     * migration.
+     * The database check is the durable outer bound; the palette's real size is
+     * `groomerPaletteSize` and it is enforced here, so adding a colour is a change in
+     * `packages/domain` and never a migration.
      */
     it("refuses a slot the palette does not have", async () => {
-      for (const colorSlot of [groomerSlotCount, -1, 1.5]) {
+      for (const colorSlot of [groomerPaletteSize, -1, 1.5]) {
         const refused = await app.inject({
           method: "PUT", url: `/api/employees/${unlinkedId}`, headers: { cookie: ownerCookie },
           payload: { colorSlot }
@@ -369,6 +369,161 @@ describeDatabase("staff profile, account linking and service restrictions", () =
       expect(row).toMatchObject({
         displayName: "Renamed Linked Groomer", phone: "(555) 010-2233", active: true
       });
+    });
+  });
+
+  /**
+   * `DELETE` soft-deactivates and `PUT` can now bring someone back, so the Staff screen's Active
+   * switch moves both ways. DELETE is deliberately unchanged, so deactivation has two paths and
+   * reactivation has one.
+   */
+  describe("reactivation", () => {
+    let restingId: string;
+
+    const activeOf = async (employeeId: string): Promise<boolean> => {
+      const [row] = await db<{ active: boolean }[]>`
+        select active from employees where business_id=${businessId} and id=${employeeId}
+      `;
+      return row!.active;
+    };
+
+    beforeAll(async () => {
+      restingId = (await app.inject({
+        method: "POST", url: "/api/employees", headers: { cookie: ownerCookie },
+        payload: { displayName: "Resting Groomer" }
+      })).json().id;
+    });
+
+    it("brings a deactivated employee back and returns them to the roster", async () => {
+      expect((await app.inject({
+        method: "DELETE", url: `/api/employees/${restingId}`, headers: { cookie: ownerCookie }
+      })).statusCode).toBe(204);
+      expect(await activeOf(restingId)).toBe(false);
+      expect(find(await roster(ownerCookie), restingId).active).toBe(false);
+
+      const revived = await app.inject({
+        method: "PUT", url: `/api/employees/${restingId}`, headers: { cookie: ownerCookie },
+        payload: { active: true }
+      });
+      expect(revived.statusCode).toBe(200);
+      expect(revived.json().active).toBe(true);
+      expect(find(await roster(ownerCookie), restingId).active).toBe(true);
+    });
+
+    it("deactivates through PUT as well, without disturbing anything else", async () => {
+      await app.inject({
+        method: "PUT", url: `/api/employees/${restingId}`, headers: { cookie: ownerCookie },
+        payload: { phone: "555-321-0000", colorSlot: 2 }
+      });
+      const off = await app.inject({
+        method: "PUT", url: `/api/employees/${restingId}`, headers: { cookie: ownerCookie },
+        payload: { active: false }
+      });
+      expect(off.statusCode).toBe(200);
+      expect(off.json()).toMatchObject({ active: false, phone: "555-321-0000", colorSlot: 2 });
+      // An unrelated edit must not silently reactivate anyone.
+      const renamed = await app.inject({
+        method: "PUT", url: `/api/employees/${restingId}`, headers: { cookie: ownerCookie },
+        payload: { displayName: "Resting Groomer" }
+      });
+      expect(renamed.json().active).toBe(false);
+      await app.inject({
+        method: "PUT", url: `/api/employees/${restingId}`, headers: { cookie: ownerCookie },
+        payload: { active: true }
+      });
+    });
+
+    it("records the activation change", async () => {
+      const [audit] = await db<{ count: number }[]>`
+        select count(*)::int from audit_events
+        where business_id=${businessId} and resource_id=${restingId}
+          and action in ('employee.reactivate','employee.deactivate')
+      `;
+      expect(audit!.count).toBeGreaterThanOrEqual(2);
+    });
+
+    /**
+     * The reachable stale-link path: link an account, deactivate the employee, revoke the
+     * account's workspace access, then try to bring the employee back. Without the guard this
+     * produces an active employee holding a disabled membership, which is precisely the row
+     * `assertMembershipLinkable` refuses to create, and the membership would silently resume
+     * collecting attribution while its unique index blocked anyone else from being linked.
+     */
+    it("refuses to reactivate an employee whose linked account was revoked", async () => {
+      const memberEmail = `revoked-${suffix}@example.test`;
+      const invitation = await app.inject({
+        method: "POST", url: "/api/members/invitations",
+        headers: { cookie: ownerCookie, origin: config.APP_ORIGIN },
+        payload: { email: memberEmail, permissions: ["calendar.view"] }
+      });
+      const token = new URL(invitation.json().acceptancePath, "http://localhost").searchParams.get("invite");
+      const accepted = await app.inject({
+        method: "POST", url: "/api/auth/invitations/accept",
+        payload: { token, password: "correct horse revoked battery" }
+      });
+      const revokedMembershipId = (await app.inject({
+        method: "GET", url: "/api/me", headers: { cookie: cookie(accepted) }
+      })).json().membershipId;
+
+      const employeeId = (await app.inject({
+        method: "POST", url: "/api/employees", headers: { cookie: ownerCookie },
+        payload: { displayName: "Departed Groomer", membershipId: revokedMembershipId }
+      })).json().id;
+      expect((await app.inject({
+        method: "DELETE", url: `/api/employees/${employeeId}`, headers: { cookie: ownerCookie }
+      })).statusCode).toBe(204);
+      expect((await app.inject({
+        method: "DELETE", url: `/api/members/${revokedMembershipId}`, headers: { cookie: ownerCookie }
+      })).statusCode).toBe(204);
+
+      const refused = await app.inject({
+        method: "PUT", url: `/api/employees/${employeeId}`, headers: { cookie: ownerCookie },
+        payload: { active: true }
+      });
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json()).toMatchObject({
+        code: "EMPLOYEE_ACCOUNT_INACTIVE",
+        membershipId: revokedMembershipId, accountEmail: memberEmail, accountStatus: "disabled"
+      });
+      expect(await activeOf(employeeId)).toBe(false);
+
+      // Unlinking is the remedy the error names, and it has to work in ONE request or the switch
+      // is still a toggle the operator cannot resolve.
+      const unlinkedAndBack = await app.inject({
+        method: "PUT", url: `/api/employees/${employeeId}`, headers: { cookie: ownerCookie },
+        payload: { active: true, membershipId: null }
+      });
+      expect(unlinkedAndBack.statusCode).toBe(200);
+      expect(unlinkedAndBack.json()).toMatchObject({ active: true, membershipId: null });
+    });
+
+    it("reactivates freely when the linked account is still good", async () => {
+      expect((await app.inject({
+        method: "DELETE", url: `/api/employees/${linkedId}`, headers: { cookie: ownerCookie }
+      })).statusCode).toBe(204);
+      const revived = await app.inject({
+        method: "PUT", url: `/api/employees/${linkedId}`, headers: { cookie: ownerCookie },
+        payload: { active: true }
+      });
+      expect(revived.statusCode).toBe(200);
+      expect(revived.json()).toMatchObject({ active: true, membershipId: groomerMembershipId });
+    });
+
+    it("refuses an activation change from a session without team.manage", async () => {
+      const write = await app.inject({
+        method: "PUT", url: `/api/employees/${restingId}`, headers: { cookie: groomerCookie },
+        payload: { active: false }
+      });
+      expect(write.statusCode).toBe(403);
+      expect(await activeOf(restingId)).toBe(true);
+    });
+
+    it("answers 404 for an employee that does not exist, ahead of any account guard", async () => {
+      const missing = await app.inject({
+        method: "PUT", url: `/api/employees/${crypto.randomUUID()}`, headers: { cookie: ownerCookie },
+        payload: { active: true, membershipId: ownerMembershipId }
+      });
+      expect(missing.statusCode).toBe(404);
     });
   });
 

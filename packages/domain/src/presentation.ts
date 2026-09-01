@@ -148,14 +148,39 @@ export function splitAppointmentServices(
   };
 }
 
-/** How many identity slots a client cycles groomers through. */
-export const groomerSlotCount = 5;
+/**
+ * How many identity colours the palette actually has, and therefore the ceiling on a slot an
+ * operator may be assigned or a client may render.
+ *
+ * THIS IS NOT THE HASH MODULUS. See `groomerHashSlotCount` for why the two must stay apart.
+ * Growing the palette means growing this number; the database check on `employees.color_slot` is
+ * a wider outer bound (0-15) precisely so that growing it needs no migration.
+ */
+export const groomerPaletteSize = 10;
+
+/**
+ * How many of those colours the HASH FALLBACK may assign.
+ *
+ * NEVER WIDEN THIS, and never fold it back together with `groomerPaletteSize`. It is the modulus
+ * of `groomerSlotIndex`, which is the colour every groomer nobody has explicitly assigned one
+ * still gets — which is every groomer in every workspace that has not opened the Staff screen.
+ * Changing the modulus does not extend the palette for those people, it REDEALS it: measured over
+ * 200,000 UUIDs, moving 5 to 10 recolours 50.2% of them. A groomer's colour is how a person finds
+ * their own column on a calendar they have read every morning for a year, and the whole reason
+ * `color_slot` exists is that nobody could fix a collision. Silently reshuffling half the salon to
+ * make room for five new colours would be a worse version of the problem it was added to solve.
+ *
+ * Slots 5-9 are reachable only by explicit assignment, which is the intended asymmetry: an
+ * operator opts in to the new colours, the hash never drifts anyone into them.
+ */
+export const groomerHashSlotCount = 5;
 
 /**
  * The identity slot a groomer occupies, from a stable hash of the employee id.
  *
  * The hash is reproduced exactly rather than replaced with something tidier: a groomer who is
- * purple on the web calendar and orange on a phone is two people to anyone reading both.
+ * purple on the web calendar and orange on a phone is two people to anyone reading both. For the
+ * same reason the modulus is pinned at `groomerHashSlotCount` and not at the palette size.
  */
 export function groomerSlotIndex(id: string | null | undefined): number | null {
   if (!id) return null;
@@ -164,7 +189,7 @@ export function groomerSlotIndex(id: string | null | undefined): number | null {
   for (let index = 0; index < key.length; index += 1) {
     hash = (hash * 31 + key.charCodeAt(index)) >>> 0;
   }
-  return hash % groomerSlotCount;
+  return hash % groomerHashSlotCount;
 }
 
 /**
@@ -181,15 +206,17 @@ export function groomerSlotIndex(id: string | null | undefined): number | null {
  *
  * An out-of-range stored slot is ignored rather than rendered, because the database's check
  * constraint is deliberately wider than the palette: it is the durable outer bound, and
- * `groomerSlotCount` is how many colours actually exist today. A slot stored while the palette
- * was larger falls back to the hash instead of asking for a token that is not there.
+ * `groomerPaletteSize` is how many colours actually exist today. A slot stored while the palette
+ * was larger falls back to the hash instead of asking for a token that is not there. The bound
+ * here is the PALETTE, not the hash count - an assigned slot of 7 is a real colour, and only the
+ * hash is confined to the first five.
  */
 export function resolveGroomerSlot(
   id: string | null | undefined,
   colorSlot: number | null | undefined
 ): number | null {
   if (typeof colorSlot === "number" && Number.isInteger(colorSlot)
-    && colorSlot >= 0 && colorSlot < groomerSlotCount) {
+    && colorSlot >= 0 && colorSlot < groomerPaletteSize) {
     return colorSlot;
   }
   return groomerSlotIndex(id);

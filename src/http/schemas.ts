@@ -5,7 +5,7 @@ import { petHealthIssues } from "@pawsh/domain";
 import { permissions } from "@pawsh/domain";
 import {pricingClasses,weightTiers} from "@pawsh/domain";
 import {cardProcessorProviders,paymentMethods} from "@pawsh/domain";
-import {groomerSlotCount} from "@pawsh/domain";
+import {groomerPaletteSize} from "@pawsh/domain";
 
 export const idParams = z.object({ id: z.string().uuid() });
 export const locationParams = z.object({ locationId: z.string().uuid() });
@@ -488,11 +488,15 @@ export const priceResolutionSchema=z.object({petId:z.string().uuid(),serviceIds:
  * The calendar identity colour a groomer is assigned, or null for "use the hash".
  *
  * The database check is the durable outer bound (0-15). THIS is where the palette's real size is
- * enforced, against the same `groomerSlotCount` the web and mobile clients render from, so adding
- * a colour is a one-line change in `packages/domain` and never a migration. Null is not a missing
- * value: it means "keep the hash-derived slot", which is what every existing employee has.
+ * enforced, against the same `groomerPaletteSize` the web and mobile clients render from, so
+ * adding a colour is a one-line change in `packages/domain` and never a migration. Null is not a
+ * missing value: it means "keep the hash-derived slot", which is what every existing employee has.
+ *
+ * The bound is the PALETTE, deliberately not `groomerHashSlotCount`. The hash may only ever deal
+ * the first five colours, because widening its modulus recolours everyone who has not been
+ * assigned one; the other five are reachable only by an operator choosing them here.
  */
-const colorSlotField = z.number().int().min(0).max(groomerSlotCount - 1);
+const colorSlotField = z.number().int().min(0).max(groomerPaletteSize - 1);
 
 /**
  * A staff phone number, for the record only. Nothing dials or texts it - Pawsh has no SMS channel.
@@ -542,6 +546,16 @@ export const employeeSchema = z.object({
  *   colorSlot: null       -> back to the hash-derived colour, on purpose
  *   phone omitted         -> the stored number is left exactly as it is
  *   phone: null or ""     -> the operator is clearing the number, on purpose
+ *   active omitted        -> the employee stays as active or inactive as they were
+ *   active: true / false  -> the operator moved the Active switch, on purpose
+ *
+ * `active` is here because `DELETE /api/employees/:id` soft-deactivates and nothing could undo
+ * it: a deactivated groomer could not be brought back through the API at all. DELETE is left
+ * exactly as it is - it is the deactivation path existing clients already call - so there are now
+ * two ways to deactivate and one way to reactivate, which is the right trade against changing a
+ * route other code depends on. It is NOT a second activation concept: both write the same
+ * `employees.active` column, and availability remains the only owner of WHEN a groomer is
+ * bookable.
  *
  * `.strict()` is deliberate: a client that misspells a field must be told, rather than have the
  * request silently succeed while changing nothing.
@@ -551,7 +565,8 @@ export const employeeUpdateSchema = z.object({
   membershipId: z.string().uuid().nullable().optional(),
   serviceIds: z.array(z.string().uuid()).optional(),
   colorSlot: colorSlotField.nullable().optional(),
-  phone: z.preprocess(blankToNull, z.string().trim().max(40).nullable().optional())
+  phone: z.preprocess(blankToNull, z.string().trim().max(40).nullable().optional()),
+  active: z.boolean().optional()
 }).strict().refine(
   (value) => Object.values(value).some((field) => field !== undefined),
   { message: "At least one team member field is required" }

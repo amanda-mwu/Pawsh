@@ -3170,30 +3170,103 @@ export function registerRoutes(
    * membership is refused with a code the picker can act on rather than a bare 409 from the
    * index. The index still stands behind it for the concurrent case; see `uniqueViolations`.
    *
-   * A `disabled` membership is not linkable. It is the same bar `hasCurrentPermission` applies:
-   * an account that can no longer act in this workspace is not an account to attribute work to.
+   * An account that can no longer act in this workspace is not an account to attribute work to,
+   * which is the bar `hasCurrentPermission` already applies and the bar `accountState` applies
+   * here: the membership must be active AND the user behind it must not be platform-disabled.
    */
+  interface LinkedAccountState {
+    usable: boolean;
+    accountEmail: string;
+    /** Why the account is unusable: the membership's status, or the user being disabled. */
+    accountStatus: string;
+    claimedBy: string | null;
+    claimedByName: string | null;
+  }
+
+  /**
+   * Everything the two account guards need, in one lookup: can this account still be attributed
+   * work, who is it, and which employee (if any) already holds it.
+   *
+   * Null means there is no such membership IN THIS BUSINESS. That is the tenant check, and it is
+   * load-bearing — see `assertMembershipLinkable`.
+   */
+  async function accountState(
+    tx: Transaction,
+    input: { businessId: string; membershipId: string }
+  ): Promise<LinkedAccountState | null> {
+    const [state] = await tx<LinkedAccountState[]>`
+      select
+        (membership.status='active' and account.disabled_at is null) as usable,
+        account.email as account_email,
+        case when account.disabled_at is not null then 'account_disabled'
+          else membership.status::text end as account_status,
+        claimant.id as claimed_by, claimant.display_name as claimed_by_name
+      from business_memberships membership
+      join users account on account.id=membership.user_id
+      left join employees claimant
+        on claimant.business_id=membership.business_id and claimant.membership_id=membership.id
+      where membership.business_id=${input.businessId} and membership.id=${input.membershipId}
+    `;
+    return state ?? null;
+  }
+
   async function assertMembershipLinkable(
     tx: Transaction,
     input: { businessId: string; membershipId: string; employeeId: string | null }
   ): Promise<void> {
-    const [membership] = await tx<{ claimedBy: string | null; claimedByName: string | null }[]>`
-      select claimant.id as claimed_by, claimant.display_name as claimed_by_name
-      from business_memberships membership
-      left join employees claimant
-        on claimant.business_id=membership.business_id and claimant.membership_id=membership.id
-      where membership.business_id=${input.businessId} and membership.id=${input.membershipId}
-        and membership.status='active'
-    `;
-    if (!membership) {
+    const state = await accountState(tx, input);
+    if (!state?.usable) {
       throw new SchedulingRequestError(404, "MEMBERSHIP_NOT_LINKABLE",
         "That workspace account is not available to link.");
     }
-    if (membership.claimedBy && membership.claimedBy !== input.employeeId) {
+    if (state.claimedBy && state.claimedBy !== input.employeeId) {
       throw new SchedulingRequestError(409, "MEMBERSHIP_ALREADY_LINKED",
-        `That account is already linked to ${membership.claimedByName}.`,
-        { membershipId: input.membershipId, employeeId: membership.claimedBy });
+        `That account is already linked to ${state.claimedByName}.`,
+        { membershipId: input.membershipId, employeeId: state.claimedBy });
     }
+  }
+
+  /**
+   * Refuses to bring back a deactivated employee whose linked account has gone stale.
+   *
+   * THIS GUARD IS NECESSARY, and the path to it is short. `DELETE /api/members/:id` does not
+   * delete a membership, it sets `status='disabled'`; and deactivating an employee does not clear
+   * `employees.membership_id`. So: link Sam, deactivate Sam, remove Sam's workspace access, then
+   * reactivate Sam — and without this check the row that comes back is an ACTIVE employee holding
+   * a DISABLED membership, which is exactly the state `assertMembershipLinkable` refuses to
+   * create. The same reachable-in-three-steps story runs through a platform account disable,
+   * which leaves the membership 'active' while the user can no longer sign in at all.
+   *
+   * That state is not cosmetic. The membership is the join behind report-card author, agreement
+   * signer, rabies verifier, photo uploader and note author, so a revoked account would quietly
+   * resume collecting attribution — and `unique (business_id, membership_id)` would keep holding
+   * the account against anyone else being linked to it, with the only visible symptom being that
+   * the real person cannot be given their own login back.
+   *
+   * The one arm that CANNOT break is the claim: `unique (business_id, membership_id)` is
+   * unconditional and does not care whether an employee is active, so a deactivated employee
+   * never lets go of its membership and nobody else can have taken it in the meantime. Only
+   * staleness is checkable here, and only staleness is checked.
+   *
+   * Evaluated against the POST-MERGE state, not the stored one, so `{active: true,
+   * membershipId: null}` succeeds in a single request. That is deliberate: unlinking is the
+   * remedy this error tells the operator about, and making them send two requests to apply it
+   * would be a worse version of the toggle that only moved one way.
+   */
+  async function assertReactivationAccountUsable(
+    tx: Transaction,
+    input: { businessId: string; membershipId: string }
+  ): Promise<void> {
+    const state = await accountState(tx, input);
+    if (state?.usable) return;
+    throw new SchedulingRequestError(409, "EMPLOYEE_ACCOUNT_INACTIVE",
+      "The workspace account linked to this team member is no longer active. "
+      + "Unlink it to reactivate them.",
+      {
+        membershipId: input.membershipId,
+        accountEmail: state?.accountEmail ?? null,
+        accountStatus: state?.accountStatus ?? "removed"
+      });
   }
 
   app.post("/api/employees", {
@@ -3237,22 +3310,34 @@ export function registerRoutes(
     const input = body(employeeUpdateSchema, request.body);
     const employee = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
+      // Read first so a request against an employee that does not exist answers 404 rather than
+      // a guard's verdict on a membership that was never going to be written anywhere.
+      const [before] = await tx<{ membershipId: string | null; active: boolean }[]>`
+        select membership_id, active from employees
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!before) return null;
       if (input.membershipId) {
         await assertMembershipLinkable(tx,
           { businessId: context.businessId, membershipId: input.membershipId, employeeId: id });
       }
+      // The guard runs on what the row WILL hold, so unlinking and reactivating in one request
+      // works; see `assertReactivationAccountUsable`.
+      const nextMembershipId = input.membershipId !== undefined ? input.membershipId : before.membershipId;
+      const reactivating = input.active === true && !before.active;
+      if (reactivating && nextMembershipId) {
+        await assertReactivationAccountUsable(tx,
+          { businessId: context.businessId, membershipId: nextMembershipId });
+      }
       // A merge, field by field. Only what the caller actually sent is written; see
       // `employeeUpdateSchema` for why an omitted field must not be read as a cleared one.
-      // `display_name` can use coalesce because it is `not null` and can never be sent as null;
-      // the other three cannot, because null is a meaningful value an operator may choose:
-      // unlink the account, go back to the hash-derived colour, clear the number.
-      const [before] = await tx<{ membershipId: string | null }[]>`
-        select membership_id from employees
-        where business_id=${context.businessId} and id=${id} for update
-      `;
+      // `display_name` and `active` can use coalesce because they are `not null` and can never be
+      // sent as null; the other three cannot, because null is a meaningful value an operator may
+      // choose: unlink the account, go back to the hash-derived colour, clear the number.
       const [updated] = await tx<EmployeeRosterRow[]>`
         update employees set
           display_name=coalesce(${input.displayName ?? null},display_name),
+          active=coalesce(${input.active ?? null},active),
           membership_id=case when ${input.membershipId !== undefined}
             then ${input.membershipId ?? null}::uuid else membership_id end,
           color_slot=case when ${input.colorSlot !== undefined}
@@ -3281,12 +3366,23 @@ export function registerRoutes(
       // Linking or unlinking an account decides whose name appears on report cards, agreements,
       // rabies verifications and photos from here on, so the change is recorded. Only the link
       // is worth an audit trail; a colour or a typo fix is not.
-      if (input.membershipId !== undefined && (before?.membershipId ?? null) !== (input.membershipId ?? null)) {
+      if (input.membershipId !== undefined && (before.membershipId ?? null) !== (input.membershipId ?? null)) {
         await record(tx, {
           businessId: context.businessId, actorId: context.userId, action: "employee.account.link",
           resourceType: "employee", resourceId: id,
-          before: { membershipId: before?.membershipId ?? null },
+          before: { membershipId: before.membershipId ?? null },
           after: { membershipId: input.membershipId ?? null },
+          eventType: "EmployeeUpdated"
+        });
+      }
+      // Activation decides whether a person can be booked at all, so it is recorded too. DELETE
+      // records nothing today, which is a gap in that route rather than a reason to leave one here.
+      if (input.active !== undefined && input.active !== before.active) {
+        await record(tx, {
+          businessId: context.businessId, actorId: context.userId,
+          action: input.active ? "employee.reactivate" : "employee.deactivate",
+          resourceType: "employee", resourceId: id,
+          before: { active: before.active }, after: { active: input.active },
           eventType: "EmployeeUpdated"
         });
       }

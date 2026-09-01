@@ -42,15 +42,17 @@ begin;
 -- makes the slot assignable; null keeps the existing hash, so no workspace that
 -- never touches the setting changes at all.
 --
--- THE RANGE IS DELIBERATELY WIDER THAN TODAY'S PALETTE. There are five tokens
--- now and an eight-to-ten pair set being designed. A check pinned to either
--- number would need a second migration the moment a colour was added, and a
--- schema migration is a bad place to keep a design decision. So the constraint
+-- THE RANGE IS DELIBERATELY WIDER THAN THE PALETTE. A check pinned to the
+-- palette size would need a second migration the moment a colour was added, and
+-- a schema migration is a bad place to keep a design decision. So the constraint
 -- is the durable outer bound -- sixteen slots, more than a calendar can render
 -- distinguishably -- and the number of slots that ACTUALLY EXIST is enforced by
--- the API against `groomerSlotCount`, the same constant both clients already
--- render from. Growing the palette is then a one-line change in
--- `packages/domain` with no migration.
+-- the API against `groomerPaletteSize`. Growing the palette is then a one-line
+-- change in `packages/domain` with no migration.
+--
+-- Note that the palette size and the HASH modulus are two different numbers and
+-- must stay that way: see `groomerHashSlotCount`. Widening the hash does not
+-- extend the palette for the people relying on it, it redeals their colours.
 --
 -- Duplicates across employees are allowed on purpose: this is a label, not an
 -- identity, and two groomers who never appear on the same day may reasonably

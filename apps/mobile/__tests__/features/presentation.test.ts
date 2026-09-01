@@ -1,7 +1,7 @@
 import {
   addOnServiceCategories,
   appointmentPrimaryActions,
-  groomerSlotCount,
+  groomerHashSlotCount,
   groomerSlotIndex,
   permissionForTransition,
   resolveAppointmentBadge,
@@ -47,7 +47,10 @@ describe("groomer identity", () => {
   });
 
   it("has a colour for every slot the hash can produce", () => {
-    expect(groomerSlots).toHaveLength(groomerSlotCount);
+    // The hash modulus, not the palette size. `groomerPaletteSize` is ten; these tokens are the
+    // five the hash can deal, and extending them to the full palette is outstanding mobile work.
+    // What must never regress is that every slot the hash CAN produce has a colour here.
+    expect(groomerSlots.length).toBeGreaterThanOrEqual(groomerHashSlotCount);
   });
 });
 

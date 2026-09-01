@@ -16,7 +16,8 @@ import { localDateBounds, localDateForInstant, resolveWallTime, validateTimeZone
 import { permissionPresets, permissions } from "@pawsh/domain";
 import { auth, authentication, issueToken, platformAuthentication, requirePermission, sessionToken, tokenHash } from "./context.js";
 import {
-  appointmentSchema, checkoutSchema, customerSchema, employeeSchema, idParams, loginSchema,
+  appointmentSchema, checkoutSchema, customerSchema, employeeSchema, employeeUpdateSchema,
+  idParams, loginSchema,
   normalizeEmail, normalizePhone, paymentSchema, petSchema, serviceSchema, signupSchema,
   transitionSchema, businessSettingsSchema, workingHoursSchema, blockedTimeSchema,
   operationalUpdateSchema, voidPaymentSchema, appointmentMoveSchema, appointmentServicesSchema,
@@ -3036,20 +3037,32 @@ export function registerRoutes(
   }, async (request, reply) => {
     const context = auth(request);
     const { id } = idParams.parse(request.params);
-    const input = body(employeeSchema, request.body);
+    const input = body(employeeUpdateSchema, request.body);
     const employee = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
+      // A merge, field by field. Only what the caller actually sent is written; see
+      // `employeeUpdateSchema` for why an omitted field must not be read as a cleared one.
+      // `display_name` can use coalesce because it is `not null` and can never be sent as null;
+      // `membership_id` cannot, because null is a meaningful value an operator may choose.
       const [updated] = await tx<{ id: string }[]>`
-        update employees set display_name=${input.displayName},membership_id=${input.membershipId ?? null},
-          updated_at=now() where business_id=${context.businessId} and id=${id} returning *
+        update employees set
+          display_name=coalesce(${input.displayName ?? null},display_name),
+          membership_id=case when ${input.membershipId !== undefined}
+            then ${input.membershipId ?? null}::uuid else membership_id end,
+          updated_at=now()
+        where business_id=${context.businessId} and id=${id} returning *
       `;
       if (!updated) return null;
-      await tx`delete from employee_services where business_id=${context.businessId} and employee_id=${id}`;
-      for (const serviceId of input.serviceIds) {
-        await tx`
-          insert into employee_services(business_id,employee_id,service_id)
-          values (${context.businessId},${id},${serviceId})
-        `;
+      // Untouched unless the caller sent the field. An empty array is a deliberate "no
+      // restriction" and does delete the rows; an absent field leaves them alone.
+      if (input.serviceIds) {
+        await tx`delete from employee_services where business_id=${context.businessId} and employee_id=${id}`;
+        for (const serviceId of input.serviceIds) {
+          await tx`
+            insert into employee_services(business_id,employee_id,service_id)
+            values (${context.businessId},${id},${serviceId})
+          `;
+        }
       }
       return updated;
     });

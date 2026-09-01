@@ -483,11 +483,47 @@ export const breedRenameSchema=z.object({
 
 export const priceResolutionSchema=z.object({petId:z.string().uuid(),serviceIds:z.array(z.string().uuid()).min(1).max(30)}).strict();
 
+/**
+ * Creating a team member.
+ *
+ * `serviceIds` defaults to the empty set because the overwhelmingly common case is a groomer who
+ * does everything the salon offers; an empty set is "no restriction", not "restricted to nothing".
+ */
 export const employeeSchema = z.object({
   displayName: z.string().trim().min(1).max(120),
   membershipId: z.string().uuid().nullish(),
   serviceIds: z.array(z.string().uuid()).default([])
 });
+
+/**
+ * Editing a team member, field by field.
+ *
+ * THIS IS A MERGE, NOT A REPLACE, AND THE DIFFERENCE IS NOT COSMETIC. `employeeSchema` defaults
+ * `serviceIds` to `[]` and treats an absent `membershipId` as null, so reusing it for PUT turned
+ * every partial edit into a full overwrite: the web editor sends `{displayName}` alone, so
+ * renaming a groomer cleared `employees.membership_id` and deleted every one of their
+ * `employee_services` rows. `membership_id` is the join behind report-card author, agreement
+ * signer, rabies verifier, photo uploader, note author, actor attribution and the mobile app's
+ * "which groomer am I", so a rename silently detached a person from their own work history.
+ *
+ * Every field is therefore optional and ABSENCE IS DISTINCT FROM AN EXPLICIT VALUE:
+ *
+ *   membershipId omitted  -> the stored link is left exactly as it is
+ *   membershipId: null    -> the operator is unlinking the account, on purpose
+ *   serviceIds omitted    -> the stored restriction is left exactly as it is
+ *   serviceIds: []        -> the operator is clearing the restriction, on purpose
+ *
+ * `.strict()` is deliberate: a client that misspells a field must be told, rather than have the
+ * request silently succeed while changing nothing.
+ */
+export const employeeUpdateSchema = z.object({
+  displayName: z.string().trim().min(1).max(120).optional(),
+  membershipId: z.string().uuid().nullable().optional(),
+  serviceIds: z.array(z.string().uuid()).optional()
+}).strict().refine(
+  (value) => Object.values(value).some((field) => field !== undefined),
+  { message: "At least one team member field is required" }
+);
 
 export const appointmentSchema = z.object({
   locationId: z.string().uuid(),

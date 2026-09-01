@@ -91,3 +91,40 @@ test("@security-permission-parity restricted capability stays hidden and denied"
   await page.reload();
   await expect(page.getByTestId("nav-setup")).toBeHidden();
 });
+
+test("@security-desktop tenant-typed settings text cannot escape the attributes it renders into",async({page,request,tenant})=>{
+  // A quote is the whole attack. `escape()` serialises a text node, which keeps quotes intact, so
+  // any of this text interpolated into a double-quoted attribute used to close that attribute early
+  // and let everything after it parse as markup - reaching whoever opened the screen next, which on
+  // a settings page a staff member can reach is the owner.
+  const payload = 'Tap" data-pwned="1';
+  const method=await request.post("/api/settings/payment-methods",{
+    data:{name:payload,settlementType:"external_card",enabled:true}
+  });
+  expect(method.ok(),await method.text()).toBeTruthy();
+  const methodId=(await method.json()).paymentMethods.find((entry:{name:string})=>entry.name===payload).id;
+  const processor=await request.post("/api/settings/card-processors",{
+    data:{provider:"square",locationLabel:payload}
+  });
+  expect(processor.ok(),await processor.text()).toBeTruthy();
+
+  await login(page,tenant.ownerEmail);
+  await page.getByTestId("nav-settings").click();
+  await page.locator('[data-settings-category="tax-payments"]').click();
+  // Anchored on the row itself. The table renders a "Loading…" row before the payload arrives, so
+  // asserting the absence of an injected attribute any earlier would pass against an empty screen.
+  const edit=page.locator(`[data-taxpay-method-edit="${methodId}"]`);
+  await expect(edit).toBeVisible();
+  // The name survived whole rather than being truncated at the quote - which is the same fix seen
+  // from the accessibility side: a screen reader announces the method the operator actually named.
+  await expect(edit).toHaveAttribute("aria-label",`Edit ${payload}`);
+  // And nothing on the screen picked up the attribute the payload tried to open.
+  await expect(page.locator("[data-pwned]")).toHaveCount(0);
+
+  await page.getByTestId("taxpay-tab-processors").click();
+  const location=page.locator("[data-taxpay-location]");
+  await expect(location).toBeVisible();
+  // The value attribute is the clearest sink of the group: free text straight back into markup.
+  await expect(location).toHaveValue(payload);
+  await expect(page.locator("[data-pwned]")).toHaveCount(0);
+});

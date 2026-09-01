@@ -9,7 +9,11 @@ import { IntegrationKeyring } from "../../src/security/integration-encryption.js
 import {
   processSquareWebhooks, squareSignature, squareSignatureHeader
 } from "../../src/integrations/square/webhooks.js";
-import { paymentRefundIdempotencyKey } from "../../src/integrations/square/refunds.js";
+import {
+  maxRefundSweepAttempts, paymentRefundIdempotencyKey
+} from "../../src/integrations/square/refunds.js";
+import { sweepPendingRefunds } from "../../src/integrations/square/sweep.js";
+import { SquareApiError } from "../../src/integrations/square/errors.js";
 import { squareStub } from "../support/square-stub.js";
 
 /**
@@ -883,10 +887,14 @@ describeDatabase("Payment refunds", () => {
   });
 
   it("refuses to record a refund Square settled for a different amount", async () => {
-    // There is no `needs_review` for a refund and there should not be: both terminal states are
-    // claims about money. `completed` would post an amount we do not recognise; `failed` would
-    // release headroom for money Square may have moved. So it stays pending, keeps holding its
-    // headroom, and says why.
+    // `completed` would post an amount we do not recognise; `failed` would release headroom for
+    // money Square may have moved. Neither is true, so the row rests at `needs_review` - the state
+    // `square_terminal_checkouts` has had since 0036 and `payment_refunds` gained in 0039.
+    //
+    // It used to stay `pending`, which was wrong in two ways that compound: on screen it was
+    // indistinguishable from a refund Square simply had not finished, so an operator was told to
+    // wait for something that was never coming; and in the drain it stayed claimable forever,
+    // re-reading an answer that had already been read and understood.
     square.state.refundOutcome = "PENDING";
     const payment = await terminalPayment({ serviceMinor: 5_000, tipMinor: 0 });
     const issued = await refund(payment.paymentId, {
@@ -902,16 +910,179 @@ describeDatabase("Payment refunds", () => {
       headers: { cookie: ownerCookie }
     });
     expect(refreshed.statusCode).toBe(200);
-    expect(refreshed.json()).toMatchObject({ status: "pending", settled: false });
+    expect(refreshed.json()).toMatchObject({
+      status: "needs_review", settled: false, failed: false, needsReview: true
+    });
     expect(refreshed.json().failureReason).toContain("does not match");
     expect((await invoiceRow(payment.invoiceId)).status).toBe("paid");
     expect(issued.json().status).toBe("pending");
+
+    // The disagreement is a document a person reads, exactly as a checkout mismatch is, and it
+    // names both sides rather than only the complaint.
+    const [parked] = await db<{ status: string; mismatch: { reason: string;
+      expected: number; received: number } }[]>`
+      select status, mismatch from payment_refunds where id=${row!.id}
+    `;
+    expect(parked!.status).toBe("needs_review");
+    expect(parked!.mismatch.reason).toBe("amount");
+    expect(parked!.mismatch.expected).toBe(5_000);
+    expect(parked!.mismatch.received).toBe(4_000);
+
+    // The headroom is STILL held, which is the point rather than a side effect: what Square did
+    // with this money is exactly what nobody knows, so a second refund on top of it must stay
+    // refused until a person resolves the first.
+    const state = await app.inject({
+      method: "GET", url: `/api/payments/${payment.paymentId}/refunds`,
+      headers: { cookie: ownerCookie }
+    });
+    expect(state.json().refundableMinor).toBe(0);
+    const second = await refund(payment.paymentId, {
+      amountMinor: 5_000, expectedRefundableMinor: 5_000
+    });
+    expect(second.statusCode).toBe(409);
+    expect(second.json().code).toBe("REFUND_EXCEEDS_REMAINING");
+
+    // And it is out of the drain's way: a row waiting on a person is not waiting on Square.
+    const [claimable] = await db<{ count: number }[]>`
+      select count(*)::int as count from payment_refunds
+      where id=${row!.id} and status='pending'
+    `;
+    expect(claimable!.count).toBe(0);
 
     const [audited] = await db<{ count: number }[]>`
       select count(*)::int as count from audit_events
       where business_id=${businessId} and action='payment.refund.mismatch' and resource_id=${row!.id}
     `;
     expect(audited!.count).toBeGreaterThanOrEqual(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Recovery without a webhook and without a person.
+  // ---------------------------------------------------------------------------
+
+  /** The worker's refund recovery pass, run directly rather than waiting out a tick. */
+  async function sweepRefunds() {
+    return sweepPendingRefunds(db, { client: square.client, keyring, environment: "sandbox" });
+  }
+
+  /**
+   * Makes ONE refund due now and every other one not due.
+   *
+   * Both halves are needed, for the reason the checkout suite spells out: the sweep's claim is
+   * global and bounded, oldest first, and the isolated test database persists between runs - so
+   * rows left pending by earlier tests and earlier runs are older than this one and would fill the
+   * batch ahead of it.
+   */
+  async function refundDue(refundId: string): Promise<void> {
+    await db`
+      update payment_refunds
+      set next_sweep_at=case when id=${refundId} then now() else now() + interval '1 day' end
+      where status='pending'
+    `;
+  }
+
+  async function refundSweepAttempts(refundId: string): Promise<number> {
+    const [row] = await db<{ sweepAttempts: number }[]>`
+      select sweep_attempts from payment_refunds
+      where business_id=${businessId} and id=${refundId}
+    `;
+    return row!.sweepAttempts;
+  }
+
+  it("settles a refund from the sweep alone when no webhook ever arrives", async () => {
+    square.state.refundOutcome = "PENDING";
+    const payment = await terminalPayment({ serviceMinor: 5_000, tipMinor: 0 });
+    const issued = await refund(payment.paymentId, {
+      amountMinor: 5_000, expectedRefundableMinor: 5_000
+    });
+    const refundId = issued.json().id as string;
+    const [row] = await refundRows(payment.paymentId);
+
+    // Square finishes the refund and tells nobody. Before the sweep existed, this row could only
+    // be finished by a person pressing refresh.
+    square.settleRefund({ refundId: row!.providerRefundId!, status: "COMPLETED" });
+
+    // The grace period holds the sweep off while the notification still might arrive.
+    await sweepRefunds();
+    expect(await refundSweepAttempts(refundId)).toBe(0);
+
+    await refundDue(refundId);
+    await sweepRefunds();
+
+    const settled = await app.inject({
+      method: "GET", url: `/api/payments/${payment.paymentId}/refunds`,
+      headers: { cookie: ownerCookie }
+    });
+    expect(settled.json().refunds[0]).toMatchObject({ status: "completed", settled: true });
+    expect(settled.json().refundedMinor).toBe(5_000);
+    // The invoice follows, exactly as it would have through the webhook.
+    expect((await invoiceRow(payment.invoiceId)).status).toBe("refunded");
+  });
+
+  it("finishes a refund whose create response was lost, without refunding twice", async () => {
+    square.state.refundOutcome = "PENDING";
+    const payment = await terminalPayment({ serviceMinor: 5_000, tipMinor: 0 });
+    const issued = await refund(payment.paymentId, {
+      amountMinor: 5_000, expectedRefundableMinor: 5_000
+    });
+    const refundId = issued.json().id as string;
+
+    // The state no notification can ever resolve: the row holds a derived key and no provider
+    // reference, so `findRefundByProviderId` has nothing to match on. Only a re-send can finish it.
+    await db`update payment_refunds set provider_refund_id=null where id=${refundId}`;
+    const before = square.state.calls.filter((call) => call.method === "createRefund").length;
+
+    await refundDue(refundId);
+    await sweepRefunds();
+
+    // Square answered the repeated key with the refund it already made rather than a second one.
+    const after = square.state.calls.filter((call) => call.method === "createRefund").length;
+    expect(after).toBeGreaterThan(before);
+    const rows = await refundRows(payment.paymentId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.amountMinor).toBe(5_000);
+  });
+
+  it("gives up on a refund it cannot confirm and puts it in front of a person", async () => {
+    square.state.refundOutcome = "PENDING";
+    const payment = await terminalPayment({ serviceMinor: 5_000, tipMinor: 0 });
+    const issued = await refund(payment.paymentId, {
+      amountMinor: 5_000, expectedRefundableMinor: 5_000
+    });
+    const refundId = issued.json().id as string;
+
+    // Square will not answer about this refund, ever.
+    square.state.failAlways.set("retrieveRefund",
+      new SquareApiError("square_unavailable", "Square is unavailable", 503));
+    try {
+      for (let attempt = 0; attempt <= maxRefundSweepAttempts; attempt += 1) {
+        await refundDue(refundId);
+        await sweepRefunds();
+      }
+    } finally {
+      square.state.failAlways.delete("retrieveRefund");
+    }
+
+    const [parked] = await db<{ status: string; mismatch: { reason: string } }[]>`
+      select status, mismatch from payment_refunds where id=${refundId}
+    `;
+    // Never `failed`: that would say the customer did not get their money, and release the
+    // headroom for money Square may well have moved. Never `completed` either.
+    expect(parked!.status).toBe("needs_review");
+    expect(parked!.mismatch.reason).toBe("unconfirmed_after_sweeps");
+
+    // Out of the drain, and still holding its headroom.
+    const settled = await refundSweepAttempts(refundId);
+    await refundDue(refundId);
+    await sweepRefunds();
+    expect(await refundSweepAttempts(refundId)).toBe(settled);
+
+    const state = await app.inject({
+      method: "GET", url: `/api/payments/${payment.paymentId}/refunds`,
+      headers: { cookie: ownerCookie }
+    });
+    expect(state.json().refundableMinor).toBe(0);
+    expect(state.json().refundedMinor).toBe(0);
   });
 
   it("writes an audit trail for the request and the settlement", async () => {

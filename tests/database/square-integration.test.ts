@@ -711,10 +711,15 @@ describeDatabase("Square Terminal integration", () => {
 
     const [row] = await db<{
       accessToken: string; refreshToken: string; refreshedAt: Date; nextRefreshAt: Date;
-      refreshAttempts: number; lastRefreshError: string | null;
+      refreshAttempts: number; lastRefreshError: string | null; daysAhead: number;
     }[]>`
       select access_token, refresh_token, refreshed_at, next_refresh_at, refresh_attempts,
-        last_refresh_error
+        last_refresh_error,
+        -- next_refresh_at is written as now() + make_interval(...) by the database, so the
+        -- distance to it has to be measured on the database clock as well. Subtracting a
+        -- client-side Date.now() compares two clocks, and any skew between the application
+        -- host and the PostgreSQL host lands straight on the upper bound asserted below.
+        (extract(epoch from (next_refresh_at - now())) / 86400)::float8 as days_ahead
       from square_connections where business_id=${business}
     `;
     // The token Square just issued, not the one the row held a moment ago. The stub advances its
@@ -731,9 +736,8 @@ describeDatabase("Square Terminal integration", () => {
     })).toBe(refreshToken);
     expect(row!.refreshAttempts).toBe(0);
     expect(row!.lastRefreshError).toBeNull();
-    const daysAhead = (row!.nextRefreshAt.getTime() - Date.now()) / 86_400_000;
-    expect(daysAhead).toBeGreaterThan(6.5);
-    expect(daysAhead).toBeLessThanOrEqual(7);
+    expect(row!.daysAhead).toBeGreaterThan(6.5);
+    expect(row!.daysAhead).toBeLessThanOrEqual(7);
 
     // Nothing is due any more, so the next tick claims nothing rather than hammering Square.
     expect(await refreshDueConnections(db, {

@@ -395,7 +395,8 @@ async function applyNonPosting(
     }
     await tx`
       update square_terminal_checkouts set
-        status='needs_review', mismatch=${tx.json(decision.mismatch as never)}, updated_at=now()
+        status='needs_review', mismatch=${tx.json(decision.mismatch as never)},
+        last_error=${decision.mismatch.detail.slice(0, 500)}, updated_at=now()
       where business_id=${checkout.businessId} and id=${checkout.id} and payment_id is null
     `;
     await record(tx, {
@@ -406,6 +407,22 @@ async function applyNonPosting(
     });
     return "needs_review";
   });
+}
+
+/**
+ * Puts an open checkout in front of a person, without consulting Square.
+ *
+ * The sweep needs this when it has exhausted its attempts: at that point another read is not going
+ * to produce an answer, and the row must stop being claimed and start being visible. It is
+ * deliberately the same write `applyNonPosting` performs for a mismatch - same fence on
+ * `payment_id is null`, same audit action - so a checkout parked by the sweep and one parked by
+ * reconciliation are indistinguishable afterwards, which is what lets one operator surface show
+ * both.
+ */
+export async function parkCheckoutForReview(
+  db: Database, checkout: TerminalCheckoutRow, mismatch: CheckoutMismatch
+): Promise<ReconciliationResult> {
+  return applyNonPosting(db, checkout, { outcome: "needs_review", mismatch });
 }
 
 /**
@@ -445,12 +462,37 @@ export async function reconcileCheckout(
   });
 
   if (!retrieved.ok) {
-    // The authorisation went away underneath a live checkout. The invoice stays unpaid and the
-    // attempt is honestly failed; no success is shown for money we cannot confirm moved.
-    const reason = retrieved.reason === "revoked"
-      ? "The Square connection was revoked while this payment was being taken."
-      : "This business has no usable Square connection.";
-    await applyNonPosting(db, checkout, { outcome: "failed", reason });
+    // The authorisation went away underneath a live checkout that Square is already holding - by
+    // this point `square_checkout_id` is set, so the terminal was reached and the card may well
+    // have been charged.
+    //
+    // `failed` was the previous answer and it is the wrong one, for a reason that only shows up in
+    // where the row ends up rather than in what it is called. `failed` is a terminal state that
+    // says "we could not take this payment", it renders with `needsReview: false`, and it is not
+    // in `square_checkout_open` - so a checkout that really did take the customer's money left the
+    // invoice unpaid and appeared in no operator surface at all. The money was at Square and
+    // nothing in Pawsh was asking anybody to go and look.
+    //
+    // `needs_review` is the honest routing: nobody knows whether money moved, which is precisely
+    // what that state means everywhere else in this file. Nothing is posted, the invoice is still
+    // untouched, and no screen says paid - the guarantees `failed` was providing are all kept -
+    // but the row is now in the list a person works through. Reconnecting and reconciling still
+    // posts the payment if there was one, because `reconcileCheckout` only refuses to re-read a
+    // checkout that is already `completed` with a payment.
+    const detail = retrieved.reason === "revoked"
+      ? "The Square connection was revoked while this payment was being taken, so Pawsh cannot "
+        + "confirm whether the customer's card was charged. Check this checkout in Square."
+      : "This business has no usable Square connection, so Pawsh cannot confirm whether the "
+        + "customer's card was charged. Check this checkout in Square.";
+    await applyNonPosting(db, checkout, {
+      outcome: "needs_review",
+      mismatch: {
+        reason: "connection_unusable",
+        detail,
+        expected: "a readable Square checkout",
+        received: retrieved.reason
+      }
+    });
     return "unusable_connection";
   }
 
@@ -517,6 +559,12 @@ export type EventResolution =
 
 /**
  * Finds the Pawsh checkout an event is about, or says why there is not one.
+ *
+ * The lookup is global - it cannot be scoped by business, because resolving the business is what
+ * it is for - and `square_checkout_identifier` in 0039 is what makes that sound: a partial unique
+ * index on `square_checkout_id` across the whole table, so at most one row can hold a given Square
+ * checkout id. Before 0039 the index was unique only within a business and this could resolve to
+ * an arbitrary one of two rows in different salons.
  *
  * The two "no row" cases are different and must not be collapsed. A checkout id we do not
  * recognise may simply not have committed yet - Square can notify faster than our own transaction

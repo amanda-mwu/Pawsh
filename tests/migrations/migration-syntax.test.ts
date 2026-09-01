@@ -218,5 +218,45 @@ describe("database migrations", () => {
     // Refunding is replay-protected like every other financial operation.
     expect(refunds).toContain("'payment.refund'");
     expect(refunds).toContain("create policy tenant_isolation on payment_refunds");
+
+    // 0039 closes the recovery gaps. Each of these, lost, puts money back in a place nobody is
+    // looking: a payment resolved into the wrong salon's ledger, a checkout nothing ever revisits,
+    // or an event retried until the end of time.
+    const recovery = await readMigration("0039_square_recovery_and_dead_letters.sql");
+    // The two identities an event resolves a tenant through must be unique across the WHOLE table,
+    // because the lookups that use them have no business id to filter by - resolving the business
+    // is what they are for. Per-business uniqueness let two rows in different salons hold one
+    // Square id and made the resolution arbitrary.
+    expect(recovery).toContain(
+      "create unique index square_checkout_identifier\n"
+      + "  on square_terminal_checkouts (square_checkout_id) where square_checkout_id is not null"
+    );
+    expect(recovery).toContain(
+      "create unique index payment_refund_identifier\n"
+      + "  on payment_refunds (provider, provider_refund_id) where provider_refund_id is not null"
+    );
+    // The weaker per-business indexes are replaced, not kept alongside.
+    expect(recovery).toContain("drop index square_checkout_identifier_per_business");
+    expect(recovery).toContain("drop index payment_refund_provider_reference");
+    // Tightening a unique index cannot assume the data already satisfies it: pre-existing
+    // duplicates must stop the migration rather than have one of them silently win.
+    expect(recovery).toContain("raise exception");
+    expect(recovery).toContain("Resolve these by hand before applying 0039");
+    // The sweep's claim schedule, and the partial indexes it claims through.
+    expect(recovery).toContain("create index square_checkout_sweep_due");
+    expect(recovery).toContain("create index payment_refund_sweep_due");
+    // A refund finally has the state a checkout has had since 0036, and it cannot be reached
+    // without the document that says what a person is being asked to look at.
+    expect(recovery).toContain("check (status in ('pending', 'completed', 'failed', 'needs_review'))");
+    expect(recovery).toContain("payment_refund_review_document");
+    // An event that cannot be processed comes to rest instead of retrying forever, and rest means
+    // carrying `processed_at` so the drain stops claiming it.
+    expect(recovery).toContain("'dead_letter'");
+    expect(recovery).toContain(
+      "check ((status in ('processed', 'parked', 'dead_letter')) = (processed_at is not null))"
+    );
+    // Retention is NOT added, and must not be added without a replay window: `event_id` being
+    // unique is the only thing refusing a replayed notification.
+    expect(recovery).not.toContain("delete from square_webhook_events");
   });
 });

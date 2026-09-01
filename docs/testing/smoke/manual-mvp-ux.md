@@ -99,3 +99,75 @@ documentation readiness.
 - Verify configured business hours, empty slots, closed periods, sticky headers/time labels, duration-scaled appointments, overlaps, visibly bounded lifecycle controls, and groomer filtering.
 - Confirm deficient rabies information appears as the compact, non-interactive `Rabies needed` warning.
 - Click a Week slot and confirm the booking form receives its local date/time. Click a Day slot and confirm it also receives the groomer from that column, including exposed empty space beside a visual appointment; open and move an appointment by clicking its visible card controls.
+
+# Tax and payments, and the Square Terminal integration
+
+This feature splits into a part a tester can exercise on a local machine and a part
+that cannot exist without a Square account. Record the first part as **PASS**,
+**FRICTION**, or **BLOCKED** as usual. Record every item in the second part as
+**BLOCKED — Square Sandbox required**, and never as PASS or FAIL: an unconfigured
+Pawsh cannot produce the state those flows operate on, so there is nothing to judge.
+
+## Reachable now, with no Square credentials
+
+- Open Settings and then Tax & payments. Confirm the workspace opens on Method and
+  that Tax and Card processors are reachable, that each tab states which scope it
+  changes, and that a tab with nothing in it explains what belongs there rather than
+  showing an empty frame. Confirm no copy anywhere on the screen claims Pawsh has no
+  processor connection, no OAuth flow, or no credential store.
+- On Method, create a payment method, edit it, reorder it against its neighbours,
+  disable and re-enable it, and delete one that allows deletion. Confirm a built-in
+  method offers editing but neither renaming nor deletion, that the list order and
+  enabled state survive a reload, that no duplicate or ghost row appears after a
+  failed or repeated save, and that a rejected value explains what to do instead.
+- On Tax, create and edit a rate, then put a different rate in force. Confirm exactly
+  one rate is ever in force, that the rate in force cannot be deleted while it holds
+  that position, and that correcting the rate in force is described as a different act
+  from correcting one standing by. Open Business settings and confirm the tax field
+  there is read-only, points at this workspace, and shows the same number.
+- On Card processors, configure processing fees and default tip presets for a
+  processor and confirm both survive a reload.
+- Check tip arithmetic against a worked example: on a checkout whose services subtotal
+  is $100.00 with a $5.00 authorized discount, a 20% preset must offer $19.00, because
+  presets are taken from the services subtotal after the discount and never from the
+  taxed total. Confirm the preset amount shown matches the amount that lands on the
+  invoice.
+- Take a checkout to completion with a salon-configured method that is not a card
+  terminal. Confirm the checkout opens once, that double-clicking or repeatedly
+  activating Complete neither opens a second checkout nor rebuilds the open one
+  underneath a tester who is already typing into it, and that the finished or failed
+  state says plainly which it is. This is the reachable half of the duplicate-activation
+  protection.
+- With a dialog open, end the session by the usual local means and then trigger any
+  authenticated action. Confirm every open dialog closes, the login screen is reachable
+  and operable rather than sitting behind a modal, and nothing keeps polling in the
+  background afterwards.
+- Name a payment method or tax rate with a double quote in it, such as `Dog "Premium"`.
+  Confirm the name renders exactly as typed everywhere it appears, that the row's
+  buttons keep working, and that nothing in the page gains an attribute or behaviour the
+  name should not have been able to give it.
+- Open the Square surface on Card processors with no Square credentials configured.
+  Confirm the screen says Square is unavailable and names the configuration that is
+  missing, that it offers no Connect or Pair control that looks usable, that nothing
+  crashes or returns a raw error, and that no token, secret, or key appears anywhere on
+  screen or in the browser console.
+
+## Blocked until a Square sandbox account exists
+
+Each of these needs a real Square connection before any of its state can exist. Record
+them as **BLOCKED — Square Sandbox required**.
+
+- The terminal drawer's device controls — Get a code, Check pairing, Pair again, and
+  Remove. The drawer only lists Square devices for a connected processor, so with no
+  connection the controls never render and there is nothing to operate.
+- The capture dialog's close and Escape guard during a live payment. That dialog opens
+  only from a terminal checkout that has actually started.
+- The OAuth connect, callback, and scheduled token refresh.
+- Terminal device pairing, including the pairing code and its expiry.
+- A real Terminal checkout, its tip, and its receipt.
+- Refunds against a provider-backed payment, including the tip-last split.
+- The needs-review state as produced by real Square responses rather than by a fixture.
+- The recovery sweep judged against actual Square state.
+- Webhook delivery, redelivery, and signature verification from Square's own signer.
+- Square's real idempotency and retry behaviour, including whether a replayed request
+  returns the original result and for how long.

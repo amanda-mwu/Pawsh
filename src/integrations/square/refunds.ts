@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Database, SqlExecutor } from "../../db/client.js";
 import { setTenant } from "../../db/client.js";
 import { applyInvoiceSettlement } from "../../domain/invoice-settlement.js";
-import { refundHeadroom, splitRefundAcrossTip } from "../../domain/refunds.js";
+import { refundHeadroom, splitRefundAcrossTip, type RefundStatus } from "../../domain/refunds.js";
 // Re-exported so a caller reaching for the refund module gets the presenter with it; the
 // function itself lives in `domain/refunds.ts`, because nothing about "may a screen say
 // refunded yet" is Square's, and `routes.ts` needs it without importing this file.
@@ -46,7 +46,7 @@ import type { SquareRefund } from "./schemas.js";
  * provider before it has a provider reference.
  */
 
-export type RefundStatus = "pending" | "completed" | "failed";
+export type { RefundStatus };
 
 export interface PaymentRefundRow {
   id: string;
@@ -66,6 +66,51 @@ export interface PaymentRefundRow {
   createdAt: Date;
   settledAt: Date | null;
   failureReason: string | null;
+  /** What Square reported that we did not ask for. Null unless `status` is `needs_review`. */
+  mismatch: unknown;
+}
+
+/**
+ * `mismatch::text`, never `mismatch` - the same trap `square_terminal_checkouts` documents.
+ *
+ * The database client is configured with `postgres.camel`, which camel-cases the keys of a jsonb
+ * value on the way out as well as column names. A document written for a person to read would come
+ * back in a vocabulary it was not written in. Reading it as text and parsing here returns exactly
+ * the bytes that were stored. The column list is spelled out at each call site rather than shared
+ * as a fragment, exactly as `terminal.ts` spells out its own: a tagged-template query that is one
+ * literal is a query the driver parameterises in one obvious way.
+ */
+type RefundRowShape = Omit<PaymentRefundRow, "mismatch"> & { mismatchText: string | null };
+
+function hydrateRefund(row: RefundRowShape): PaymentRefundRow {
+  const { mismatchText, ...rest } = row;
+  return { ...rest, mismatch: mismatchText ? JSON.parse(mismatchText) : null };
+}
+
+/** How long a freshly claimed refund is left to the webhook before the sweep looks at it. */
+export const refundSweepGraceSeconds = 120;
+
+/**
+ * How many sweeps a refund gets before it stops being swept and starts waiting for a person.
+ *
+ * A refund Square will not talk to us about is not a refund that becomes knowable by asking again
+ * more often. After this many attempts the honest thing is to say so once, in a state an operator
+ * can find, rather than to keep a row in the drain forever generating requests nobody reads.
+ */
+export const maxRefundSweepAttempts = 8;
+
+/**
+ * What Square reported that Pawsh did not ask for.
+ *
+ * The same four fields as `CheckoutMismatch`, deliberately, because it is the same job: a document
+ * a person reads before any money is called settled. Held as a document rather than as columns
+ * because the shape of a disagreement is not knowable up front.
+ */
+export interface RefundMismatch {
+  reason: string;
+  detail: string;
+  expected: unknown;
+  received: unknown;
 }
 
 export const paymentRefundIdempotencyVersion = "pawsh.square.payment-refund.v1";
@@ -142,37 +187,39 @@ export function mapSquareRefundStatus(status: string | undefined): {
 export async function readPaymentRefund(
   sql: SqlExecutor, input: { businessId: string; refundId: string }
 ): Promise<PaymentRefundRow | null> {
-  const [row] = await sql<PaymentRefundRow[]>`
+  const [row] = await sql<RefundRowShape[]>`
     select id, business_id, payment_id, invoice_id, amount_minor, tip_refunded_minor, currency,
       provider, provider_refund_id, idempotency_key, status, reason, requested_by, attempt,
-      created_at, settled_at, failure_reason from payment_refunds
+      created_at, settled_at, failure_reason, mismatch::text as mismatch_text from payment_refunds
     where business_id=${input.businessId} and id=${input.refundId}
   `;
-  return row ?? null;
+  return row ? hydrateRefund(row) : null;
 }
 
 export async function listPaymentRefunds(
   sql: SqlExecutor, input: { businessId: string; paymentId: string }
 ): Promise<PaymentRefundRow[]> {
-  return sql<PaymentRefundRow[]>`
+  const rows = await sql<RefundRowShape[]>`
     select id, business_id, payment_id, invoice_id, amount_minor, tip_refunded_minor, currency,
       provider, provider_refund_id, idempotency_key, status, reason, requested_by, attempt,
-      created_at, settled_at, failure_reason from payment_refunds
+      created_at, settled_at, failure_reason, mismatch::text as mismatch_text from payment_refunds
     where business_id=${input.businessId} and payment_id=${input.paymentId}
     order by created_at, id
   `;
+  return rows.map(hydrateRefund);
 }
 
 export async function listInvoiceRefunds(
   sql: SqlExecutor, input: { businessId: string; invoiceId: string }
 ): Promise<PaymentRefundRow[]> {
-  return sql<PaymentRefundRow[]>`
+  const rows = await sql<RefundRowShape[]>`
     select id, business_id, payment_id, invoice_id, amount_minor, tip_refunded_minor, currency,
       provider, provider_refund_id, idempotency_key, status, reason, requested_by, attempt,
-      created_at, settled_at, failure_reason from payment_refunds
+      created_at, settled_at, failure_reason, mismatch::text as mismatch_text from payment_refunds
     where business_id=${input.businessId} and invoice_id=${input.invoiceId}
     order by created_at, id
   `;
+  return rows.map(hydrateRefund);
 }
 
 /**
@@ -182,17 +229,25 @@ export async function listInvoiceRefunds(
  * deliberately not unique, so one merchant id can name two Pawsh businesses. We created this row,
  * so it already knows the business, the payment and the amount, and nothing about the incoming
  * event is trusted to supply any of them.
+ *
+ * NOT SCOPED BY BUSINESS, AND THAT IS STRUCTURAL RATHER THAN AN OVERSIGHT. A `refund.updated` body
+ * carries a Square refund id and a merchant id, and neither of those is a tenant - resolving the
+ * business IS what this query is for, so it has nothing to filter by. What makes taking the first
+ * row correct is `payment_refund_identifier` in 0039: a partial unique index on
+ * `(provider, provider_refund_id)` across the whole table, so at most one row in this deployment
+ * can ever hold a given Square refund id. Before 0039 the backing index was unique only within a
+ * business, and this query could return an arbitrary one of two rows in different salons.
  */
 export async function findRefundByProviderId(
   sql: SqlExecutor, providerRefundId: string
 ): Promise<PaymentRefundRow | null> {
-  const [row] = await sql<PaymentRefundRow[]>`
+  const [row] = await sql<RefundRowShape[]>`
     select id, business_id, payment_id, invoice_id, amount_minor, tip_refunded_minor, currency,
       provider, provider_refund_id, idempotency_key, status, reason, requested_by, attempt,
-      created_at, settled_at, failure_reason from payment_refunds
+      created_at, settled_at, failure_reason, mismatch::text as mismatch_text from payment_refunds
     where provider='square' and provider_refund_id=${providerRefundId}
   `;
-  return row ?? null;
+  return row ? hydrateRefund(row) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -294,21 +349,26 @@ export async function claimPaymentRefund(
     amountMinor: input.amountMinor,
     attempt
   });
-  const [created] = await tx<PaymentRefundRow[]>`
+  // `next_sweep_at` is set here rather than left to the column default so the grace period is a
+  // constant in this module beside the other ones, and so the sweep is a backstop rather than a
+  // competitor: the request that claimed this row is about to call Square itself, and the webhook
+  // that follows normally settles it within seconds.
+  const [created] = await tx<RefundRowShape[]>`
     insert into payment_refunds
       (business_id, payment_id, invoice_id, amount_minor, tip_refunded_minor, currency, provider,
-       idempotency_key, status, reason, requested_by, attempt)
+       idempotency_key, status, reason, requested_by, attempt, next_sweep_at)
     values (${input.businessId}, ${input.paymentId}, ${payment.invoiceId}, ${input.amountMinor},
       ${split.tipMinor}, ${currency}, ${payment.provider}, ${idempotencyKey}, 'pending',
-      ${input.reason}, ${input.userId}, ${attempt})
+      ${input.reason}, ${input.userId}, ${attempt},
+      now() + make_interval(secs => ${refundSweepGraceSeconds}))
     returning id, business_id, payment_id, invoice_id, amount_minor, tip_refunded_minor, currency,
       provider, provider_refund_id, idempotency_key, status, reason, requested_by, attempt,
-      created_at, settled_at, failure_reason
+      created_at, settled_at, failure_reason, mismatch::text as mismatch_text
   `;
   if (!created) throw new Error("Refund could not be claimed");
   return {
     claimed: true,
-    refund: created,
+    refund: hydrateRefund(created),
     providerPaymentId: payment.providerPaymentId,
     remainingMinor: headroom.remainingMinor - input.amountMinor
   };
@@ -424,29 +484,63 @@ export async function failPaymentRefund(
 /**
  * Refuses to settle a refund whose retrieved amount is not the amount we asked for.
  *
- * There is no `needs_review` state for a refund and there should not be one: the states are
- * `pending -> completed | failed` and both terminal values are claims about money. `completed`
- * would post an amount we do not recognise; `failed` would release headroom for money Square may
- * well have moved. So the row stays pending - holding its headroom, so nothing can be
- * over-refunded on top of it - the disagreement is written where a person can read it, and the
- * audit trail says so loudly.
+ * `completed` would post an amount we do not recognise; `failed` would release headroom for money
+ * Square may well have moved. Neither is true, so the row rests at `needs_review` instead - which
+ * is the state `square_terminal_checkouts` has had since 0036 for exactly this situation and which
+ * `payment_refunds` was missing until 0039.
+ *
+ * Leaving it `pending` was the previous answer and it was wrong in two ways that compound. On
+ * screen a mismatched refund was indistinguishable from one Square had simply not finished yet, so
+ * the operator was told to wait for something that was never going to arrive. And in the drain it
+ * stayed claimable forever, re-reading a refund whose answer had already been read and understood.
+ * `needs_review` fixes both: it is out of `payment_refund_sweep_due` and into
+ * `payment_refund_review`, which is a list somebody is expected to work through.
+ *
+ * The headroom is still held. That is not an accident of the state change - it is the point. What
+ * Square did with this money is precisely what nobody knows, and releasing it would invite a
+ * second refund on top of one that may already have gone through.
  */
 async function refuseMismatchedRefund(
   db: Database,
   refund: PaymentRefundRow,
-  detail: { expected: unknown; received: unknown }
+  mismatch: RefundMismatch
 ): Promise<RefundOutcome> {
-  const reason = "Square reported a refund that does not match the one Pawsh asked for, so it "
-    + "has not been recorded as done. A manager needs to check this in Square.";
+  return parkRefundForReview(db, refund, {
+    reason: "Square reported a refund that does not match the one Pawsh asked for, so it has not "
+      + "been recorded as done. A manager needs to check this in Square.",
+    mismatch,
+    action: "payment.refund.mismatch"
+  });
+}
+
+/**
+ * Stops a refund waiting on Square and starts it waiting on a person.
+ *
+ * The one write that reaches `needs_review`, shared by the mismatch path and by the sweep that has
+ * run out of attempts, so a refund parked either way is indistinguishable afterwards and one
+ * operator list shows both. Fenced on `status='pending'` exactly as every other transition here
+ * is: a replayed `refund.updated` and an operator pressing refresh in the same second both reach
+ * it, and the second must change nothing rather than overwrite a refund another path has since
+ * settled or failed. A zero-row update is convergence, not an error.
+ */
+export async function parkRefundForReview(
+  db: Database,
+  refund: PaymentRefundRow,
+  input: { reason: string; mismatch: RefundMismatch; action: string }
+): Promise<RefundOutcome> {
   await db.begin(async (tx) => {
     await setTenant(tx, refund.businessId);
-    await noteRefundError(tx, {
-      businessId: refund.businessId, refundId: refund.id, reason
-    });
+    await tx`
+      update payment_refunds set
+        status='needs_review',
+        failure_reason=${input.reason.slice(0, 500)},
+        mismatch=${tx.json(input.mismatch as never)}
+      where business_id=${refund.businessId} and id=${refund.id} and status='pending'
+    `;
     await record(tx, {
       businessId: refund.businessId, actorId: refund.requestedBy,
-      action: "payment.refund.mismatch", resourceType: "payment_refund", resourceId: refund.id,
-      after: { ...detail, paymentId: refund.paymentId, amountMinor: refund.amountMinor }
+      action: input.action, resourceType: "payment_refund", resourceId: refund.id,
+      after: { ...input.mismatch, paymentId: refund.paymentId, amountMinor: refund.amountMinor }
     });
   });
   return "mismatch";
@@ -549,11 +643,15 @@ export async function applyRetrievedRefund(
   // amount or in a different currency is not the refund this row describes.
   if (retrieved.amount_money.amount !== refund.amountMinor) {
     return refuseMismatchedRefund(db, refund, {
+      reason: "amount",
+      detail: "Square settled a refund for a different amount to the one Pawsh asked for.",
       expected: refund.amountMinor, received: retrieved.amount_money.amount
     });
   }
   if (retrieved.amount_money.currency.toUpperCase() !== refund.currency.toUpperCase()) {
     return refuseMismatchedRefund(db, refund, {
+      reason: "currency",
+      detail: "Square settled a refund in a different currency to the one Pawsh asked for.",
       expected: refund.currency, received: retrieved.amount_money.currency.toUpperCase()
     });
   }

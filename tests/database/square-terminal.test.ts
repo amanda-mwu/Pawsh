@@ -9,11 +9,14 @@ import { hashPassword } from "../../src/security/passwords.js";
 import { IntegrationKeyring } from "../../src/security/integration-encryption.js";
 import { SquareApiError } from "../../src/integrations/square/errors.js";
 import {
-  processSquareWebhooks, squareSignature, squareSignatureHeader
+  maxWebhookAttempts, processSquareWebhooks, squareSignature, squareSignatureHeader
 } from "../../src/integrations/square/webhooks.js";
 import {
   expireStaleDeviceCodes, terminalCheckoutIdempotencyKey
 } from "../../src/integrations/square/terminal.js";
+import {
+  maxCheckoutSweepAttempts, sweepOpenCheckouts
+} from "../../src/integrations/square/sweep.js";
 import { squareStub } from "../support/square-stub.js";
 
 /**
@@ -81,6 +84,44 @@ describeDatabase("Square Terminal capture", () => {
 
   async function drain(): Promise<number> {
     return processSquareWebhooks(db, { client: square.client, keyring, environment: "sandbox" });
+  }
+
+  /** The worker's recovery pass, run directly so a test does not have to wait out a tick. */
+  async function sweep() {
+    return sweepOpenCheckouts(db, { client: square.client, keyring, environment: "sandbox" });
+  }
+
+  /**
+   * How many times the sweep has claimed one checkout.
+   *
+   * The sweep's own claim is global - it is the worker looking for work across every salon, which
+   * is the whole point of it - and the isolated test database persists between runs, so the batch
+   * counts it returns are a fact about the database rather than about this test. This is the
+   * per-row question every assertion below actually means to ask.
+   */
+  async function sweepAttempts(checkoutId: string): Promise<number> {
+    const [row] = await db<{ sweepAttempts: number }[]>`
+      select sweep_attempts from square_terminal_checkouts
+      where business_id=${businessId} and id=${checkoutId}
+    `;
+    return row!.sweepAttempts;
+  }
+
+  /**
+   * Makes ONE checkout due now and every other one not due.
+   *
+   * Both halves are needed. The sweep's claim is deliberately global and bounded - it is the worker
+   * looking for work across every salon, a batch at a time, oldest first - and the isolated test
+   * database persists between runs, so rows left open by earlier tests and earlier runs are older
+   * than this one and would fill the batch ahead of it. Standing them down is how this test asks
+   * about its own row instead of about how much history the database happens to hold.
+   */
+  async function sweepDue(checkoutId: string): Promise<void> {
+    await db`
+      update square_terminal_checkouts
+      set next_sweep_at=case when id=${checkoutId} then now() else now() + interval '1 day' end
+      where status in ('pending','in_progress')
+    `;
   }
 
   /** Runs the drain until every claimable row has come to rest, without waiting out the backoff. */
@@ -846,7 +887,7 @@ describeDatabase("Square Terminal capture", () => {
     expect((await checkoutRow(started.json().id)).squareCheckoutId).not.toBeNull();
   });
 
-  it("resolves a checkout as failed when the authorisation is revoked mid-flight", async () => {
+  it("puts a checkout in front of a person when the authorisation is revoked mid-flight", async () => {
     const { deviceId } = await pairTerminal("Revoked counter");
     const invoice = await terminalInvoice();
     const started = await startCapture(invoice.id, deviceId);
@@ -862,10 +903,32 @@ describeDatabase("Square Terminal capture", () => {
       square.state.failAlways.delete("retrieveTerminalCheckout");
     }
 
-    const failed = await checkoutRow(checkoutId);
-    expect(failed.status).toBe("failed");
-    expect(failed.lastError).toContain("revoked");
-    // No success is shown for money nobody can confirm moved, and the invoice is untouched.
+    // `needs_review`, not `failed`. By this point `square_checkout_id` is set, so the terminal was
+    // reached and the card may well have been charged - nobody knows, which is exactly what
+    // `needs_review` means everywhere else in this integration. `failed` was the previous answer
+    // and it was a routing bug rather than a wording one: it renders with `needsReview: false` and
+    // is not in `square_checkout_open`, so a checkout that really did take a customer's money left
+    // the invoice unpaid and appeared in no operator surface at all.
+    const parked = await checkoutRow(checkoutId);
+    expect(parked.status).toBe("needs_review");
+    expect(JSON.parse(parked.mismatchText!)).toMatchObject({ reason: "connection_unusable" });
+    expect(parked.lastError).toContain("revoked");
+
+    // It is in the list a person actually works through - which is the whole point of the change.
+    const [open] = await db<{ count: number }[]>`
+      select count(*)::int as count from square_terminal_checkouts
+      where business_id=${businessId} and id=${checkoutId}
+        and status in ('pending','in_progress','needs_review')
+    `;
+    expect(open!.count).toBe(1);
+
+    // Every guarantee `failed` was providing is kept: no success is shown for money nobody can
+    // confirm moved, nothing is posted, and the invoice is untouched.
+    const presented = await app.inject({
+      method: "GET", url: `/api/square/terminal-checkouts/${checkoutId}`,
+      headers: { cookie: ownerCookie }
+    });
+    expect(presented.json()).toMatchObject({ settled: false, needsReview: true, inFlight: false });
     expect((await invoiceRow(invoice.id)).status).toBe("open");
     expect(await squarePayments(invoice.id)).toHaveLength(0);
     const [connection] = await db<{ status: string }[]>`
@@ -1002,6 +1065,150 @@ describeDatabase("Square Terminal capture", () => {
     expect((await invoiceRow(invoice.id)).balanceMinor).toBe(0);
   });
 
+  // ---------------------------------------------------------------------------
+  // Recovery without a webhook and without a person.
+  //
+  // Capture had exactly two ways to finish: Square delivers a notification, or somebody presses
+  // refresh. Neither is guaranteed, and between them was a gap in which a customer's card had been
+  // charged, the invoice still said `open`, and nothing in Pawsh was asking anyone to look.
+  // ---------------------------------------------------------------------------
+
+  it("settles a checkout from the sweep alone when no webhook ever arrives", async () => {
+    const { deviceId } = await pairTerminal("Silent webhook counter");
+    const invoice = await terminalInvoice();
+    const started = await startCapture(invoice.id, deviceId);
+    const checkoutId = started.json().id as string;
+    const squareCheckoutId = (await checkoutRow(checkoutId)).squareCheckoutId!;
+
+    // The customer taps and Square takes the money. No notification is delivered and nobody
+    // presses refresh - the two paths that used to be the only ones.
+    square.completeCheckout({
+      checkoutId: squareCheckoutId, amountMinor: invoice.balanceMinor, tipMinor: 300
+    });
+    const [beforeEvents] = await db<{ count: number }[]>`
+      select count(*)::int as count from square_webhook_events
+    `;
+
+    // A freshly claimed checkout is left to the webhook for a grace period first, so the sweep
+    // does not touch this row until that has elapsed.
+    await sweep();
+    expect(await sweepAttempts(checkoutId)).toBe(0);
+    await sweepDue(checkoutId);
+
+    await sweep();
+    expect(await sweepAttempts(checkoutId)).toBe(1);
+
+    // Everything the webhook path would have produced, produced by the worker instead.
+    expect((await checkoutRow(checkoutId)).status).toBe("completed");
+    expect(await squarePayments(invoice.id)).toHaveLength(1);
+    const after = await invoiceRow(invoice.id);
+    expect(after.tipMinor).toBe(300);
+    expect(after.balanceMinor).toBe(0);
+    expect(after.status).toBe("paid");
+
+    // And it really was the sweep: no notification was ever received.
+    const [afterEvents] = await db<{ count: number }[]>`
+      select count(*)::int as count from square_webhook_events
+    `;
+    expect(afterEvents!.count).toBe(beforeEvents!.count);
+  });
+
+  it("posts once when the sweep and a replayed webhook both reach the same payment", async () => {
+    const { deviceId } = await pairTerminal("Sweep race counter");
+    const invoice = await terminalInvoice();
+    const started = await startCapture(invoice.id, deviceId);
+    const checkoutId = started.json().id as string;
+    const squareCheckoutId = (await checkoutRow(checkoutId)).squareCheckoutId!;
+    square.completeCheckout({
+      checkoutId: squareCheckoutId, amountMinor: invoice.balanceMinor, tipMinor: 150
+    });
+
+    // Every recovery path at once, twice over: the sweep, a notification, another sweep, a
+    // redelivery of the same notification, and an operator pressing refresh.
+    await sweepDue(checkoutId);
+    await sweep();
+    await terminalWebhook(squareCheckoutId);
+    await drainUntilQuiet();
+    await sweepDue(checkoutId);
+    await sweep();
+    await terminalWebhook(squareCheckoutId);
+    await drainUntilQuiet();
+    await app.inject({
+      method: "POST", url: `/api/square/terminal-checkouts/${checkoutId}/refresh`,
+      headers: { cookie: ownerCookie }
+    });
+
+    // One payment, one tip raise, one settled invoice. The sweep introduces no write the other
+    // paths did not already make, so it cannot introduce a second charge either.
+    expect(await squarePayments(invoice.id)).toHaveLength(1);
+    const after = await invoiceRow(invoice.id);
+    expect(after.tipMinor).toBe(150);
+    expect(after.balanceMinor).toBe(0);
+    const [checkouts] = await db<{ count: number }[]>`
+      select count(*)::int as count from square_terminal_checkouts
+      where business_id=${businessId} and invoice_id=${invoice.id}
+    `;
+    expect(checkouts!.count).toBe(1);
+  });
+
+  it("gives up on a checkout it cannot resolve and puts it in front of a person", async () => {
+    const { deviceId } = await pairTerminal("Unresolvable counter");
+    const invoice = await terminalInvoice();
+    const started = await startCapture(invoice.id, deviceId);
+    const checkoutId = started.json().id as string;
+
+    // The state the orphan leaves behind: Square was called, the response was lost, and the row
+    // never learned a checkout id. No notification can resolve to it - there is nothing to match -
+    // so before the sweep existed this sat `pending` forever with the invoice unpaid.
+    await db`update square_terminal_checkouts set square_checkout_id=null where id=${checkoutId}`;
+
+    for (let attempt = 0; attempt <= maxCheckoutSweepAttempts; attempt += 1) {
+      await sweepDue(checkoutId);
+      await sweep();
+    }
+
+    const parked = await checkoutRow(checkoutId);
+    expect(parked.status).toBe("needs_review");
+    const mismatch = JSON.parse(parked.mismatchText!);
+    expect(mismatch.reason).toBe("unresolved_after_sweeps");
+    // It must not claim the terminal took nothing: a lost create response is not proof the request
+    // never landed, and telling a salon "nothing was charged" would be inventing a fact.
+    expect(mismatch.detail).toMatch(/may or may not have taken a payment/i);
+
+    // Nothing was posted and the invoice is exactly as it was - the row is visible, not settled.
+    expect(await squarePayments(invoice.id)).toHaveLength(0);
+    expect((await invoiceRow(invoice.id)).status).toBe("open");
+
+    // And it has stopped being claimed, so it is not generating requests forever. `sweepDue`
+    // cannot even make it due again: a parked row is out of the claim's status predicate.
+    const settled = await sweepAttempts(checkoutId);
+    await sweepDue(checkoutId);
+    await sweep();
+    expect(await sweepAttempts(checkoutId)).toBe(settled);
+  });
+
+  it("never re-sends a checkout to a terminal from the worker", async () => {
+    const { deviceId } = await pairTerminal("No background charge counter");
+    const invoice = await terminalInvoice();
+    const started = await startCapture(invoice.id, deviceId);
+    const checkoutId = started.json().id as string;
+    await db`update square_terminal_checkouts set square_checkout_id=null where id=${checkoutId}`;
+
+    const created = () =>
+      square.state.calls.filter((call) => call.method === "createTerminalCheckout").length;
+    const before = created();
+    for (let attempt = 0; attempt <= maxCheckoutSweepAttempts; attempt += 1) {
+      await sweepDue(checkoutId);
+      await sweep();
+    }
+
+    // Re-sending the stored key would not double-charge - Square answers a repeated key with the
+    // checkout it already made - but it would light up a terminal in an empty salon hours later,
+    // asking a customer who is not there to present a card. A retry a person initiates is a retry
+    // somebody is standing in front of; the worker's is not, so it must never do this.
+    expect(created()).toBe(before);
+  });
+
   it("never posts a payment the salon took outside Pawsh on its own Square account", async () => {
     const body = await readFile("tests/fixtures/square/webhook-payment-updated.json");
     const eventId = JSON.parse(body.toString("utf8")).event_id as string;
@@ -1028,6 +1235,113 @@ describeDatabase("Square Terminal capture", () => {
         and provider_payment_id='PAYSAMPLE00000001' and business_id=${businessId}
     `;
     expect(posts!.count).toBe(0);
+  });
+
+  it("keys the checkout identity on the id alone, not on the business", async () => {
+    // The webhook lookup that turns a `terminal.checkout.updated` body into a Pawsh business
+    // cannot filter by business - resolving the business is what it is for - so it reads
+    // `where square_checkout_id = $1` and takes the first row. That is only sound if there can
+    // only ever BE one row. Until 0039 the backing index was `(business_id, square_checkout_id)`,
+    // so two salons could hold one Square id and the lookup returned an arbitrary one of them: a
+    // payment posted into the wrong salon's ledger.
+    //
+    // The cross-business insert is refused in `square-migration-0039.test.ts`, which has two
+    // businesses to hand; what is asserted here is the shape that makes it refusable, because that
+    // is the thing a future edit could quietly weaken back to per-business.
+    const [definition] = await db<{ indexdef: string }[]>`
+      select indexdef from pg_indexes
+      where schemaname='public' and indexname='square_checkout_identifier'
+    `;
+    expect(definition!.indexdef).toContain("UNIQUE");
+    expect(definition!.indexdef).toMatch(/\(square_checkout_id\)/);
+    expect(definition!.indexdef).not.toContain("business_id");
+
+    const [refundDefinition] = await db<{ indexdef: string }[]>`
+      select indexdef from pg_indexes
+      where schemaname='public' and indexname='payment_refund_identifier'
+    `;
+    expect(refundDefinition!.indexdef).toContain("UNIQUE");
+    expect(refundDefinition!.indexdef).not.toContain("business_id");
+
+    // And the weaker indexes are gone rather than sitting alongside, still implying the old rule.
+    const [stale] = await db<{ count: number }[]>`
+      select count(*)::int as count from pg_indexes where schemaname='public'
+        and indexname in ('square_checkout_identifier_per_business',
+          'payment_refund_provider_reference')
+    `;
+    expect(stale!.count).toBe(0);
+  });
+
+  it("stops retrying a webhook it can never process, and keeps the row", async () => {
+    const { deviceId } = await pairTerminal("Dead letter counter");
+    const invoice = await terminalInvoice();
+    const started = await startCapture(invoice.id, deviceId);
+    const squareCheckoutId = (await checkoutRow(started.json().id as string)).squareCheckoutId!;
+
+    // A failure that is ours rather than Square's, so it is never retryable and never resolves.
+    // Before the ceiling existed this event was re-read every hour until the end of time, and no
+    // operator surface could tell it apart from one about to succeed.
+    square.state.failAlways.set("retrieveTerminalCheckout",
+      new SquareApiError("invalid_request", "Square rejected the request", 400));
+    let eventId: string;
+    try {
+      eventId = await terminalWebhook(squareCheckoutId);
+      for (let attempt = 0; attempt < maxWebhookAttempts + 2; attempt += 1) {
+        await db`
+          update square_webhook_events
+          set next_attempt_at=case when event_id=${eventId} then now()
+            else now() + interval '1 day' end
+          where processed_at is null
+        `;
+        await drain();
+      }
+    } finally {
+      square.state.failAlways.delete("retrieveTerminalCheckout");
+    }
+
+    const [dead] = await db<{
+      status: string; attempts: number; processedAt: Date | null; lastError: string | null;
+    }[]>`
+      select status, attempts, processed_at, last_error
+      from square_webhook_events where event_id=${eventId!}
+    `;
+    expect(dead!.status).toBe("dead_letter");
+    expect(dead!.attempts).toBe(maxWebhookAttempts);
+    // `processed_at` is what stops the drain claiming it - the same mechanism `parked` uses - and
+    // it is emphatically not `parked`, which would file a real defect among deliberate no-ops.
+    expect(dead!.processedAt).not.toBeNull();
+    expect(dead!.lastError).toBeTruthy();
+
+    // It really has stopped: another pass does not touch it.
+    await db`update square_webhook_events set next_attempt_at=now() where event_id=${eventId!}`;
+    await drain();
+    const [after] = await db<{ attempts: number }[]>`
+      select attempts from square_webhook_events where event_id=${eventId!}
+    `;
+    expect(after!.attempts).toBe(maxWebhookAttempts);
+
+    // And the row is KEPT. `event_id` being unique is the only thing refusing a replayed
+    // notification, so deleting a dead letter would make its event replayable with a signature
+    // that is still perfectly valid.
+    const replay = await app.inject({
+      method: "POST", url: "/webhooks/square",
+      headers: {
+        "content-type": "application/json",
+        [squareSignatureHeader]: squareSignature({
+          notificationUrl, signatureKey: webhookSignatureKey,
+          rawBody: Buffer.from(JSON.stringify({
+            merchant_id: merchantId, type: "terminal.checkout.updated", event_id: eventId!,
+            data: { object: { checkout: { id: squareCheckoutId } } }
+          }), "utf8")
+        })
+      },
+      payload: Buffer.from(JSON.stringify({
+        merchant_id: merchantId, type: "terminal.checkout.updated", event_id: eventId!,
+        data: { object: { checkout: { id: squareCheckoutId } } }
+      }), "utf8")
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().status).toBe("duplicate");
   });
 
   it("keeps one salon's checkouts unreachable from another", async () => {

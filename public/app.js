@@ -55,7 +55,14 @@ function settleUnauthenticated() {
   state.calendar.preferences=null;state.calendar.filterInitialized=false;state.calendar.selectedGroomerIds=null;
   $("#app-view").hidden=true;
   $("#auth-view").hidden=false;
-  if ($("#modal")?.open) $("#modal").close();
+  // Every open dialog, not just #modal. A dialog opened with showModal() makes the rest of the
+  // document inert, so a terminal capture still on screen when the session lapses sits on top of
+  // the login form and blocks it outright - and its poll would go on 401ing every couple of
+  // seconds behind it. Closing them all is also what keeps a new sign-in from landing behind a
+  // dialog belonging to the session that just ended. close() is called directly rather than
+  // through the capture dialog's own guard: this is teardown, and there is nobody to ask.
+  stopTerminalCapturePoll();
+  $$("dialog").forEach((dialog) => { if (dialog.open) dialog.close(); });
 }
 
 async function reconcilePermissions() {
@@ -113,6 +120,14 @@ function toast(message) {
 function runDetached(task){Promise.resolve().then(task).catch(error=>toast(error.message));}
 function escape(value = "") {
   const el = document.createElement("span"); el.textContent = value; return el.innerHTML;
+}
+// `escape()` serializes a text node, and a text node keeps its quotes: correct between tags, wrong
+// inside a quoted attribute, where a `"` in tenant-typed text closes the attribute early and turns
+// whatever follows into markup. Anything interpolated into an attribute value goes through this.
+// The output stays safe between tags too, because a browser decodes these entities back to the
+// characters they stand for when it parses the text.
+function escapeAttr(value = "") {
+  return escape(value).replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 function normalizeBreedFilter(value){return String(value).trim().toLowerCase().replace(/[\s\-_]+/g," ").replace(/[^a-z0-9 ]/g,"");}
 function allowed(permission) {
@@ -279,7 +294,10 @@ function renderAppointments() {
   const todays = state.appointments.filter((item) => appointmentLocalValue(item).slice(0,10) === today);
   $("#today-list").innerHTML = todays.length ? todays.map(appointmentHtml).join("") : "No appointments today.";
   bindCalendarInteractions($("#today-list"));
-  $$(".appointment-action").forEach((button) => button.addEventListener("click", () => advanceAppointment(button.dataset.id, button.dataset.status, button)));
+  // runDetached, because advanceAppointment is async and the completed branch now reaches the
+  // network before it opens anything. A rejection dropped here would surface as an unhandled
+  // rejection with nothing said to the operator.
+  $$(".appointment-action").forEach((button) => button.addEventListener("click", () => runDetached(() => advanceAppointment(button.dataset.id, button.dataset.status, button))));
   $$(".terminal-action").forEach(button=>button.addEventListener("click",()=>terminalAppointment(button.dataset.id,button.dataset.status)));
   $$(".move-action").forEach(button=>button.addEventListener("click",()=>moveAppointment(button.dataset.id)));
   $$(".service-action").forEach(button=>button.addEventListener("click",()=>adjustServices(button.dataset.id)));
@@ -637,7 +655,13 @@ async function terminalAppointment(id,status) {
   });
 }
 async function advanceAppointment(id, status, actionButton) {
-  if (status === "completed") return checkout(id);
+  // Guarded like every other transition. `checkout()` is async and makes two reads before it can
+  // open anything, and this is the one branch that returns before the runOnce below - so without a
+  // key of its own a second click inside that window runs the whole of checkout() again: the
+  // salon's payment configuration is read twice, and the modal is rebuilt and rebound underneath
+  // whoever is already typing into it. showModal() on an already-modal dialog is a no-op rather
+  // than a throw, so nothing reports any of this; it is silent, and the second render wins.
+  if (status === "completed") return runOnce(`checkout:${id}`,()=>checkout(id));
   const appointment=state.appointments.find(item=>item.id===id);
   const next = {scheduled:"checked_in",checked_in:"in_service",in_service:"completed"}[status];
   if (status === "scheduled" || status === "checked_in") {
@@ -736,8 +760,18 @@ async function checkout(id) {
         try{
           // No amount and no tip in this body: the server derives both, and the idempotency key
           // that makes a retry safe is derived from the row it writes before Square is called.
-          started=await api(`/api/invoices/${invoice.id}/terminal-checkouts`,
-            {method:"POST",body:JSON.stringify({deviceId:device.id})});
+          //
+          // Keyed on the invoice, which is what stays stable across the retry this failure invites:
+          // the error below tells the operator the invoice exists and the terminal did not start,
+          // so the obvious response is to press the button again, and two of those must never be in
+          // flight at once. A client-generated Idempotency-Key would be inert here - this route
+          // dedupes on the checkout row it claims before calling Square, not on a header.
+          started=await runOnce(`terminal-start:${invoice.id}`,()=>api(`/api/invoices/${invoice.id}/terminal-checkouts`,
+            {method:"POST",body:JSON.stringify({deviceId:device.id})}));
+          // `runOnce` resolves to nothing when an identical start is already in flight. That is a
+          // double-press rather than an outcome, and it must not open a capture modal watching a
+          // checkout this call never received.
+          if(!started)return {message:"Already sending to the terminal"};
         }catch(error){
           error.message=`Invoice created; the terminal did not start. ${error.message}`;
           throw error;
@@ -3725,11 +3759,12 @@ async function applyAvailabilityClosure(localDate,closed,{announce=true}={}){
 // rate in force moves three things at once — the rate standing down, the rate taking over, and
 // the number invoices snapshot.
 //
-// What this screen does NOT do is connect anything. Pawsh has no OAuth flow, no credential store
-// and no tokenization, so a card processor recorded here is a note about how the salon takes
-// payment. There is deliberately no connection status, no Connect button and no disabled
-// placeholder for one: a control for a state the server has no concept of still asserts the
-// concept exists and is merely pending.
+// What this screen connects is Square, and only Square. Every other processor recorded here is a
+// note about how the salon takes payment: there is no OAuth flow, no credential store and no
+// tokenization behind those rows, so they carry no connection status, no Connect button and no
+// disabled placeholder for one. A control for a state the server has no concept of still asserts
+// the concept exists and is merely pending. Square is the exception because it is the one row
+// that has somewhere to connect to, and its panel says so rather than implying the rest could.
 // ---------------------------------------------------------------------------
 const TAXPAY_TABS=[["method","Method"],["tax","Tax"],["processors","Card processors"]];
 // Mirrors the column default on `card_processors`, so the tips dialog opens on the values a new
@@ -3844,14 +3879,16 @@ function taxPayFootMarkup(attribute,label,testid){
 // equivalent at all, and the list is short enough that a step at a time is faster anyway.
 function taxPayMethodRow(method,index,total){
   const name=escape(method.name);
+  // The same name again, safe to put inside a quoted attribute. A salon types this.
+  const nameAttr=escapeAttr(method.name);
   const type=escape(taxPaySettlementLabel(method.settlementType));
-  const arrow=(direction,label,icon,blocked)=>`<button type="button" class="icon-button" data-taxpay-move="${direction}" data-taxpay-method="${method.id}" aria-label="Move ${name} ${label}" title="Move ${label}"${blocked?` disabled aria-disabled="true"`:""}>${icon}</button>`;
+  const arrow=(direction,label,icon,blocked)=>`<button type="button" class="icon-button" data-taxpay-move="${direction}" data-taxpay-method="${method.id}" aria-label="Move ${nameAttr} ${label}" title="Move ${label}"${blocked?` disabled aria-disabled="true"`:""}>${icon}</button>`;
   // A built-in method is editable, just not renamable or retypable. The processor it settles
   // through is exactly what the Processor column is for, and Card is the row that most needs to
   // say it. Deletion stays off: recorded payments display through these four.
-  const edit=`<button type="button" class="icon-button" data-taxpay-method-edit="${method.id}" aria-label="Edit ${name}" title="Edit">${PENCIL_ICON}</button>`;
+  const edit=`<button type="button" class="icon-button" data-taxpay-method-edit="${method.id}" aria-label="Edit ${nameAttr}" title="Edit">${PENCIL_ICON}</button>`;
   const actions=method.builtIn?edit
-    :edit+`<button type="button" class="icon-button danger" data-taxpay-method-delete="${method.id}" aria-label="Delete ${name}" title="Delete">${TRASH_ICON}</button>`;
+    :edit+`<button type="button" class="icon-button danger" data-taxpay-method-delete="${method.id}" aria-label="Delete ${nameAttr}" title="Delete">${TRASH_ICON}</button>`;
   return `<tr data-taxpay-method-row="${method.id}">`
     +`<td><span class="taxpay-order">${arrow("up","up",ARROW_UP_ICON,index===0)}${arrow("down","down",ARROW_DOWN_ICON,index===total-1)}</span></td>`
     +`<td><span class="taxpay-name"><strong>${name}</strong>${method.builtIn?`<small>Built-in</small>`:""}<small class="taxpay-inline-type">${type}</small></span></td>`
@@ -3882,12 +3919,13 @@ function taxPayMethodMarkup(){
 // screen express two rates in force, or none, neither of which the server will store.
 function taxPayRateRow(rate){
   const name=escape(rate.name);
+  const nameAttr=escapeAttr(rate.name);
   // Editing is offered on every rate, the one in force included. Without it a typo in the live
   // rate would be unfixable here: it cannot be deleted, and a replacement cannot take its name.
-  const edit=`<button type="button" class="icon-button" data-taxpay-rate-edit="${rate.id}" aria-label="Edit ${name}" title="Edit">${PENCIL_ICON}</button>`;
+  const edit=`<button type="button" class="icon-button" data-taxpay-rate-edit="${rate.id}" aria-label="Edit ${nameAttr}" title="Edit">${PENCIL_ICON}</button>`;
   const remove=rate.isDefault
-    ?`<button type="button" class="icon-button danger" disabled aria-disabled="true" aria-label="Delete ${name}" title="The rate in force cannot be deleted. Put another rate in force first.">${TRASH_ICON}</button>`
-    :`<button type="button" class="icon-button danger" data-taxpay-rate-delete="${rate.id}" aria-label="Delete ${name}" title="Delete">${TRASH_ICON}</button>`;
+    ?`<button type="button" class="icon-button danger" disabled aria-disabled="true" aria-label="Delete ${nameAttr}" title="The rate in force cannot be deleted. Put another rate in force first.">${TRASH_ICON}</button>`
+    :`<button type="button" class="icon-button danger" data-taxpay-rate-delete="${rate.id}" aria-label="Delete ${nameAttr}" title="Delete">${TRASH_ICON}</button>`;
   return `<tr data-taxpay-rate-row="${rate.id}"${rate.isDefault?' class="is-inforce"':""}>`
     +`<td><strong>${name}</strong></td>`
     +`<td class="taxpay-rate">${escape(taxPayPercent(rate.rateBasisPoints))}%</td>`
@@ -3915,14 +3953,15 @@ function taxPayTaxMarkup(){
 // --- Tab 3: Card processors ----------------------------------------------
 function taxPayProcessorRow(processor){
   const label=escape(taxPayProviderLabel(processor.provider));
-  const action=(attribute,text)=>`<button type="button" class="secondary compact" data-taxpay-${attribute}="${processor.id}" aria-label="${escape(text)} for ${label}">${escape(text)}</button>`;
-  const remove=`<button type="button" class="icon-button danger" data-taxpay-processor-delete="${processor.id}" aria-label="Delete ${label}" title="Delete">${TRASH_ICON}</button>`;
+  const labelAttr=escapeAttr(taxPayProviderLabel(processor.provider));
+  const action=(attribute,text)=>`<button type="button" class="secondary compact" data-taxpay-${attribute}="${processor.id}" aria-label="${escapeAttr(text)} for ${labelAttr}">${escape(text)}</button>`;
+  const remove=`<button type="button" class="icon-button danger" data-taxpay-processor-delete="${processor.id}" aria-label="Delete ${labelAttr}" title="Delete">${TRASH_ICON}</button>`;
   return `<li class="taxpay-processor" data-taxpay-processor-row="${processor.id}">`
     +`<span class="taxpay-processor-name">${label}${processor.isDefault?`<span class="taxpay-default-mark">Default</span>`:""}</span>`
     +`<label class="taxpay-location">Location label`
     // Free text, never a selector. Pawsh does not talk to the provider, so it cannot enumerate
     // the locations that provider knows about; offering a list would imply it had asked.
-    +`<input type="text" maxlength="80" autocomplete="off" placeholder="Front desk" value="${escape(processor.locationLabel||"")}" data-taxpay-location="${processor.id}"></label>`
+    +`<input type="text" maxlength="80" autocomplete="off" placeholder="Front desk" value="${escapeAttr(processor.locationLabel||"")}" data-taxpay-location="${processor.id}"></label>`
     +`<span class="taxpay-processor-actions">${action("terminals","Terminal setting")}${action("fees","Processing fees")}${action("tips","Default tips")}${remove}</span>`
     +`</li>`;
 }
@@ -3962,7 +4001,11 @@ function taxPayMarkup(){
   return taxPayTabsMarkup()
     // One line of provenance, in ordinary muted type. A banner, an icon or a tint would make the
     // absence of an integration look like a warning about one.
-    +(taxPayState.tab==="processors"?`<p class="taxpay-provenance" data-testid="taxpay-provenance">This records how your salon takes card payments. Pawsh does not process them.</p>`:"")
+    // Written when this screen was configuration only, and it stopped being true on the day the
+    // Square panel below it shipped: Pawsh starts, reconciles and refunds card payments on a
+    // connected Square terminal. It stays honest about the other three, which are a note for
+    // receipts and reporting and nothing Pawsh can talk to.
+    +(taxPayState.tab==="processors"?`<p class="taxpay-provenance" data-testid="taxpay-provenance">This records how your salon takes card payments. Pawsh takes them itself only on a connected Square terminal; the rest are recorded so receipts and reporting can name them.</p>`:"")
     +`<article class="settings-panel taxpay-panel" id="taxpay-panel" role="tabpanel" aria-labelledby="taxpay-tab-${taxPayState.tab}">${body}</article>`;
 }
 // renderSettingsCategory replaces the whole settings pane on every nav click, so this re-reads
@@ -4089,10 +4132,10 @@ function openTaxPayMethodEditor(methodId){
   // it, so its name and type are read-only text rather than inputs that look editable and fail.
   const identity=method?.builtIn
     ?`<p class="wide fine"><strong>${escape(method.name)}</strong> records as <strong>${escape(taxPaySettlementLabel(method.settlementType))}</strong>. A built-in method's name and settlement type are fixed, because payments already recorded display through them.</p>`
-    :field("name","Method name","text",`required maxlength="60" value="${escape(method?.name||"")}"`)
+    :field("name","Method name","text",`required maxlength="60" value="${escapeAttr(method?.name||"")}"`)
       +select("settlementType","Records as",types,false,method?.settlementType||"");
   openModal(method?"Edit payment method":"New payment method",
-    identity+field("processorLabel","Processor (optional)","text",`maxlength="60" value="${escape(method?.processorLabel||"")}"`,true),
+    identity+field("processorLabel","Processor (optional)","text",`maxlength="60" value="${escapeAttr(method?.processorLabel||"")}"`,true),
     async form=>{
       const values=Object.fromEntries(form);
       const processorLabel=String(values.processorLabel||"").trim()||null;
@@ -4109,7 +4152,7 @@ function openTaxPayRateEditor(rateId){
   // Percent in, basis points out — the same convention as the tax field in Business settings,
   // because it is ultimately the same number.
   openModal(rate?"Edit tax rate":"New tax rate",
-    field("name","Rate name","text",`required maxlength="80" value="${escape(rate?.name||"")}"`)
+    field("name","Rate name","text",`required maxlength="80" value="${escapeAttr(rate?.name||"")}"`)
     +field("rate","Rate (%)","number",`required min="0" max="100" step=".01" value="${rate?escape(taxPayPercent(rate.rateBasisPoints)):"0"}"`)
     // Correcting the rate in force moves the number invoices snapshot, which is a different act
     // from correcting one that is standing by, and the operator is told which one they are doing.
@@ -4155,7 +4198,7 @@ function taxPayFeesBody(processorId){
   const body=fees.map(fee=>`<tr><td><strong>${escape(fee.name)}</strong></td>`
     +`<td class="taxpay-rate">${escape(taxPayPercent(fee.rateBasisPoints))}%</td>`
     +`<td class="taxpay-rate">${escape(money(fee.centAmountMinor))}</td>`
-    +`<td><span class="taxpay-actions"><button type="button" class="icon-button danger" data-taxpay-fee-delete="${fee.id}" aria-label="Delete ${escape(fee.name)}" title="Delete">${TRASH_ICON}</button></span></td></tr>`).join("");
+    +`<td><span class="taxpay-actions"><button type="button" class="icon-button danger" data-taxpay-fee-delete="${fee.id}" aria-label="Delete ${escapeAttr(fee.name)}" title="Delete">${TRASH_ICON}</button></span></td></tr>`).join("");
   return `<div class="wide">${taxPayTableMarkup("taxpay-fee-table",head,body)}${foot}${note}</div>`;
 }
 function renderTaxPayFees(){
@@ -4241,7 +4284,12 @@ function terminalDrawerBody(){
       +`<p class="fine settings-note">These are the terminals Pawsh is paired with. Add and pair them under Card processors.</p>`;
   }
   const terminals=processor?.terminals||[];
-  const note=`<p class="fine settings-note">Terminals are recorded so staff can tell devices apart. Pawsh does not pair with, or send anything to, a terminal.</p>`;
+  // Square reaches this branch whenever it is not connected, and telling a salon that Pawsh does
+  // not pair with a terminal is the opposite of what is true for the one processor it does pair
+  // with. The sentence names the reason they are looking at an inventory list instead.
+  const note=processor?.provider==="square"
+    ?`<p class="fine settings-note">Pawsh is not connected to Square, so it cannot show the terminals it is paired with. Connect Square under Card processors. Terminals recorded here only help staff tell devices apart.</p>`
+    :`<p class="fine settings-note">Terminals are recorded so staff can tell devices apart. Pawsh does not pair with, or send anything to, a terminal.</p>`;
   if(!terminals.length){
     return `<div class="taxpay-empty" data-testid="taxpay-terminal-empty"><p>No terminal recorded. Add the machines on your counter so staff can tell them apart.</p></div>${note}`;
   }
@@ -4250,7 +4298,7 @@ function terminalDrawerBody(){
   const body=terminals.map(terminal=>`<tr><td><strong>${escape(terminal.name)}</strong></td>`
     +`<td>${terminal.locationLabel?escape(terminal.locationLabel):"—"}</td>`
     +`<td>${terminal.deviceCode?escape(terminal.deviceCode):"—"}</td>`
-    +`<td><span class="taxpay-actions"><button type="button" class="icon-button danger" data-taxpay-terminal-delete="${terminal.id}" aria-label="Delete ${escape(terminal.name)}" title="Delete">${TRASH_ICON}</button></span></td></tr>`).join("");
+    +`<td><span class="taxpay-actions"><button type="button" class="icon-button danger" data-taxpay-terminal-delete="${terminal.id}" aria-label="Delete ${escapeAttr(terminal.name)}" title="Delete">${TRASH_ICON}</button></span></td></tr>`).join("");
   return taxPayTableMarkup("taxpay-terminal-table",head,body)+note;
 }
 function renderTerminalDrawer(){
@@ -4260,6 +4308,13 @@ function renderTerminalDrawer(){
   // recorded, "Terminal setting" on its own names nothing anybody can identify.
   $("#terminal-drawer-title").textContent=processor?`Terminal setting — ${taxPayProviderLabel(processor.provider)}`:"Terminal setting";
   $("#terminal-drawer-body").innerHTML=terminalDrawerBody();
+  // Render and bind stay together, which is the one thing this drawer was not doing. The Square
+  // branch of `terminalDrawerBody()` emits the same device rows the Card processors tab does, and
+  // those controls are bound by `bindSquare` - which only ever ran against `#taxpay-root`, a
+  // different tree from this top-level dialog, leaving every button in here inert. `bindSquare`
+  // reaches for its targets optionally, so calling it on a root that has none is a no-op and the
+  // two branches cannot drift apart again.
+  bindSquare($("#terminal-drawer-body"));
   // "+ Add terminal" here writes an inventory row, which is not what adding a Square terminal
   // means. Rather than have one button do two different things, it stands down and the Square
   // panel keeps the only control that pairs anything.
@@ -4392,6 +4447,7 @@ function squareLocationName(locationId){
 
 function squareDeviceRow(device){
   const label=escape(device.label);
+  const labelAttr=escapeAttr(device.label);
   const place=squareLocationName(device.locationId);
   const status=device.pairingStatus;
   const pill=status==="paired"?`<span class="square-pill is-paired">Paired</span>`
@@ -4418,7 +4474,7 @@ function squareDeviceRow(device){
     status==="unpaired"
       ? `<button type="button" class="secondary compact" data-square-check="${device.id}">Check pairing</button>`
       : "",
-    `<button type="button" class="icon-button danger" data-square-remove="${device.id}" aria-label="Remove ${label}" title="Remove">${TRASH_ICON}</button>`
+    `<button type="button" class="icon-button danger" data-square-remove="${device.id}" aria-label="Remove ${labelAttr}" title="Remove">${TRASH_ICON}</button>`
   ].join("");
   return `<li class="square-device" data-square-device="${device.id}">`
     +`<span class="square-device-name"><strong>${label}</strong>${place?`<span class="fine">${escape(place)}</span>`:""}</span>`
@@ -4676,14 +4732,43 @@ function openTerminalCapture(checkout,deviceLabel){
   if(checkout.inFlight)scheduleTerminalCapturePoll();
 }
 
+/**
+ * What this dialog would cost to close right now, or null when it costs nothing.
+ *
+ * There is exactly one way into this modal - the checkout that started the payment - so whatever
+ * is on screen here is not recoverable once it is gone. That is fine for a settled or cancelled
+ * payment, whose outcome is on the receipt and on the invoice. It is not fine while the customer
+ * is still at the terminal, and it is not fine for `needs review`, whose instruction to stop and
+ * fetch a manager exists nowhere else in the product.
+ */
+function terminalCaptureCloseWarning(){
+  const data=terminalCapture.data;
+  if(data?.needsReview)return "This payment needs a manager's review, and this is the only screen that shows it. Close it anyway?";
+  if(data?.inFlight)return "The customer may still be paying on the terminal. Pawsh stops watching it if you close this, and this is the only screen that shows it. Close it anyway?";
+  return null;
+}
+/** True when the dialog may close: either nothing is at stake, or the operator said to close it. */
+function confirmTerminalCaptureClose(){
+  const warning=terminalCaptureCloseWarning();
+  return !warning||confirm(warning);
+}
 function setupTerminalCapture(){
   const dialog=$("#terminal-capture");if(!dialog)return;
-  dialog.querySelector(".drawer-head .close")?.addEventListener("click",()=>dialog.close());
-  $("[data-testid=\"terminal-capture-close\"]")?.addEventListener("click",()=>dialog.close());
+  // Every route out of this dialog that is not "Cancel payment" goes through the same question.
+  // Cancel payment is the way to actually stop a live charge - it asks the terminal and reconciles
+  // - so it is deliberately not guarded here; closing is the one that loses the payment silently.
+  const requestClose=()=>{if(confirmTerminalCaptureClose())dialog.close();};
+  dialog.querySelector(".drawer-head .close")?.addEventListener("click",requestClose);
+  $("[data-testid=\"terminal-capture-close\"]")?.addEventListener("click",requestClose);
+  // Escape reaches a <dialog> without touching either button, and it is the likeliest way this
+  // gets dismissed by accident. `cancel` is the only event that can still refuse it.
+  dialog.addEventListener("cancel",event=>{if(!confirmTerminalCaptureClose())event.preventDefault();});
   dialog.addEventListener("close",()=>{
     stopTerminalCapturePoll();
     terminalCapture.checkoutId=null;terminalCapture.data=null;
-    runDetached(()=>refresh());
+    // Not after a session ended: settleUnauthenticated closes this dialog on its way out, and a
+    // refresh from here would only be one more 401 against a session that is already gone.
+    if(state.me)runDetached(()=>refresh());
   });
   // Recovery, and only when a person asks: this is the one control here that reaches Square.
   $("[data-testid=\"terminal-capture-refresh\"]")?.addEventListener("click",()=>runDetached(async()=>{

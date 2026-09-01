@@ -34,7 +34,10 @@ interface TaxPaymentSettings {
   taxRates: TaxRate[];
   paymentMethods: PaymentMethod[];
   cardProcessors: CardProcessor[];
-  cardProcessing: { connectable: boolean; reason: string };
+  cardProcessing: {
+    connectable: boolean; reason: string;
+    connectableProviders: string[]; connectRoute: string;
+  };
   settlementTypes: { value: string; label: string }[];
   cardProcessorProviders: { value: string; label: string }[];
 }
@@ -118,7 +121,7 @@ describeDatabase("tax and payment settings", () => {
 
   // A salon opening this screen for the first time sees what it has been charging and taking,
   // not a blank slate implying neither was ever set.
-  it("serves the whole screen, and reports that a processor cannot be connected", async () => {
+  it("serves the whole screen, and reports which processor can be connected", async () => {
     const payload = await settings();
 
     expect(payload.currency).toBe("USD");
@@ -140,10 +143,23 @@ describeDatabase("tax and payment settings", () => {
 
     expect(payload.cardProcessors).toEqual([]);
 
-    // The honest part. There is no OAuth flow, credential store or tokenization behind this
-    // screen, so the server says so rather than leaving the client to discover it by trying.
-    expect(payload.cardProcessing.connectable).toBe(false);
-    expect(payload.cardProcessing.reason).toMatch(/does not connect/i);
+    // The honest part, and it has to stay honest. This asserted "does not connect" for as long as
+    // that was true; Square Terminal made it false, and an assertion that pins a stale claim is
+    // worse than no assertion because it actively defends the wrong answer. What the server owes
+    // the client is which providers can actually be connected and where, so that is what is
+    // pinned - including the negative, which is the part an owner most needs: exactly one
+    // provider is connectable and the rest of this screen is configuration.
+    expect(payload.cardProcessing.connectable).toBe(true);
+    expect(payload.cardProcessing.connectableProviders).toEqual(["square"]);
+    expect(payload.cardProcessing.connectRoute).toBe("/settings/integrations");
+    expect(payload.cardProcessing.reason).toMatch(/connects to Square/i);
+    // Recording a processor is still not connecting to one, for every provider and for Square on
+    // any screen but Integrations.
+    expect(payload.cardProcessing.reason).toMatch(/No other processor can be connected/i);
+    for (const provider of payload.cardProcessorProviders.map((entry) => entry.value)) {
+      if (provider === "square") continue;
+      expect(payload.cardProcessing.connectableProviders).not.toContain(provider);
+    }
 
     // The two closed sets, named by the server so the client keeps no copy of a check constraint.
     expect(payload.settlementTypes.map((type) => type.value))

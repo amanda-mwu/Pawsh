@@ -234,6 +234,14 @@ function hydrate(row: CheckoutRowShape): TerminalCheckoutRow {
   return { ...rest, mismatch: mismatchText ? JSON.parse(mismatchText) : null };
 }
 
+/**
+ * How long a freshly claimed checkout is left to the webhook before the sweep looks at it.
+ *
+ * Lives here rather than in `sweep.ts` because this is the module that writes it, and importing it
+ * the other way would make the two files a cycle for the sake of one number.
+ */
+export const checkoutSweepGraceSeconds = 120;
+
 export const terminalCheckoutIdempotencyVersion = "pawsh.square.terminal-checkout.v1";
 
 /**
@@ -320,6 +328,16 @@ export async function readTerminalCheckout(
  * name two Pawsh businesses and a payment resolved through it could be posted into the wrong
  * ledger. We created this row, so it already knows the business, the invoice and the amount that
  * was asked for; nothing about the incoming event is trusted to supply any of those.
+ *
+ * NOT SCOPED BY BUSINESS, AND THAT IS STRUCTURAL RATHER THAN AN OVERSIGHT. A
+ * `terminal.checkout.updated` body carries a Square checkout id and a merchant id, and neither is
+ * a tenant - resolving the business IS what this query is for, so it has nothing to filter by.
+ * What makes taking the first row correct is `square_checkout_identifier` in 0039: a partial
+ * unique index on `square_checkout_id` across the whole table, so at most one row in this
+ * deployment can hold a given Square checkout id. Before 0039 the backing index was unique only
+ * within a business, and this could resolve to an arbitrary one of two rows in different salons -
+ * exactly the wrong-ledger posting the paragraph above is about. This is the same reasoning
+ * `square_device_code_identifier` has carried since 0036.
  */
 export async function findCheckoutBySquareId(
   sql: SqlExecutor, squareCheckoutId: string
@@ -425,12 +443,17 @@ export async function claimTerminalCheckout(
     currency,
     attempt
   });
+  // `next_sweep_at` is set here rather than left to the column default so the grace period is a
+  // constant in the sweep module beside the other ones, and so the sweep stays a backstop: the
+  // request that claimed this row is about to call Square itself, and the webhook that follows
+  // normally settles it within seconds.
   const [created] = await sql<CheckoutRowShape[]>`
     insert into square_terminal_checkouts
       (business_id, invoice_id, device_id, idempotency_key, amount_minor, currency, status,
-       attempt, created_by)
+       attempt, created_by, next_sweep_at)
     values (${input.businessId}, ${input.invoiceId}, ${input.deviceId}, ${idempotencyKey},
-      ${invoice.balanceMinor}, ${currency}, 'pending', ${attempt}, ${input.userId})
+      ${invoice.balanceMinor}, ${currency}, 'pending', ${attempt}, ${input.userId},
+      now() + make_interval(secs => ${checkoutSweepGraceSeconds}))
     returning id, business_id, invoice_id, device_id, square_checkout_id, idempotency_key,
       amount_minor, currency, status, cancel_reason, last_error, mismatch::text as mismatch_text,
       payment_id, attempt, created_by, reconciled_at, created_at, updated_at

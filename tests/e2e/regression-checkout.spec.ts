@@ -73,3 +73,52 @@ test("@regression-checkout receipt failure preserves committed payment and retri
   const payments=await page.getByTestId("receipt").locator(".void-payment").count();
   expect(payments).toBe(1);
 });
+
+test("@regression-checkout a double-pressed checkout opens one working modal and submits once",async({page,request,tenant})=>{
+  const appointment=await completeAppointment(request,tenant);
+  // A card processor gives the salon its three tip presets, which is what proves the modal on
+  // screen is bound: the presets only compute if bindCheckoutTips ran against these nodes.
+  const processor=await request.post("/api/settings/card-processors",{data:{provider:"square",locationLabel:"Front desk"}});
+  expect(processor.ok(),await processor.text()).toBeTruthy();
+
+  await login(page,tenant.ownerEmail);
+  await page.getByTestId("nav-calendar").click();
+
+  // checkout() reads the salon's payment options before it can open anything. Holding that read
+  // open widens the window a second press lands in - the window the guard exists for.
+  let release!:()=>void;let entered!:()=>void;
+  const arrived=new Promise<void>((resolve)=>{entered=resolve;});
+  const continueRequest=new Promise<void>((resolve)=>{release=resolve;});
+  const optionReads:string[]=[];
+  await page.route("**/api/checkout/payment-options",async(route)=>{
+    optionReads.push(route.request().url());entered();await continueRequest;await route.continue();
+  });
+  const checkoutPosts:string[]=[];
+  page.on("request",(req)=>{
+    if(req.method()==="POST"&&/\/api\/appointments\/[^/]+\/checkout$/.test(new URL(req.url()).pathname))checkoutPosts.push(req.url());
+  });
+
+  const action=await appointmentAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"appointment-completed");
+  // Two clicks in one task, which is what a double-press is. Dispatching them directly rather than
+  // clicking twice keeps the reproduction independent of whether the action menu stays open.
+  await action.evaluate((element:HTMLElement)=>{element.click();element.click();});
+  await arrived;
+  release();
+
+  // The regression. Both presses used to enter checkout(), because the completed branch returned
+  // before the runOnce that guards every other transition - so the salon's payment configuration
+  // was read twice and the whole modal was rebuilt and rebound underneath the operator, discarding
+  // anything already typed into the first copy. showModal() on an already-modal dialog is a no-op
+  // rather than a throw, so nothing announced this; the duplicated read is what makes it visible.
+  await expect.poll(()=>optionReads.length,{message:"checkout() ran twice for one appointment"}).toBe(1);
+  await expect(page.getByTestId("field-method")).toBeVisible();
+  expect(await page.locator("#modal-fields [data-testid='field-method']").count()).toBe(1);
+
+  // Still a working modal, not merely a single one: the presets compute and the invoice posts once.
+  await page.getByRole("button",{name:"18%"}).click();
+  await expect(page.getByTestId("field-tip")).toHaveValue("15.30");
+  await page.getByTestId("field-method").selectOption({label:"Cash"});
+  await page.getByTestId("modal-submit").click();
+  await expect(page.getByTestId("receipt")).toContainText("Balance$0.00");
+  expect(checkoutPosts.length,"the appointment was checked out more than once").toBe(1);
+});

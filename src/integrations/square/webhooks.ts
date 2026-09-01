@@ -52,6 +52,23 @@ import { applyDeviceCodeState } from "./terminal.js";
 
 export const squareSignatureHeader = "x-square-hmacsha256-signature";
 
+/**
+ * How many times an event is attempted before the drain stops claiming it.
+ *
+ * With the existing backoff - a minute doubling to an hour - this spans roughly half a day, which
+ * outlasts Square's own redelivery schedule of about eleven attempts over twenty-four hours. An
+ * event still failing after that is failing for a reason another attempt will not change, and
+ * retrying it hourly forever costs a request every hour, a row that never leaves the drain, and an
+ * operator surface that cannot tell it apart from one that is about to succeed.
+ *
+ * NOTHING IS DELETED WHEN AN EVENT DIES, AND NO RETENTION IS ADDED ANYWHERE. `event_id` being
+ * UNIQUE is not merely the dedupe - it is the ONLY defence against a replayed notification,
+ * because nothing here checks how old a body is. Removing rows would let every aged-out event be
+ * replayed with a signature that is still valid. A dead letter therefore stays in the table
+ * forever, exactly like a processed one; it simply stops being claimed.
+ */
+export const maxWebhookAttempts = 12;
+
 /** The types this integration acts on. Everything else is recorded and marked processed as a no-op. */
 export const handledEventTypes = [
   "oauth.authorization.revoked", "device.code.paired",
@@ -183,13 +200,7 @@ export async function processSquareWebhooks(
         dependencies
       });
       if (outcome.disposition === "retry") {
-        await db`
-          update square_webhook_events set
-            status='failed', last_error=${outcome.reason.slice(0, 500)},
-            next_attempt_at=now() + least(interval '1 hour',
-              interval '1 minute' * power(2, ${event.attempts}))
-          where id=${event.id}
-        `;
+        await failWebhookEvent(db, event, outcome.reason);
         continue;
       }
       await db`
@@ -201,16 +212,49 @@ export async function processSquareWebhooks(
         where id=${event.id}
       `;
     } catch (error) {
-      await db`
-        update square_webhook_events set
-          status='failed', last_error=${String(error)},
-          next_attempt_at=now() + least(interval '1 hour',
-            interval '1 minute' * power(2, ${event.attempts}))
-        where id=${event.id}
-      `;
+      await failWebhookEvent(db, event, String(error));
     }
   }
   return events.length;
+}
+
+/**
+ * Schedules another attempt at an event, or stops attempting it.
+ *
+ * One function for the two failure paths - a `retry` disposition and a thrown error - because they
+ * are the same fact about the row and were previously two copies of the same UPDATE that could
+ * drift apart. Neither of them used to have an end.
+ *
+ * `dead_letter` is not the same as `parked` and the difference matters to whoever reads the table.
+ * `parked` says we understood the event and it is not ours: a payment the salon took directly on
+ * its own Square account is not a Pawsh ledger entry and never will be. `dead_letter` says we
+ * could not process it and have stopped trying, which is a defect somebody has to look at. Filing
+ * the second as the first would hide real failures inside a list of deliberate no-ops.
+ *
+ * It sets `processed_at` for the mechanical reason `parked` does: the drain claims on
+ * `processed_at is null`, so a resting state has to carry a timestamp or it is not resting.
+ * `square_webhook_processed_time` in 0039 names all three resting states together.
+ */
+async function failWebhookEvent(
+  db: Database,
+  event: { id: string; attempts: number },
+  reason: string
+): Promise<void> {
+  if (event.attempts >= maxWebhookAttempts) {
+    await db`
+      update square_webhook_events set
+        status='dead_letter', processed_at=now(), last_error=${reason.slice(0, 500)}
+      where id=${event.id}
+    `;
+    return;
+  }
+  await db`
+    update square_webhook_events set
+      status='failed', last_error=${reason.slice(0, 500)},
+      next_attempt_at=now() + least(interval '1 hour',
+        interval '1 minute' * power(2, ${event.attempts}))
+    where id=${event.id}
+  `;
 }
 
 /**

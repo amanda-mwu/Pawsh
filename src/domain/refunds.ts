@@ -21,6 +21,12 @@
  * one direction it is safe to be conservative in - the worst case is an operator being told to
  * wait, and the worst case of the other choice is refunding more than was taken.
  *
+ * `needs_review` HOLDS HEADROOM TOO, AND FOR A STRONGER REASON THAN `pending` DOES. It is the
+ * state a refund reaches when the provider reported something that is not the refund we asked
+ * for, so what the provider did with the money is precisely what nobody knows. Releasing the
+ * headroom would invite a second refund on top of one that may well have gone through. Only
+ * `failed` - which is the provider telling us plainly that nothing moved - gives it back.
+ *
  * THE REFUNDED STATUSES REPLACE `paid`, AND ONLY `paid`. An invoice that still owes money is
  * `open` or `partially_paid` and stays that way through any number of refunds, because the
  * question those statuses answer is "is this collectable" and a refund does not change the
@@ -29,6 +35,17 @@
  */
 
 import type { InvoiceStatus } from "@pawsh/domain";
+
+/**
+ * What a refund row can say about itself.
+ *
+ * Defined here rather than beside the Square client because none of the four values are Square's:
+ * a refund is provider-agnostic, and the void route and every report read these without importing
+ * an integration. `needs_review` is not a claim about money the way `completed` and `failed` are -
+ * it is the absence of one, for a refund whose provider reported something we did not ask for.
+ * Mirrors the `status` check constraint on `payment_refunds`.
+ */
+export type RefundStatus = "pending" | "completed" | "failed" | "needs_review";
 
 export interface RefundSplit {
   /** The part of this refund that comes out of the service amount. */
@@ -79,7 +96,7 @@ export interface RefundHeadroom {
  */
 export function refundHeadroom(input: {
   paymentAmountMinor: number;
-  refunds: readonly { amountMinor: number; status: "pending" | "completed" | "failed" }[];
+  refunds: readonly { amountMinor: number; status: RefundStatus }[];
 }): RefundHeadroom {
   const committedMinor = input.refunds
     .filter((refund) => refund.status !== "failed")
@@ -131,7 +148,7 @@ export const invoiceRefundedStatuses: readonly InvoiceStatus[] = ["partially_ref
 
 /** The two fields a presenter needs. Deliberately not the whole row. */
 export interface RefundPresentable {
-  status: "pending" | "completed" | "failed";
+  status: RefundStatus;
   providerRefundId: string | null;
 }
 
@@ -142,6 +159,15 @@ export interface RefundPresentation {
   /** True only when the retrieved Refund said COMPLETED. Nothing else may say "refunded". */
   settled: boolean;
   failed: boolean;
+  /**
+   * True when a person has to look at this before anything else happens.
+   *
+   * Reported rather than left to be inferred from the other three being false, for the reason
+   * `checkoutPresentation` reports it: a client working out "not in flight, not settled, not
+   * failed, therefore somebody must check Square" is a client that has re-derived a rule the
+   * server already knows, and it will get it wrong the first time a fifth state exists.
+   */
+  needsReview: boolean;
 }
 
 export function refundPresentation(
@@ -151,15 +177,31 @@ export function refundPresentation(
     case "pending":
       return {
         label: row.providerRefundId ? "Refund in progress" : "Sending the refund",
-        inFlight: true, settled: false, failed: false
+        inFlight: true, settled: false, failed: false, needsReview: false
       };
     case "completed":
-      return { label: "Refunded", inFlight: false, settled: true, failed: false };
+      return {
+        label: "Refunded", inFlight: false, settled: true, failed: false, needsReview: false
+      };
     case "failed":
-      return { label: "Refund failed", inFlight: false, settled: false, failed: true };
+      return {
+        label: "Refund failed", inFlight: false, settled: false, failed: true, needsReview: false
+      };
+    case "needs_review":
+      // Not in flight - nothing here is waiting on Square any more - and emphatically not failed,
+      // because "the refund failed" tells an operator the customer still has their money and that
+      // is the one thing this state cannot promise.
+      return {
+        label: "Refund needs review", inFlight: false, settled: false, failed: false,
+        needsReview: true
+      };
     default:
       // Unreachable while the check constraint holds, and deliberately not optimistic if it ever
-      // does not: an unknown refund state is never a completed one.
-      return { label: "Refund status unknown", inFlight: true, settled: false, failed: false };
+      // does not: an unknown refund state is never a completed one, and it is always somebody's
+      // to look at.
+      return {
+        label: "Refund status unknown", inFlight: true, settled: false, failed: false,
+        needsReview: true
+      };
   }
 }

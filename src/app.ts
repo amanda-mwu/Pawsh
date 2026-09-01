@@ -16,6 +16,7 @@ import { openSecret } from "./security/secrets.js";
 import { createSquareClient, type SquareClient } from "./integrations/square/client.js";
 import { refreshDueConnections, purgeExpiredOAuthStates } from "./integrations/square/oauth.js";
 import { squareIntegration } from "./integrations/square/settings.js";
+import { sweepOpenCheckouts, sweepPendingRefunds } from "./integrations/square/sweep.js";
 import { expireStaleDeviceCodes } from "./integrations/square/terminal.js";
 import { processSquareWebhooks } from "./integrations/square/webhooks.js";
 import { createDocumentStorage, type DocumentStorage } from "./storage/documents.js";
@@ -176,6 +177,13 @@ export async function createApp(
     };
     await refreshDueConnections(db, dependencies);
     await processSquareWebhooks(db, dependencies);
+    // After the drain, deliberately. A webhook that has just arrived is the cheaper and more
+    // timely answer for the same row, so letting it land first leaves the sweep less to do; the
+    // sweep is the backstop for the notifications that never came, not a competitor for the ones
+    // that did. Both call the same reconcilers, so the ordering is an efficiency rather than a
+    // correctness property.
+    await sweepOpenCheckouts(db, dependencies);
+    await sweepPendingRefunds(db, dependencies);
     await purgeExpiredOAuthStates(db);
     // A pairing code that has passed its `pair_by` is expired whether or not anybody has looked.
     // The screen already derives that from the instant, so this is not what makes the product

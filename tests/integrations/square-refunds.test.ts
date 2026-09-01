@@ -116,6 +116,16 @@ describe("refund headroom", () => {
     })).toEqual({ committedMinor: 2_500, remainingMinor: 5_000, exhausted: false });
   });
 
+  // The state a mismatched refund rests in. It must hold its headroom for a STRONGER reason than
+  // `pending` does: what Square did with the money is exactly what nobody knows, so releasing it
+  // would invite a second refund on top of one that may already have gone through.
+  it("keeps holding the headroom of a refund that needs review", () => {
+    expect(refundHeadroom({
+      paymentAmountMinor: 7_500,
+      refunds: [{ amountMinor: 7_500, status: "needs_review" }]
+    })).toEqual({ committedMinor: 7_500, remainingMinor: 0, exhausted: true });
+  });
+
   it("never reports negative headroom", () => {
     expect(refundHeadroom({
       paymentAmountMinor: 1_000,
@@ -290,7 +300,7 @@ describe("Square's refund status, mapped", () => {
 describe("what a screen is allowed to say", () => {
   it("says refunded only for a completed row", () => {
     expect(refundPresentation({ status: "completed", providerRefundId: "R1" })).toEqual({
-      label: "Refunded", inFlight: false, settled: true, failed: false
+      label: "Refunded", inFlight: false, settled: true, failed: false, needsReview: false
     });
   });
 
@@ -307,7 +317,17 @@ describe("what a screen is allowed to say", () => {
 
   it("never reports a failed refund as settled", () => {
     expect(refundPresentation({ status: "failed", providerRefundId: null })).toEqual({
-      label: "Refund failed", inFlight: false, settled: false, failed: true
+      label: "Refund failed", inFlight: false, settled: false, failed: true, needsReview: false
+    });
+  });
+
+  // The state a refund rests in when Square reported something Pawsh did not ask for. It is
+  // emphatically not `failed`: telling an operator "the refund failed" asserts the customer still
+  // has their money, and that is the one thing this state cannot promise.
+  it("says a mismatched refund needs review without calling it failed or settled", () => {
+    expect(refundPresentation({ status: "needs_review", providerRefundId: "R1" })).toEqual({
+      label: "Refund needs review", inFlight: false, settled: false, failed: false,
+      needsReview: true
     });
   });
 
@@ -315,6 +335,10 @@ describe("what a screen is allowed to say", () => {
     expect(refundPresentation({
       status: "something-else" as never, providerRefundId: null
     }).settled).toBe(false);
+    // And routes it to a person rather than letting it look like an ordinary in-flight refund.
+    expect(refundPresentation({
+      status: "something-else" as never, providerRefundId: null
+    }).needsReview).toBe(true);
   });
 });
 

@@ -9,7 +9,7 @@ import { canTransition, invoiceSettledStatuses, type AppointmentStatus } from "@
 import { calculateInvoice } from "@pawsh/domain";
 import { canonicalHash } from "../domain/canonical.js";
 import { applyInvoiceSettlement } from "../domain/invoice-settlement.js";
-import { refundPresentation } from "../domain/refunds.js";
+import { refundPresentation, type RefundStatus } from "../domain/refunds.js";
 import { safePdfFilename } from "../domain/filenames.js";
 import { maxPhotoBytes, readPhotoShape, safePhotoFilename } from "../domain/images.js";
 import { localDateBounds, localDateForInstant, resolveWallTime, validateTimeZone } from "../domain/time.js";
@@ -1372,17 +1372,27 @@ function sessionCookie(config: Config) {
 /**
  * What the screen is told about connecting a processor, in the same payload it draws from.
  *
- * Pawsh has no OAuth flow, no credential store, no tokenization and no PCI scope, so there is no
- * connected state to report and nothing here can create one. The client is told that rather than
- * left to infer it from a missing field or discover it by trying, and the server is the one
- * saying it, so the day a real integration lands this flips in one place.
+ * This said "Pawsh does not connect to card processors" until 0036 through 0039 added an OAuth
+ * flow, a sealed credential store and Terminal pairing for exactly one of them. It is the server
+ * saying what it can do so the client never has to infer it, which is only worth anything while
+ * what it says is true - so it now names Square specifically rather than claiming the whole
+ * capability is absent.
+ *
+ * The distinction it draws is real and is the one an owner needs: connecting is a different act
+ * from recording, it happens on a different screen, and it is available for Square alone. A
+ * `card_processors` row for any other provider is still what 0034 made it - configuration a salon
+ * keeps for its own reference - and a `card_processor_terminals` row is still an inventory record
+ * of a device on the counter rather than a paired session.
  */
 const cardProcessingConnectivity = {
-  connectable: false,
-  reason: "Pawsh does not connect to card processors. There is no OAuth flow, no credential " +
-    "store and no tokenization, so a processor recorded here is configuration this salon keeps " +
-    "for its own reference and a terminal is an inventory record of a device on the counter - " +
-    "neither is a paired or connected session."
+  connectable: true,
+  connectableProviders: ["square"] as const,
+  connectRoute: "/settings/integrations",
+  reason: "Pawsh connects to Square, in Settings -> Integrations: that is where a merchant " +
+    "authorises Pawsh, where its credentials are stored sealed, and where a Square Terminal is " +
+    "paired. No other processor can be connected. A processor recorded on this screen is " +
+    "configuration this salon keeps for its own reference, and a terminal recorded here is an " +
+    "inventory record of a device on the counter - neither is a paired or connected session."
 } as const;
 
 // Matches the column defaults on `card_processors`. Named here because an insert that omits the
@@ -7657,7 +7667,7 @@ export function registerRoutes(
       db`select * from payments where business_id=${context.businessId} and invoice_id=${id} order by recorded_at,id`,
       db<{
         id: string; paymentId: string; amountMinor: number; tipRefundedMinor: number;
-        currency: string; status: "pending" | "completed" | "failed"; reason: string | null;
+        currency: string; status: RefundStatus; reason: string | null;
         providerRefundId: string | null; failureReason: string | null;
         createdAt: Date; settledAt: Date | null;
       }[]>`select id,payment_id,amount_minor,tip_refunded_minor,currency,status,reason,

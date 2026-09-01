@@ -1,4 +1,5 @@
 import type { Database } from "../db/client.js";
+import { hasEffectivePermission } from "../db/effective-permissions.js";
 import nodemailer from "nodemailer";
 import type { Config } from "../config.js";
 import { createHash } from "node:crypto";
@@ -43,11 +44,11 @@ export async function reconcileRabiesNotifications(
   `;
   const availableStaff=await db<{membershipId:string;email:string;employeeId:string|null;defaultRecipient:boolean}[]>`
     select distinct m.id as membership_id,u.email,e.id as employee_id,
-      (m.is_owner or 'settings.manage'=any(m.permissions)) as default_recipient
+      ${hasEffectivePermission(db,"m","settings.manage")} as default_recipient
     from business_memberships m join users u on u.id=m.user_id
     left join employees e on e.business_id=m.business_id and e.membership_id=m.id and e.active
     where m.business_id=${input.businessId} and m.status='active'
-      and (m.is_owner or 'settings.manage'=any(m.permissions) or e.id is not null)
+      and (${hasEffectivePermission(db,"m","settings.manage")} or e.id is not null)
     order by m.id,e.id limit 100`;
   let created=0;
   for(const appointment of appointments) {

@@ -14,6 +14,7 @@ import { safePdfFilename } from "../domain/filenames.js";
 import { maxPhotoBytes, readPhotoShape, safePhotoFilename } from "../domain/images.js";
 import { localDateBounds, localDateForInstant, resolveWallTime, validateTimeZone } from "../domain/time.js";
 import { can, permissionPresets, permissions } from "@pawsh/domain";
+import { effectivePermissions, hasEffectivePermission } from "../db/effective-permissions.js";
 import { auth, authentication, issueToken, platformAuthentication, requirePermission, sessionToken, tokenHash } from "./context.js";
 import {
   appointmentSchema, checkoutSchema, customerSchema, employeeSchema, employeeUpdateSchema,
@@ -913,7 +914,7 @@ async function hasCurrentPermission(
   input: { businessId: string; membershipId: string; permission: string }
 ): Promise<boolean> {
   const [row] = await tx<{ allowed: boolean }[]>`
-    select (membership.is_owner or ${input.permission}=any(membership.permissions)) as allowed
+    select ${hasEffectivePermission(tx, "membership", input.permission)} as allowed
     from business_memberships membership
     join users account on account.id=membership.user_id and account.disabled_at is null
     join businesses business on business.id=membership.business_id and business.status='active'
@@ -1837,7 +1838,7 @@ export function registerRoutes(
         select distinct account.email from business_memberships membership
         join users account on account.id=membership.user_id and account.disabled_at is null
         where membership.business_id=${business.id} and membership.status='active'
-          and (membership.is_owner or 'team.manage'=any(membership.permissions))
+          and ${hasEffectivePermission(tx, "membership", "team.manage")}
       `;
       const reviewBody=`${input.requesterName} (${input.requesterEmail.trim()}) requested access to ${business.name}.${input.message?` Message: ${input.message}`:""} Sign in to Pawsh and open Salon setup to review the request.`;
       for(const reviewer of reviewers)await tx`
@@ -1993,13 +1994,27 @@ export function registerRoutes(
 
   app.get("/api/workspaces",{preHandler:authenticate},async request=>{
     const context=auth(request);
-    return db`
-      select business.id,business.name,membership.is_owner,membership.permissions,
+    // Each workspace reports the permissions the user effectively holds THERE, resolved through
+    // that workspace's own role. The role is joined tenant-qualified on both columns, matching the
+    // composite foreign key: a membership can only ever name a role its own business owns.
+    const rows = await db<{
+      id: string; name: string; isOwner: boolean; permissions: string[]; current: boolean;
+      roleId: string | null; roleName: string | null; roleEnabled: boolean | null;
+    }[]>`
+      select business.id,business.name,membership.is_owner,
+        ${effectivePermissions(db, "membership")} as permissions,
+        assigned_role.id as role_id,assigned_role.name as role_name,assigned_role.enabled as role_enabled,
         (business.id=${context.businessId}) as current
       from business_memberships membership join businesses business on business.id=membership.business_id
+      left join roles assigned_role
+        on assigned_role.business_id=membership.business_id and assigned_role.id=membership.role_id
       where membership.user_id=${context.userId} and membership.status='active' and business.status='active'
       order by current desc,business.name
     `;
+    return rows.map(({ roleId, roleName, roleEnabled, ...workspace }) => ({
+      ...workspace,
+      role: roleId ? { id: roleId, name: roleName ?? "", enabled: roleEnabled ?? false } : null
+    }));
   });
 
   app.post("/api/workspaces/select",{preHandler:authenticate},async(request,reply)=>{
@@ -2767,15 +2782,32 @@ export function registerRoutes(
     preHandler: [authenticate, requirePermission("team.manage")]
   }, async (request) => {
     const context = auth(request);
-    return db`
-      select m.id, u.email, m.is_owner, m.permissions, m.status, m.created_at,
-        e.id as employee_id, e.display_name as employee_display_name
+    // `permissions` is the EFFECTIVE set, resolved through the role, so this list and the
+    // member's own session agree about what they can do. The role is reported alongside it
+    // rather than instead of it: the caller needs the name to render the row, and the resolved
+    // set to explain a member of a disabled role showing no access at all.
+    const rows = await db<{
+      id: string; email: string; isOwner: boolean; permissions: string[]; status: string;
+      createdAt: Date; employeeId: string | null; employeeDisplayName: string | null;
+      roleId: string | null; roleName: string | null; roleEnabled: boolean | null;
+    }[]>`
+      select m.id, u.email, m.is_owner, ${effectivePermissions(db, "m")} as permissions,
+        m.status, m.created_at,
+        e.id as employee_id, e.display_name as employee_display_name,
+        assigned_role.id as role_id, assigned_role.name as role_name,
+        assigned_role.enabled as role_enabled
       from business_memberships m
       join users u on u.id = m.user_id
       left join employees e on e.business_id = m.business_id and e.membership_id = m.id
+      left join roles assigned_role
+        on assigned_role.business_id = m.business_id and assigned_role.id = m.role_id
       where m.business_id = ${context.businessId}
       order by m.is_owner desc, u.email
     `;
+    return rows.map(({ roleId, roleName, roleEnabled, ...member }) => ({
+      ...member,
+      role: roleId ? { id: roleId, name: roleName ?? "", enabled: roleEnabled ?? false } : null
+    }));
   });
 
   app.get("/api/workspace-access-requests",{
@@ -2985,10 +3017,24 @@ export function registerRoutes(
         where business_id=${context.businessId} and id=${input.membershipId} and status='active' for update
       `;
       if (!target) return false;
+      // `role_id=null` is not tidiness, it is the invariant. Owners never carry a role: `can()`
+      // short-circuits on `is_owner` before permissions are consulted, so a promoted owner holding
+      // a role would keep a dangling assignment that grants nothing, blocks that role's deletion
+      // through `on delete restrict`, and would start granting again the moment they were demoted.
       await tx`
         update business_memberships set is_owner=true,permissions=${permissions as unknown as string[]},
-          updated_at=now() where id=${target.id}
+          role_id=null,updated_at=now() where id=${target.id}
       `;
+      // The outgoing owner keeps `role_id` null and falls back onto the `permissions` column it
+      // still carries from its time as owner, which is the full tuple. That is correct TODAY and
+      // preserves the behaviour this endpoint has always had.
+      //
+      // IT STOPS BEING CORRECT WHEN `business_memberships.permissions` IS DROPPED. At that point
+      // the transitional arm of `effectivePermissions` disappears and this membership resolves to
+      // the empty set - a former owner silently locked out of the workspace they founded by an
+      // action that never mentioned permissions. There is no invisible fix: which role an outgoing
+      // owner lands on is a product decision, not an implementation detail, and the frozen roles
+      // contract does not currently carry one. This must be answered before the drop migration.
       await tx`
         update business_memberships set is_owner=false,updated_at=now()
         where id=${context.membershipId}
@@ -5740,7 +5786,10 @@ export function registerRoutes(
           select pet_id,requested_by,expected_current_document_id,expected_current_document_version,expected_pet_version,expiration_intent,expiration_value
           from pet_document_requests where id=${createdRequest.id} and state='in_progress' for update`;
         if (!requestRow) throw new Error("Upload request is no longer active");
-        const [membership] = await tx<{isOwner:boolean;permissions:string[]}[]>`select is_owner,permissions from business_memberships where business_id=${context.businessId} and id=${context.membershipId} and user_id=${context.userId} and status='active' for update`;
+        // Re-read under `for update` so a permission revoked (or a role disabled) between the
+        // upload starting and this transaction committing is seen here, not in the request that
+        // authorised the upload. Resolved through the role like every other read.
+        const [membership] = await tx<{isOwner:boolean;permissions:string[]}[]>`select membership.is_owner,${effectivePermissions(tx,"membership")} as permissions from business_memberships membership where membership.business_id=${context.businessId} and membership.id=${context.membershipId} and membership.user_id=${context.userId} and membership.status='active' for update`;
         if (!membership || (!membership.isOwner && (!membership.permissions.includes('pets.edit') || !membership.permissions.includes('pets.care.edit')))) throw new Error("PERMISSION_REVOKED");
         const [pet] = await tx<{version:number;vaccinationExpiresOn:string|null}[]>`select version,vaccination_expires_on from pets where business_id=${context.businessId} and id=${requestRow.petId} for update`;
         const [current] = await tx<{id:string;documentVersion:number}[]>`select id,document_version from pet_documents where business_id=${context.businessId} and pet_id=${requestRow.petId} and document_type='rabies_vaccination' and state='current' for update`;

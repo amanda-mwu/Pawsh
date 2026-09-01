@@ -1,14 +1,33 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Database } from "../db/client.js";
+import { effectivePermissions } from "../db/effective-permissions.js";
 import { can, type Permission } from "@pawsh/domain";
+
+/** The role a membership is assigned, as the clients need to name it. Null for owners. */
+export interface AuthRole {
+  id: string;
+  name: string;
+  enabled: boolean;
+}
 
 export interface AuthContext {
   userId: string;
   businessId: string;
   membershipId: string;
   isOwner: boolean;
+  /**
+   * The permissions this membership EFFECTIVELY holds, already resolved through its role by
+   * `effectivePermissions`. A disabled role resolves to the empty set here, so every downstream
+   * `context.permissions.includes(...)` check inherits the kill switch without knowing about it.
+   */
   permissions: string[];
+  /**
+   * The assigned role, or null for an owner (and for a membership not yet migrated onto one).
+   * `enabled` is reported as it is stored: a client showing "Groomer (disabled)" is telling the
+   * truth, and `permissions` above is already empty in that case.
+   */
+  role: AuthRole | null;
   /** Active location for this session; null only when the business has no active location. */
   locationId: string | null;
 }
@@ -42,6 +61,18 @@ export function sessionToken(request: FastifyRequest): string | undefined {
   return request.cookies.pawsh_session;
 }
 
+/**
+ * Resolves the session, the membership behind it, and what that membership may do.
+ *
+ * PERMISSIONS ARE RE-RESOLVED ON EVERY REQUEST, and that is the property the whole roles feature
+ * rests on. Nothing about a membership's authority is cached in the session row or in the token,
+ * so editing a role, disabling a role, or reassigning a member takes effect on THE VERY NEXT
+ * REQUEST that session makes - no session invalidation, no forced re-login, no revocation sweep.
+ * An owner who disables a role during an incident has closed it, not scheduled it to close.
+ *
+ * The corollary is that this query is on the hot path for every authenticated request, so it stays
+ * a single round trip: the role is resolved by the same statement, not by a follow-up query.
+ */
 export function authentication(db: Database) {
   return async function authenticate(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const token = sessionToken(request);
@@ -53,14 +84,25 @@ export function authentication(db: Database) {
       membershipId: string;
       isOwner: boolean;
       permissions: string[];
+      roleId: string | null;
+      roleName: string | null;
+      roleEnabled: boolean | null;
       locationId: string | null;
     }[]>`
-      select s.user_id, m.business_id, m.id as membership_id, m.is_owner, m.permissions,
+      select s.user_id, m.business_id, m.id as membership_id, m.is_owner,
+        ${effectivePermissions(db, "m")} as permissions,
+        assigned_role.id as role_id, assigned_role.name as role_name,
+        assigned_role.enabled as role_enabled,
         active_location.id as location_id
       from sessions s
       join users u on u.id = s.user_id
       join business_memberships m on m.user_id = u.id
       join businesses b on b.id = m.business_id
+      -- Tenant-qualified on both columns, matching the composite foreign key that stores the
+      -- reference. Joining on the role id alone would be a join that reads correctly and, the
+      -- day a cross-tenant row existed, resolved another business's role.
+      left join roles assigned_role
+        on assigned_role.business_id = m.business_id and assigned_role.id = m.role_id
       -- The chosen location wins while it is still active and still owned by the
       -- resolved business; otherwise the (name,id) ordering makes the fallback
       -- deterministic rather than whatever the planner returns first.
@@ -81,7 +123,11 @@ export function authentication(db: Database) {
     `;
     const row = rows[0];
     if (!row) return reply.code(401).send({ error: "Session is invalid or business access is unavailable" });
-    request.auth = row;
+    const { roleId, roleName, roleEnabled, ...context } = row;
+    request.auth = {
+      ...context,
+      role: roleId ? { id: roleId, name: roleName ?? "", enabled: roleEnabled ?? false } : null
+    };
   };
 }
 
@@ -99,7 +145,7 @@ export function platformAuthentication(db: Database) {
     if (!row) return reply.code(403).send({ error: "Platform administrator access required" });
     request.auth = {
       userId: row.userId, businessId: "", membershipId: "",
-      isOwner: false, permissions: [], locationId: null
+      isOwner: false, permissions: [], role: null, locationId: null
     };
   };
 }

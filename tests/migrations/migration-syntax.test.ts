@@ -289,5 +289,41 @@ describe("database migrations", () => {
     // `employees` is covered by the 0001 `tenant_isolation` do-block; this migration only adds
     // columns, so declaring a policy here would duplicate one that already exists.
     expect(staffFields).not.toContain("create policy tenant_isolation on employees");
+
+    const roles = await readMigration("0041_roles.sql");
+    expect(roles).toContain("create table roles");
+    // THE COMPOSITE FOREIGN KEYS ARE THE POINT OF 0041. A plain `role_id uuid references
+    // roles(id)` would accept a membership in one business pointing at another business's role,
+    // and nothing else would catch it: the `tenant_isolation` policies do not enforce anything
+    // while Pawsh connects as the table owner with no FORCE ROW LEVEL SECURITY (see 0033). A
+    // constraint, unlike a policy, does apply to the owner - so this is the whole defence.
+    expect(roles).toContain("foreign key (business_id, role_id) references roles (business_id, id)");
+    expect(roles).toContain("unique (business_id, id)");
+    // `restrict`, never `set null`: nulling the column would silently fall a member back onto the
+    // transitional column and then, once that is dropped, onto nothing at all.
+    expect(roles).toContain("on delete restrict");
+    expect(roles).not.toContain("on delete set null");
+    expect(roles).not.toContain("on delete cascade");
+    // One role name per business, compared case-insensitively.
+    expect(roles).toContain("create unique index roles_unique_name_per_business");
+    expect(roles).toContain("on roles (business_id, lower(name))");
+    // `roles` is created here, so like 0027 and 0033 it must declare its own policy: the bulk
+    // loop in 0001 ran once and cannot cover a table that did not exist yet.
+    expect(roles).toContain("create policy tenant_isolation on roles");
+    // The three shipped preset names, and the name the empty set gets.
+    expect(roles).toContain("'Groomer'");
+    expect(roles).toContain("'Receptionist'");
+    expect(roles).toContain("'Manager'");
+    expect(roles).toContain("'No access'");
+    expect(roles).toContain("Custom access ");
+    // NO ADMIN OR OWNER ROLE. Owner authority is `is_owner` plus the `protect_last_owner` trigger
+    // from 0001, and `can()` short-circuits on it. A role shadowing it would be a second way to
+    // express one thing and would fight `prevent_last_owner_loss` the moment it was unassigned.
+    expect(roles).not.toContain("'Admin'");
+    expect(roles).not.toContain("'Owner'");
+    // The old columns stay populated so this phase is revertible by reverting code alone. A drop
+    // here would make the migration one-way on the riskiest change in the authorization path.
+    expect(roles).not.toContain("drop column permissions");
+    expect(roles).not.toContain("alter table business_memberships drop column");
   });
 });

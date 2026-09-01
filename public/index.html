@@ -124,7 +124,6 @@
       <section id="setup" data-testid="setup-view" class="view" hidden>
         <div class="split-head"><div><p class="eyebrow">Location operations</p><h3>Salon</h3></div><details class="setup-menu"><summary aria-label="Salon sections" aria-expanded="false">Salon sections <span aria-hidden="true">▾</span></summary><nav class="setup-menu-items" aria-label="Salon sections"><button data-permission="settings.manage" type="button" data-action="business-hours">Business hours</button></nav></details></div>
         <div class="content-grid">
-          <article class="panel" data-permission="team.manage"><div class="panel-head"><h3>Team</h3><button type="button" class="text-button" data-action="new-employee">+ Add</button></div><div id="employee-list" class="simple-list"></div></article>
           <article class="panel" data-permission="settings.manage"><h3>Business hours</h3><p>Set the operating hours used by scheduling.</p><div class="settings-list"><button class="settings-row" type="button" data-action="business-hours"><span><strong>Manage hours</strong><small>Location opening and closing times</small></span><span aria-hidden="true">Open →</span></button></div></article>
 
         </div>
@@ -246,6 +245,17 @@
     </div>
     <div class="breed-drawer-foot">
       <button type="button" class="primary compact" id="breed-add" data-testid="breed-add">Add Pet Breed</button>
+    </div>
+  </dialog>
+  <dialog id="staff-services-drawer" class="drawer" aria-labelledby="staff-services-title" data-testid="staff-services-drawer">
+    <div class="drawer-head">
+      <div><p class="eyebrow">Available services</p><h3 id="staff-services-title">Available services</h3></div>
+      <button type="button" class="close" data-testid="staff-services-close" aria-label="Close available services">&#215;</button>
+    </div>
+    <div id="staff-services-body" class="drawer-body"></div>
+    <div class="drawer-foot">
+      <button type="button" class="secondary compact" data-testid="staff-services-cancel">Cancel</button>
+      <button type="button" class="primary compact" data-testid="staff-services-save">Save services</button>
     </div>
   </dialog>
   <dialog id="terminal-drawer" class="drawer" aria-labelledby="terminal-drawer-title" data-testid="terminal-drawer">

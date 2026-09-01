@@ -129,14 +129,14 @@ test("local pilot calendar sends employeeIds and employee hours round-trip uncha
   await page.getByRole("button", { name: "Apply" }).click();
   expect((await filtered).status()).toBe(200);
 
-  await page.getByTestId("nav-setup").click();
-  await page.locator("#employee-list > div").filter({ hasText: "Grace Groomer" }).getByRole("button", { name: "Edit" }).click();
-  await expect(page.locator('#modal input[name="day1"]')).toBeChecked();
-  await expect(page.locator('#modal input[name="start1"]')).toHaveValue("11:15");
-  await expect(page.locator('#modal input[name="end1"]')).toHaveValue("19:45");
-  await expect(page.locator('#modal input[name="day2"]')).not.toBeChecked();
-  await expect(page.locator('#modal input[name="day3"]')).toBeChecked();
-  await page.getByTestId("modal-submit").click();
+  // Availability is the only place working hours are edited, so that grid is where the stored
+  // week has to be legible - the Salon team panel that used to carry a second editor is gone.
+  await page.getByTestId("nav-settings").click();
+  await page.locator("#settings-navigation").getByRole("button", { name: "Availability", exact: true }).click();
+  await expect(page.getByTestId("availability-grid")).toBeVisible();
+  await expect(page.getByRole("gridcell", { name: /^Grace Groomer, Monday/ })).toContainText("11:15–7:45 PM");
+  await expect(page.getByRole("gridcell", { name: /^Grace Groomer, Tuesday/ })).toContainText("Off");
+  await expect(page.getByRole("gridcell", { name: /^Grace Groomer, Wednesday/ })).toContainText("7:30–1:15 PM");
   expect(await (await request.get(`/api/employees/${tenant.employeeId}/working-hours`)).json()).toEqual(unusualHours);
 });
 

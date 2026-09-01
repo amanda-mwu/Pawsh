@@ -227,7 +227,7 @@ async function refresh() {
   if(!state.calendar.selectedDate){state.calendar.selectedDate=state.appointments[0]?appointmentLocalValue(state.appointments[0]).slice(0,10):businessDate();state.calendar.weekStart=weekStart(state.calendar.selectedDate);state.calendar.month=state.calendar.selectedDate.slice(0,7);}
   $("#today").textContent = new Intl.DateTimeFormat([], {timeZone:schedulingZone(),weekday:"long",month:"short",day:"numeric"}).format(new Date());
   applyPermissions();
-  renderDashboard(dashboard); renderCustomersEnhanced(); renderSetupEnhanced(); renderServices(); renderAppointments(); renderReports();
+  renderDashboard(dashboard); renderCustomersEnhanced(); renderSetup(); renderServices(); renderAppointments(); renderReports();
 }
 
 function schedulingZone(){return state.me?.business?.timezone||"UTC";}
@@ -1158,7 +1158,6 @@ async function voidPayment(paymentId,invoiceId,provider) {
   });
 }
 function renderSetup() {
-  $("#employee-list").innerHTML = state.employees.length ? state.employees.map((e) => `<div><strong>${escape(e.displayName)}</strong><small>${e.active ? "Active" : "Inactive"}</small></div>`).join("") : `<p class="empty">No team members yet.</p>`;
   if(!$("#member-list")||!$("#access-request-list"))return;
   $("#member-list").innerHTML = state.members.length ? state.members.map((member) => `<div><span><strong>${escape(member.email)}</strong><small>${member.isOwner ? "Owner" : `${member.permissions.length} permissions`}</small></span>${member.isOwner ? "" : `<span><button class="text-button edit-member" data-id="${member.id}">Access</button> <button class="text-button remove-member" data-id="${member.id}">Remove</button></span>`}</div>`).join("") : `<p class="empty">Only you have workspace access.</p>`;
   $$(".edit-member").forEach((button)=>button.addEventListener("click",()=>editMember(button.dataset.id)));
@@ -1271,12 +1270,6 @@ function renderCustomerPager(){
 }
 async function loadCustomerDirectory(page=1){const result=await api(`/api/customers?${customerDirectoryParams(page)}`);state.customerDirectory=result;state.customers=result.items;renderCustomersEnhanced();}
 async function showCustomerDetail(id){try{const data=await api(`/api/customers/${id}/history`);state.pets=[...state.pets.filter(pet=>pet.customerId!==id),...data.pets];if(!state.customers.some(customer=>customer.id===id))state.customers.push(data.customer);const pets=data.pets.map(pet=>`<div class="customer-pet-row"><span><strong>${escape(petName(pet))}</strong><small>${escape(pet.breed||"Breed not provided")} · ${pet.weightOunces?`${Number(pet.weightOunces)/16} lb`:"Weight not provided"}</small><small>${pet.vaccinationExpiresOn?`Rabies expires ${String(pet.vaccinationExpiresOn).slice(0,10)}`:"Rabies expiration not provided"}${pet.safetyAlerts?` · Safety: ${escape(pet.safetyAlerts)}`:""}</small></span><span>${allowed("pets.edit")?`<button type="button" class="text-button detail-edit-pet" data-id="${pet.id}">Profile</button>`:""}${allowed("pets.care.view")?`<button type="button" class="text-button detail-care" data-id="${pet.id}">Care & history</button>`:""}</span></div>`).join("")||"<p>No pets yet.</p>";openModal(`${clientName(data.customer)}`,`<div class="wide customer-detail"><p><strong>${escape(data.customer.phone||"No phone")}</strong> · ${escape(data.customer.email||"No email")}</p><div class="customer-detail-actions">${allowed("customers.edit")?`<button type="button" class="text-button detail-edit-customer">Edit customer</button><button type="button" class="text-button detail-archive-customer">Archive</button>`:""}<button type="button" class="text-button detail-history">Full history</button></div><h4>Pets</h4>${pets}</div>`,async()=>{});const next=callback=>{$("#modal").close();setTimeout(callback,50);};$(".detail-edit-customer")?.addEventListener("click",()=>next(()=>editCustomer(id)));$(".detail-archive-customer")?.addEventListener("click",()=>next(()=>archiveCustomer(id)));$(".detail-history")?.addEventListener("click",()=>next(()=>showCustomerHistory(id)));$$(".detail-edit-pet").forEach(button=>button.addEventListener("click",()=>next(()=>editPet(button.dataset.id))));$$(".detail-care").forEach(button=>button.addEventListener("click",()=>next(()=>editPetCare(button.dataset.id))));}catch(error){toast(error.message);}}
-function renderSetupEnhanced() {
-  renderSetup();
-  $("#employee-list").innerHTML = state.employees.length ? state.employees.map((employee) => `<div><span><strong>${escape(employee.displayName)}</strong><small>${employee.active ? "Active" : "Inactive"}</small></span>${employee.active?`<span><button type="button" class="text-button edit-employee" data-id="${employee.id}">Edit</button> <button type="button" class="text-button deactivate-employee" data-id="${employee.id}">Deactivate</button></span>`:""}</div>`).join("") : `<p class="empty">No team members yet.</p>`;
-  $$(".edit-employee").forEach((button)=>button.addEventListener("click",()=>editEmployee(button.dataset.id)));
-  $$(".deactivate-employee").forEach((button)=>button.addEventListener("click",()=>deactivate("employees",button.dataset.id)));
-}
 function pricingMatrix(service){
   if(service.pricingMode!=="TIERED")return "";
   const classes=["SMOOTH_SINGLE","STANDARD","EXTRA_FLOOF"];const tiers=[["TIER_1","1–20"],["TIER_2","21–40"],["TIER_3","41–60"],["TIER_4","61–80"],["TIER_5","81–100"],["TIER_6","100+"]];
@@ -1623,17 +1616,6 @@ function revealCheckedBookingServices() {
     section.open=true;
     section.querySelector("summary")?.setAttribute("aria-expanded","true");
   });
-}
-function weeklyHoursFields(hours=[]) {
-  const byDay=new Map(hours.map(period=>[Number(period.weekday),period]));
-  return `<fieldset class="wide hours-grid"><legend>Working hours</legend>${["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"].map((day,index)=>{const period=byDay.get(index);return `<div><label><input type="checkbox" name="day${index}" ${period?"checked":""}> ${day}</label><input type="time" name="start${index}" value="${escape(period?.startTime||"09:00")}"><input type="time" name="end${index}" value="${escape(period?.endTime||"17:00")}"></div>`;}).join("")}</fieldset>`;
-}
-async function editEmployee(id) {
-  const employee=state.employees.find(item=>item.id===id);
-  try{const hours=await api(`/api/employees/${id}/working-hours`);openModal("Edit team member",field("displayName","Display name","text",`required value="${escape(employee.displayName)}"`,true)+weeklyHoursFields(hours),async(form)=>{
-    await api(`/api/employees/${id}`,{method:"PUT",body:JSON.stringify({displayName:form.get("displayName")})});
-    await api(`/api/employees/${id}/working-hours`,{method:"PUT",body:JSON.stringify({hours:[0,1,2,3,4,5,6].filter(index=>form.get(`day${index}`)).map(index=>({weekday:index,startTime:form.get(`start${index}`),endTime:form.get(`end${index}`)}))})});
-  });}catch(error){toast(error.message);}
 }
 function editService(id) {
   const service=state.services.find(item=>item.id===id);
@@ -2727,9 +2709,6 @@ const actions = {
   "new-service": () => openModal("New service",
     field("name","Service name","text","required")+field("baseDurationMinutes","Duration (minutes)","number",'required min="1"')+field("basePrice","Fixed price ($)","number",'required min="0" step=".01"')+select("category","Category",[["GENERAL","General"],["DOG_ADDON","Dog add-on"],["A_LA_CARTE","À la carte"],["CAT","Cat"]],true,"GENERAL")+field("description","Description","text","",true),
     (form) => { const o=Object.fromEntries(form); o.baseDurationMinutes=Number(o.baseDurationMinutes); o.basePriceMinor=Math.round(Number(o.basePrice)*100);o.pricingMode="FIXED";o.active=true;delete o.basePrice; return api("/api/services",{method:"POST",body:JSON.stringify(o)}); }),
-  "new-employee": () => openModal("New team member",
-    field("displayName","Display name","text","required",true),
-    (form) => api("/api/employees",{method:"POST",body:JSON.stringify({displayName:form.get("displayName")})})),
   "invite-member": () => openModal("Invite workspace member",
     field("email","Email","email","required",true)+
     `<label class="wide">Access preset<select name="preset"><option value="groomer">Groomer</option><option value="receptionist">Receptionist</option><option value="manager">Manager</option></select></label>`,
@@ -3168,6 +3147,553 @@ function renderPetOptions(){
 }
 function settingsLink(title,description,label,target){return `<article class="settings-panel"><h3>${escape(title)}</h3><p>${escape(description)}</p><button type="button" class="primary compact settings-canonical-link" data-target="${target}">${escape(label)}</button></article>`;}
 function settingsPlaceholder(id,title){return `<article class="settings-panel settings-placeholder" data-testid="settings-placeholder"><p class="eyebrow">Coming soon</p><h3>${escape(title)}</h3><p>${escape(settingsDescriptions[id]||"This capability is not yet available in Pawsh.")}</p></article>`;}
+function bindSettingsGoto(root){
+  root.querySelectorAll(".settings-canonical-link").forEach(button=>button.addEventListener("click",()=>showView(button.dataset.target)));
+  root.querySelectorAll("[data-settings-goto]").forEach(button=>button.addEventListener("click",()=>
+    renderSettingsCategory(button.dataset.settingsGoto,{history:"push"})));
+}
+// ---------------------------------------------------------------------------
+// Settings → Staff
+//
+// A roster rail beside one person's record. The rail is a vertical tablist and the record is its
+// tabpanel, because the rail's only job is to swap what the one adjacent panel shows.
+//
+// The record form owns the fields that belong to the person - name, phone, linked account,
+// calendar colour - and saves them as a merge, sending only what changed. Absence is not the same
+// as an explicit value on PUT /api/employees/:id, which is what stops a rename from clearing the
+// account link and the service restriction. The two operational controls act on their own: Active
+// is a state transition, and Available services is a list edited in a drawer.
+// ---------------------------------------------------------------------------
+const staffState={selectedId:null,draft:null,activeError:null,unavailableOpen:false,drawer:null};
+// Reactivating is refusable: revoking a member disables the membership rather than deleting it,
+// and deactivating an employee does not let go of it, so link → deactivate → revoke → reactivate
+// would otherwise hand a revoked account back its attribution. The server refuses that with one
+// code carrying the account status, because the remedy differs per status and "restore their
+// access" is wrong advice for an invitation nobody ever accepted.
+const staffAccountInactiveCode="EMPLOYEE_ACCOUNT_INACTIVE";
+
+// Active first, then inactive, each alphabetically - the same order the server returns, restated
+// because a saved row arrives back before the roster is refetched.
+function staffRoster(){
+  return [...state.employees].sort((left,right)=>
+    Number(right.active)-Number(left.active)||left.displayName.localeCompare(right.displayName));
+}
+function staffDraftRecord(){
+  return {id:"draft",draft:true,displayName:"",phone:"",membershipId:null,colorSlot:null,serviceIds:[],active:true};
+}
+function staffRecord(){
+  if(staffState.selectedId==="draft")return staffState.draft;
+  return state.employees.find(employee=>employee.id===staffState.selectedId)||null;
+}
+function staffEnsureSelection(){
+  if(staffState.selectedId==="draft"&&staffState.draft)return;
+  staffState.draft=null;
+  if(state.employees.some(employee=>employee.id===staffState.selectedId))return;
+  const roster=staffRoster();
+  staffState.selectedId=roster[0]?.id||null;
+}
+// Grapheme-safe, matching petAvatarMarkup: Array.from, never [0].
+function staffInitial(name){return Array.from(String(name||"").trim())[0]?.toUpperCase()||"?";}
+function staffManages(){return allowed("team.manage");}
+// The picker needs the workspace accounts, which arrive with refresh() alongside the roster. An
+// empty list for a session that may read them means the call did not land - every workspace has
+// at least its owner - so the select goes read-only rather than offering "No linked account" as
+// though it were the whole truth.
+function staffMembersLoaded(){return Array.isArray(state.members)&&state.members.length>0;}
+
+// There is no role column anywhere in the schema. The only persisted distinction is
+// business_memberships.is_owner, and permission presets are expanded to a flat array at invite
+// time with the preset name discarded, so these are the only words available.
+function staffRoleLine(employee){
+  if(!employee.membershipId)return "No linked account";
+  if(!staffManages())return "Linked to a workspace account";
+  if(!employee.accountEmail)return "Linked account not found";
+  const line=`${employee.accountIsOwner?"Owner":"Workspace member"} · ${employee.accountEmail}`;
+  return employee.accountStatus&&employee.accountStatus!=="active"?`${line} · access ${employee.accountStatus}`:line;
+}
+function staffServicesSummary(serviceIds){
+  if(!serviceIds.length)return "All services. Nothing is restricted, so this person can be booked for any service in the catalogue.";
+  const total=state.services.filter(service=>service.active).length;
+  return `${serviceIds.length} of ${total} services. Only these can be booked with this person.`;
+}
+function staffColourName(slot){return groomerSlotNames[slot]||"";}
+
+function staffCardMarkup(employee,selected){
+  // Inactive staff never reach the calendar, so the card carries no slot and --g falls back.
+  const slot=employee.active?groomerColorSlot(employee.id):"";
+  const chips=(employee.accountIsOwner?`<span class="staff-chip is-owner">Owner</span>`:"")
+    +(employee.active?"":`<span class="staff-chip is-inactive">Inactive</span>`);
+  return `<button type="button" role="tab" class="staff-card${selected?" is-selected":""}${employee.active?"":" is-inactive"}"`
+    +` id="staff-tab-${escapeAttr(employee.id)}" aria-controls="staff-detail" aria-selected="${selected}" tabindex="${selected?0:-1}"`
+    +` data-staff-id="${escapeAttr(employee.id)}"${slot===""?"":` data-groomer-slot="${slot}"`} data-testid="staff-card">`
+    +`<span class="staff-avatar" aria-hidden="true">${escape(staffInitial(employee.displayName))}</span>`
+    +`<span class="staff-card-text"><span class="staff-card-name">${escape(employee.displayName)}</span>`
+    +(chips?`<span class="staff-card-meta">${chips}</span>`:"")
+    +`</span></button>`;
+}
+function staffRailMarkup(roster){
+  const inactive=roster.filter(employee=>!employee.active).length;
+  const draft=staffState.draft
+    ? `<button type="button" role="tab" class="staff-card is-selected" id="staff-tab-draft" aria-controls="staff-detail"`
+      +` aria-selected="true" tabindex="0" data-staff-id="draft" data-testid="staff-card">`
+      +`<span class="staff-avatar" aria-hidden="true">?</span>`
+      +`<span class="staff-card-text"><span class="staff-card-name">New staff member</span></span></button>`
+    : "";
+  const cards=roster.map(employee=>staffCardMarkup(employee,employee.id===staffState.selectedId)).join("");
+  return `<div class="staff-rail">`
+    +(staffManages()?`<button type="button" class="primary compact staff-rail-add" data-testid="staff-add">+ Add staff</button>`:"")
+    +(roster.length?`<p class="staff-rail-count">${roster.length} staff${inactive?` · ${inactive} inactive`:""}</p>`:"")
+    +(roster.length||draft
+      ? `<div class="staff-list" role="tablist" aria-orientation="vertical" aria-label="Staff">${draft}${cards}</div>`
+      : `<p class="empty">No staff yet.</p>`)
+    +`</div>`;
+}
+function staffEmptyPanelMarkup(){
+  return `<article class="settings-panel" data-testid="staff-detail"><h3>No staff yet</h3>`
+    +`<p>Add the people who groom. A staff member appears as a calendar column, can be assigned appointments, and gets their own colour. Pawsh can book an appointment without one, so nothing is broken until you do.</p>`
+    +(staffManages()?`<button type="button" class="primary compact" data-testid="staff-add">+ Add staff</button>`:"")
+    +`</article>`;
+}
+function staffDetailHeadMarkup(record){
+  const name=record.draft?"New staff member":record.displayName;
+  const slot=record.draft||!record.active?"":groomerColorSlot(record.id);
+  return `<div class="staff-detail-head">`
+    +`<span class="staff-avatar staff-avatar-lg"${slot===""?"":` data-groomer-slot="${slot}"`} aria-hidden="true">${escape(staffInitial(name))}</span>`
+    +`<div><p class="eyebrow">Staff</p><h3>${escape(name)}</h3>`
+    +`<p class="staff-detail-role">${escape(record.draft?"No linked account":staffRoleLine(record))}</p></div>`
+    +(record.draft||record.active?"":`<span class="staff-chip is-inactive">Inactive</span>`)
+    +`</div>`;
+}
+function staffMembershipMarkup(record){
+  const hint=`<span class="field-hint">The workspace login this person signs in with. Report cards, agreements, rabies verifications, photos and notes they record are attributed to this account, and the mobile app uses it to know whose day to show.</span>`;
+  if(!staffMembersLoaded()){
+    return `<label class="staff-field-wide">Linked account`
+      +`<select name="membershipId" data-testid="staff-membership" disabled><option>Workspace accounts unavailable</option></select>`
+      +`<span class="field-hint">Workspace accounts could not be loaded. Saving keeps the current link.</span></label>`;
+  }
+  const options=state.members.map(member=>{
+    const claimed=member.employeeId&&member.employeeId!==record.id;
+    const suffix=claimed?` — linked to ${member.employeeDisplayName}`
+      :member.isOwner?" — Owner"
+        :member.status&&member.status!=="active"?` — ${member.status}`:"";
+    return `<option value="${escapeAttr(member.id)}" ${claimed?"disabled":""} ${member.id===record.membershipId?"selected":""}>${escape(`${member.email}${suffix}`)}</option>`;
+  }).join("");
+  return `<label class="staff-field-wide">Linked account`
+    +`<select name="membershipId" data-testid="staff-membership">`
+    +`<option value="" ${record.membershipId?"":"selected"}>No linked account</option>${options}</select>${hint}</label>`;
+}
+function staffColoursMarkup(record){
+  // Automatic is required: without it there is no way back to unset, and the pane would report a
+  // stored colour where none is stored - which is every employee in every workspace today.
+  const hashed=record.draft?"":groomerSlot(record.id);
+  const chosen=Number.isInteger(record.colorSlot)?String(record.colorSlot):"";
+  const autoName=hashed===""?"Automatic":`Automatic, currently ${staffColourName(hashed)}`;
+  const swatches=groomerSlotNames.map((name,slot)=>
+    `<label class="staff-swatch"><input type="radio" name="colorSlot" value="${slot}" ${chosen===String(slot)?"checked":""}>`
+    +`<span class="staff-swatch-dot" data-groomer-slot="${slot}" aria-hidden="true"></span>`
+    +`<span class="visually-hidden">${escape(name)}</span></label>`).join("");
+  return `<fieldset class="staff-colours"><legend>Calendar colour</legend>`
+    +`<p class="field-hint">Colours this person's appointment blocks, calendar column and report bars. Ten are available; above ten, two people share one.</p>`
+    +`<div class="staff-swatches">`
+    +`<label class="staff-swatch is-auto"><input type="radio" name="colorSlot" value="" ${chosen===""?"checked":""}>`
+    +`<span class="staff-swatch-dot"${hashed===""?"":` data-groomer-slot="${hashed}"`} aria-hidden="true"></span>`
+    +`<span class="visually-hidden">${escape(autoName)}</span><span class="staff-swatch-auto" aria-hidden="true">Auto</span></label>`
+    +swatches+`</div>`
+    +`<p class="staff-swatch-current" data-testid="staff-colour-current" aria-live="polite">${escape(staffColourLine(chosen,hashed))}</p>`
+    +`</fieldset>`;
+}
+function staffColourLine(chosen,hashed){
+  if(chosen!=="")return `Selected: ${staffColourName(Number(chosen))}`;
+  return hashed===""?"Selected: Automatic":`Selected: Automatic (${staffColourName(hashed)})`;
+}
+function staffFormMarkup(record){
+  return `<form class="staff-form" data-testid="staff-form"><div class="staff-field-grid">`
+    +`<label>Name <input name="displayName" type="text" required maxlength="120" value="${escapeAttr(record.displayName||"")}" data-testid="staff-name"></label>`
+    +`<label>Phone <span class="staff-optional">Optional</span>`
+    +`<input name="phone" type="tel" inputmode="tel" maxlength="40" autocomplete="off" value="${escapeAttr(record.phone||"")}" data-testid="staff-phone">`
+    +`<span class="field-hint">Kept on the record so the salon can reach this person. Pawsh never calls or texts it, and it is never shown to a client.</span></label>`
+    +staffMembershipMarkup(record)
+    +`</div>`
+    +staffColoursMarkup(record)
+    +`<div class="staff-form-foot"><p class="error" data-testid="staff-error"></p>`
+    +(record.draft?`<button type="button" class="secondary compact" data-testid="staff-cancel">Cancel</button>`:"")
+    +`<button type="submit" class="primary compact" data-testid="staff-save" disabled>${record.draft?"Create staff member":"Save"}</button></div></form>`;
+}
+// The refusal lives in the row rather than a toast: the cause is on another screen, and a
+// two-clause explanation naming a remedy is longer than a toast survives. The guard is evaluated
+// against the post-merge state, so unlinking and reactivating is one request rather than two
+// saves - which is why the remedy the copy names is also a button beside it.
+function staffActiveRefusalMarkup(refusal){
+  const account=refusal.accountEmail?`<strong>${escape(refusal.accountEmail)}</strong>`:"the linked workspace account";
+  const copy={
+    disabled:`Cannot reactivate: ${account}'s workspace access was revoked. Clear the linked account above, or restore their access in Settings → Permissions.`,
+    account_disabled:`Cannot reactivate: the account ${account} has been disabled. Clear the linked account above to reactivate this person without a login.`,
+    invited:`Cannot reactivate: ${account} has not accepted their invitation yet. Clear the linked account above, or resend the invitation in Settings → Permissions.`,
+    removed:`Cannot reactivate: the linked workspace account no longer exists. Clear the linked account above to reactivate this person without a login.`
+  }[refusal.accountStatus]
+    ||`Cannot reactivate: ${account} is no longer active. Clear the linked account above to reactivate this person without a login.`;
+  return `<span class="pref-hint is-refusal" data-testid="staff-active-refusal">${copy} `
+    +`<button type="button" class="text-button staff-availability-link" data-testid="staff-unlink-reactivate">Unlink and reactivate</button>.</span>`;
+}
+function staffSchedulingMarkup(record){
+  const restricted=record.serviceIds.length>0;
+  const hint=staffState.activeError
+    ?staffActiveRefusalMarkup(staffState.activeError)
+    :`<span class="pref-hint">Appears on the calendar and can be assigned appointments. <button type="button" class="text-button staff-availability-link" data-settings-goto="availability">Set when they work in Availability</button>.</span>`;
+  return `<section class="staff-section"><h4>Scheduling</h4>`
+    +(record.draft?"":`<label class="pref-row"><span class="pref-text"><span class="pref-name">Active</span>${hint}</span>`
+      +`<input type="checkbox" role="switch" class="pref-toggle" data-testid="staff-active" ${record.active?"checked":""}></label>`)
+    +`<div class="pref-row"><span class="pref-text"><span class="pref-name">Available services</span>`
+    +`<span class="pref-hint" data-testid="staff-services-summary">${escape(staffServicesSummary(record.serviceIds))}</span></span>`
+    +`<span class="staff-services-value">${restricted?`<span class="staff-chip is-restricted">Restricted</span>`:""}`
+    +`<button type="button" class="secondary compact" data-testid="staff-services-edit">Edit</button></span></div></section>`;
+}
+// Grouped, closed, and at the bottom. In Pawsh these four share exactly one property - they do not
+// exist - and that, not their subject matter, is what an operator needs to learn. Interleaved among
+// the live controls they would train the eye to skim past anything disabled, which is how someone
+// misses that Available services is real. `fieldset disabled` makes them genuinely inert rather
+// than focusable and useless; the summary sits outside it so the group still opens by keyboard.
+function staffUnavailableMarkup(){
+  const rows=[
+    ["Enable online booking","Public online-booking configuration is not yet available in Pawsh, so there is nothing for a groomer to be opted into. Every appointment is booked by the salon.","switch"],
+    ["Decline online requests from new clients","There is no online request queue to filter. This depends on online booking.","switch"],
+    ["Start and end addresses","Pawsh schedules one salon location per workspace and does not route travel between appointments, so a groomer has no start or end address to record.","button"],
+    ["Mobile app notifications","The Pawsh mobile app signs a groomer in and shows their day. It has no notification settings yet.","button"]
+  ];
+  return `<details class="staff-unavailable" data-testid="staff-unavailable"${staffState.unavailableOpen?" open":""}>`
+    +`<summary><span class="staff-unavailable-title">Not available yet</span><span class="staff-chip">${rows.length}</span></summary>`
+    +`<p class="staff-unavailable-intro">Pawsh does not have these capabilities, so there is nothing here to switch on. They are listed rather than hidden so it is clear they were not overlooked.</p>`
+    +`<fieldset disabled><legend class="visually-hidden">Capabilities not available in Pawsh</legend>`
+    +rows.map(([name,reason,control])=>`<div class="pref-row"><span class="pref-text"><span class="pref-name">${escape(name)}</span>`
+      +`<span class="pref-hint">${escape(reason)}</span></span>`
+      +(control==="switch"?`<input type="checkbox" role="switch" class="pref-toggle">`:`<button type="button" class="secondary compact">Manage</button>`)
+      +`</div>`).join("")
+    +`</fieldset></details>`;
+}
+// Without team.manage the roster still renders - the calendar needs these names - but the record is
+// a set of facts. The switches and the unbuilt group are omitted rather than disabled: a disabled
+// control implies "you could turn this on", and the honest message is that it is not yours. The API
+// withholds phone and the account email from this session entirely, so those rows render only when
+// the keys actually arrive.
+function staffFactsMarkup(record){
+  const slot=groomerColorSlot(record.id);
+  const colour=Number.isInteger(record.colorSlot)
+    ? staffColourName(record.colorSlot)
+    : `${staffColourName(slot)} (automatic)`;
+  const facts=[["Name",escape(record.displayName)]];
+  if("phone" in record)facts.push(["Phone",escape(record.phone||"Not recorded")]);
+  facts.push(["Linked account",escape(staffRoleLine(record))]);
+  facts.push(["Calendar colour",`<span class="staff-swatch-dot" data-groomer-slot="${slot}" aria-hidden="true"></span>${escape(colour)}`]);
+  facts.push(["Available services",escape(staffServicesSummary(record.serviceIds))]);
+  return `<p class="fine staff-permission-note">Editing staff needs the Team permission.</p>`
+    +`<dl class="account-facts staff-facts">${facts.map(([term,value])=>`<div><dt>${escape(term)}</dt><dd>${value}</dd></div>`).join("")}</dl>`;
+}
+function staffDetailMarkup(record){
+  const labelledBy=record.draft?"staff-tab-draft":`staff-tab-${escapeAttr(record.id)}`;
+  const body=staffManages()
+    ? staffFormMarkup(record)+staffSchedulingMarkup(record)+(record.draft?"":staffUnavailableMarkup())
+    : staffFactsMarkup(record);
+  return `<div class="staff-panel" role="tabpanel" id="staff-detail" aria-labelledby="${labelledBy}" tabindex="-1" data-testid="staff-detail">`
+    +staffDetailHeadMarkup(record)+body+`</div>`;
+}
+function staffMarkup(){
+  const roster=staffRoster(),record=staffRecord();
+  return `<div class="staff-workspace">${staffRailMarkup(roster)}${record?staffDetailMarkup(record):staffEmptyPanelMarkup()}</div>`;
+}
+
+// renderSettingsCategory replaces the whole settings pane on every nav click, so this re-reads
+// module state rather than assuming anything about what is currently on screen. A save re-renders
+// too, so focus is put back where it was; the guard is that it only moves focus at all when focus
+// was already inside this screen, which keeps the shell's own content.focus() on first paint.
+function renderStaff({restoreFocus=true}={}){
+  const root=$("#staff-root");if(!root)return;
+  const wanted=restoreFocus?staffFocusKey(root):null;
+  staffEnsureSelection();
+  root.innerHTML=staffMarkup();
+  bindStaff(root);
+  if(wanted)root.querySelector(wanted)?.focus();
+}
+function staffFocusKey(root){
+  const active=document.activeElement;
+  if(!active||!root.contains(active))return null;
+  if(active.dataset?.staffId)return `[data-staff-id="${active.dataset.staffId}"]`;
+  if(active.name)return `[name="${active.name}"]`;
+  if(active.dataset?.testid)return `[data-testid="${active.dataset.testid}"]`;
+  return null;
+}
+function bindStaff(root){
+  bindSettingsGoto(root);
+  root.querySelectorAll('[data-testid="staff-add"]').forEach(button=>button.addEventListener("click",addStaffDraft));
+  bindStaffRoster(root);
+  bindStaffForm(root);
+  root.querySelector('[data-testid="staff-active"]')?.addEventListener("change",event=>{
+    const record=staffRecord();if(!record||record.draft)return;
+    runDetached(()=>setStaffActive(record,event.target.checked,{toggle:event.target}));
+  });
+  root.querySelector('[data-testid="staff-unlink-reactivate"]')?.addEventListener("click",()=>{
+    const record=staffRecord();if(!record||record.draft)return;
+    runDetached(()=>setStaffActive(record,true,{unlink:true}));
+  });
+  root.querySelector('[data-testid="staff-services-edit"]')?.addEventListener("click",openStaffServices);
+  root.querySelector('[data-testid="staff-unavailable"]')?.addEventListener("toggle",event=>{
+    staffState.unavailableOpen=event.target.open;
+  });
+}
+// Arrow keys move focus and nothing else. The panel holds a half-typed record, so arrowing through
+// the roster must not tear it down; Enter and Space are what commit. Same shape as newActionMenu.
+function bindStaffRoster(root){
+  const list=root.querySelector(".staff-list");if(!list)return;
+  const cards=()=>[...list.querySelectorAll(".staff-card")];
+  list.addEventListener("keydown",event=>{
+    const items=cards(),index=items.indexOf(document.activeElement);
+    if(index<0)return;
+    if(event.key==="Enter"||event.key===" "||event.key==="Spacebar"){
+      event.preventDefault();selectStaff(items[index].dataset.staffId);return;
+    }
+    if(!["ArrowDown","ArrowUp","Home","End"].includes(event.key))return;
+    event.preventDefault();
+    const next=event.key==="Home"?0:event.key==="End"?items.length-1
+      :(index+(event.key==="ArrowDown"?1:-1)+items.length)%items.length;
+    items[next]?.focus();
+  });
+  cards().forEach(card=>card.addEventListener("click",()=>selectStaff(card.dataset.staffId)));
+}
+function bindStaffForm(root){
+  const form=root.querySelector(".staff-form");if(!form)return;
+  const sync=()=>{
+    form.querySelector('[data-testid="staff-save"]').disabled=!staffFormDirty(form);
+    const values=staffFormValues(form),record=staffRecord();
+    const line=form.querySelector('[data-testid="staff-colour-current"]');
+    if(line)line.textContent=staffColourLine(values.colorSlot,!record||record.draft?"":groomerSlot(record.id));
+  };
+  form.addEventListener("input",sync);
+  form.addEventListener("change",sync);
+  form.addEventListener("submit",event=>{event.preventDefault();runDetached(()=>saveStaffRecord(form));});
+  form.querySelector('[data-testid="staff-cancel"]')?.addEventListener("click",()=>{
+    staffState.draft=null;staffState.selectedId=null;renderStaff({restoreFocus:false});
+  });
+}
+function staffFormValues(form){
+  const membership=form.elements.membershipId;
+  return {
+    displayName:form.elements.displayName.value.trim(),
+    phone:form.elements.phone.value.trim(),
+    membershipId:membership&&!membership.disabled?membership.value:null,
+    colorSlot:form.querySelector('input[name="colorSlot"]:checked')?.value??""
+  };
+}
+// Only what changed. An omitted field leaves what is stored alone, so a rename cannot clear the
+// account link or the service restriction; an explicit null unlinks, and an explicit "" clears the
+// number. A membership select that could not be populated sends nothing at all.
+function staffFormChanges(record,values){
+  const changes={};
+  if(values.displayName!==record.displayName)changes.displayName=values.displayName;
+  if(values.phone!==(record.phone||""))changes.phone=values.phone;
+  if(values.membershipId!==null&&values.membershipId!==(record.membershipId||""))changes.membershipId=values.membershipId||null;
+  const stored=Number.isInteger(record.colorSlot)?String(record.colorSlot):"";
+  if(values.colorSlot!==stored)changes.colorSlot=values.colorSlot===""?null:Number(values.colorSlot);
+  return changes;
+}
+function staffFormDirty(form){
+  const record=staffRecord();if(!record)return false;
+  const values=staffFormValues(form);
+  if(record.draft)return Boolean(values.displayName);
+  return Object.keys(staffFormChanges(record,values)).length>0;
+}
+async function saveStaffRecord(form){
+  const record=staffRecord();if(!record)return;
+  const values=staffFormValues(form);
+  const error=form.querySelector('[data-testid="staff-error"]');
+  const submit=form.querySelector('[data-testid="staff-save"]');
+  error.textContent="";
+  if(!values.displayName){error.textContent="Enter a name.";form.elements.displayName.focus();return;}
+  submit.disabled=true;
+  try{
+    if(record.draft){
+      const body={displayName:values.displayName,serviceIds:record.serviceIds};
+      if(values.membershipId)body.membershipId=values.membershipId;
+      if(values.colorSlot!=="")body.colorSlot=Number(values.colorSlot);
+      if(values.phone)body.phone=values.phone;
+      const created=await api("/api/employees",{method:"POST",body:JSON.stringify(body)});
+      staffState.draft=null;staffState.selectedId=created.id;
+      await refresh();toast("Staff member added");
+    }else{
+      const changes=staffFormChanges(record,values);
+      if(Object.keys(changes).length)await api(`/api/employees/${record.id}`,{method:"PUT",body:JSON.stringify(changes)});
+      await refresh();toast("Staff member saved");
+    }
+    staffState.activeError=null;renderStaff({restoreFocus:false});
+  }catch(failure){
+    // Entered values stay put and the message lands beside the button, because a toast is gone
+    // before a validation refusal has been read.
+    submit.disabled=false;error.textContent=failure.message;
+    const code=failure.data?.code;
+    const invalid=code==="MEMBERSHIP_NOT_LINKABLE"||code==="MEMBERSHIP_ALREADY_LINKED"
+      ?form.elements.membershipId:form.elements.displayName;
+    invalid?.focus();
+  }
+}
+function selectStaff(id,{focus=true}={}){
+  if(id===staffState.selectedId)return;
+  const form=$("#staff-root .staff-form");
+  if(form&&staffFormDirty(form)){
+    const record=staffRecord();
+    openStackedDialog({title:"Discard unsaved changes?",
+      body:`<p>Changes to ${escape(record?.draft?"the new staff member":record?.displayName||"this staff member")} have not been saved.</p>`,
+      confirmLabel:"Discard",dismissLabel:"Keep editing",
+      onConfirm:()=>{commitStaffSelection(id,focus);}});
+    return;
+  }
+  commitStaffSelection(id,focus);
+}
+function commitStaffSelection(id,focus){
+  if(id!=="draft")staffState.draft=null;
+  staffState.selectedId=id;staffState.activeError=null;
+  renderStaff({restoreFocus:false});
+  if(!focus)return;
+  if(id==="draft"){$("#staff-root [name=\"displayName\"]")?.focus();return;}
+  // Stacked below a scrolling roster, the panel would otherwise scroll away from the tab that
+  // still holds focus.
+  const panel=$('#staff-root [data-testid="staff-detail"]');
+  if(globalThis.matchMedia("(max-width:760px)").matches&&panel){
+    panel.focus();
+    panel.scrollIntoView({block:"start",
+      behavior:globalThis.matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});
+    return;
+  }
+  $(`#staff-root [data-staff-id="${id}"]`)?.focus();
+}
+// A draft row rather than a modal: this screen exists to remove the second staff editor, and a
+// modal would put one back.
+function addStaffDraft(){
+  if(staffState.selectedId==="draft")return;
+  staffState.draft=staffDraftRecord();
+  selectStaff("draft");
+}
+// The switch never rests in a state the server did not accept: every path that does not end in a
+// successful write puts it back, including Escape and the backdrop, which bypass the dismiss
+// button. A success re-renders instead, so the restored toggle is gone by the time close fires.
+async function setStaffActive(employee,wanted,{unlink=false,toggle=null}={}){
+  staffState.activeError=null;
+  const revert=()=>{if(toggle?.isConnected){toggle.checked=employee.active;toggle.disabled=false;}};
+  if(!wanted){
+    const dialog=openStackedDialog({title:`Deactivate ${employee.displayName}?`,
+      body:"<p>They stop appearing on the calendar and cannot be assigned new appointments. Appointments already booked are unchanged.</p>",
+      confirmLabel:"Deactivate",dismissLabel:"Cancel",
+      onConfirm:async()=>{
+        await api(`/api/employees/${employee.id}`,{method:"DELETE"});
+        await refresh();renderStaff({restoreFocus:false});toast(`${employee.displayName} deactivated`);
+      }});
+    dialog.addEventListener("close",revert,{once:true});
+    return;
+  }
+  if(toggle)toggle.disabled=true;
+  try{
+    await api(`/api/employees/${employee.id}`,{method:"PUT",
+      body:JSON.stringify(unlink?{active:true,membershipId:null}:{active:true})});
+    await refresh();renderStaff({restoreFocus:false});
+    toast(unlink?`${employee.displayName} reactivated without a linked account`:`${employee.displayName} reactivated`);
+  }catch(error){
+    // A refusal the server registered names a cause on another screen, so it replaces the row's own
+    // hint where it can be read. A transport failure keeps the ordinary error line and its retry.
+    if(error.data?.code===staffAccountInactiveCode){
+      staffState.activeError={accountStatus:error.data.accountStatus,accountEmail:error.data.accountEmail};
+      renderStaff({restoreFocus:false});return;
+    }
+    revert();
+    const line=$('#staff-root [data-testid="staff-error"]');
+    if(line)line.textContent=error.message;else toast(error.message);
+  }
+}
+
+// --- Available services drawer -------------------------------------------
+// An empty set is "no restriction", never "restricted to nothing", so the drawer asks the question
+// as a rule rather than a count and refuses to save a restriction with nothing in it.
+function staffServiceGroupsMarkup(record){
+  const chosen=staffState.drawer.serviceIds;
+  const labels={DOG_BASE:"Main services",DOG_ADDON:"Dog add-ons",A_LA_CARTE:"À la carte",CAT:"Cat services",GENERAL:"General"};
+  const catalogue=state.services.filter(service=>service.active||record.serviceIds.includes(service.id));
+  const groups=[...new Set(catalogue.map(service=>service.category))].sort((left,right)=>{
+    const rank=value=>{const index=serviceCategoryOrder.indexOf(value);return index<0?serviceCategoryOrder.length:index;};
+    return rank(left)-rank(right)||left.localeCompare(right);
+  });
+  return groups.map(category=>{
+    const options=catalogue.filter(service=>service.category===category).map(service=>
+      `<label><input type="checkbox" name="staffServiceIds" value="${escapeAttr(service.id)}" ${chosen.has(service.id)?"checked":""}>`
+      +`<span>${escape(service.name)}${service.active?"":`<span class="staff-chip">Archived</span>`}</span></label>`).join("");
+    return `<section class="staff-services-group"><h4>${escape(labels[category]||category.replaceAll("_"," "))}</h4>`
+      +`<div class="compact-options">${options}</div></section>`;
+  }).join("")||`<p class="empty">Add a service first.</p>`;
+}
+function staffServicesBodyMarkup(record){
+  const mode=staffState.drawer.mode;
+  return `<p class="staff-services-intro">Everyone is bookable for the whole catalogue unless they are restricted here. A restriction is enforced when a service is assigned: Pawsh refuses to book, add or move a service onto someone who is not set up for it.</p>`
+    +`<fieldset class="staff-services-mode"><legend>Booking rule</legend>`
+    +`<label><input type="radio" name="staffServiceMode" value="all" ${mode==="all"?"checked":""}> No restriction — bookable for any service</label>`
+    +`<label><input type="radio" name="staffServiceMode" value="restrict" ${mode==="restrict"?"checked":""}> Restrict to selected services</label>`
+    +`</fieldset>`
+    +`<div data-staff-service-catalogue ${mode==="restrict"?"":"hidden"}>${staffServiceGroupsMarkup(record)}</div>`
+    +`<p class="error staff-services-error" data-testid="staff-services-refusal"></p>`;
+}
+function openStaffServices(){
+  const record=staffRecord();if(!record)return;
+  staffState.drawer={id:record.id,mode:record.serviceIds.length?"restrict":"all",serviceIds:new Set(record.serviceIds)};
+  const drawer=$("#staff-services-drawer");
+  drawer.querySelector("#staff-services-title").textContent=record.draft?"New staff member":record.displayName;
+  $("#staff-services-body").innerHTML=staffServicesBodyMarkup(record);
+  bindStaffServicesBody();
+  syncStaffServicesDrawer();
+  if(!drawer.open)drawer.showModal();
+  drawer.querySelector(".drawer-head .close")?.focus();
+}
+function bindStaffServicesBody(){
+  const body=$("#staff-services-body");
+  body.querySelectorAll('input[name="staffServiceMode"]').forEach(input=>input.addEventListener("change",()=>{
+    staffState.drawer.mode=input.value;syncStaffServicesDrawer();
+  }));
+  body.querySelectorAll('input[name="staffServiceIds"]').forEach(input=>input.addEventListener("change",()=>{
+    if(input.checked)staffState.drawer.serviceIds.add(input.value);
+    else staffState.drawer.serviceIds.delete(input.value);
+    syncStaffServicesDrawer();
+  }));
+}
+function syncStaffServicesDrawer(){
+  const draft=staffState.drawer;if(!draft)return;
+  const restrict=draft.mode==="restrict",empty=restrict&&!draft.serviceIds.size;
+  $("#staff-services-body [data-staff-service-catalogue]").hidden=!restrict;
+  $('[data-testid="staff-services-refusal"]').textContent=empty
+    ?"Choose at least one service, or switch to No restriction.":"";
+  $('[data-testid="staff-services-save"]').disabled=empty;
+}
+async function saveStaffServices(){
+  const draft=staffState.drawer,record=staffRecord();
+  if(!draft||!record)return;
+  const serviceIds=draft.mode==="restrict"?[...draft.serviceIds]:[];
+  if(draft.mode==="restrict"&&!serviceIds.length)return;
+  const drawer=$("#staff-services-drawer");
+  if(record.draft){
+    record.serviceIds=serviceIds;drawer.close();renderStaff({restoreFocus:false});return;
+  }
+  const save=$('[data-testid="staff-services-save"]');save.disabled=true;
+  try{
+    await api(`/api/employees/${record.id}`,{method:"PUT",body:JSON.stringify({serviceIds})});
+    await refresh();drawer.close();renderStaff({restoreFocus:false});
+    toast(serviceIds.length?"Available services saved":"Service restriction cleared");
+  }catch(error){
+    save.disabled=false;
+    $('[data-testid="staff-services-refusal"]').textContent=error.message;
+  }
+}
+function setupStaffServicesDrawer(){
+  const drawer=$("#staff-services-drawer");if(!drawer)return;
+  const close=()=>drawer.close();
+  drawer.querySelector('[data-testid="staff-services-close"]')?.addEventListener("click",close);
+  drawer.querySelector('[data-testid="staff-services-cancel"]')?.addEventListener("click",close);
+  drawer.querySelector('[data-testid="staff-services-save"]')?.addEventListener("click",()=>runDetached(saveStaffServices));
+  // Clicking the backdrop dismisses it: the click lands on the dialog itself, never on its panel.
+  drawer.addEventListener("click",event=>{if(event.target===drawer)close();});
+  drawer.addEventListener("close",()=>{staffState.drawer=null;});
+}
 // ---------------------------------------------------------------------------
 // Settings → Availability
 //
@@ -3376,8 +3902,8 @@ function availabilityDefaultMarkup(){
   const editable=allowed("team.manage"),groomers=availabilityGroomers();
   if(!groomers.length){
     return `<div class="empty-workspace"><span class="empty-icon" aria-hidden="true">◎</span><h3>No groomers yet</h3>`
-      +`<p>Default working hours describe the people who groom. Add a groomer in Salon and their week appears here.</p>`
-      +`<button type="button" class="secondary compact settings-canonical-link" data-target="setup">Open Salon team</button></div>`;
+      +`<p>Default working hours describe the people who groom. Add a groomer under Staff and their week appears here.</p>`
+      +`<button type="button" class="secondary compact" data-settings-goto="staff">Open Staff</button></div>`;
   }
   // Nobody having set hours yet is not an empty state. The grid is the answer, every cell reads Off,
   // and the note says what Pawsh actually does with that — which is not "refuse every booking".
@@ -3486,7 +4012,7 @@ function bindAvailability(root){
     else{availabilityState.closures=null;availabilityState.closuresError=null;}
     renderAvailability();ensureAvailabilityData();
   }));
-  root.querySelectorAll(".settings-canonical-link").forEach(button=>button.addEventListener("click",()=>showView(button.dataset.target)));
+  bindSettingsGoto(root);
   root.querySelectorAll("[data-availability-month]").forEach(button=>button.addEventListener("click",()=>shiftAvailabilityMonth(Number(button.dataset.availabilityMonth))));
   bindAvailabilityHours(root);
   bindAvailabilityClosures(root);
@@ -4876,7 +5402,7 @@ function checkoutTipPercents(){
   const tips=checkoutOptions.data?.tipPercents;
   return Array.isArray(tips)?tips.map(Number):[];
 }
-function renderSettingsCategory(category=settingsPathCategory(),{history="replace"}={}){const definition=settingsCategories.find(([id])=>id===category)||settingsCategories[0],[id,title]=definition,nav=$("#settings-navigation"),content=$("#settings-content");if(!nav||!content)return;nav.innerHTML=settingsCategories.map(([key,label])=>`<button type="button" data-settings-category="${key}" class="${key===id?"active":""}" ${key===id?'aria-current="page"':""}>${escape(label)}</button>`).join("");let html="";if(id==="account")html=settingsLink("Account","Personal identity and password security remain in your canonical account workspace.","Manage profile & security","profile-account");else if(id==="staff")html=settingsLink("Staff","Groomer records, operational eligibility, and active status remain in Salon.","Open Salon team","setup");else if(id==="business")html=`<article class="settings-panel"><h3>Business</h3><p>Manage the workspace name and authoritative timezone, currency, tax rate, and reminder lead time.</p><button type="button" class="primary compact settings-business-action">Edit business settings</button></article>`;else if(id==="availability")html=`<div id="availability-root" class="availability-root"></div>`;else if(id==="permissions")html=allowed("team.manage")?`<article class="settings-panel"><div class="panel-head"><div><h3>Permissions</h3><p>Manage workspace membership and server-authorized access.</p></div><button type="button" class="secondary compact settings-invite">+ Invite</button></div><div id="member-list" class="simple-list"></div><h4>Pending access requests</h4><div id="access-request-list" class="simple-list"></div></article>`:settingsPlaceholder(id,title);else if(id==="services")html=settingsLink("Services","Service names, pricing, durations, and availability have one canonical workspace.","Open Services","services");else if(id==="pet-options")html=`<div id="pet-options-workspace" class="pet-options-workspace"></div>`;else if(id==="tax-payments")html=`<div id="taxpay-root" class="taxpay-root"></div>`;else if(id==="automated-messages")html=`<article class="settings-panel"><h3>Automated messages</h3><p>Pawsh’s durable reminder/outbox flow uses the configured reminder lead time. Template and channel management are deferred.</p><button type="button" class="primary compact settings-business-action">Manage reminder timing</button></article>`;else html=settingsPlaceholder(id,title);content.innerHTML=`<div class="settings-content-head"><p class="eyebrow">Settings</p><h2>${escape(title)}</h2></div>${html}`;nav.querySelectorAll("[data-settings-category]").forEach(button=>button.addEventListener("click",()=>renderSettingsCategory(button.dataset.settingsCategory,{history:"push"})));content.querySelectorAll(".settings-canonical-link").forEach(button=>button.addEventListener("click",()=>showView(button.dataset.target)));content.querySelectorAll(".settings-business-action").forEach(button=>button.addEventListener("click",actions["business-settings"]));content.querySelector(".settings-invite")?.addEventListener("click",actions["invite-member"]);if(id==="permissions")renderSetup();if(id==="pet-options")renderPetOptions();if(id==="availability"){renderAvailability();ensureAvailabilityData();}if(id==="tax-payments"){renderTaxPayments();ensureTaxPaymentsData();}if(history!=="none")globalThis.history[history==="push"?"pushState":"replaceState"]({view:"admin-settings",settingsCategory:id},"",`/settings/${id}`);content.focus({preventScroll:true});}
+function renderSettingsCategory(category=settingsPathCategory(),{history="replace"}={}){const definition=settingsCategories.find(([id])=>id===category)||settingsCategories[0],[id,title]=definition,nav=$("#settings-navigation"),content=$("#settings-content");if(!nav||!content)return;nav.innerHTML=settingsCategories.map(([key,label])=>`<button type="button" data-settings-category="${key}" class="${key===id?"active":""}" ${key===id?'aria-current="page"':""}>${escape(label)}</button>`).join("");let html="";if(id==="account")html=settingsLink("Account","Personal identity and password security remain in your canonical account workspace.","Manage profile & security","profile-account");else if(id==="staff")html=`<div id="staff-root" class="staff-root"></div>`;else if(id==="business")html=`<article class="settings-panel"><h3>Business</h3><p>Manage the workspace name and authoritative timezone, currency, tax rate, and reminder lead time.</p><button type="button" class="primary compact settings-business-action">Edit business settings</button></article>`;else if(id==="availability")html=`<div id="availability-root" class="availability-root"></div>`;else if(id==="permissions")html=allowed("team.manage")?`<article class="settings-panel"><div class="panel-head"><div><h3>Permissions</h3><p>Manage workspace membership and server-authorized access.</p></div><button type="button" class="secondary compact settings-invite">+ Invite</button></div><div id="member-list" class="simple-list"></div><h4>Pending access requests</h4><div id="access-request-list" class="simple-list"></div></article>`:settingsPlaceholder(id,title);else if(id==="services")html=settingsLink("Services","Service names, pricing, durations, and availability have one canonical workspace.","Open Services","services");else if(id==="pet-options")html=`<div id="pet-options-workspace" class="pet-options-workspace"></div>`;else if(id==="tax-payments")html=`<div id="taxpay-root" class="taxpay-root"></div>`;else if(id==="automated-messages")html=`<article class="settings-panel"><h3>Automated messages</h3><p>Pawsh’s durable reminder/outbox flow uses the configured reminder lead time. Template and channel management are deferred.</p><button type="button" class="primary compact settings-business-action">Manage reminder timing</button></article>`;else html=settingsPlaceholder(id,title);content.innerHTML=`<div class="settings-content-head"><p class="eyebrow">Settings</p><h2>${escape(title)}</h2></div>${html}`;nav.querySelectorAll("[data-settings-category]").forEach(button=>button.addEventListener("click",()=>renderSettingsCategory(button.dataset.settingsCategory,{history:"push"})));content.querySelectorAll(".settings-canonical-link").forEach(button=>button.addEventListener("click",()=>showView(button.dataset.target)));content.querySelectorAll(".settings-business-action").forEach(button=>button.addEventListener("click",actions["business-settings"]));content.querySelector(".settings-invite")?.addEventListener("click",actions["invite-member"]);if(id==="permissions")renderSetup();if(id==="staff")renderStaff();if(id==="pet-options")renderPetOptions();if(id==="availability"){renderAvailability();ensureAvailabilityData();}if(id==="tax-payments"){renderTaxPayments();ensureTaxPaymentsData();}if(history!=="none")globalThis.history[history==="push"?"pushState":"replaceState"]({view:"admin-settings",settingsCategory:id},"",`/settings/${id}`);content.focus({preventScroll:true});}
 
 async function openClientProfile(customerId,{petId=null,appointmentId=null,returnView=null}={}){
   if(returnView)state.clientProfileReturnView=returnView;
@@ -6626,6 +7152,7 @@ if (inviteToken || resetToken) {
   $("#auth-form input[name=password]").autocomplete="new-password";
 }
 setupBreedDrawer();
+setupStaffServicesDrawer();
 setupTerminalDrawer();
 setupTerminalCapture();
 bootstrap();

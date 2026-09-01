@@ -22,7 +22,49 @@ export const permissions = [
   "services.manage",
   "team.manage",
   "reports.view",
-  "settings.manage"
+  "settings.manage",
+
+  // ---------------------------------------------------------------------------------------------
+  // Reporting and dashboard taxonomy.
+  //
+  // Two masters, and children grouped beneath them. `reports.view` and `dashboard.view` each gate
+  // an endpoint on their own; the children narrow WHAT COMES BACK from it, by omitting fields from
+  // the response rather than by asking the client to hide panels. A client-side hide is not a
+  // permission, it is a suggestion.
+  //
+  // SOME OF THESE GATE NOTHING YET, ON PURPOSE. Pawsh has no payroll, no time clock, no product
+  // catalogue and no commission model, so the switches for those exist so that the day the feature
+  // ships it is already granted to the right people, instead of every workspace having to
+  // rediscover its own access rules. `unenforcedPermissions` names exactly which ones, and the
+  // catalog reports it as `enforced: false` so the editor can say so rather than implying a
+  // restriction that is not there.
+  // ---------------------------------------------------------------------------------------------
+  "dashboard.view",
+  "dashboard.revenue",
+  "dashboard.revenue_by_staff",
+  "dashboard.commission_by_staff",
+  "dashboard.tips_by_staff",
+  "dashboard.sales_items",
+  "dashboard.payment_status",
+  "dashboard.sales_by_method",
+  "dashboard.summary",
+
+  "payroll.report",
+  "payroll.commission_by_staff",
+  "payroll.staff_commission_detail",
+  "payroll.clock_in_out_by_staff",
+  "payroll.clock_in_out_detail",
+  "payroll.tips_by_staff",
+  "payroll.tips_collected_detail",
+  "payroll.clock_in_out_by_day",
+  "payroll.special_service_rates",
+
+  "sales.all",
+  "sales.by_payment_method",
+  "sales.by_service",
+  "sales.by_product",
+  "sales.by_staff",
+  "sales.by_client"
 ] as const;
 
 export type Permission = (typeof permissions)[number];
@@ -74,7 +116,36 @@ export interface PermissionGroup {
  *
  * Emptying this set is how a feature graduates. Nothing else needs to change.
  */
-export const unenforcedPermissions: ReadonlySet<Permission> = new Set<Permission>([]);
+export const unenforcedPermissions: ReadonlySet<Permission> = new Set<Permission>([
+  // No commission model exists anywhere in the schema - no rate, no plan, no ledger - which is why
+  // `/api/reports` reports `commissionMinor: null` rather than zero. There is nothing to withhold.
+  "dashboard.commission_by_staff",
+
+  // No payroll and no time clock. Pawsh records appointments, not shifts, so every one of these
+  // would be protecting a report that does not exist.
+  "payroll.report",
+  "payroll.commission_by_staff",
+  "payroll.staff_commission_detail",
+  "payroll.clock_in_out_by_staff",
+  "payroll.clock_in_out_detail",
+  "payroll.tips_by_staff",
+  "payroll.tips_collected_detail",
+  "payroll.clock_in_out_by_day",
+  "payroll.special_service_rates",
+
+  // `sales.by_payment_method` and `sales.by_staff` ARE enforced and are deliberately absent here -
+  // they share their backing data with the dashboard children of the same shape.
+  //
+  // The rest are not: "all sales" is not a distinct projection from the report the master already
+  // gates; per-service is returned as `services`, which is a count of services performed rather
+  // than money and so does not answer this question; there is no product model at all, which is
+  // why `salesItems.productsMinor` is a structural zero; and invoices are not aggregated per
+  // client anywhere.
+  "sales.all",
+  "sales.by_service",
+  "sales.by_product",
+  "sales.by_client"
+]);
 
 /**
  * The permission catalog, grouped for presentation.
@@ -105,8 +176,32 @@ export const permissionGroups: readonly PermissionGroup[] = [
     permissions: ["checkout.perform", "payments.view", "discounts.apply"]
   },
   {
+    id: "dashboard", label: "Dashboard", masterKey: "dashboard.view",
+    permissions: [
+      "dashboard.revenue", "dashboard.revenue_by_staff", "dashboard.commission_by_staff",
+      "dashboard.tips_by_staff", "dashboard.sales_items", "dashboard.payment_status",
+      "dashboard.sales_by_method", "dashboard.summary"
+    ]
+  },
+  {
+    id: "payroll", label: "Payroll", masterKey: "reports.view",
+    permissions: [
+      "payroll.report", "payroll.commission_by_staff", "payroll.staff_commission_detail",
+      "payroll.clock_in_out_by_staff", "payroll.clock_in_out_detail", "payroll.tips_by_staff",
+      "payroll.tips_collected_detail", "payroll.clock_in_out_by_day",
+      "payroll.special_service_rates"
+    ]
+  },
+  {
+    id: "sales", label: "Sales", masterKey: "reports.view",
+    permissions: [
+      "sales.all", "sales.by_payment_method", "sales.by_service", "sales.by_product",
+      "sales.by_staff", "sales.by_client"
+    ]
+  },
+  {
     id: "reporting", label: "Reporting", masterKey: null,
-    permissions: ["reports.view"]
+    permissions: ["reports.view", "dashboard.view"]
   },
   {
     id: "administration", label: "Administration", masterKey: null,

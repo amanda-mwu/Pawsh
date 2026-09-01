@@ -1,7 +1,7 @@
 import { request as playwrightRequest } from "@playwright/test";
 import {
   test,expect,login,createMember,completeAppointment,createTenant,
-  ownerPermissions,password,appointmentAction
+  ownerPermissions,password,appointmentAction,setMemberPermissions
 } from "../fixtures/tenant.js";
 
 test("@smoke browser security enforces permission changes and protects ownership",async({page,request,tenant})=>{
@@ -20,7 +20,8 @@ test("@smoke browser security enforces permission changes and protects ownership
     return response.status;
   },appointment.id);
   expect(deniedStatus).toBe(403);
-  await request.patch(`/api/members/${member.membershipId}/permissions`,{data:{permissions:[...initial,"checkout.perform"]}});
+  // Granting is done by editing the member's ROLE - the per-member permission list is gone.
+  await setMemberPermissions(request,member.roleId,[...initial,"checkout.perform"]);
   await page.reload();
   await page.getByTestId("nav-calendar").click();
   await expect(await appointmentAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"appointment-completed")).toBeVisible();

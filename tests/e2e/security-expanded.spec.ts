@@ -1,5 +1,6 @@
 import {
-  test, expect, login, createMember, createTenant, completeAppointment, ownerPermissions, password, appointmentAction
+  test, expect, login, createMember, createTenant, completeAppointment, ownerPermissions, password,
+  appointmentAction, setMemberPermissions
 } from "./fixtures/tenant.js";
 import { request as playwrightRequest } from "@playwright/test";
 
@@ -32,9 +33,10 @@ test("@security-desktop stale permission cannot mutate and reconciles capability
   const checkout=await appointmentAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"appointment-completed");
   await expect(checkout).toBeVisible();
 
-  await request.patch(`/api/members/${member.membershipId}/permissions`,{
-    data:{permissions:ownerPermissions.filter((permission)=>permission!=="checkout.perform")}
-  });
+  // Revoking is done by editing the member's ROLE, and takes effect on their next request: the
+  // session is not invalidated and nothing is cached.
+  await setMemberPermissions(request,member.roleId,
+    ownerPermissions.filter((permission)=>permission!=="checkout.perform"));
   const staleCheckoutStatus=await page.evaluate(async(appointmentId)=>(await fetch(`/api/appointments/${appointmentId}/checkout`,{
     method:"POST",
     credentials:"include",

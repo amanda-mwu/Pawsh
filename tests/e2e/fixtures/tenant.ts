@@ -9,6 +9,7 @@ import {
   type TestInfo,
 } from "@playwright/test";
 import { nextMonday } from "../helpers/date.js";
+import { permissions } from "@pawsh/domain";
 
 export const password = "correct horse browser smoke";
 export async function appointmentAction(card:Locator,testId:string):Promise<Locator>{
@@ -17,13 +18,15 @@ export async function appointmentAction(card:Locator,testId:string):Promise<Loca
   await trigger.click();
   return trigger.page().getByTestId(testId).filter({visible:true});
 }
-const ownerPermissions = [
-  "calendar.view","appointments.view","appointments.create","appointments.edit","appointments.cancel",
-  "appointments.override_conflict",
-  "customers.view","customers.edit","pets.view","pets.edit","pets.care.view","pets.care.edit",
-  "operations.check_in","operations.perform_service","operations.complete","checkout.perform",
-  "payments.view","discounts.apply","services.manage","team.manage","reports.view","settings.manage"
-];
+/**
+ * Everything a member can be granted, taken from the domain tuple rather than restated here.
+ *
+ * It used to be a hand-maintained copy, and it silently fell behind the day the reporting taxonomy
+ * was added: specs asking for "all permissions" got a member who could not open the dashboard,
+ * which reads as a permissions bug in whatever the spec was actually testing. Deriving it means the
+ * list cannot drift again.
+ */
+const ownerPermissions: string[] = [...permissions];
 
 export interface TenantFixture {
   runId: string;
@@ -173,7 +176,7 @@ export async function createMember(
   ownerApi: APIRequestContext,
   email: string,
   permissions: string[]
-): Promise<{email:string;membershipId:string}> {
+): Promise<{email:string;membershipId:string;roleId:string}> {
   // A member's access is their role, so the permissions a spec asks for become a role first. The
   // role is named after the caller's request rather than reused, so two specs asking for different
   // permission sets never collide on the unique (business_id, lower(name)) index.
@@ -189,7 +192,27 @@ export async function createMember(
   await json(await memberApi.post("/api/auth/invitations/accept",{data:{token,password}}));
   await memberApi.dispose();
   const members = await json<Array<{id:string;email:string}>>(await ownerApi.get("/api/members"));
-  return {email,membershipId:members.find((member)=>member.email===email)!.id};
+  return {email,membershipId:members.find((member)=>member.email===email)!.id,roleId:role.id};
+}
+
+/**
+ * Changes what a member can do, by changing THEIR ROLE.
+ *
+ * A member's access is their role and nothing else - there is no per-member permission list to
+ * write any more - so a spec that wants to grant or revoke a capability mid-test edits the role the
+ * member holds. The current version is read first because roles use optimistic concurrency: a
+ * stale version is refused rather than silently taking the last write.
+ */
+export async function setMemberPermissions(
+  ownerApi: APIRequestContext,
+  roleId: string,
+  permissions: string[]
+): Promise<void> {
+  const roles = await json<{roles:Array<{id:string;version:number}>}>(await ownerApi.get("/api/roles"));
+  const current = roles.roles.find((role)=>role.id===roleId)!;
+  await json(await ownerApi.patch(`/api/roles/${roleId}`,{
+    data:{version:current.version,permissions}
+  }));
 }
 
 type Fixtures = { tenant: TenantFixture };

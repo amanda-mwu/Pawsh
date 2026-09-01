@@ -48,10 +48,20 @@ describe("permission catalog", () => {
   });
 
   it.each(seedsAndFixtures)("grants only real permissions in %s", async (file) => {
+    const source = await readFile(file, "utf8");
     const referenced = await permissionStringsIn(file);
-    // Guards against a renamed or moved file turning this into a test of nothing.
-    expect(referenced.length, `${file} referenced no permissions at all`).toBeGreaterThan(0);
+    // Every permission string it does spell out must be one the domain defines.
     expect(referenced.filter((value) => !permissionSet.has(value))).toEqual([]);
+    // And it must be doing one of the two honest things: spelling them out, or deriving them from
+    // the tuple. A file doing NEITHER has been renamed, moved, or quietly rewritten, and this test
+    // would otherwise be asserting nothing at all while continuing to pass. Deriving is the better
+    // of the two - a hand-maintained copy of the tuple is exactly what fell behind when the
+    // reporting taxonomy was added.
+    const derives = /from\s+"@pawsh\/domain"/.test(source);
+    expect(
+      derives || referenced.length > 0,
+      `${file} neither lists permissions nor derives them from the domain tuple`
+    ).toBe(true);
   });
 
   it("places every permission in exactly one group", () => {
@@ -90,19 +100,26 @@ describe("permission catalog", () => {
     }
   });
 
-  it("keeps the migration 0041 preset literals in step with the domain presets", async () => {
-    // 0041 hard-codes the three presets, because a migration is a historical record and must not
-    // change meaning when the tuple later does. That is correct - but on the day it was written
-    // the two had to agree, or the backfill would have named a role after a preset it did not
-    // actually match and quietly left everyone on `Custom access N` instead.
-    const migration = (await readFile("migrations/0041_roles.sql", "utf8")).replaceAll("\r\n", "\n");
-    const referenced = new Set<string>();
-    for (const match of migration.matchAll(candidate)) {
-      const value = match[1]!;
-      if (namespaces.has(value.split(".", 1)[0]!)) referenced.add(value);
+  it("grants every permission to somebody, through 0041 or 0043", async () => {
+    // Migrations are historical records and must not be edited when the tuple grows, so neither of
+    // these names the whole tuple on its own: 0041 seeded roles from the presets as they stood
+    // then, and 0043 added the reporting taxonomy to the roles that already had `reports.view`.
+    //
+    // TOGETHER THEY MUST COVER IT. A permission named in neither is one that exists in code, is
+    // grantable through the editor, and that NO EXISTING ROLE HAS - so every workspace silently
+    // starts without it and nobody is told. That may well be the right answer for a genuinely new
+    // capability, but it is a decision, and this test exists to force it to be made rather than
+    // arrived at by omission.
+    const named = new Set<string>();
+    for (const file of ["0041_roles.sql", "0043_report_dashboard_taxonomy.sql"]) {
+      const sql = (await readFile(`migrations/${file}`, "utf8")).replaceAll("\r\n", "\n");
+      for (const match of sql.matchAll(candidate)) {
+        const value = match[1]!;
+        if (namespaces.has(value.split(".", 1)[0]!)) named.add(value);
+      }
+      // Neither migration may name a permission the domain does not define.
+      expect([...named].filter((value) => !permissionSet.has(value)), file).toEqual([]);
     }
-    expect([...referenced].filter((value) => !permissionSet.has(value))).toEqual([]);
-    // The Manager preset is the whole tuple, so the migration must name every permission there is.
-    expect([...permissions].filter((value) => !referenced.has(value))).toEqual([]);
+    expect([...permissions].filter((value) => !named.has(value))).toEqual([]);
   });
 });

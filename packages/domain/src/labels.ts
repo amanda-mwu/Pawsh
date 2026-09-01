@@ -98,8 +98,35 @@ export const permissionLabels: Record<Permission, string> = {
   "discounts.apply": "Apply discounts",
   "services.manage": "Manage services",
   "team.manage": "Manage team",
-  "reports.view": "View reports",
-  "settings.manage": "Manage settings"
+  "reports.view": "Access Report",
+  "settings.manage": "Manage settings",
+
+  "dashboard.view": "Access Dashboard",
+  "dashboard.revenue": "Revenue",
+  "dashboard.revenue_by_staff": "Revenue by staff",
+  "dashboard.commission_by_staff": "Commission by staff",
+  "dashboard.tips_by_staff": "Tips by staff",
+  "dashboard.sales_items": "Sales items",
+  "dashboard.payment_status": "Payment status",
+  "dashboard.sales_by_method": "Sales by method",
+  "dashboard.summary": "Summary",
+
+  "payroll.report": "Payroll report",
+  "payroll.commission_by_staff": "Commission by staff",
+  "payroll.staff_commission_detail": "Staff commission detail",
+  "payroll.clock_in_out_by_staff": "Clock in out by staff",
+  "payroll.clock_in_out_detail": "Clock in out detail",
+  "payroll.tips_by_staff": "Tips by staff",
+  "payroll.tips_collected_detail": "Tips collected detail",
+  "payroll.clock_in_out_by_day": "Clock in out by day",
+  "payroll.special_service_rates": "Special service rates report",
+
+  "sales.all": "All Sales",
+  "sales.by_payment_method": "Sales by payment method",
+  "sales.by_service": "Sales by service",
+  "sales.by_product": "Sales by product",
+  "sales.by_staff": "Sales by staff",
+  "sales.by_client": "Sales by client"
 };
 
 export const pricingClassLabels: Record<PricingClass, string> = {

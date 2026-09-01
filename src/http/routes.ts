@@ -14,7 +14,7 @@ import { safePdfFilename } from "../domain/filenames.js";
 import { maxPhotoBytes, readPhotoShape, safePhotoFilename } from "../domain/images.js";
 import { localDateBounds, localDateForInstant, resolveWallTime, validateTimeZone } from "../domain/time.js";
 import { can, permissionGroups, permissionLabels, permissionPresets, permissions,
-  unenforcedPermissions } from "@pawsh/domain";
+  unenforcedPermissions, type Permission } from "@pawsh/domain";
 import { effectivePermissions, hasEffectivePermission } from "../db/effective-permissions.js";
 import { auth, authentication, issueToken, platformAuthentication, requirePermission, sessionToken, tokenHash } from "./context.js";
 import {
@@ -8503,8 +8503,23 @@ export function registerRoutes(
     return { invoice, items, payments, refunds, refundedMinor };
   });
 
+  /**
+   * The dashboard, gated on `dashboard.view` rather than `reports.view`.
+   *
+   * The two are separate questions - "may this person see the daily numbers on the home screen"
+   * and "may they open the reports section" - and a salon that wants a receptionist to see today's
+   * takings without opening the reports section could not express that while one permission gated
+   * both. Migration 0043 grants `dashboard.view` to every role that already held `reports.view`,
+   * so the split takes nothing away from anybody.
+   *
+   * INDIVIDUAL FIGURES ARE OMITTED FROM THE PAYLOAD, NOT HIDDEN BY THE CLIENT. A panel the browser
+   * declines to draw is still a number that was sent to it, readable in the network tab by exactly
+   * the person it was withheld from. This follows the two precedents in this file: `/api/employees`
+   * nulls staff PII without `team.manage`, and `/api/customers/:id/history` returns a null summary
+   * without `payments.view`.
+   */
   app.get("/api/dashboard", {
-    preHandler: [authenticate, requirePermission("reports.view")]
+    preHandler: [authenticate, requirePermission("dashboard.view")]
   }, async (request) => {
     const context = auth(request);
     const [location]=await db<{id:string;timezone:string}[]>`select id,timezone from locations where business_id=${context.businessId} and id=${context.locationId}::uuid and active`;
@@ -8557,7 +8572,17 @@ export function registerRoutes(
         and r.status='completed'
         and i.created_at>=${bounds.from} and i.created_at<${bounds.to}
     `;
-    return { ...metrics, ...finance, ...refunded };
+    // `todaysRefundedMinor` travels with `todaysSalesMinor` under `dashboard.revenue`: it is the
+    // other half of the same figure, and releasing "collected" while withholding "given back"
+    // would report a number this endpoint's own comment calls misleading.
+    const shows = (permission: Permission) => can(context, permission);
+    return {
+      ...(shows("dashboard.summary") ? metrics : {}),
+      ...(shows("dashboard.revenue")
+        ? { todaysSalesMinor: finance!.todaysSalesMinor, ...refunded }
+        : {}),
+      ...(shows("dashboard.payment_status") ? { outstandingMinor: finance!.outstandingMinor } : {})
+    };
   });
 
   app.get("/api/reports", {
@@ -8742,25 +8767,53 @@ export function registerRoutes(
       // No commission model exists in this schema; see the comment above.
       commissionMinor:null
     };
+    // FIELD-LEVEL ENFORCEMENT. `reports.view` gets the caller through the door; the children of the
+    // Dashboard and Sales groups decide which figures are actually in the payload. Withholding is
+    // done by OMITTING THE KEY, not by nulling it and not by trusting the client to skip the panel:
+    // anything sent is readable by the person it was withheld from.
+    //
+    // Two permissions can cover the same figure, because the same data answers a Dashboard question
+    // and a Sales question - per-groomer money is `dashboard.revenue_by_staff` and `sales.by_staff`,
+    // payment-method totals are `dashboard.sales_by_method` and `sales.by_payment_method`. Holding
+    // either is enough; requiring both would deny a role that had been given the honest half.
+    //
+    // `services` is NOT gated. `sales.by_service` is one of the permissions that gates nothing yet -
+    // it names money per service, and this key is a COUNT of services performed, which is a
+    // different question. Gating it on that permission would be enforcing a name rather than a
+    // meaning. See `unenforcedPermissions`.
+    const shows = (...candidates: Permission[]) => candidates.some((name) => can(context, name));
     return {
       localDate, days, from, to,
       employeeIds: query.employeeIds ?? null,
-      totals, revenue,
-      employees: employees.map((row)=>({
-        ...row,
-        revenueMinor:minor(byEmployee.get(row.id)?.revenueMinor),
-        tipMinor:minor(byEmployee.get(row.id)?.tipMinor),
-        commissionMinor:null
-      })),
+      ...(shows("dashboard.summary") ? { totals } : {}),
+      ...(shows("dashboard.revenue") ? { revenue } : {}),
+      ...(shows("dashboard.revenue_by_staff", "sales.by_staff") ? {
+        employees: employees.map((row)=>({
+          ...row,
+          revenueMinor:minor(byEmployee.get(row.id)?.revenueMinor),
+          // Tips by groomer are their own switch, so a role may see who earned what without
+          // seeing who was tipped what.
+          ...(shows("dashboard.tips_by_staff")
+            ? { tipMinor: minor(byEmployee.get(row.id)?.tipMinor) }
+            : {}),
+          commissionMinor:null
+        }))
+      } : {}),
       services: servicesPerformed,
-      paymentMethods: paymentMethodRows.map((row)=>({
-        method:row.method, amountMinor:minor(row.amountMinor), count:Number(row.paymentCount)
-      })),
+      ...(shows("dashboard.sales_by_method", "sales.by_payment_method") ? {
+        paymentMethods: paymentMethodRows.map((row)=>({
+          method:row.method, amountMinor:minor(row.amountMinor), count:Number(row.paymentCount)
+        }))
+      } : {}),
       // `productsMinor` is a structural zero, not a measurement: Pawsh has no product or retail model,
       // and every invoice line is created from an appointment service at checkout. `servicesMinor` is
       // net of discount so the four buckets sum to `totals.billedRevenueMinor`.
-      salesItems: { servicesMinor: netMinor, productsMinor: 0, taxMinor, tipMinor },
-      paymentStatus: { paidMinor: paidRevenueMinor, outstandingMinor }
+      ...(shows("dashboard.sales_items")
+        ? { salesItems: { servicesMinor: netMinor, productsMinor: 0, taxMinor, tipMinor } }
+        : {}),
+      ...(shows("dashboard.payment_status")
+        ? { paymentStatus: { paidMinor: paidRevenueMinor, outstandingMinor } }
+        : {})
     };
   });
 

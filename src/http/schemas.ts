@@ -80,6 +80,55 @@ export const locationSelectionSchema=z.object({locationId:z.string().uuid()}).st
 const blankToNull = (value: unknown) =>
   typeof value === "string" && value.trim() === "" ? null : value;
 
+/**
+ * Creating a role.
+ *
+ * A new role starts with NO permissions unless it is copied from an existing one. That is the
+ * safe default in both directions: an owner who creates "Front desk" and walks away has granted
+ * nobody anything, and an owner who meant to copy said so. `copyFromRoleId` is resolved
+ * server-side against the caller's own business, so it can never seed a role from another
+ * tenant's - the lookup carries the business predicate, not the client.
+ */
+export const roleCreateSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  description: z.preprocess(blankToNull, z.string().trim().max(500).nullish()),
+  copyFromRoleId: z.string().uuid().nullish()
+}).strict();
+
+/**
+ * Editing a role, field by field, under optimistic concurrency.
+ *
+ * `version` is REQUIRED and every other field is optional, which is the same shape location
+ * settings use (`locationVersion`). Two owners editing one role in two tabs must not silently
+ * overwrite each other, and permissions are the last place in the product where a lost update is
+ * acceptable: the loser's tab would report success while having quietly restored whatever the
+ * winner just removed.
+ *
+ * ABSENCE IS DISTINCT FROM AN EXPLICIT VALUE. Omitting `permissions` leaves them alone; sending
+ * `[]` revokes everything the role grants. `description` accepts null to clear it. `permissions`
+ * is validated against the domain tuple rather than a list restated here, so a permission cannot
+ * be grantable through this endpoint while unknown to the authorization layer.
+ */
+export const roleUpdateSchema = z.object({
+  version: z.number().int().min(1),
+  name: z.string().trim().min(1).max(80).optional(),
+  description: z.preprocess(blankToNull, z.string().trim().max(500).nullable()).optional(),
+  enabled: z.boolean().optional(),
+  permissions: z.array(z.enum(permissions)).optional()
+}).strict();
+
+/**
+ * Assigning a member to a role.
+ *
+ * `roleId` is required and may not be null. "No role" is not an access level a person can be put
+ * on: it is the transitional state migration 0041 emptied, and it resolves to the membership's
+ * own legacy column - which stops existing. An owner who wants a member to have nothing assigns
+ * them a role that grants nothing, which is a decision written down rather than an absence.
+ */
+export const memberRoleSchema = z.object({
+  roleId: z.string().uuid()
+}).strict();
+
 export const customerSchema = z.object({
   firstName: z.preprocess(blankToNull, z.string().trim().min(1).max(80).nullish()),
   lastName: z.preprocess(blankToNull, z.string().trim().min(1).max(80).nullish()),

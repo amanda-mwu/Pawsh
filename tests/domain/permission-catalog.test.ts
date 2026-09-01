@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { permissionPresets, permissions } from "@pawsh/domain";
+import {
+  permissionGroups, permissionLabels, permissionPresets, permissions, unenforcedPermissions
+} from "@pawsh/domain";
 
 /**
  * Every permission string written down anywhere in the repository must be one the domain tuple
@@ -50,6 +52,35 @@ describe("permission catalog", () => {
     // Guards against a renamed or moved file turning this into a test of nothing.
     expect(referenced.length, `${file} referenced no permissions at all`).toBeGreaterThan(0);
     expect(referenced.filter((value) => !permissionSet.has(value))).toEqual([]);
+  });
+
+  it("places every permission in exactly one group", () => {
+    const grouped = permissionGroups.flatMap((group) => group.permissions);
+    // Missing from the catalog means an owner can never grant it through the Roles editor; listed
+    // twice means a checkbox that disagrees with itself.
+    expect([...permissions].filter((permission) => !grouped.includes(permission))).toEqual([]);
+    expect(grouped.filter((permission, index) => grouped.indexOf(permission) !== index)).toEqual([]);
+    expect(new Set(permissionGroups.map((group) => group.id)).size).toBe(permissionGroups.length);
+  });
+
+  it("uses a real permission as every group master", () => {
+    for (const group of permissionGroups) {
+      if (group.masterKey === null) continue;
+      // A master is a real permission that gates something on its own, not a synthetic header.
+      expect(permissionSet.has(group.masterKey), group.id).toBe(true);
+    }
+  });
+
+  it("labels every permission", () => {
+    for (const permission of permissions) {
+      expect(permissionLabels[permission]?.trim(), permission).toBeTruthy();
+    }
+  });
+
+  it("marks unenforced permissions as ones that really exist", () => {
+    // The set says "stored but gates nothing yet". A string in it that is not a permission would
+    // silently mark nothing, and the editor would present a dead switch as a live one.
+    for (const permission of unenforcedPermissions) expect(permissionSet.has(permission)).toBe(true);
   });
 
   it("builds every preset from real permissions", () => {

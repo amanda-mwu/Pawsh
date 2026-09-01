@@ -13,7 +13,8 @@ import { refundPresentation, type RefundStatus } from "../domain/refunds.js";
 import { safePdfFilename } from "../domain/filenames.js";
 import { maxPhotoBytes, readPhotoShape, safePhotoFilename } from "../domain/images.js";
 import { localDateBounds, localDateForInstant, resolveWallTime, validateTimeZone } from "../domain/time.js";
-import { can, permissionPresets, permissions } from "@pawsh/domain";
+import { can, permissionGroups, permissionLabels, permissionPresets, permissions,
+  unenforcedPermissions } from "@pawsh/domain";
 import { effectivePermissions, hasEffectivePermission } from "../db/effective-permissions.js";
 import { auth, authentication, issueToken, platformAuthentication, requirePermission, sessionToken, tokenHash } from "./context.js";
 import {
@@ -24,6 +25,7 @@ import {
   operationalUpdateSchema, voidPaymentSchema, appointmentMoveSchema, appointmentServicesSchema,
   passwordResetRequestSchema, passwordResetConfirmSchema, invitationSchema,
   invitationAcceptSchema, ownershipTransferSchema, petProfileUpdateSchema, petCareUpdateSchema,
+  roleCreateSchema, roleUpdateSchema, memberRoleSchema,
   servicePricingSchema,petTypeParams,breedParams,breedSettingsSchema,priceResolutionSchema,
   breedCreateSchema,breedRenameSchema,
   ownProfileUpdateSchema,passwordChangeSchema,workspaceAccessRequestSchema,workspaceSelectionSchema,
@@ -481,6 +483,62 @@ function assignedToEmployees(db: Database, employeeIds: readonly string[] | unde
 }
 
 type SqlFragment = ReturnType<typeof assignedToEmployees>;
+
+/**
+ * How many permission labels a role reports for the disable confirmation.
+ *
+ * A confirmation that lists all twenty-odd is unreadable, so it lists the first few and the caller
+ * says "and N more" from `grantedCount`, which is the exact total. The labels are ordered by the
+ * domain tuple rather than by the order the role happens to store them in, so the same role always
+ * describes itself the same way.
+ */
+const topPermissionLabelCount = 3;
+
+interface RoleRow {
+  id: string;
+  name: string;
+  description: string | null;
+  builtIn: boolean;
+  enabled: boolean;
+  version: number;
+  permissions: string[];
+  assignedCount: number;
+  grantedCount: number;
+  totalCount: number;
+  topPermissionLabels: string[];
+}
+
+/**
+ * Every role of one business, in the shape the roles contract promises.
+ *
+ * One projection shared by the list endpoint and by the create/update responses, so a role never
+ * arrives at the client in two different shapes depending on which call produced it - which is how
+ * an editor ends up rendering a stale `assignedCount` after a save.
+ */
+async function roleRows(
+  executor: Database | Transaction,
+  businessId: string,
+  roleId?: string
+): Promise<RoleRow[]> {
+  const rows = await executor<Omit<RoleRow, "totalCount" | "topPermissionLabels">[]>`
+    select r.id, r.name, r.description, r.built_in, r.enabled, r.version, r.permissions,
+      (select count(*)::int from business_memberships m
+        where m.business_id = r.business_id and m.role_id = r.id) as assigned_count,
+      cardinality(r.permissions) as granted_count
+    from roles r
+    where r.business_id = ${businessId}
+      and (${roleId ?? null}::uuid is null or r.id = ${roleId ?? null}::uuid)
+    order by r.built_in desc, lower(r.name)
+  `;
+  return rows.map((role) => ({
+    ...role,
+    totalCount: permissions.length,
+    topPermissionLabels: permissions
+      .filter((permission) => role.permissions.includes(permission))
+      .slice(0, topPermissionLabelCount)
+      .map((permission) => permissionLabels[permission])
+  }));
+}
 
 /**
  * The calendar row shape, in one place.
@@ -2120,9 +2178,279 @@ export function registerRoutes(
     return { changed:true };
   });
 
+  /**
+   * The permission catalog.
+   *
+   * `permissions` and `presets` are unchanged and stay flat, because the mobile client and the
+   * existing member editor read them that way. `groups` is the same catalog arranged for the
+   * Roles editor, and it carries the one thing a flat list cannot say: which switches actually
+   * gate something today. A permission with `enforced: false` is stored and returned but protects
+   * no feature yet, and the editor is expected to SAY SO rather than present it as a live control
+   * an owner has relied on.
+   */
   app.get("/api/permissions", { preHandler: authenticate }, async () => ({
-    permissions, presets: permissionPresets
+    permissions, presets: permissionPresets,
+    groups: permissionGroups.map((group) => ({
+      id: group.id,
+      label: group.label,
+      masterKey: group.masterKey,
+      permissions: group.permissions.map((key) => ({
+        key,
+        label: permissionLabels[key],
+        enforced: !unenforcedPermissions.has(key)
+      }))
+    }))
   }));
+
+  /**
+   * The roles of the current workspace, with the counts the editor cannot compute for itself.
+   *
+   * `assignedCount` counts EVERY membership pointing at the role, not only the active ones, and
+   * that is deliberate: it is the number that decides whether the role can be deleted, because it
+   * is the number the `on delete restrict` foreign key is counting. Reporting only active members
+   * would show "0 assigned" beside a delete that then failed, and the operator would have no way
+   * to find the row holding it.
+   *
+   * `assignedCount` and `topPermissionLabels` are computed HERE rather than in the browser
+   * because the browser cannot: the member list paginates, so a client-side count would silently
+   * become wrong at the page boundary and the disable confirmation would understate what it was
+   * about to switch off.
+   */
+  app.get("/api/roles", {
+    preHandler: [authenticate, requirePermission("team.manage")]
+  }, async (request) => {
+    const context = auth(request);
+    return { roles: await roleRows(db, context.businessId) };
+  });
+
+  /**
+   * Creating, editing and deleting roles is OWNER-ONLY, on top of `team.manage`.
+   *
+   * That is the same split `PATCH /api/members/:id/permissions` already draws: reading the team is
+   * a manager's job, changing who can do what is not. `requirePermission("team.manage")` alone
+   * would let a manager grant themselves `settings.manage` by editing the role they are standing
+   * in, which is privilege escalation with extra steps. The explicit `isOwner` check is what stops
+   * it, and it is repeated on each route rather than factored away so that no future route can
+   * quietly be added to this group without it.
+   */
+  app.post("/api/roles", {
+    preHandler: [authenticate, requirePermission("team.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    if (!context.isOwner) return reply.code(403).send({ error: "Only an Owner can create roles" });
+    const input = body(roleCreateSchema, request.body);
+    const created = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      // Resolved inside the caller's own business, so `copyFromRoleId` can never seed a role from
+      // another tenant's - the predicate is here, not in the request.
+      let seeded: string[] = [];
+      if (input.copyFromRoleId) {
+        const [source] = await tx<{ permissions: string[] }[]>`
+          select permissions from roles
+          where business_id=${context.businessId} and id=${input.copyFromRoleId}
+        `;
+        if (!source) return { error: "copy-source-missing" as const };
+        seeded = source.permissions;
+      }
+      const [existing] = await tx<{ id: string }[]>`
+        select id from roles where business_id=${context.businessId} and lower(name)=lower(${input.name})
+      `;
+      if (existing) return { error: "duplicate-name" as const };
+      const [role] = await tx<{ id: string }[]>`
+        insert into roles (business_id,name,description,permissions)
+        values (${context.businessId},${input.name},${input.description ?? null},${seeded})
+        returning id
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "role.create",
+        resourceType: "role", resourceId: role!.id,
+        after: { name: input.name, permissions: seeded }
+      });
+      return { roleId: role!.id };
+    });
+    if ("error" in created) {
+      if (created.error === "copy-source-missing") {
+        return reply.code(404).send({ error: "The role to copy was not found" });
+      }
+      return reply.code(409).send({ error: "A role with this name already exists" });
+    }
+    const [role] = await roleRows(db, context.businessId, created.roleId);
+    return reply.code(201).send(role);
+  });
+
+  /**
+   * Editing a role, under the optimistic-concurrency rule location settings already use.
+   *
+   * A stale `version` is a 409 and NOT a merge. Two owners editing one role in two tabs is the
+   * ordinary case, and silently taking the last write would let the loser's tab report success
+   * while restoring permissions the winner had just removed. Refusing is the only answer that
+   * cannot quietly re-grant something.
+   */
+  app.patch("/api/roles/:id", {
+    preHandler: [authenticate, requirePermission("team.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    if (!context.isOwner) return reply.code(403).send({ error: "Only an Owner can change roles" });
+    const { id } = idParams.parse(request.params);
+    const input = body(roleUpdateSchema, request.body);
+    const outcome = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [before] = await tx<{
+        version: number; name: string; description: string | null;
+        enabled: boolean; permissions: string[];
+      }[]>`
+        select version,name,description,enabled,permissions from roles
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!before) return { error: "missing" as const };
+      if (before.version !== input.version) return { error: "stale" as const };
+      if (input.name !== undefined) {
+        const [clash] = await tx<{ id: string }[]>`
+          select id from roles
+          where business_id=${context.businessId} and lower(name)=lower(${input.name}) and id<>${id}
+        `;
+        if (clash) return { error: "duplicate-name" as const };
+      }
+      // Every field is optional and absence leaves the stored value alone; `permissions: []`
+      // is an explicit revocation of everything and is honoured as one.
+      await tx`
+        update roles set
+          name=${input.name ?? before.name},
+          description=${input.description === undefined ? before.description : input.description},
+          enabled=${input.enabled ?? before.enabled},
+          permissions=${input.permissions ?? before.permissions},
+          version=version+1,
+          updated_at=now()
+        where business_id=${context.businessId} and id=${id}
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "role.update",
+        resourceType: "role", resourceId: id,
+        before: { name: before.name, enabled: before.enabled, permissions: before.permissions },
+        after: {
+          name: input.name ?? before.name,
+          enabled: input.enabled ?? before.enabled,
+          permissions: input.permissions ?? before.permissions
+        }
+      });
+      return { updated: true as const };
+    });
+    if ("error" in outcome) {
+      if (outcome.error === "missing") return reply.code(404).send({ error: "Role not found" });
+      if (outcome.error === "duplicate-name") {
+        return reply.code(409).send({ error: "A role with this name already exists" });
+      }
+      return reply.code(409).send({ error: "This role was changed by somebody else" });
+    }
+    const [role] = await roleRows(db, context.businessId, id);
+    return role;
+  });
+
+  /**
+   * Deleting a role, refused while anything still points at it.
+   *
+   * The check mirrors the `on delete restrict` foreign keys exactly - every membership, and every
+   * invitation that has not been accepted or revoked. If it did not, the constraint would refuse
+   * the delete anyway and the caller would get a 500 describing a foreign key instead of a 409
+   * naming what is in the way.
+   */
+  app.delete("/api/roles/:id", {
+    preHandler: [authenticate, requirePermission("team.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    if (!context.isOwner) return reply.code(403).send({ error: "Only an Owner can delete roles" });
+    const { id } = idParams.parse(request.params);
+    const outcome = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [role] = await tx<{ id: string; name: string }[]>`
+        select id,name from roles where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!role) return { error: "missing" as const };
+      const [held] = await tx<{ assigned: number; invited: number }[]>`
+        select
+          (select count(*)::int from business_memberships m
+            where m.business_id=${context.businessId} and m.role_id=${id}) as assigned,
+          (select count(*)::int from membership_invitations v
+            where v.business_id=${context.businessId} and v.role_id=${id}) as invited
+      `;
+      if ((held?.assigned ?? 0) > 0 || (held?.invited ?? 0) > 0) {
+        return { error: "in-use" as const, assigned: held!.assigned, invited: held!.invited };
+      }
+      await tx`delete from roles where business_id=${context.businessId} and id=${id}`;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "role.delete",
+        resourceType: "role", resourceId: id, before: { name: role.name }
+      });
+      return { deleted: true as const };
+    });
+    if (outcome.error === "missing") return reply.code(404).send({ error: "Role not found" });
+    if (outcome.error === "in-use") {
+      return reply.code(409).send({
+        error: "This role is still in use",
+        assignedCount: outcome.assigned,
+        pendingInvitationCount: outcome.invited
+      });
+    }
+    return reply.code(204).send();
+  });
+
+  /**
+   * Assigning a member to a role.
+   *
+   * `and not is_owner` carries the same weight it does on the permissions endpoint it replaces:
+   * an owner has no role and must not be given one. Their authority comes from `is_owner` and the
+   * `protect_last_owner` trigger, so a role on an owner would grant nothing today and would start
+   * granting the moment they were demoted - a stored decision nobody made.
+   */
+  app.patch("/api/members/:id/role", {
+    preHandler: [authenticate, requirePermission("team.manage")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    if (!context.isOwner) return reply.code(403).send({ error: "Only an Owner can change member access" });
+    const { id } = idParams.parse(request.params);
+    const input = body(memberRoleSchema, request.body);
+    const outcome = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      // The role is resolved within the caller's business. The composite foreign key would refuse
+      // a cross-tenant assignment regardless, but refusing it here turns a constraint violation
+      // into an ordinary 404 rather than a 500.
+      const [role] = await tx<{ id: string; name: string }[]>`
+        select id,name from roles where business_id=${context.businessId} and id=${input.roleId}
+      `;
+      if (!role) return { error: "role-missing" as const };
+      const [before] = await tx<{ roleId: string | null }[]>`
+        select role_id from business_memberships
+        where business_id=${context.businessId} and id=${id} and not is_owner for update
+      `;
+      if (!before) return { error: "member-missing" as const };
+      await tx`
+        update business_memberships set role_id=${input.roleId},updated_at=now()
+        where business_id=${context.businessId} and id=${id} and not is_owner
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "membership.role.update",
+        resourceType: "membership", resourceId: id,
+        before: { roleId: before.roleId }, after: { roleId: input.roleId }
+      });
+      return { assigned: true as const };
+    });
+    if ("error" in outcome) {
+      if (outcome.error === "role-missing") return reply.code(404).send({ error: "Role not found" });
+      return reply.code(404).send({ error: "Editable member not found" });
+    }
+    const [member] = await db`
+      select m.id, m.role_id, r.name as role_name, r.enabled as role_enabled
+      from business_memberships m
+      left join roles r on r.business_id=m.business_id and r.id=m.role_id
+      where m.business_id=${context.businessId} and m.id=${id}
+    `;
+    return {
+      id: member!.id,
+      role: member!.roleId
+        ? { id: member!.roleId, name: member!.roleName, enabled: member!.roleEnabled }
+        : null
+    };
+  });
 
   app.put("/api/business/settings", {
     preHandler: [authenticate, requirePermission("settings.manage")]

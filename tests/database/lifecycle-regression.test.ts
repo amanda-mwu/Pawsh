@@ -4,6 +4,7 @@ import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
 import { formatWallTime } from "../../src/domain/time.js";
 import { hashPassword } from "../../src/security/passwords.js";
+import { roleFor } from "../support/roles.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -200,8 +201,8 @@ describeDatabase("D2 appointment lifecycle regression", () => {
       returning id
     `;
     await db`
-      insert into business_memberships(business_id,user_id,permissions)
-      values (${businessId},${user!.id},${["appointments.view"]})
+      insert into business_memberships(business_id,user_id,role_id)
+      values (${businessId},${user!.id},${await roleFor(db, businessId, ["appointments.view"])})
     `;
     const login = await app.inject({
       method: "POST",

@@ -3,6 +3,7 @@ import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
 import { permissions } from "@pawsh/domain";
+import { createRole } from "../support/roles.js";
 
 /**
  * The roles API: who may call it, what it refuses, and the counts the editor cannot compute.
@@ -46,7 +47,7 @@ describeDatabase("roles API", () => {
 
     const invitation = await app.inject({
       method: "POST", url: "/api/members/invitations", headers: { cookie: ownerCookie },
-      payload: { email: managerEmail, permissions: ["calendar.view", "team.manage"] }
+      payload: { email: managerEmail, roleId: await createRole(app, ownerCookie, `Bootstrap manager ${suffix}`, ["calendar.view", "team.manage"]) }
     });
     const token = new URL(invitation.json().acceptancePath, "http://localhost").searchParams.get("invite");
     const accepted = await app.inject({
@@ -60,8 +61,9 @@ describeDatabase("roles API", () => {
   });
 
   afterAll(async () => {
-    await db`update business_memberships set role_id = null where business_id = ${businessId}`;
-    await db`delete from roles where business_id = ${businessId}`;
+    // Roles are left in place: `membership_role_matches_ownership` forbids stranding a non-owner
+    // without one, so clearing them would mean deleting the memberships as well. The unique suffix
+    // keeps the residue from reaching any other suite.
     await app.close();
     await db.end();
   });
@@ -72,6 +74,22 @@ describeDatabase("roles API", () => {
     await app.inject({ method: "GET", url: "/api/roles", headers: { cookie: sessionCookie } });
   const patch = async (id: string, payload: Record<string, unknown>, sessionCookie = ownerCookie) =>
     await app.inject({ method: "PATCH", url: `/api/roles/${id}`, headers: { cookie: sessionCookie }, payload });
+
+  /** Invites `email` onto a fresh role and returns the membership id once accepted. */
+  const joinAsMember = async (email: string, roleName: string): Promise<string> => {
+    const roleId = await createRole(app, ownerCookie, roleName, ["calendar.view"]);
+    const invitation = await app.inject({
+      method: "POST", url: "/api/members/invitations", headers: { cookie: ownerCookie },
+      payload: { email, roleId }
+    });
+    const token = new URL(invitation.json().acceptancePath, "http://localhost").searchParams.get("invite");
+    const accepted = await app.inject({
+      method: "POST", url: "/api/auth/invitations/accept",
+      payload: { token, password: "correct horse joining member" }
+    });
+    return (await app.inject({ method: "GET", url: "/api/me", headers: { cookie: cookie(accepted) } }))
+      .json().membershipId;
+  };
 
   it("publishes a grouped catalog that covers every permission and flags what it enforces", async () => {
     const catalog = (await app.inject({
@@ -228,11 +246,86 @@ describeDatabase("roles API", () => {
     })).statusCode).toBe(403);
   });
 
+  it("refuses a transfer that does not name a role for the outgoing owner", async () => {
+    const heir = `heir-a-${suffix}@example.test`;
+    const heirMembership = await joinAsMember(heir, `Heir A ${suffix}`);
+    // No role for the outgoing owner is not a defaultable omission. Falling through would leave
+    // the founder a non-owner with no role, which resolves to the empty set.
+    expect((await app.inject({
+      method: "POST", url: "/api/business/transfer-ownership", headers: { cookie: ownerCookie },
+      payload: { membershipId: heirMembership }
+    })).statusCode).toBe(400);
+    // Nor may it name a role that is not this business's.
+    const [foreign] = await db<{ id: string }[]>`
+      select id from roles where business_id <> ${businessId} limit 1
+    `;
+    if (foreign) {
+      expect((await app.inject({
+        method: "POST", url: "/api/business/transfer-ownership", headers: { cookie: ownerCookie },
+        payload: { membershipId: heirMembership, outgoingOwnerRoleId: foreign.id }
+      })).statusCode).toBe(404);
+    }
+    // And the workspace still has exactly the owner it started with.
+    expect((await app.inject({ method: "GET", url: "/api/me", headers: { cookie: ownerCookie } }))
+      .json().isOwner).toBe(true);
+  });
+
+  it("lands the outgoing owner on the named role with real permissions, never the empty set", async () => {
+    const founderEmail = `founder-${suffix}@example.test`;
+    const founderSignup = await app.inject({
+      method: "POST", url: "/api/auth/signup",
+      payload: { email: founderEmail, password: "correct horse founder here", businessName: `Handover ${suffix}` }
+    });
+    const founderCookie = cookie(founderSignup);
+    const successorEmail = `successor-${suffix}@example.test`;
+    const successorRole = await createRole(app, founderCookie, "Successor", ["calendar.view"]);
+    const invitation = await app.inject({
+      method: "POST", url: "/api/members/invitations", headers: { cookie: founderCookie },
+      payload: { email: successorEmail, roleId: successorRole }
+    });
+    const token = new URL(invitation.json().acceptancePath, "http://localhost").searchParams.get("invite");
+    const successorCookie = cookie(await app.inject({
+      method: "POST", url: "/api/auth/invitations/accept",
+      payload: { token, password: "correct horse successor here" }
+    }));
+    const successorMembership = (await app.inject({
+      method: "GET", url: "/api/me", headers: { cookie: successorCookie }
+    })).json().membershipId;
+    const keptRole = await createRole(app, founderCookie, "Founder emeritus",
+      ["calendar.view", "customers.view", "reports.view"]);
+
+    const transfer = await app.inject({
+      method: "POST", url: "/api/business/transfer-ownership", headers: { cookie: founderCookie },
+      payload: { membershipId: successorMembership, outgoingOwnerRoleId: keptRole }
+    });
+    expect(transfer.statusCode).toBe(200);
+
+    // The founder is no longer an owner and holds EXACTLY the role the transfer named - not the
+    // empty set, which is what a transfer with no role would have produced once the denormalised
+    // permission column was dropped.
+    const founder = (await app.inject({
+      method: "GET", url: "/api/me", headers: { cookie: founderCookie }
+    })).json();
+    expect(founder.isOwner).toBe(false);
+    expect(founder.role).toMatchObject({ id: keptRole, name: "Founder emeritus", enabled: true });
+    expect(founder.permissions.sort())
+      .toEqual(["calendar.view", "customers.view", "reports.view"]);
+    expect(founder.permissions.length).toBeGreaterThan(0);
+
+    // The successor is an owner, holds no role, and holds everything.
+    const successor = (await app.inject({
+      method: "GET", url: "/api/me", headers: { cookie: successorCookie }
+    })).json();
+    expect(successor.isOwner).toBe(true);
+    expect(successor.role).toBeNull();
+    expect(successor.permissions).toEqual([...permissions]);
+  });
+
   it("refuses every roles route to a member without team.manage", async () => {
     const plainEmail = `roles-api-plain-${suffix}@example.test`;
     const invitation = await app.inject({
       method: "POST", url: "/api/members/invitations", headers: { cookie: ownerCookie },
-      payload: { email: plainEmail, permissions: ["calendar.view"] }
+      payload: { email: plainEmail, roleId: await createRole(app, ownerCookie, `Bootstrap plain ${suffix}`, ["calendar.view"]) }
     });
     const token = new URL(invitation.json().acceptancePath, "http://localhost").searchParams.get("invite");
     const plainCookie = cookie(await app.inject({

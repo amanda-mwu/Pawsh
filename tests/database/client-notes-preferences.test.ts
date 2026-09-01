@@ -4,6 +4,7 @@ import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
 import { hashPassword } from "../../src/security/passwords.js";
+import { roleFor } from "../support/roles.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -66,8 +67,8 @@ describeDatabase("client note thread and client preferences", () => {
       values (${email},${email},${await hashPassword(password)},${label}) returning id
     `;
     await db`
-      insert into business_memberships(business_id,user_id,permissions)
-      values (${businessId},${user!.id},${memberPermissions})
+      insert into business_memberships(business_id,user_id,role_id)
+      values (${businessId},${user!.id},${await roleFor(db, businessId, memberPermissions)})
     `;
     const login = await app.inject({ method: "POST", url: "/api/auth/login", payload: { email, password } });
     expect(login.statusCode).toBe(200);

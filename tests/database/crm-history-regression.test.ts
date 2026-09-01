@@ -3,6 +3,7 @@ import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
 import { hashPassword } from "../../src/security/passwords.js";
+import { createRole, roleFor } from "../support/roles.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -46,8 +47,8 @@ describeDatabase("D3 customer, pet, and history regression", () => {
       values (${email},${email},${await hashPassword(password)}) returning id
     `;
     await db`
-      insert into business_memberships(business_id,user_id,permissions)
-      values (${businessId},${user!.id},${permissions})
+      insert into business_memberships(business_id,user_id,role_id)
+      values (${businessId},${user!.id},${await roleFor(db, businessId, permissions)})
     `;
     const login = await app.inject({
       method: "POST", url: "/api/auth/login", payload: { email, password }
@@ -210,16 +211,28 @@ describeDatabase("D3 customer, pet, and history regression", () => {
   });
 
   it("rejects retired permission inputs while retaining historical audit readability", async () => {
-    const retiredInvitation = await app.inject({
-      method: "POST", url: "/api/members/invitations", headers: { cookie: ownerCookie },
-      payload: { email: `retired-${suffix}@example.test`, permissions: ["pets.safety.edit"] }
+    // 0004 replaced `pets.safety.*` with `pets.care.*`. The strings must still be refused, but the
+    // boundary that refuses them has moved: a permission list is now written to a ROLE, and the
+    // per-member permissions endpoint that used to accept one no longer exists. Both facts are
+    // asserted here, because a retired string that parses is one that grants nothing while looking
+    // like it grants something.
+    const role = await createRole(app, ownerCookie, `Retired ${suffix}`);
+    const retiredGrant = await app.inject({
+      method: "PATCH", url: `/api/roles/${role}`, headers: { cookie: ownerCookie },
+      payload: { version: 1, permissions: ["pets.safety.edit"] }
     });
-    expect(retiredInvitation.statusCode).toBe(400);
-    const retiredUpdate = await app.inject({
+    expect(retiredGrant.statusCode).toBe(400);
+    const retiredViewGrant = await app.inject({
+      method: "PATCH", url: `/api/roles/${role}`, headers: { cookie: ownerCookie },
+      payload: { version: 1, permissions: ["pets.safety.view"] }
+    });
+    expect(retiredViewGrant.statusCode).toBe(400);
+    // The retired per-member endpoint is gone rather than merely unused.
+    const retiredEndpoint = await app.inject({
       method: "PATCH", url: `/api/members/${crypto.randomUUID()}/permissions`,
       headers: { cookie: ownerCookie }, payload: { permissions: ["pets.safety.view"] }
     });
-    expect(retiredUpdate.statusCode).toBe(400);
+    expect(retiredEndpoint.statusCode).toBe(404);
 
     await db`
       insert into audit_events(

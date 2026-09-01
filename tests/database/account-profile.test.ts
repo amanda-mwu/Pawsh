@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
+import { createRole } from "../support/roles.js";
 
 const databaseUrl=process.env.DATABASE_URL;
 const describeDatabase=databaseUrl?describe:describe.skip;
@@ -66,7 +67,7 @@ describeDatabase("authenticated account profile",()=>{
 
   it("allows a non-owner to view and update only their own personal profile",async()=>{
     const memberEmail=`member-profile-${suffix}@example.test`;
-    const invitation=await app.inject({method:"POST",url:"/api/members/invitations",headers:{cookie:ownerCookie,origin:config.APP_ORIGIN},payload:{email:memberEmail,permissions:["calendar.view"]}});
+    const invitation=await app.inject({method:"POST",url:"/api/members/invitations",headers:{cookie:ownerCookie,origin:config.APP_ORIGIN},payload:{email:memberEmail,roleId:await createRole(app,ownerCookie,`Member ${suffix}`,["calendar.view"])}});
     const token=new URL(invitation.json().acceptancePath,"http://localhost").searchParams.get("invite");
     const accepted=await app.inject({method:"POST",url:"/api/auth/invitations/accept",payload:{token,password:"correct horse member profile"}});
     const memberCookie=cookie(accepted);

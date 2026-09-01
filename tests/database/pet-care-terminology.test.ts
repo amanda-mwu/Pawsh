@@ -1,19 +1,24 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
+import { resolve } from "node:path";
+import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Config } from "../../src/config.js";
-import { createDatabase, type Database } from "../../src/db/client.js";
+
+/**
+ * 0004 renamed `pets.safety.*` to `pets.care.*` in the denormalised permission columns, and this
+ * asserts it did so without changing anybody's effective access, twice over (it is replayed to
+ * prove idempotency).
+ *
+ * IT RUNS AGAINST ITS OWN THROWAWAY DATABASE, built to 0041 and no further. Those columns were
+ * dropped by 0042, so the shared test database no longer has anything for 0004 to migrate - and a
+ * historical migration test has to run against the schema of its own era, not today's. Same
+ * reasoning as `square-migration-0039.test.ts` and `roles-backfill.test.ts`.
+ */
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
-const config: Config = {
-  NODE_ENV: "test",
-  PORT: 3000,
-  DATABASE_URL: databaseUrl ?? "postgres://unavailable",
-  SESSION_SECRET: "test-session-secret-at-least-thirty-two-characters",
-  APP_ORIGIN: "http://localhost:3000",
-  SMTP_PORT: 587,
-  SMTP_SECURE: false
-};
+const scratchDatabase = "pawsh_pet_care_0004_vitest";
+/** The last migration at which `business_memberships.permissions` still exists. */
+const lastMigrationWithPermissionColumns = "0041_roles";
 
 const oldView = "pets.safety.view";
 const oldEdit = "pets.safety.edit";
@@ -24,14 +29,30 @@ const canonicalize = (values: string[]) => [...new Set(values.map((value) => {
 }))];
 
 describeDatabase("D3.1 Pet Care permission terminology migration", () => {
-  let db: Database;
+  let admin: postgres.Sql;
+  let db: postgres.Sql;
 
-  beforeAll(() => {
-    db = createDatabase(config);
-  });
+  beforeAll(async () => {
+    admin = postgres(databaseUrl!, { max: 1, onnotice: () => {} });
+    const url = new URL(databaseUrl!);
+    url.pathname = `/${scratchDatabase}`;
+    await admin.unsafe(`drop database if exists ${scratchDatabase} with (force)`);
+    await admin.unsafe(`create database ${scratchDatabase}`);
+    db = postgres(url.toString(), { max: 1, onnotice: () => {}, transform: postgres.camel });
+    await db`create table if not exists schema_migrations (
+      version text primary key, applied_at timestamptz not null default now())`;
+    for (const file of (await readdir("migrations")).filter((n) => n.endsWith(".sql")).sort()) {
+      const version = file.replace(/\.sql$/, "");
+      if (version > lastMigrationWithPermissionColumns) break;
+      await db.unsafe(await readFile(resolve("migrations", file), "utf8"));
+      await db`insert into schema_migrations (version) values (${version}) on conflict do nothing`;
+    }
+  }, 120_000);
 
   afterAll(async () => {
-    await db.end();
+    await db?.end();
+    await admin.unsafe(`drop database if exists ${scratchDatabase} with (force)`).catch(() => {});
+    await admin.end();
   });
 
   it("preserves each membership's effective permission set, status, timestamps, and ordering", async () => {

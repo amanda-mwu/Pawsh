@@ -4,6 +4,7 @@ import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
 import { hashPassword } from "../../src/security/passwords.js";
 import { tokenHash } from "../../src/http/context.js";
+import { roleFor } from "../support/roles.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -83,8 +84,8 @@ describeDatabase("D4 checkout, stale state, and error paths",()=>{
         insert into users(email,normalized_email,password_hash) values
           (${`d4-member-${suffix}@example.test`},${`d4-member-${suffix}@example.test`},${passwordHash}) returning id
       )
-      insert into business_memberships(business_id,user_id,permissions)
-      select ${businessId},id,array['checkout.perform','payments.view','discounts.apply'] from account returning id,user_id
+      insert into business_memberships(business_id,user_id,role_id)
+      select ${businessId},id,${await roleFor(db, businessId, ['checkout.perform','payments.view','discounts.apply'])} from account returning id,user_id
     `;
     await db`insert into sessions(user_id,token_hash,expires_at) values (${member!.userId},${tokenHash(token)},now()+interval '1 day')`;
     memberCookie=`pawsh_session=${token}`;
@@ -213,7 +214,7 @@ describeDatabase("D4 checkout, stale state, and error paths",()=>{
     const replayKey=key();
     const invoice=await checkout(appointmentId,undefined,replayKey,memberCookie);
     expect(invoice.statusCode).toBe(201);
-    await db`update business_memberships set permissions=array['payments.view'] where business_id=${businessId} and user_id=(select user_id from sessions where token_hash=${tokenHash(memberCookie.slice("pawsh_session=".length))})`;
+    await db`update business_memberships set role_id=${await roleFor(db, businessId, ['payments.view'])} where business_id=${businessId} and user_id=(select user_id from sessions where token_hash=${tokenHash(memberCookie.slice("pawsh_session=".length))})`;
     const denied=await checkout(appointmentId,undefined,replayKey,memberCookie);
     expect(denied.statusCode).toBe(403);
     const paymentA=await pay(invoice.json().id,3000,invoice.json().balanceMinor);

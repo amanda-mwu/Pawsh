@@ -43,30 +43,20 @@ export const passwordChangeSchema = z.object({
 /**
  * Inviting somebody to the workspace.
  *
- * `roleId` is the shape that survives. An invitation names the role the person will hold, so what
- * they arrive with is the role's permissions AS THEY STAND ON THE DAY THEY ACCEPT - not a snapshot
- * taken when the invitation was written. An invitation sent last week to somebody who accepts
- * after the role was tightened must not hand them the looser set.
+ * An invitation names a ROLE. What the person arrives holding is the role as it stands on the day
+ * they ACCEPT, not a snapshot taken when the invitation was written - so tightening a role also
+ * tightens every invitation still outstanding against it, which is the only behaviour that cannot
+ * quietly hand somebody the looser set they were offered last week.
  *
- * `permissions` is the LEGACY shape and is accepted only until `membership_invitations.permissions`
- * is dropped. It is still here because dropping it and the column in one step would make the
- * riskiest change in the authorization path irreversible, which is the same reason 0041 left the
- * columns populated. New callers must send `roleId`.
- *
- * Both are optional and at most one may be given: an invitation carrying a role AND a permission
- * list is two different answers to "what will this person be able to do", and picking one silently
- * is how the wrong one gets picked.
+ * The old `{ email, permissions }` shape is gone along with the column it wrote to. There is no
+ * transitional arm left: `membership_invitations.permissions` no longer exists, so an invitation
+ * that named a permission list would have nowhere to put it and the membership it created would
+ * resolve to the empty set.
  */
 export const invitationSchema = z.object({
   email: z.string().email().max(320),
-  roleId: z.string().uuid().nullish(),
-  // Read from the domain tuple rather than restated here, so a new permission cannot be grantable
-  // by the authorization layer while silently rejected at the invitation boundary.
-  permissions: z.array(z.enum(permissions)).default([])
-}).refine(
-  (value) => !(value.roleId && value.permissions.length > 0),
-  { message: "An invitation names a role or a permission list, not both", path: ["roleId"] }
-);
+  roleId: z.string().uuid()
+}).strict();
 
 /**
  * Approving a workspace access request.
@@ -85,8 +75,26 @@ export const invitationAcceptSchema = z.object({
   password: z.string().min(1).max(1024)
 });
 
+/**
+ * Transferring ownership.
+ *
+ * `outgoingOwnerRoleId` IS REQUIRED, AND THERE IS DELIBERATELY NO DEFAULT.
+ *
+ * Ownership transfer is the one action that turns an owner into a non-owner, and a non-owner's
+ * only grant is their role. So the transfer has to say what the founder keeps. Every alternative
+ * is worse: falling through to no role would resolve to the EMPTY SET and lock them out of the
+ * workspace they built, by an action that never mentioned permissions; auto-minting a "Former
+ * owner" role would invent an access level nobody chose; and silently copying the full permission
+ * tuple would hand a demoted owner everything except the name, which is the opposite of demoting
+ * them. The person performing the transfer states what the outgoing owner keeps, and if they will
+ * not state it the transfer does not happen.
+ *
+ * The role is validated against the caller's own business and applied in the SAME TRANSACTION that
+ * clears `is_owner`, so there is no instant at which the outgoing owner resolves to nothing.
+ */
 export const ownershipTransferSchema = z.object({
-  membershipId: z.string().uuid()
+  membershipId: z.string().uuid(),
+  outgoingOwnerRoleId: z.string().uuid()
 });
 
 export const workspaceAccessRequestSchema=z.object({

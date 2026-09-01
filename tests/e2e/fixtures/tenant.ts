@@ -174,8 +174,15 @@ export async function createMember(
   email: string,
   permissions: string[]
 ): Promise<{email:string;membershipId:string}> {
+  // A member's access is their role, so the permissions a spec asks for become a role first. The
+  // role is named after the caller's request rather than reused, so two specs asking for different
+  // permission sets never collide on the unique (business_id, lower(name)) index.
+  const role = await json<{id:string}>(await ownerApi.post("/api/roles",{
+    data:{name:`Fixture ${email}`}
+  }));
+  await json(await ownerApi.patch(`/api/roles/${role.id}`,{data:{version:1,permissions}}));
   const invitation = await json<{acceptancePath:string}>(await ownerApi.post("/api/members/invitations",{
-    data:{email,permissions}
+    data:{email,roleId:role.id}
   }));
   const token = new URL(invitation.acceptancePath,"http://local").searchParams.get("invite")!;
   const memberApi = await playwrightRequest.newContext({baseURL:process.env.PAWSH_E2E_BASE_URL??"http://127.0.0.1:3000"});

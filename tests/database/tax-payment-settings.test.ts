@@ -4,6 +4,7 @@ import { createDatabase, type Database } from "../../src/db/client.js";
 import type { Config } from "../../src/config.js";
 import { tokenHash } from "../../src/http/context.js";
 import { hashPassword } from "../../src/security/passwords.js";
+import { roleFor } from "../support/roles.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -106,8 +107,8 @@ describeDatabase("tax and payment settings", () => {
           ${await hashPassword("correct horse salon cashier")})
         returning id
       )
-      insert into business_memberships(business_id,user_id,permissions)
-      select ${businessId},id,array['checkout.perform','payments.view'] from account
+      insert into business_memberships(business_id,user_id,role_id)
+      select ${businessId},id,${await roleFor(db, businessId, ['checkout.perform','payments.view'])} from account
       returning user_id
     `;
     await db`

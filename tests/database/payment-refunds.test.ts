@@ -15,6 +15,7 @@ import {
 import { sweepPendingRefunds } from "../../src/integrations/square/sweep.js";
 import { SquareApiError } from "../../src/integrations/square/errors.js";
 import { squareStub } from "../support/square-stub.js";
+import { roleFor } from "../support/roles.js";
 
 /**
  * Giving money back, through the real routes and against a real database.
@@ -332,8 +333,8 @@ describeDatabase("Payment refunds", () => {
           ${await hashPassword("correct horse refunds staff")})
         returning id
       )
-      insert into business_memberships(business_id,user_id,permissions)
-      select ${businessId},id,array['checkout.perform','payments.view'] from account
+      insert into business_memberships(business_id,user_id,role_id)
+      select ${businessId},id,${await roleFor(db, businessId, ['checkout.perform','payments.view'])} from account
       returning user_id
     `;
     await db`

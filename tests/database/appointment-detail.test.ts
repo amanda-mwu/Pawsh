@@ -4,6 +4,7 @@ import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
 import { hashPassword } from "../../src/security/passwords.js";
 import { protectedPetCareFields } from "@pawsh/domain";
+import { roleFor } from "../support/roles.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -96,8 +97,8 @@ describeDatabase("single appointment detail", () => {
       values (${limitedEmail},${limitedEmail},${await hashPassword(limitedPassword)},'Limited') returning id
     `;
     await db`
-      insert into business_memberships(business_id,user_id,permissions)
-      values (${businessId},${limitedUser!.id},${["calendar.view", "appointments.view"] as unknown as string[]})
+      insert into business_memberships(business_id,user_id,role_id)
+      values (${businessId},${limitedUser!.id},${await roleFor(db, businessId, ["calendar.view", "appointments.view"])})
     `;
     limitedCookie = cookie(await app.inject({
       method: "POST", url: "/api/auth/login", payload: { email: limitedEmail, password: limitedPassword }
@@ -190,13 +191,13 @@ describeDatabase("single appointment detail", () => {
     const anonymous = await app.inject({ method: "GET", url: `/api/appointments/${appointmentId}` });
     expect(anonymous.statusCode).toBe(401);
     await db`
-      update business_memberships set permissions=${["calendar.view"] as unknown as string[]}
+      update business_memberships set role_id=${await roleFor(db, businessId, ["calendar.view"])}
       where business_id=${businessId} and not is_owner
     `;
     const forbidden = await detailRow(limitedCookie, appointmentId);
     expect(forbidden.statusCode).toBe(403);
     await db`
-      update business_memberships set permissions=${["calendar.view", "appointments.view"] as unknown as string[]}
+      update business_memberships set role_id=${await roleFor(db, businessId, ["calendar.view", "appointments.view"])}
       where business_id=${businessId} and not is_owner
     `;
   });

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
+import { createRole } from "../support/roles.js";
 
 /**
  * A role is only useful if changing it CHANGES SOMETHING NOW.
@@ -55,7 +56,7 @@ describeDatabase("roles resolve live, without re-authentication", () => {
 
     const invitation = await app.inject({
       method: "POST", url: "/api/members/invitations", headers: { cookie: ownerCookie },
-      payload: { email: memberEmail, permissions: ["calendar.view", "team.manage"] }
+      payload: { email: memberEmail, roleId: await createRole(app, ownerCookie, `Bootstrap ${suffix}`, ["calendar.view", "team.manage"]) }
     });
     const token = new URL(invitation.json().acceptancePath, "http://localhost").searchParams.get("invite");
     const accepted = await app.inject({
@@ -80,8 +81,9 @@ describeDatabase("roles resolve live, without re-authentication", () => {
   });
 
   afterAll(async () => {
-    await db`update business_memberships set role_id = null where id = ${membershipId}`;
-    await db`delete from roles where id = ${roleId}`;
+    // Roles are left in place: `membership_role_matches_ownership` forbids stranding a non-owner
+    // without one, so clearing them would mean deleting the memberships as well. The unique suffix
+    // keeps the residue from reaching any other suite.
     await app.close();
     await db.end();
   });

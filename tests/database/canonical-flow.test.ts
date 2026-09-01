@@ -4,6 +4,8 @@ import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
 import { deliverNotifications, processOutbox, type EmailMessage, type EmailProvider } from "../../src/engagement/worker.js";
 import { openSecret } from "../../src/security/secrets.js";
+import { createRole } from "../support/roles.js";
+import { permissions } from "@pawsh/domain";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -549,7 +551,7 @@ describeDatabase("canonical Pawsh workflow", () => {
   it("supports invitation acceptance and enforces customized permission denial", async () => {
     const invitation = await app.inject({
       method: "POST", url: "/api/members/invitations", headers: { cookie: ownerCookie },
-      payload: { email: `groomer-${suffix}@example.test`, permissions: ["calendar.view"] }
+      payload: { email: `groomer-${suffix}@example.test`, roleId: await createRole(app, ownerCookie, `Groomer ${suffix}`, ["calendar.view"]) }
     });
     expect(invitation.statusCode).toBe(201);
     const token = new URL(invitation.json().acceptancePath, "http://localhost").searchParams.get("invite");
@@ -581,7 +583,7 @@ describeDatabase("canonical Pawsh workflow", () => {
     otherBusinessId = other.json().businessId;
     const existingInvitation = await app.inject({
       method: "POST", url: "/api/members/invitations", headers: { cookie: ownerCookie },
-      payload: { email: `other-${suffix}@example.test`, permissions: ["calendar.view"] }
+      payload: { email: `other-${suffix}@example.test`, roleId: await createRole(app, ownerCookie, `Other ${suffix}`, ["calendar.view"]) }
     });
     const existingToken = new URL(existingInvitation.json().acceptancePath, "http://localhost").searchParams.get("invite");
     const wrongPassword = await app.inject({
@@ -620,15 +622,30 @@ describeDatabase("canonical Pawsh workflow", () => {
   });
 
   it("transfers protected ownership without leaving the business ownerless", async () => {
-    const transfer = await app.inject({
+    // The transfer states what the outgoing owner keeps. There is no default: without a role the
+    // founder would become a non-owner holding nothing.
+    // The role the founder keeps carries the full tuple, because the rest of this suite goes on
+    // using their session: the transfer changes who OWNS the workspace, and this suite is not the
+    // place to also change what that person can reach. `roles-api.test.ts` is where the narrow case
+    // is pinned down.
+    const keptRole = await createRole(app, ownerCookie, `Former owner ${suffix}`, [...permissions]);
+    expect((await app.inject({
       method: "POST", url: "/api/business/transfer-ownership", headers: { cookie: ownerCookie },
       payload: { membershipId: memberMembershipId }
+    })).statusCode).toBe(400);
+    const transfer = await app.inject({
+      method: "POST", url: "/api/business/transfer-ownership", headers: { cookie: ownerCookie },
+      payload: { membershipId: memberMembershipId, outgoingOwnerRoleId: keptRole }
     });
     expect(transfer.statusCode).toBe(200);
     const formerOwner = await app.inject({ method: "GET", url: "/api/me", headers: { cookie: ownerCookie } });
     const newOwner = await app.inject({ method: "GET", url: "/api/me", headers: { cookie: memberCookie } });
     expect(formerOwner.json().isOwner).toBe(false);
     expect(newOwner.json().isOwner).toBe(true);
+    // The founder landed on the named role rather than on nothing at all.
+    expect(formerOwner.json().role).toMatchObject({ id: keptRole, enabled: true });
+    expect(formerOwner.json().permissions.length).toBeGreaterThan(0);
+    expect(newOwner.json().role).toBeNull();
   });
 
   it("resets passwords with a short-lived token and revokes existing sessions", async () => {

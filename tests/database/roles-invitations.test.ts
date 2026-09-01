@@ -59,9 +59,9 @@ describeDatabase("invitations on roles", () => {
   });
 
   afterAll(async () => {
-    await db`update business_memberships set role_id = null where business_id = ${businessId}`;
-    await db`update membership_invitations set role_id = null where business_id = ${businessId}`;
-    await db`delete from roles where business_id = ${businessId}`;
+    // Roles are deliberately left behind: `membership_role_matches_ownership` forbids stranding a
+    // non-owner without one, so tearing them down would mean deleting the memberships too. Every
+    // suite scopes itself with a unique suffix, so the residue is inert.
     await app.close();
     await db.end();
   });
@@ -78,29 +78,31 @@ describeDatabase("invitations on roles", () => {
   const acceptanceToken = (response: { json: () => { acceptancePath: string } }) =>
     new URL(response.json().acceptancePath, "http://localhost").searchParams.get("invite")!;
 
-  it("stores the role and no permission list of its own", async () => {
+  it("stores the role as the whole record of what was offered", async () => {
     const email = `named-${suffix}@example.test`;
     const created = await invite({ email, roleId });
     expect(created.statusCode).toBe(201);
-    const [row] = await db<{ roleId: string; permissions: string[] }[]>`
-      select role_id, permissions from membership_invitations
+    const [row] = await db<{ roleId: string }[]>`
+      select role_id from membership_invitations
       where business_id = ${businessId} and normalized_email = ${email}
     `;
+    // The role is the whole record of what was offered. There is no permission column left to hold
+    // a second, frozen answer to "what will this person be able to do".
     expect(row!.roleId).toBe(roleId);
-    // A stored list would be a second, frozen answer to "what will this person be able to do".
-    expect(row!.permissions).toEqual([]);
 
     const listed = (await invitations()).json().invitations
       .find((item: { email: string }) => item.email === email);
     expect(listed.role).toMatchObject({ id: roleId, name: `Bather ${suffix}`, enabled: true });
   });
 
-  it("refuses an invitation that names both a role and a permission list", async () => {
-    const response = await invite({
-      email: `both-${suffix}@example.test`, roleId, permissions: ["calendar.view"]
-    });
-    // Two different answers to the same question; picking one silently is how the wrong one wins.
-    expect(response.statusCode).toBe(400);
+  it("refuses an invitation that does not name a role", async () => {
+    // The legacy { email, permissions } shape is gone along with the column it wrote to. There is
+    // no fallback: an invitation with no role would create a membership that resolves to the empty
+    // set, which the schema now forbids outright.
+    expect((await invite({ email: `none-${suffix}@example.test` })).statusCode).toBe(400);
+    expect((await invite({
+      email: `legacy-${suffix}@example.test`, permissions: ["calendar.view"]
+    })).statusCode).toBe(400);
   });
 
   it("refuses a role belonging to another business", async () => {

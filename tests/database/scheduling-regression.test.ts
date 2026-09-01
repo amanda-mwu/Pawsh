@@ -4,6 +4,7 @@ import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
 import { hashPassword } from "../../src/security/passwords.js";
 import { formatWallTime } from "../../src/domain/time.js";
+import { roleFor } from "../support/roles.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -164,8 +165,8 @@ describeDatabase("D1 scheduling regression", () => {
       returning id
     `;
     const [membership] = await db<{ id: string }[]>`
-      insert into business_memberships(business_id,user_id,permissions)
-      values (${businessId},${user!.id},${["calendar.view","appointments.view","appointments.create","appointments.edit"]})
+      insert into business_memberships(business_id,user_id,role_id)
+      values (${businessId},${user!.id},${await roleFor(db, businessId, ["calendar.view","appointments.view","appointments.create","appointments.edit"])})
       returning id
     `;
     memberId = membership!.id;
@@ -285,7 +286,7 @@ describeDatabase("D1 scheduling regression", () => {
 
     await db`
       update business_memberships
-      set permissions=${["appointments.override_conflict"]}
+      set role_id=${await roleFor(db, businessId, ["appointments.override_conflict"])}
       where id=${memberId}
     `;
     const lacksBasePermission = await create(memberCookie, employeeA, startAt, { overrideConflict: true });
@@ -293,7 +294,7 @@ describeDatabase("D1 scheduling regression", () => {
 
     await db`
       update business_memberships
-      set permissions=${["appointments.create","appointments.override_conflict"]}
+      set role_id=${await roleFor(db, businessId, ["appointments.create","appointments.override_conflict"])}
       where id=${memberId}
     `;
     const loaded = await create(memberCookie, employeeA, startAt);
@@ -301,7 +302,7 @@ describeDatabase("D1 scheduling regression", () => {
     expect(loaded.json().canOverride).toBe(true);
     await db`
       update business_memberships
-      set permissions=${["appointments.create"]}
+      set role_id=${await roleFor(db, businessId, ["appointments.create"])}
       where id=${memberId}
     `;
     const stale = await create(memberCookie, employeeA, startAt, { overrideConflict: true });
@@ -595,10 +596,10 @@ describeDatabase("D1 scheduling regression", () => {
         (select count(*)::integer from outbox_events where business_id=${businessId} and resource_id=${first.json().id} and event_type='AppointmentCreated') outbox
     `;
     expect(counts).toEqual({appointments:1,replays:1,audits:1,outbox:1});
-    await db`update business_memberships set permissions=${["appointments.create","appointments.view"]} where id=${memberId}`;
+    await db`update business_memberships set role_id=${await roleFor(db, businessId, ["appointments.create","appointments.view"])} where id=${memberId}`;
     const crossActor=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:memberCookie,"idempotency-key":key},payload});
     expect(crossActor.statusCode).toBe(200);
-    await db`update business_memberships set permissions=${["appointments.create"]} where id=${memberId}`;
+    await db`update business_memberships set role_id=${await roleFor(db, businessId, ["appointments.create"])} where id=${memberId}`;
     const viewRevoked=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:memberCookie,"idempotency-key":key},payload});
     expect(viewRevoked.statusCode).toBe(403);
     expect(viewRevoked.json().code).toBe("PERMISSION_DENIED");

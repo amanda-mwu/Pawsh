@@ -1779,9 +1779,11 @@ export function registerRoutes(
       `;
       if (!business) throw new Error("Business creation failed");
       await setTenant(tx, business.id);
+      // No permission list: an owner's authority is `is_owner`, and `effectivePermissions`
+      // reports the full tuple from that rather than from a stored copy that could drift.
       const [membership] = await tx<{ id: string }[]>`
-        insert into business_memberships (business_id, user_id, is_owner, permissions)
-        values (${business.id}, ${user.id}, true, ${permissions as unknown as string[]})
+        insert into business_memberships (business_id, user_id, is_owner)
+        values (${business.id}, ${user.id}, true)
         returning id
       `;
       const [location] = await tx<{ id: string }[]>`
@@ -1899,7 +1901,7 @@ export function registerRoutes(
         where membership.business_id=${business.id} and membership.status='active'
           and ${hasEffectivePermission(tx, "membership", "team.manage")}
       `;
-      const reviewBody=`${input.requesterName} (${input.requesterEmail.trim()}) requested access to ${business.name}.${input.message?` Message: ${input.message}`:""} Sign in to Pawsh and open Salon setup to review the request.`;
+      const reviewBody=`${input.requesterName} (${input.requesterEmail.trim()}) requested access to ${business.name}.${input.message?` Message: ${input.message}`:""} Sign in to Pawsh and open Settings -> Roles & permissions to review the request.`;
       for(const reviewer of reviewers)await tx`
         insert into notification_intents
           (business_id,notification_type,scheduled_occurrence,channel,destination,encrypted_body)
@@ -1983,10 +1985,9 @@ export function registerRoutes(
     const input = body(invitationAcceptSchema, request.body);
     const result = await db.begin(async (tx) => {
       const [invitation] = await tx<{
-        id: string; businessId: string; email: string; normalizedEmail: string;
-        permissions: string[]; roleId: string | null;
+        id: string; businessId: string; email: string; normalizedEmail: string; roleId: string;
       }[]>`
-        select id,business_id,email,normalized_email,permissions,role_id from membership_invitations
+        select id,business_id,email,normalized_email,role_id from membership_invitations
         where token_hash=${tokenHash(input.token)} and accepted_at is null and revoked_at is null
           and expires_at>now() for update
       `;
@@ -2014,12 +2015,10 @@ export function registerRoutes(
       }
       if (!user) throw new Error("Invitation user creation failed");
       // The membership takes the invitation's ROLE, so what the person arrives with is the role as
-      // it stands today rather than a snapshot taken when the invitation was written. The legacy
-      // permission list is carried only for an invitation that never named a role.
+      // it stands today rather than a snapshot taken when the invitation was written.
       const [membership] = await tx<{ id: string }[]>`
-        insert into business_memberships(business_id,user_id,permissions,role_id,status)
-        values (${invitation.businessId},${user.id},${invitation.permissions},
-          ${invitation.roleId},'active') returning id
+        insert into business_memberships(business_id,user_id,role_id,status)
+        values (${invitation.businessId},${user.id},${invitation.roleId},'active') returning id
       `;
       // The invitation is consumed, so it releases its role reference. Leaving it set would keep
       // `on delete restrict` blocking that role's deletion on behalf of a row nothing can use.
@@ -3207,7 +3206,7 @@ export function registerRoutes(
           values (${context.businessId},${accessRequest.requesterEmail},${accessRequest.normalizedEmail},${tokenHash(invitationToken)},
             ${input.roleId},${context.userId},now()+interval '7 days')
           on conflict (business_id,normalized_email) do update set email=excluded.email,
-            token_hash=excluded.token_hash,permissions=excluded.permissions,role_id=excluded.role_id,
+            token_hash=excluded.token_hash,role_id=excluded.role_id,
             invited_by=excluded.invited_by,
             expires_at=excluded.expires_at,accepted_at=null,revoked_at=null,created_at=now()
           returning id
@@ -3267,29 +3266,23 @@ export function registerRoutes(
       // The role is resolved inside the caller's own business. The composite foreign key would
       // refuse a cross-tenant reference anyway, but resolving it here turns a constraint violation
       // into an ordinary 404.
-      if (input.roleId) {
-        const [role] = await tx<{ id: string }[]>`
-          select id from roles where business_id=${context.businessId} and id=${input.roleId}
-        `;
-        if (!role) return { error: "role-missing" as const };
-      }
-      // A role-bearing invitation stores no permission list. The list would be a second, frozen
-      // answer to "what will this person be able to do", and it would win the day somebody read
-      // the column instead of the role.
-      const granted = input.roleId ? [] : input.permissions;
+      const [role] = await tx<{ id: string }[]>`
+        select id from roles where business_id=${context.businessId} and id=${input.roleId}
+      `;
+      if (!role) return { error: "role-missing" as const };
       const [created] = await tx<{
-        id: string; email: string; permissions: string[]; roleId: string | null; expiresAt: Date;
+        id: string; email: string; roleId: string; expiresAt: Date;
       }[]>`
         insert into membership_invitations
-          (business_id,email,normalized_email,token_hash,permissions,role_id,invited_by,expires_at)
+          (business_id,email,normalized_email,token_hash,role_id,invited_by,expires_at)
         values (${context.businessId},${input.email.trim()},${normalized},${tokenHash(invitationToken)},
-          ${granted},${input.roleId ?? null},${context.userId},now()+interval '7 days')
+          ${input.roleId},${context.userId},now()+interval '7 days')
         on conflict (business_id,normalized_email) do update set
-          email=excluded.email,token_hash=excluded.token_hash,permissions=excluded.permissions,
+          email=excluded.email,token_hash=excluded.token_hash,
           role_id=excluded.role_id,
           invited_by=excluded.invited_by,expires_at=excluded.expires_at,accepted_at=null,revoked_at=null,
           created_at=now()
-        returning id,email,permissions,role_id,expires_at
+        returning id,email,role_id,expires_at
       `;
       if (!created) throw new Error("Invitation creation failed");
       await record(tx, {
@@ -3371,38 +3364,11 @@ export function registerRoutes(
     return reply.code(204).send();
   });
 
-  app.patch("/api/members/:id/permissions", {
-    preHandler: [authenticate, requirePermission("team.manage")]
-  }, async (request, reply) => {
-    const context = auth(request);
-    if (!context.isOwner) return reply.code(403).send({ error: "Only an Owner can change member access" });
-    const { id } = idParams.parse(request.params);
-    const input = body(
-      (await import("zod")).z.object({ permissions: (await import("zod")).z.array((await import("zod")).z.enum(permissions)) }),
-      request.body
-    );
-    const member = await db.begin(async (tx) => {
-      await setTenant(tx, context.businessId);
-      const [before] = await tx<{ permissions: string[] }[]>`
-        select permissions from business_memberships
-        where id=${id} and business_id=${context.businessId} and not is_owner for update
-      `;
-      if (!before) return null;
-      const [updated] = await tx`
-        update business_memberships set permissions=${input.permissions},updated_at=now()
-        where id=${id} and business_id=${context.businessId} and not is_owner
-        returning id,permissions
-      `;
-      await record(tx, {
-        businessId: context.businessId, actorId: context.userId, action: "membership.permissions.update",
-        resourceType: "membership", resourceId: id,
-        before: { permissions: before.permissions }, after: { permissions: input.permissions }
-      });
-      return updated;
-    });
-    if (!member) return reply.code(404).send({ error: "Editable member not found" });
-    return member;
-  });
+  // `PATCH /api/members/:id/permissions` was retired here. A member's access is their ROLE, and
+  // nothing else: an endpoint that wrote a per-member permission list would be a second, invisible
+  // grant sitting alongside the role, and the two would disagree the first time either changed.
+  // Assigning a role is `PATCH /api/members/:id/role`; changing what a role grants is
+  // `PATCH /api/roles/:id`, where it is visible to everyone holding that role.
 
   app.delete("/api/members/:id", {
     preHandler: [authenticate, requirePermission("team.manage")]
@@ -3444,41 +3410,57 @@ export function registerRoutes(
     }
     const transferred = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
+      // The role the OUTGOING owner will hold, resolved inside the caller's own business. The
+      // composite foreign key would refuse a cross-tenant reference anyway; resolving it here
+      // turns a constraint violation into an ordinary 404, and does so BEFORE anything is written.
+      const [outgoingRole] = await tx<{ id: string }[]>`
+        select id from roles
+        where business_id=${context.businessId} and id=${input.outgoingOwnerRoleId}
+      `;
+      if (!outgoingRole) return { error: "role-missing" as const };
       const [target] = await tx<{ id: string }[]>`
         select id from business_memberships
         where business_id=${context.businessId} and id=${input.membershipId} and status='active' for update
       `;
-      if (!target) return false;
+      if (!target) return { error: "target-missing" as const };
       // `role_id=null` is not tidiness, it is the invariant. Owners never carry a role: `can()`
       // short-circuits on `is_owner` before permissions are consulted, so a promoted owner holding
       // a role would keep a dangling assignment that grants nothing, blocks that role's deletion
       // through `on delete restrict`, and would start granting again the moment they were demoted.
       await tx`
-        update business_memberships set is_owner=true,permissions=${permissions as unknown as string[]},
+        update business_memberships set is_owner=true,
           role_id=null,updated_at=now() where id=${target.id}
       `;
-      // The outgoing owner keeps `role_id` null and falls back onto the `permissions` column it
-      // still carries from its time as owner, which is the full tuple. That is correct TODAY and
-      // preserves the behaviour this endpoint has always had.
+      // The outgoing owner lands on the role the caller named, IN THIS SAME TRANSACTION and in the
+      // same statement that clears `is_owner`. There is therefore no instant - not even one another
+      // connection could observe - at which this membership is a non-owner holding no role, which
+      // is the state that resolves to the empty set.
       //
-      // IT STOPS BEING CORRECT WHEN `business_memberships.permissions` IS DROPPED. At that point
-      // the transitional arm of `effectivePermissions` disappears and this membership resolves to
-      // the empty set - a former owner silently locked out of the workspace they founded by an
-      // action that never mentioned permissions. There is no invisible fix: which role an outgoing
-      // owner lands on is a product decision, not an implementation detail, and the frozen roles
-      // contract does not currently carry one. This must be answered before the drop migration.
+      // `prevent_last_owner_loss` still governs this: it fires on the update that clears
+      // `is_owner`, and the promotion above has already committed a second active owner within the
+      // transaction, so the trigger sees one and allows it. Ordering these two statements the other
+      // way round would make the trigger refuse every transfer.
       await tx`
-        update business_memberships set is_owner=false,updated_at=now()
+        update business_memberships set is_owner=false,role_id=${input.outgoingOwnerRoleId},
+          updated_at=now()
         where id=${context.membershipId}
       `;
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "ownership.transfer",
         resourceType: "membership", resourceId: target.id,
-        after: { previousOwnerMembershipId: context.membershipId }
+        after: {
+          previousOwnerMembershipId: context.membershipId,
+          previousOwnerRoleId: input.outgoingOwnerRoleId
+        }
       });
-      return true;
+      return { transferred: true as const };
     });
-    if (!transferred) return reply.code(404).send({ error: "Active target member not found" });
+    if (transferred.error === "role-missing") {
+      return reply.code(404).send({ error: "Role not found" });
+    }
+    if (transferred.error === "target-missing") {
+      return reply.code(404).send({ error: "Active target member not found" });
+    }
     return { transferred: true };
   });
 

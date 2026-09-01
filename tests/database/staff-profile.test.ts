@@ -3,6 +3,7 @@ import { groomerPaletteSize } from "@pawsh/domain";
 import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
+import { createRole } from "../support/roles.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -58,7 +59,8 @@ describeDatabase("staff profile, account linking and service restrictions", () =
       headers: { cookie: ownerCookie, origin: config.APP_ORIGIN },
       payload: {
         email: groomerEmail,
-        permissions: ["calendar.view", "appointments.view", "pets.view", "pets.edit", "pets.care.edit", "operations.perform_service"]
+        roleId: await createRole(app, ownerCookie, `Groomer ${suffix}`,
+          ["calendar.view", "appointments.view", "pets.view", "pets.edit", "pets.care.edit", "operations.perform_service"])
       }
     });
     const token = new URL(invitation.json().acceptancePath, "http://localhost").searchParams.get("invite");
@@ -454,7 +456,7 @@ describeDatabase("staff profile, account linking and service restrictions", () =
       const invitation = await app.inject({
         method: "POST", url: "/api/members/invitations",
         headers: { cookie: ownerCookie, origin: config.APP_ORIGIN },
-        payload: { email: memberEmail, permissions: ["calendar.view"] }
+        payload: { email: memberEmail, roleId: await createRole(app, ownerCookie, `Linkable ${suffix}`, ["calendar.view"]) }
       });
       const token = new URL(invitation.json().acceptancePath, "http://localhost").searchParams.get("invite");
       const accepted = await app.inject({

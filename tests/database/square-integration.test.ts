@@ -12,6 +12,7 @@ import {
   hashOAuthState, openAccessToken, refreshDueConnections, storeConnection
 } from "../../src/integrations/square/oauth.js";
 import { SquareApiError } from "../../src/integrations/square/errors.js";
+import { roleFor } from "../support/roles.js";
 import {
   processSquareWebhooks, squareSignature, squareSignatureHeader
 } from "../../src/integrations/square/webhooks.js";
@@ -181,8 +182,8 @@ describeDatabase("Square Terminal integration", () => {
           ${await hashPassword("correct horse salon staff")})
         returning id
       )
-      insert into business_memberships(business_id,user_id,permissions)
-      select ${businessId},id,array['checkout.perform','payments.view'] from account
+      insert into business_memberships(business_id,user_id,role_id)
+      select ${businessId},id,${await roleFor(db, businessId, ['checkout.perform','payments.view'])} from account
       returning user_id
     `;
     await db`

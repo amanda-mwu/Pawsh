@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
+import { roleFor } from "../support/roles.js";
 
 const databaseUrl=process.env.DATABASE_URL;
 const describeDatabase=databaseUrl?describe:describe.skip;
@@ -170,8 +171,8 @@ describeDatabase("session location selection",()=>{
     const second=await app.inject({method:"POST",url:"/api/auth/signup",payload:{email:secondBusinessEmail,password:"correct horse workspace battery",businessName:"Second Workspace"}});
     const secondBusinessId=second.json().businessId;
     const secondLocationId=second.json().locationId;
-    await db`insert into business_memberships(business_id,user_id,is_owner,permissions)
-      values (${secondBusinessId},(select id from users where normalized_email=${email}),false,${["calendar.view","settings.manage"] as unknown as string[]})`;
+    await db`insert into business_memberships(business_id,user_id,is_owner,role_id)
+      values (${secondBusinessId},(select id from users where normalized_email=${email}),false,${await roleFor(db, secondBusinessId, ["calendar.view","settings.manage"])})`;
 
     const switched=await app.inject({method:"POST",url:"/api/workspaces/select",headers:{cookie:ownerCookie,origin:config.APP_ORIGIN},payload:{businessId:secondBusinessId}});
     expect(switched.statusCode).toBe(200);

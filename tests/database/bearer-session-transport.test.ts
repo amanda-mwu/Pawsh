@@ -3,6 +3,7 @@ import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
 import { tokenHash } from "../../src/http/context.js";
+import { roleFor } from "../support/roles.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -55,9 +56,9 @@ describeDatabase("bearer session transport", () => {
     }});
     secondBusinessId = second.json().businessId;
     await db`
-      insert into business_memberships(business_id,user_id,is_owner,permissions)
+      insert into business_memberships(business_id,user_id,is_owner,role_id)
       values (${secondBusinessId},(select id from users where normalized_email=${email}),false,
-        ${["calendar.view", "appointments.view"] as unknown as string[]})
+        ${await roleFor(db, secondBusinessId, ["calendar.view", "appointments.view"])})
     `;
   });
   afterAll(async () => { await app.close(); await db.end(); });

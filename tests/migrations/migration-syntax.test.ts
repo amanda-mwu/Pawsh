@@ -325,5 +325,21 @@ describe("database migrations", () => {
     // here would make the migration one-way on the riskiest change in the authorization path.
     expect(roles).not.toContain("drop column permissions");
     expect(roles).not.toContain("alter table business_memberships drop column");
+
+    const retire = await readMigration("0042_retire_membership_permissions.sql");
+    // The invariants that replace the dropped columns. Without these, "a non-owner with no role"
+    // stays representable, and that state resolves to the EMPTY SET - a person silently locked out
+    // by a code path that simply forgot. A check constraint, unlike a row policy, applies to the
+    // table owner Pawsh connects as, so this one actually holds.
+    expect(retire).toContain("membership_role_matches_ownership");
+    expect(retire).toContain("check ((is_owner and role_id is null) or (not is_owner and role_id is not null))");
+    expect(retire).toContain("live_invitation_requires_role");
+    // The straggler conversion has to come BEFORE the columns are dropped, or the permission sets
+    // it reads are already gone. Any membership that reached 0042 without a role - a legacy
+    // invitation accepted after 0041 - is converted rather than silently emptied.
+    expect(retire.indexOf("create temporary table straggler"))
+      .toBeLessThan(retire.indexOf("drop column permissions"));
+    expect(retire).toContain("alter table business_memberships drop column permissions");
+    expect(retire).toContain("alter table membership_invitations drop column permissions");
   });
 });

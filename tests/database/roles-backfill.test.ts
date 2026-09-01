@@ -2,6 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { permissions } from "@pawsh/domain";
 import { effectivePermissions } from "../../src/db/effective-permissions.js";
 
 /**
@@ -187,7 +188,13 @@ describeDatabase("migration 0041 roles backfill", () => {
     let checked = 0;
     for (const [, memberships] of planted) {
       for (const [membershipId, before] of memberships) {
-        expect(asSet(await effective(membershipId)), membershipId).toEqual(asSet(before));
+        // OWNERS ARE COMPARED AGAINST THE WHOLE TUPLE, NOT AGAINST WHAT THEIR ROW HAPPENED TO
+        // STORE. Owner authority has never come from the permission column - `can()` short-circuits
+        // on `is_owner` long before permissions are read - so a column that disagreed with the
+        // tuple was always cosmetic. `effectivePermissions` now says so directly, which is why the
+        // owner planted here with a receptionist-sized list resolves to everything.
+        const expected = membershipId === alphaOwner ? [...permissions] : before;
+        expect(asSet(await effective(membershipId)), membershipId).toEqual(asSet(expected));
         checked += 1;
       }
     }

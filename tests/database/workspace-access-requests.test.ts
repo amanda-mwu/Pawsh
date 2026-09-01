@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
+import { createRole } from "../support/roles.js";
 
 const databaseUrl=process.env.DATABASE_URL;
 const describeDatabase=databaseUrl?describe:describe.skip;
@@ -44,13 +45,13 @@ describeDatabase("existing workspace access requests",()=>{
 
   it("lets a team manager review but never lets the requester choose privilege",async()=>{
     const staffEmail=`staff-${suffix}@example.test`;
-    const staffInvitation=await app.inject({method:"POST",url:"/api/members/invitations",headers:{cookie:ownerCookie},payload:{email:staffEmail,permissions:["calendar.view"]}});
+    const staffInvitation=await app.inject({method:"POST",url:"/api/members/invitations",headers:{cookie:ownerCookie},payload:{email:staffEmail,roleId:await createRole(app,ownerCookie,`Staff ${suffix}`,["calendar.view"])}});
     const staffToken=new URL(staffInvitation.json().acceptancePath,"http://localhost").searchParams.get("invite");
     const staff=await app.inject({method:"POST",url:"/api/auth/invitations/accept",payload:{token:staffToken,password:"correct horse access staff"}});
     expect((await app.inject({method:"GET",url:"/api/workspace-access-requests",headers:{cookie:cookie(staff)}})).statusCode).toBe(403);
     expect((await app.inject({method:"POST",url:"/api/workspace-access-requests",payload:{requesterName:"Escalation",requesterEmail:`escalation-${suffix}@example.test`,workspaceName:`Access Salon ${suffix}`,workspaceAdminEmail:ownerEmail,role:"owner"}})).statusCode).toBe(400);
     const managerEmail=`manager-${suffix}@example.test`;
-    const invitation=await app.inject({method:"POST",url:"/api/members/invitations",headers:{cookie:ownerCookie},payload:{email:managerEmail,permissions:["team.manage"]}});
+    const invitation=await app.inject({method:"POST",url:"/api/members/invitations",headers:{cookie:ownerCookie},payload:{email:managerEmail,roleId:await createRole(app,ownerCookie,`Manager ${suffix}`,["team.manage"])}});
     const token=new URL(invitation.json().acceptancePath,"http://localhost").searchParams.get("invite");
     const accepted=await app.inject({method:"POST",url:"/api/auth/invitations/accept",payload:{token,password:"correct horse access manager"}});
     expect((await app.inject({method:"GET",url:"/api/workspace-access-requests",headers:{cookie:cookie(accepted)}})).statusCode).toBe(200);
@@ -63,10 +64,9 @@ describeDatabase("existing workspace access requests",()=>{
     expect((await app.inject({method:"POST",url:`/api/workspace-access-requests/${pending.id}/approve`,headers:{cookie:ownerCookie},payload:{}})).statusCode).toBe(400);
     const approval=await app.inject({method:"POST",url:`/api/workspace-access-requests/${pending.id}/approve`,headers:{cookie:ownerCookie},payload:{roleId:approvedRole}});
     expect(approval.statusCode).toBe(200);expect(approval.json()).toMatchObject({approved:true,membershipCreated:false,invitationCreated:true});
-    const invitationRow=await db<{permissions:string[];roleId:string;invitedBy:string}[]>`select permissions,role_id,invited_by from membership_invitations where business_id=${businessId} and normalized_email=${requesterEmail}`;
-    // The requester gets exactly the role the approver chose, and no permission list of its own.
+    const invitationRow=await db<{roleId:string;invitedBy:string}[]>`select role_id,invited_by from membership_invitations where business_id=${businessId} and normalized_email=${requesterEmail}`;
+    // The requester gets exactly the role the approver chose, and nothing else.
     expect(invitationRow[0]?.roleId).toBe(approvedRole);
-    expect(invitationRow[0]?.permissions).toEqual([]);
   });
 
   it("adds an existing user exactly once, permits workspace selection, and enforces tenant boundaries",async()=>{

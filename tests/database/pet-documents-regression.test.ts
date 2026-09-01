@@ -4,6 +4,7 @@ import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
 import { hashPassword } from "../../src/security/passwords.js";
 import { MemoryDocumentStorage } from "../../src/storage/documents.js";
+import { roleFor } from "../support/roles.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -185,8 +186,8 @@ describeDatabase("D3.2 rabies vaccination documents", () => {
     const [user] = await db<{ id: string }[]>`
       insert into users(email,normalized_email,password_hash) values (${email},${email},${await hashPassword(password)}) returning id
     `;
-    await db`insert into business_memberships(business_id,user_id,permissions)
-      values (${businessId},${user!.id},${["customers.view"]})`;
+    await db`insert into business_memberships(business_id,user_id,role_id)
+      values (${businessId},${user!.id},${await roleFor(db, businessId, ["customers.view"])})`;
     const login = await app.inject({ method: "POST", url: "/api/auth/login", payload: { email, password } });
     const limitedCookie = cookie(login);
     const list = await app.inject({ method: "GET", url: `/api/pets/${petId}/documents`, headers: { cookie: limitedCookie } });
@@ -242,8 +243,8 @@ describeDatabase("D3.2 rabies vaccination documents", () => {
       insert into users(email,normalized_email,password_hash) values (${email},${email},${await hashPassword(password)}) returning id
     `;
     const [membership] = await db<{ id: string }[]>`
-      insert into business_memberships(business_id,user_id,permissions)
-      values (${businessId},${user!.id},${["pets.edit","pets.care.edit"]}) returning id
+      insert into business_memberships(business_id,user_id,role_id)
+      values (${businessId},${user!.id},${await roleFor(db, businessId, ["pets.edit","pets.care.edit"])}) returning id
     `;
     const login = await isolatedApp.inject({ method: "POST", url: "/api/auth/login", payload: { email, password } });
     const memberCookie = cookie(login);
@@ -257,7 +258,7 @@ describeDatabase("D3.2 rabies vaccination documents", () => {
     const pending = isolatedApp.inject({ method: "POST", url: `/api/pets/${petId}/documents/rabies`,
       headers: { cookie: memberCookie, ...body.headers }, payload: body.payload });
     await blocking.started;
-    await db`update business_memberships set permissions='{}' where id=${membership!.id}`;
+    await db`update business_memberships set role_id=${await roleFor(db, businessId, [])} where id=${membership!.id}`;
     blocking.release();
     const response = await pending;
     expect(response.statusCode).toBe(403);

@@ -27,7 +27,10 @@ beforeEach(() => {
   jest.clearAllMocks();
   mocked.services.mockResolvedValue([]);
   mocked.employees.mockResolvedValue([
-    { id: "employee-1", displayName: "Maya R.", membershipId: "membership-1", active: true }
+    {
+      id: "employee-1", displayName: "Maya R.", membershipId: "membership-1",
+      colorSlot: null, active: true
+    }
   ]);
 });
 

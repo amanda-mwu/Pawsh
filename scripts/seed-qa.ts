@@ -1,4 +1,6 @@
 import postgres from "postgres";
+import { builtInRoles } from "@pawsh/domain";
+import { provisionBusinessCatalog } from "../src/domain/catalog-seed.js";
 import { hashPassword, validateNewPassword } from "../src/security/passwords.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -23,23 +25,29 @@ console.log(`QA seed target: ${target.hostname}${target.pathname} (${process.env
 
 const sql = postgres(databaseUrl, { transform: postgres.camel });
 const passwordHash = await hashPassword(password);
-const allPermissions = [
-  "calendar.view","appointments.view","appointments.create","appointments.edit","appointments.cancel",
-  "appointments.override_conflict",
-  "customers.view","customers.edit","pets.view","pets.edit","pets.care.view","pets.care.edit",
-  "operations.check_in","operations.perform_service","operations.complete","checkout.perform",
-  "payments.view","discounts.apply","services.manage","team.manage","reports.view","settings.manage"
-];
-const managerPermissions = allPermissions.filter((permission) => permission !== "settings.manage");
-const receptionistPermissions = [
-  "calendar.view","appointments.view","appointments.create","appointments.edit","appointments.cancel",
-  "customers.view","customers.edit","pets.view","pets.edit","pets.care.view",
-  "operations.check_in","checkout.perform","payments.view"
-];
-const groomerPermissions = [
-  "calendar.view","appointments.view","customers.view","pets.view","pets.care.view",
-  "operations.check_in","operations.perform_service","operations.complete"
-];
+
+/**
+ * The QA staff, named by the BUILT-IN ROLE each one holds.
+ *
+ * This file used to carry four hand-written permission arrays and write them onto
+ * `business_memberships.permissions` - a column migration 0042 dropped, which is why the seed had
+ * stopped running at all. It is not repaired by moving those arrays onto a role: a QA workspace
+ * whose Manager holds a set no real workspace has is a workspace where nothing observed about
+ * permissions is evidence about the product. So the roles come from the same provisioning path a
+ * real signup uses, and this map only says who holds which.
+ */
+const builtInRoleNames = new Set(builtInRoles.map((role) => role.name));
+const memberDefinitions = [
+  ["manager@pawsh-test.example", "Manager"],
+  ["reception@pawsh-test.example", "Receptionist"],
+  ["grace@pawsh-test.example", "Groomer"],
+  ["gabriel@pawsh-test.example", "Groomer"]
+] as const;
+for (const [, roleName] of memberDefinitions) {
+  // A name Pawsh no longer ships would seed a member with no role at all, which
+  // `membership_role_matches_ownership` refuses - loudly here rather than mid-transaction.
+  if (!builtInRoleNames.has(roleName)) throw new Error(`QA seed names an unknown built-in role: ${roleName}`);
+}
 
 await sql.begin(async (tx) => {
   async function ensureUser(email: string): Promise<string> {
@@ -62,10 +70,22 @@ await sql.begin(async (tx) => {
     await tx`update businesses set currency='USD',tax_rate_basis_points=825,reminder_lead_minutes=1440,status='active' where id=${business.id}`;
   }
   const businessId = business!.id;
+  await tx`select set_config('app.business_id',${businessId},true)`;
+  // The SAME provisioning authority a real signup runs, rather than a seed-only reconstruction of
+  // it. It is what gives this workspace its service catalog, its tax rate, its payment methods and
+  // its built-in roles, and it is idempotent, so re-seeding an existing QA business adds nothing.
+  await provisionBusinessCatalog(tx, businessId);
+  const roleIds = new Map(
+    (await tx<{ id: string; name: string }[]>`
+      select id,name from roles where business_id=${businessId} and built_in
+    `).map((role) => [role.name, role.id])
+  );
+  // An owner holds no role - `membership_role_matches_ownership` requires `role_id` to be null for
+  // one - because owner authority is `is_owner` and resolves to the whole tuple.
   const [ownerMembership] = await tx<{ id: string }[]>`
-    insert into business_memberships(business_id,user_id,is_owner,permissions,status)
-    values (${businessId},${ownerId},true,${allPermissions},'active')
-    on conflict (business_id,user_id) do update set is_owner=true,permissions=excluded.permissions,status='active'
+    insert into business_memberships(business_id,user_id,is_owner,role_id,status)
+    values (${businessId},${ownerId},true,null,'active')
+    on conflict (business_id,user_id) do update set is_owner=true,role_id=null,status='active'
     returning id
   `;
   let [location] = await tx<{ id: string; timezone:string }[]>`select id,timezone from locations where business_id=${businessId} and active limit 1`;
@@ -83,20 +103,16 @@ await sql.begin(async (tx) => {
     await tx`insert into business_hours(business_id,location_id,weekday,start_time,end_time) values (${businessId},${location!.id},${weekday},${start},${end})`;
   }
 
-  const memberDefinitions = [
-    ["manager@pawsh-test.example",managerPermissions],
-    ["reception@pawsh-test.example",receptionistPermissions],
-    ["grace@pawsh-test.example",groomerPermissions],
-    ["gabriel@pawsh-test.example",groomerPermissions]
-  ] as const;
   const memberships = new Map<string,string>();
   memberships.set("owner@pawsh-test.example",ownerMembership!.id);
-  for (const [email,permissions] of memberDefinitions) {
+  for (const [email,roleName] of memberDefinitions) {
+    const roleId = roleIds.get(roleName);
+    if (!roleId) throw new Error(`QA seed could not find the built-in role ${roleName}`);
     const userId = await ensureUser(email);
     const [membership] = await tx<{ id: string }[]>`
-      insert into business_memberships(business_id,user_id,permissions,status)
-      values (${businessId},${userId},${permissions as unknown as string[]},'active')
-      on conflict (business_id,user_id) do update set permissions=excluded.permissions,status='active'
+      insert into business_memberships(business_id,user_id,role_id,status)
+      values (${businessId},${userId},${roleId},'active')
+      on conflict (business_id,user_id) do update set role_id=excluded.role_id,status='active'
       returning id
     `;
     memberships.set(email,membership!.id);

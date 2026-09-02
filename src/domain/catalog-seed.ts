@@ -1,5 +1,5 @@
 import type postgres from "postgres";
-import type {PricingClass,WeightTierCode} from "@pawsh/domain";
+import {builtInRoleSortOrder,builtInRoles,type PricingClass,type WeightTierCode} from "@pawsh/domain";
 
 type Sql=postgres.Sql|postgres.TransactionSql;
 const smooth=new Set(["Boston Terrier","Boxer","Dalmatian","Doberman Pinscher","French Bulldog","Great Dane","Greyhound","Weimaraner"]);
@@ -41,6 +41,7 @@ export async function provisionBusinessCatalog(sql:Sql,businessId:string):Promis
  for(const service of defaultServices){const id=ids.get(service.key);if(!id||!service.prices)continue;for(const [dimension,value] of Object.entries(service.prices)){if(Array.isArray(value))for(let i=0;i<value.length;i++)prices.push({business_id:businessId,service_id:id,pricing_class:dimension,weight_tier_code:`TIER_${i+1}`,price_minor:value[i]!});else prices.push({business_id:businessId,service_id:id,pricing_class:"STANDARD",weight_tier_code:dimension,price_minor:value});}}
  if(prices.length)await sql`insert into service_price_tiers ${sql(prices,"business_id","service_id","pricing_class","weight_tier_code","price_minor")} on conflict (service_id,pricing_class,weight_tier_code) do nothing`;
  await provisionTaxAndPaymentSettings(sql,businessId);
+ await provisionRoleCatalog(sql,businessId);
 }
 
 /**
@@ -73,4 +74,49 @@ export async function provisionTaxAndPaymentSettings(sql:Sql,businessId:string):
    and not exists (select 1 from tax_rates rate where rate.business_id=business.id)
   on conflict do nothing
  `;
+}
+
+/**
+ * The named roles a salon starts with.
+ *
+ * Migration 0041 seeded `Groomer`, `Receptionist` and `Manager` for every business that existed
+ * when it ran, and 0043 topped the Manager up with the reporting taxonomy. NEITHER OF THEM CAN
+ * REACH A BUSINESS CREATED AFTERWARDS. Until this existed, a salon that signed up yesterday had no
+ * roles at all - and since an invitation must name a `roleId`, its owner could not invite anybody
+ * until they had hand-built a role, while a salon migrated last week opened Settings -> Roles to
+ * three. Same product, two different first runs.
+ *
+ * DERIVED FROM `builtInRoles`, NOT RESTATED. The migrations hold SQL literals because a migration
+ * that has already run is a historical record, but nothing running today needs a second copy, and
+ * `tests/domain/permission-catalog.test.ts` pins those frozen literals to these same definitions.
+ *
+ * Idempotent, and deliberately not by catching a unique violation: each role is inserted only when
+ * the business has no role of that name, compared the same case-insensitive way
+ * `roles_unique_name_per_business` compares it. Re-running this over an existing business adds
+ * nothing, and a salon that already has its own role called "Manager" keeps THEIRS rather than
+ * having a built-in forced alongside it. The `on conflict do nothing` behind the predicate is for
+ * two provisioners racing, not for the ordinary case.
+ *
+ * It never updates. A built-in role an owner has already edited is theirs, and re-provisioning
+ * must not quietly restore the preset over the top of it.
+ *
+ * `sort_order` comes from the position in `builtInRoles`, which is what puts the Manager directly
+ * under the Owner in the editor. Writing it here rather than leaving it to the column default is
+ * what makes the order a stated fact: alphabetically the three sort Groomer, Manager,
+ * Receptionist, and a built-in added later would land wherever its name fell with nothing to
+ * catch it.
+ */
+export async function provisionRoleCatalog(sql:Sql,businessId:string):Promise<void>{
+ for(const role of builtInRoles){
+  await sql`
+   insert into roles (business_id,name,permissions,built_in,sort_order)
+   select ${businessId}::uuid,${role.name}::text,${role.permissions as unknown as string[]}::text[],true,
+    ${builtInRoleSortOrder(role.name)}::int
+   where not exists (
+    select 1 from roles existing
+    where existing.business_id=${businessId}::uuid and lower(existing.name)=lower(${role.name}::text)
+   )
+   on conflict do nothing
+  `;
+ }
 }

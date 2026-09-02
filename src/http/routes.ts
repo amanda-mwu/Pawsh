@@ -13,7 +13,7 @@ import { refundPresentation, type RefundStatus } from "../domain/refunds.js";
 import { safePdfFilename } from "../domain/filenames.js";
 import { maxPhotoBytes, readPhotoShape, safePhotoFilename } from "../domain/images.js";
 import { localDateBounds, localDateForInstant, resolveWallTime, validateTimeZone } from "../domain/time.js";
-import { can, permissionGroups, permissionLabels, permissionPresets, permissions,
+import { can, permissionGroups, permissionHints, permissionLabels, permissionPresets, permissions,
   unenforcedPermissions, type Permission } from "@pawsh/domain";
 import { effectivePermissions, hasEffectivePermission } from "../db/effective-permissions.js";
 import { auth, authentication, issueToken, platformAuthentication, requirePermission, sessionToken, tokenHash } from "./context.js";
@@ -529,7 +529,7 @@ async function roleRows(
     from roles r
     where r.business_id = ${businessId}
       and (${roleId ?? null}::uuid is null or r.id = ${roleId ?? null}::uuid)
-    order by r.built_in desc, lower(r.name)
+    order by r.built_in desc, r.sort_order, lower(r.name)
   `;
   return rows.map((role) => ({
     ...role,
@@ -2206,6 +2206,9 @@ export function registerRoutes(
       permissions: group.permissions.map((key) => ({
         key,
         label: permissionLabels[key],
+        // Present only where it says something the label does not, so the editor renders a hint
+        // where one helps rather than a restatement under every row. Absent is a valid answer.
+        ...(permissionHints[key] === undefined ? {} : { hint: permissionHints[key] }),
         enforced: !unenforcedPermissions.has(key)
       }))
     }))
@@ -2306,12 +2309,27 @@ export function registerRoutes(
       await setTenant(tx, context.businessId);
       const [before] = await tx<{
         version: number; name: string; description: string | null;
-        enabled: boolean; permissions: string[];
+        enabled: boolean; builtIn: boolean; permissions: string[];
       }[]>`
-        select version,name,description,enabled,permissions from roles
+        select version,name,description,enabled,built_in,permissions from roles
         where business_id=${context.businessId} and id=${id} for update
       `;
       if (!before) return { error: "missing" as const };
+      // A BUILT-IN ROLE'S NAME IS ITS IDENTITY. Pawsh ships Groomer, Receptionist and Manager as
+      // system templates: the docs, the migrations and every future preset change name them, so a
+      // salon that renamed Manager to "Shift lead" would own a row nothing could ever recognise
+      // again. Retiring one is expressed by DISABLING it - which keeps the assignments, keeps the
+      // canonical name, and is reversible - not by renaming it into something else.
+      //
+      // Refused ahead of the version check on purpose. A stale version says "refresh and try
+      // again", and this is not a request that succeeds on a second attempt.
+      //
+      // An unchanged name is not a rename: editors that PATCH the whole role back are saving the
+      // description, the enabled flag or the permissions, and must not be refused for carrying the
+      // name they were given.
+      if (before.builtIn && input.name !== undefined && input.name !== before.name) {
+        return { error: "built-in-name" as const };
+      }
       if (before.version !== input.version) return { error: "stale" as const };
       if (input.name !== undefined) {
         const [clash] = await tx<{ id: string }[]>`
@@ -2346,6 +2364,12 @@ export function registerRoutes(
     });
     if ("error" in outcome) {
       if (outcome.error === "missing") return reply.code(404).send({ error: "Role not found" });
+      if (outcome.error === "built-in-name") {
+        return reply.code(409).send({
+          code: "ROLE_BUILT_IN_NAME_IMMUTABLE",
+          error: "A built-in Pawsh role cannot be renamed. Disable it if you do not use it."
+        });
+      }
       if (outcome.error === "duplicate-name") {
         return reply.code(409).send({ error: "A role with this name already exists" });
       }
@@ -2356,9 +2380,9 @@ export function registerRoutes(
   });
 
   /**
-   * Deleting a role, refused while anything still points at it.
+   * Deleting a role, refused for a built-in and refused while anything still points at it.
    *
-   * The check mirrors the `on delete restrict` foreign keys exactly - every membership, and every
+   * The in-use check mirrors the `on delete restrict` foreign keys exactly - every membership, and every
    * invitation that has not been accepted or revoked. If it did not, the constraint would refuse
    * the delete anyway and the caller would get a 500 describing a foreign key instead of a 409
    * naming what is in the way.
@@ -2371,10 +2395,22 @@ export function registerRoutes(
     const { id } = idParams.parse(request.params);
     const outcome = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [role] = await tx<{ id: string; name: string }[]>`
-        select id,name from roles where business_id=${context.businessId} and id=${id} for update
+      const [role] = await tx<{ id: string; name: string; builtIn: boolean }[]>`
+        select id,name,built_in from roles
+        where business_id=${context.businessId} and id=${id} for update
       `;
       if (!role) return { error: "missing" as const };
+      // A BUILT-IN ROLE CANNOT BE DELETED, whether or not anybody currently holds it. It is a
+      // Pawsh template rather than something this salon authored, every workspace has the same
+      // three, and `provisionRoleCatalog` would put a deleted one back on the next provisioning
+      // pass anyway - as a NEW row, with a new id, which would silently strand every audit entry
+      // and every invitation that named the old one. Disabling is the supported way to retire one:
+      // it grants nothing while disabled, keeps the assignments, and re-enabling restores exactly
+      // the access it granted before under the same identity.
+      //
+      // Checked before the in-use count so the answer does not change depending on whether
+      // somebody happens to hold it today.
+      if (role.builtIn) return { error: "built-in" as const };
       const [held] = await tx<{ assigned: number; invited: number }[]>`
         select
           (select count(*)::int from business_memberships m
@@ -2393,6 +2429,12 @@ export function registerRoutes(
       return { deleted: true as const };
     });
     if (outcome.error === "missing") return reply.code(404).send({ error: "Role not found" });
+    if (outcome.error === "built-in") {
+      return reply.code(409).send({
+        code: "ROLE_BUILT_IN_UNDELETABLE",
+        error: "A built-in Pawsh role cannot be deleted. Disable it instead."
+      });
+    }
     if (outcome.error === "in-use") {
       return reply.code(409).send({
         error: "This role is still in use",

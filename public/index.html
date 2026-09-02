@@ -27,9 +27,9 @@
         <p id="auth-subtitle">Set up your workspace in under a minute.</p>
       </div>
       <form id="auth-form" data-testid="auth-form">
-        <label>Email<input data-testid="login-email" name="email" type="email" autocomplete="email" required></label>
+        <label>Email<input data-testid="login-email" name="email" type="email" autocomplete="off" required></label>
         <label>Password<input data-testid="login-password" name="password" type="password" minlength="8" maxlength="256" autocomplete="new-password" required></label>
-        <label id="business-field">Salon name<input name="businessName" type="text" autocomplete="organization" required></label>
+        <label id="business-field">Salon name<input data-testid="signup-business-name" name="businessName" type="text" autocomplete="off" required></label>
         <button data-testid="auth-submit" class="primary" type="submit">Create workspace</button>
         <p id="auth-error" class="error" role="alert"></p>
       </form>
@@ -44,7 +44,7 @@
       <a class="brand" href="/">pawsh<span>.</span></a>
       <button type="button" id="mobile-nav-toggle" class="mobile-nav-toggle" aria-label="Open navigation" aria-expanded="false" aria-controls="primary-navigation">☰</button>
       <nav id="primary-navigation" class="primary-nav" aria-label="Main navigation">
-        <button type="button" data-testid="nav-dashboard" data-view="dashboard" class="active" aria-label="Dashboard"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 15a8 8 0 1 1 16 0M12 15l4-5M7 19h10"/></svg></span><span>Dashboard</span></button>
+        <button type="button" data-testid="nav-dashboard" data-view="dashboard" data-permission="dashboard.view" class="active" aria-label="Dashboard"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 15a8 8 0 1 1 16 0M12 15l4-5M7 19h10"/></svg></span><span>Dashboard</span></button>
         <button type="button" data-testid="nav-calendar" data-view="calendar" data-permission="calendar.view" aria-label="Calendar"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 10h18M7 14h2M11 14h2M15 14h2"/></svg></span><span>Calendar</span></button>
         <button type="button" data-testid="nav-customers" data-view="customers" data-any-permission="customers.view,pets.view" aria-label="Clients"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></span><span>Clients</span></button>
         <button type="button" data-testid="nav-messages" data-view="messages" aria-label="Messages"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h12a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3H9l-5 4V5Z"/><path d="M8 9h7M8 12h5"/></svg></span><span>Messages</span></button>
@@ -278,6 +278,20 @@
       <button type="button" class="secondary compact" data-testid="terminal-capture-refresh">Check the terminal</button>
       <button type="button" class="primary compact" data-testid="terminal-capture-receipt" hidden>View receipt</button>
       <button type="button" class="secondary compact" data-testid="terminal-capture-close">Close</button>
+    </div>
+  </dialog>
+  <dialog id="role-editor" class="drawer" aria-labelledby="role-editor-title" data-testid="role-editor">
+    <div class="drawer-head">
+      <div><p class="eyebrow" id="role-editor-eyebrow">Permissions</p><h3 id="role-editor-title">Role</h3></div>
+      <button type="button" class="close" data-testid="role-editor-close" aria-label="Close role editor">&#215;</button>
+    </div>
+    <div id="role-editor-tools" class="drawer-tools"></div>
+    <div id="role-editor-body" class="drawer-body"></div>
+    <p id="role-editor-error" class="error drawer-status" role="alert"></p>
+    <div class="drawer-foot">
+      <span id="role-editor-dirty" class="role-dirty" aria-live="polite"></span>
+      <button type="button" class="secondary compact" data-testid="role-editor-cancel">Cancel</button>
+      <button type="button" class="primary compact" data-testid="role-editor-save">Save</button>
     </div>
   </dialog>
   <dialog id="modal" data-testid="modal">

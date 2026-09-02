@@ -1634,6 +1634,9 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
 .staff-detail-head>.staff-chip{margin-left:auto}
 .staff-avatar-lg{width:40px;height:40px;font-size:16px}
 .staff-detail-role{margin:0;color:var(--muted);font-size:12.5px}
+/* The role is reported here and changed in Roles & permissions, so the link across is its own
+   paragraph rather than a second `.staff-detail-role` - one class, one meaning. */
+.staff-detail-role-link{margin:2px 0 0;font-size:12.5px}
 .staff-permission-note{margin:var(--space-3) 0 0}
 .staff-facts{margin-top:var(--space-4)}
 .staff-facts .staff-swatch-dot{display:inline-grid;margin-right:6px;vertical-align:middle}
@@ -1713,3 +1716,105 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
   .staff-form-foot{flex-direction:column;align-items:stretch}
   .staff-form-foot .error{text-align:left}
 }
+/* Settings → Roles & permissions.
+
+   Appended after the `.staff-*` block on purpose. `.drawer` (0,1,0) has to keep outranking the
+   bare `dialog` rules earlier in this file, and the role editor is one more `.drawer`, so nothing
+   here restates the shell - it only adds the tools bar the shell did not have and the two sheets
+   that go inside it. The table is `.taxpay-table`, the switches are `.pref-toggle`, the rows are
+   `.pref-row`, and the row menus are `.row-menu`: this screen introduces no new component. */
+.roles-root{min-width:0}
+.roles-panel{min-width:0}
+.roles-name{display:flex;flex-direction:column;gap:2px;min-width:0}
+.roles-name small{color:var(--muted);font-size:11px;font-weight:600}
+.roles-description{font-weight:400}
+.roles-col-assigned{width:1%;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.roles-col-surface{white-space:nowrap}
+.roles-col-surface .text-button{padding:0;font-size:12.5px;font-weight:650}
+.roles-count{display:block;color:var(--muted);font-size:11px;font-weight:600;font-variant-numeric:tabular-nums}
+.roles-full{color:var(--muted);font-size:12.5px;font-weight:650}
+/* A retired role. Set apart from the plain `<small>` beside it - Built-in is an identity, this is
+   a state - and carrying its own word so it never depends on the switch's shape or colour. */
+.roles-off{justify-self:start;padding:1px 7px;border-radius:20px;background:var(--surface-2);color:var(--ink);font-size:10.5px;font-weight:700;letter-spacing:.02em}
+.roles-switch{display:flex;align-items:center;margin:0}
+.roles-actions{width:1%;text-align:right;white-space:nowrap}
+.roles-actions .row-menu{display:inline-block}
+/* The client directory positions its menu `fixed` and places it with a script on every scroll.
+   These tables are short and sit in normal flow, so the menu is anchored to its own row instead
+   and needs no placement pass at all. */
+.roles-menu .row-menu-list{position:absolute;top:calc(100% + 4px);right:0;left:auto;z-index:20;min-width:170px}
+.roles-table tr.is-owner td{background:var(--brand-tint)}
+.roles-table tr.is-owner td:first-child{box-shadow:inset 3px 0 0 var(--brand)}
+.roles-loading{padding:18px 2px;color:var(--muted);font-size:13px}
+.roles-empty{margin:var(--space-4) 0;color:var(--muted);font-size:12.5px}
+.roles-people,.roles-requests{margin-top:var(--space-5);padding-top:var(--space-4);border-top:1px solid var(--line)}
+.roles-people h4,.roles-requests h4{margin:0;font-size:13px}
+.roles-people .panel-head{align-items:flex-start;margin-bottom:var(--space-3)}
+.roles-people .panel-head p{max-width:60ch;margin:2px 0 0}
+
+/* The editor. Head, tools, scrolling body, foot - the tools bar is a SIBLING of the body rather
+   than its first child, so the filter and the count it reports stay on screen while the groups
+   under them scroll. */
+.drawer-tools{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--space-3);padding:var(--space-3) var(--space-5);border-bottom:1px solid var(--line)}
+.role-filter{flex:1 1 220px;min-width:0;margin:0}
+.role-filter input{width:100%;min-height:var(--control-h)}
+.role-filter-count{flex:0 0 auto;color:var(--muted);font-size:11.5px;font-weight:600}
+.role-dirty{margin-right:auto;color:var(--muted);font-size:11.5px;font-weight:650}
+#role-editor .drawer-foot{align-items:center}
+#role-editor-error:empty{display:none}
+
+.role-masters{margin:0 0 var(--space-4);padding:0 0 var(--space-2);border-bottom:1px solid var(--line)}
+.role-master-row .pref-name{font-size:13.5px}
+/* A group's own master, listed among its rows because the Permissions sheet renders no master
+   switches above its groups. It carries the same weight as a master on the Access Control sheet,
+   which is where that treatment already means "this one gates the others". The row also says so in
+   words, so the distinction does not rest on a half-point of type. */
+.role-permission-row.is-group-master .pref-name{font-size:13.5px}
+.role-group{margin:0 0 var(--space-2);border-bottom:1px solid var(--line)}
+.role-group:last-child{border-bottom:0}
+.role-group-summary{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);min-height:var(--control-h);padding:6px 2px;list-style:none;cursor:pointer;border-radius:var(--radius-sm)}
+.role-group-summary::-webkit-details-marker{display:none}
+.role-group-summary::before{content:"";flex:0 0 auto;width:0;height:0;border:5px solid transparent;border-left-color:var(--muted);transition:transform .15s}
+.role-group[open]>.role-group-summary::before{transform:rotate(90deg) translateX(-1px)}
+.role-group-summary:hover{background:var(--surface-2)}
+.role-group-summary:focus-visible{outline:3px solid var(--coral);outline-offset:2px}
+.role-group-name{flex:0 1 auto;min-width:0;font-size:13px;font-weight:700}
+/* Colour is never the only signal: the count says "Off" in words when the master is down, so the
+   state survives being dimmed and survives not being able to tell these greys apart. */
+.role-group-count{flex:0 0 auto;color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.02em;font-variant-numeric:tabular-nums}
+.role-group-tools{display:flex;gap:var(--space-3);padding:0 2px var(--space-2)}
+.role-group-tools .text-button{padding:0;font-size:11.5px;font-weight:700}
+.role-group-rows{padding:0 2px}
+.role-group-rows .pref-row:last-child{border-bottom:0}
+/* Dimmed and inert, never hidden and never zeroed: the values are still the role's, they are just
+   not in effect while the master above them is off. */
+.role-group.is-off .role-group-name,.role-group.is-off .role-group-count{color:var(--muted)}
+.role-permission-row.is-off .pref-name,.role-permission-row.is-off .pref-hint{color:var(--muted);opacity:.75}
+/* An unbuilt group, and why it is not `.is-off`.
+   The two mean opposite things and are true of the same group at the same time - Payroll is every
+   row unbuilt AND folds shut whenever `reports.view` is down - so they are given different SLOTS
+   rather than a shared one: `.role-group-count` goes on saying "Off" or "n of m", and the badge
+   sits beside the name. Three signals separate them and none is colour alone: the count's own word,
+   the direction of the treatment (dimmed away vs marked in amber), and - the one that settles it -
+   `.is-off` disables every switch while `.is-unbuilt` leaves every switch working. That is the
+   product decision made visible: these keys ship early so a salon can say who should hold them the
+   day the feature lands, which is only possible if the switch moves. */
+.role-group-heading{display:flex;flex:1 1 auto;align-items:center;gap:var(--space-2);min-width:0}
+.role-group-unenforced{flex:0 0 auto}
+/* The note is an explanation, not an alert, and appears once per group rather than once per row -
+   so it is quiet text with an amber rule rather than a tinted block. Several tinted blocks down one
+   sheet would put the sheet's loudest treatment on its least urgent statement. */
+.role-group-note{max-width:74ch;margin:var(--space-2) 2px var(--space-3);padding:0 0 0 9px;border-left:2px solid var(--warning);color:var(--muted);font-size:11.5px;font-weight:400;line-height:1.45}
+.role-group-note strong{color:var(--warning);font-weight:700}
+.role-hidden-note{max-width:74ch;margin:var(--space-4) 2px 0;color:var(--muted);font-size:11.5px;font-weight:400;line-height:1.45}
+.role-hide-unbuilt{display:flex;flex:1 0 100%;align-items:center;gap:var(--space-2);min-height:var(--control-h);margin:0;font-size:12px;font-weight:600}
+.role-hide-unbuilt input{flex:0 0 auto;width:16px;height:16px;min-height:0;margin:0;padding:0;border-radius:3px;accent-color:var(--brand)}
+.role-hide-unbuilt small{color:var(--muted);font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums}
+@media(max-width:620px){
+  .drawer-tools{padding:var(--space-3) var(--space-4)}
+  .roles-people .panel-head{flex-direction:column;align-items:stretch;gap:var(--space-2)}
+  .role-permission-row,.role-master-row{flex-wrap:wrap;row-gap:var(--space-2)}
+  .role-group-heading{flex-wrap:wrap;row-gap:var(--space-1)}
+  .role-group-note{margin-right:0}
+}
+@media(prefers-reduced-motion:reduce){.role-group-summary::before{transition:none}}

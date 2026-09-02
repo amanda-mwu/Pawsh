@@ -49,6 +49,10 @@ async function api(path, options = {}) {
 }
 
 function settleUnauthenticated() {
+  // A rejected sign-in is a 401 as well, and it arrives here on its way to the error message. Only
+  // a session that actually ended empties the form: a wrong password has to leave the address the
+  // person just typed in place, or correcting it would mean retyping both fields.
+  const sessionEnded=state.me!==null||!$("#app-view").hidden;
   state.me=null;
   state.locations=[];
   closeLocationMenu();
@@ -63,6 +67,32 @@ function settleUnauthenticated() {
   // through the capture dialog's own guard: this is teardown, and there is nobody to ask.
   stopTerminalCapturePoll();
   $$("dialog").forEach((dialog) => { if (dialog.open) dialog.close(); });
+  if (sessionEnded) resetAuthForm();
+}
+
+/**
+ * Returns the sign-in screen to the state a stranger should find it in.
+ *
+ * A salon's front desk is a shared machine, so the address the last person signed in with must not
+ * be sitting in the box for whoever walks up next. The markup asks the browser not to offer it
+ * back (`autocomplete="off"` on the email and salon-name fields); this covers the other half,
+ * because every route back to sign-in - the account menu, a lapsed session, a 401 reconciled
+ * mid-request - swaps the view rather than loading a page, so the fields keep whatever they last
+ * held. It hangs off settleUnauthenticated for that reason, rather than off the button.
+ */
+function resetAuthForm() {
+  const form=$("#auth-form");
+  form.reset();
+  // reset() restores each field's default, which is empty here, but a value the browser filled in
+  // is not reliably a default it gives back. Blanking them outright is what was actually asked for,
+  // and it covers the salon-name field signup uses as well as the two credentials.
+  $$("#auth-form input").forEach((input)=>{input.value="";});
+  $("#auth-error").textContent="";
+  // Focus has to move whether or not it saves a click: it was last on something inside the shell
+  // that is now hidden, and leaving it there strands keyboard and screen-reader users. The first
+  // field still on offer is both the safe landing place and the one they are about to type into -
+  // the email field in every case except the invitation and reset screens, where it is hidden.
+  $$("#auth-form input").find((input)=>!input.closest("label").hidden)?.focus();
 }
 
 async function reconcilePermissions() {
@@ -133,7 +163,26 @@ function normalizeBreedFilter(value){return String(value).trim().toLowerCase().r
 function allowed(permission) {
   return Boolean(state.me?.isOwner || state.me?.permissions?.includes(permission));
 }
+// The Dashboard nav button had no gate at all while the data behind it was gated on reports.view,
+// so a member without that permission opened a dashboard of four zeroes. The gate is `dashboard.view`,
+// which only exists once the roles backend is serving this workspace - and until then no role can
+// grant it, so applying it early would hide Dashboard from every member instead of the right ones.
+// `/api/me` carrying a `role` field is the signal that the roles backend has landed.
+function rolesBackendPresent(){return Boolean(state.me)&&"role" in state.me;}
+// activateView refuses a view whose nav button is hidden, so a landing view this session may not
+// open would leave the shell blank. Dashboard is the default landing and is now gated, so there
+// has to be somewhere else to land: the first destination this session actually has.
+function firstPermittedView(){
+  return $$("#primary-navigation [data-view]").find(button=>!button.hidden)?.dataset.view||null;
+}
+function applyDashboardNavGate(){
+  const dashboard=$('[data-testid="nav-dashboard"]');
+  if(!dashboard)return;
+  if(rolesBackendPresent())dashboard.dataset.permission="dashboard.view";
+  else{delete dashboard.dataset.permission;dashboard.hidden=false;}
+}
 function applyPermissions() {
+  applyDashboardNavGate();
   $$("[data-permission]").forEach((element) => {
     const permitted=allowed(element.dataset.permission);
     if(!permitted||!element.classList.contains("view"))element.hidden=!permitted;
@@ -195,7 +244,7 @@ async function bootstrap() {
     applyPermissions();
     await refresh();
     $("#auth-view").hidden = true; $("#app-view").hidden = false;
-    const initialView=viewForPath(location.pathname);if(initialView==="client-profile"){const customerId=location.pathname.match(/^\/clients\/([^/]+)$/)?.[1];if(customerId)await openClientProfile(customerId);else activateView("customers",{history:"replace"});}else{activateView(initialView,{history:"replace"});if(initialView==="admin-settings")openSettingsForPath({history:"replace"});}
+    const initialView=viewForPath(location.pathname);if(initialView==="client-profile"){const customerId=location.pathname.match(/^\/clients\/([^/]+)$/)?.[1];if(customerId)await openClientProfile(customerId);else activateView("customers",{history:"replace"});}else{if(!activateView(initialView,{history:"replace"})){const fallback=firstPermittedView();if(fallback)activateView(fallback,{history:"replace"});}if(initialView==="admin-settings")openSettingsForPath({history:"replace"});}
   } catch { $("#auth-view").hidden = false; $("#app-view").hidden = true; }
 }
 
@@ -227,7 +276,7 @@ async function refresh() {
   if(!state.calendar.selectedDate){state.calendar.selectedDate=state.appointments[0]?appointmentLocalValue(state.appointments[0]).slice(0,10):businessDate();state.calendar.weekStart=weekStart(state.calendar.selectedDate);state.calendar.month=state.calendar.selectedDate.slice(0,7);}
   $("#today").textContent = new Intl.DateTimeFormat([], {timeZone:schedulingZone(),weekday:"long",month:"short",day:"numeric"}).format(new Date());
   applyPermissions();
-  renderDashboard(dashboard); renderCustomersEnhanced(); renderSetup(); renderServices(); renderAppointments(); renderReports();
+  renderDashboard(dashboard); renderCustomersEnhanced(); renderRoles(); renderServices(); renderAppointments(); renderReports();
 }
 
 function schedulingZone(){return state.me?.business?.timezone||"UTC";}
@@ -1157,20 +1206,7 @@ async function voidPayment(paymentId,invoiceId,provider) {
     }catch(error){toast(error.message);}
   });
 }
-function renderSetup() {
-  if(!$("#member-list")||!$("#access-request-list"))return;
-  $("#member-list").innerHTML = state.members.length ? state.members.map((member) => `<div><span><strong>${escape(member.email)}</strong><small>${member.isOwner ? "Owner" : `${member.permissions.length} permissions`}</small></span>${member.isOwner ? "" : `<span><button class="text-button edit-member" data-id="${member.id}">Access</button> <button class="text-button remove-member" data-id="${member.id}">Remove</button></span>`}</div>`).join("") : `<p class="empty">Only you have workspace access.</p>`;
-  $$(".edit-member").forEach((button)=>button.addEventListener("click",()=>editMember(button.dataset.id)));
-  $$(".remove-member").forEach((button)=>button.addEventListener("click",()=>removeMember(button.dataset.id)));
-  const requests=state.accessRequests.filter(request=>request.status==="pending");
-  $("#access-request-list").innerHTML=requests.length?requests.map(request=>`<div><span><strong>${escape(request.requesterName)}</strong><small>${escape(request.requesterEmail)} Â· ${new Date(request.createdAt).toLocaleDateString()}</small></span><span><button type="button" class="text-button approve-access-request" data-id="${request.id}">Approve</button> <button type="button" class="text-button reject-access-request" data-id="${request.id}">Reject</button></span></div>`).join(""):`<p class="empty">No pending requests.</p>`;
-  $$(".approve-access-request").forEach(button=>button.addEventListener("click",()=>reviewAccessRequest(button.dataset.id,"approve")));
-  $$(".reject-access-request").forEach(button=>button.addEventListener("click",()=>reviewAccessRequest(button.dataset.id,"reject")));
-}
-async function reviewAccessRequest(id,decision){
-  if(!confirm(`${decision==="approve"?"Approve":"Reject"} this workspace access request?`))return;
-  try{const result=await api(`/api/workspace-access-requests/${id}/${decision}`,{method:"POST"});let copied=false;if(result.acceptancePath&&navigator.clipboard){try{await navigator.clipboard.writeText(`${location.origin}${result.acceptancePath}`);copied=true;}catch{copied=false;}}toast(result.acceptancePath?(copied?"Approved; secure setup link copied":"Approved; the requester invitation was queued"):"Access request updated");await refresh();}catch(error){toast(error.message);}
-}
+
 let clientRowMenusBound=false;
 function closeClientRowMenus(){
   $$("#customer-grid .row-menu[open]").forEach(menu=>{menu.open=false;menu.querySelector("summary")?.setAttribute("aria-expanded","false");});
@@ -1498,37 +1534,6 @@ function renderReports() {
   $("#report-charts").hidden=state.reportMode!=="charts";$("#report-table").hidden=state.reportMode!=="table";$("#report-charts-mode").setAttribute("aria-pressed",String(state.reportMode==="charts"));$("#report-table-mode").setAttribute("aria-pressed",String(state.reportMode==="table"));
 }
 
-const permissionLabels = {
-  "calendar.view":"View calendar","appointments.view":"View appointments","appointments.create":"Create appointments",
-  "appointments.edit":"Edit appointments","appointments.cancel":"Cancel appointments",
-  "appointments.override_conflict":"Override scheduling conflicts","customers.view":"View customers",
-  "customers.edit":"Edit customers","pets.view":"View pets","pets.edit":"Edit pets",
-  "pets.care.view":"View Pet Care details","pets.care.edit":"Edit Pet Care details",
-  "operations.check_in":"Check in pets","operations.perform_service":"Perform services",
-  "operations.complete":"Complete services","checkout.perform":"Perform checkout","payments.view":"View payments",
-  "discounts.apply":"Apply discounts","services.manage":"Manage services","team.manage":"Manage team",
-  "reports.view":"View reports","settings.manage":"Manage settings"
-};
-function permissionFields(selected=[]) {
-  return `<fieldset class="wide permission-grid"><legend>Permissions</legend>${Object.entries(permissionLabels).map(([value,label])=>`<label><input type="checkbox" name="permissions" value="${value}" ${selected.includes(value)?"checked":""}> ${label}</label>`).join("")}</fieldset>`;
-}
-function editMember(id) {
-  const member=state.members.find((item)=>item.id===id);
-  openModal("Edit member access",permissionFields(member.permissions)+`<label class="wide transfer-control"><input type="checkbox" name="transferOwnership"> Transfer protected business ownership to this member</label>`,async(form)=>{
-    if(form.get("transferOwnership")){
-      if(!confirm("Transfer ownership? Your account will no longer have protected Owner authority."))throw new Error("Ownership transfer cancelled");
-      await api("/api/business/transfer-ownership",{method:"POST",body:JSON.stringify({membershipId:id})});
-      state.me=await api("/api/me");
-      return;
-    }
-    await api(`/api/members/${id}/permissions`,{method:"PATCH",body:JSON.stringify({permissions:form.getAll("permissions")})});
-  });
-}
-async function removeMember(id) {
-  if (!confirm("Remove this member’s Pawsh access?")) return;
-  try { await api(`/api/members/${id}`,{method:"DELETE"});toast("Member access removed");await refresh(); }
-  catch(error){toast(error.message);}
-}
 // An employee with rows in employee_services is only set up for those, and the server refuses the
 // assignment at booking, service-change and groomer-change time. So every groomer picker takes the
 // services in play and renders the rest as disabled options carrying the reason - disabled rather
@@ -2709,16 +2714,35 @@ const actions = {
   "new-service": () => openModal("New service",
     field("name","Service name","text","required")+field("baseDurationMinutes","Duration (minutes)","number",'required min="1"')+field("basePrice","Fixed price ($)","number",'required min="0" step=".01"')+select("category","Category",[["GENERAL","General"],["DOG_ADDON","Dog add-on"],["A_LA_CARTE","À la carte"],["CAT","Cat"]],true,"GENERAL")+field("description","Description","text","",true),
     (form) => { const o=Object.fromEntries(form); o.baseDurationMinutes=Number(o.baseDurationMinutes); o.basePriceMinor=Math.round(Number(o.basePrice)*100);o.pricingMode="FIXED";o.active=true;delete o.basePrice; return api("/api/services",{method:"POST",body:JSON.stringify(o)}); }),
-  "invite-member": () => openModal("Invite workspace member",
-    field("email","Email","email","required",true)+
-    `<label class="wide">Access preset<select name="preset"><option value="groomer">Groomer</option><option value="receptionist">Receptionist</option><option value="manager">Manager</option></select></label>`,
-    async(form)=>{
+  // An invitation carries a ROLE and nothing else. The flattened-preset shape this used to accept
+  // was retired with the per-member permission column and now returns 400, so there is no older
+  // path worth keeping: an invitation that does not name a role is not something the server can
+  // store, and a salon with no roles yet has to make one before it can hand anybody access.
+  "invite-member": async () => {
+    let roles=[];
+    try{
+      const result=await api("/api/roles");
+      roles=(result?.roles||[]).filter(role=>role.enabled!==false);
+    }catch(error){toast(error.message);return;}
+    if(!roles.length){
+      toast("Add a role first. An invitation has to say what the person is being given.");
+      return;
+    }
+    openModal("Invite workspace member",
+      field("email","Email","email","required",true)
+      +`<label class="wide">Role<select data-testid="field-roleId" name="roleId" required>${roles.map(role=>`<option value="${escapeAttr(role.id)}">${escape(role.name)}</option>`).join("")}</select></label>`,
+      async(form)=>{
       const values=Object.fromEntries(form);
-      const definitions=await api("/api/permissions");
-      const result=await api("/api/members/invitations",{method:"POST",body:JSON.stringify({email:values.email,permissions:definitions.presets[values.preset]})});
-      await navigator.clipboard.writeText(`${location.origin}${result.acceptancePath}`);
-      toast("Secure invitation link copied");
-    }),
+      const result=await api("/api/members/invitations",{method:"POST",
+        body:JSON.stringify({email:values.email,roleId:values.roleId})});
+      let copied=false;
+      if(result?.acceptancePath&&navigator.clipboard){
+        try{await navigator.clipboard.writeText(`${location.origin}${result.acceptancePath}`);copied=true;}catch{copied=false;}
+      }
+      if(rolesState.roles)await loadRoleInvitations();
+      return {afterClose:null,message:copied?"Secure invitation link copied":"Invitation queued"};
+    });
+  },
   "business-settings": () => openModal("Business settings",
     field("name","Salon name","text",`required value="${escape(state.me.business.name)}"`,true)+
     field("timezone","IANA timezone","text",`required value="${escape(state.me.business.timezone)}"`)+
@@ -2969,7 +2993,7 @@ $("#profile-cancel").addEventListener("click",()=>{renderAccountIdentity();$("#p
 $("#profile-workspace-select").addEventListener("change",async event=>{try{await api("/api/workspaces/select",{method:"POST",body:JSON.stringify({businessId:event.target.value})});location.reload();}catch(error){toast(error.message);renderAccountIdentity();}});
 $("#password-form").addEventListener("submit",async event=>{event.preventDefault();const form=event.currentTarget,values=Object.fromEntries(new FormData(form)),error=$("#password-error"),button=form.querySelector("button[type=submit]");error.textContent="";if(values.newPassword!==values.confirmPassword){error.textContent="New passwords do not match";form.elements.confirmPassword.focus();return;}button.disabled=true;try{await api("/api/me/password",{method:"POST",body:JSON.stringify({currentPassword:values.currentPassword,newPassword:values.newPassword})});form.reset();toast("Password changed; other sessions signed out");}catch(problem){error.textContent=problem.message;}finally{button.disabled=false;}});
 const settingsCategories=[
-  ["account","Account","canonical"],["staff","Staff","canonical"],["business","Business","functional"],["availability","Availability","canonical"],["appointment-schedule","Appointment schedule","placeholder"],["locations","Locations","placeholder"],["permissions","Permissions","functional"],["services","Services","canonical"],["payroll","Payroll","placeholder"],["pet-options","Pet options","canonical"],["tax-payments","Tax & payments","functional"],["discounts","Coupons & discounts","placeholder"],["automated-messages","Automated messages","functional"],["sms-auto-reply","SMS auto-reply","placeholder"],["agreements","Agreements","placeholder"],["online-booking","Online booking","placeholder"],["intake-form","Intake form","placeholder"],["client-portal","Client portal","placeholder"],["loyalty","Loyalty program","placeholder"],["reviews","Review booster","placeholder"],["report-cards","Report card","placeholder"],["integrations","Integrations","placeholder"]
+  ["account","Account","canonical"],["staff","Staff","canonical"],["business","Business","functional"],["availability","Availability","canonical"],["appointment-schedule","Appointment schedule","placeholder"],["locations","Locations","placeholder"],["permissions","Roles & permissions","functional"],["services","Services","canonical"],["payroll","Payroll","placeholder"],["pet-options","Pet options","canonical"],["tax-payments","Tax & payments","functional"],["discounts","Coupons & discounts","placeholder"],["automated-messages","Automated messages","functional"],["sms-auto-reply","SMS auto-reply","placeholder"],["agreements","Agreements","placeholder"],["online-booking","Online booking","placeholder"],["intake-form","Intake form","placeholder"],["client-portal","Client portal","placeholder"],["loyalty","Loyalty program","placeholder"],["reviews","Review booster","placeholder"],["report-cards","Report card","placeholder"],["integrations","Integrations","placeholder"]
 ];
 const settingsDescriptions={"appointment-schedule":"Configurable appointment policy is not yet available. Calendar display preferences remain under the Calendar gear.",locations:"Pawsh currently supports one active scheduling location per workspace. Multi-location management requires the approved location architecture.",payroll:"Payroll, commissions, and pay runs are not yet available in Pawsh.",discounts:"Manual checkout discounts are supported, but a coupon or discount-program management system is not yet available.","sms-auto-reply":"Pawsh does not currently provide an SMS auto-reply integration.",agreements:"Agreement and waiver template management is not yet available.","online-booking":"Public online-booking configuration is not yet available.","intake-form":"A configurable intake-form builder is not yet available.","client-portal":"Pawsh does not currently provide a client portal.",loyalty:"A points or rewards program is not yet available.",reviews:"Automated external review requests are not yet available.","report-cards":"Configurable grooming report cards are not yet available.",integrations:"No external integrations are currently configured."};
 function settingsPathCategory(){if(legacyBreedPaths.has(location.pathname))return "pet-options";const match=location.pathname.match(/^\/settings\/([^/]+)$/);return settingsCategories.some(([id])=>id===match?.[1])?match[1]:"account";}
@@ -3201,14 +3225,18 @@ function staffManages(){return allowed("team.manage");}
 // though it were the whole truth.
 function staffMembersLoaded(){return Array.isArray(state.members)&&state.members.length>0;}
 
-// There is no role column anywhere in the schema. The only persisted distinction is
-// business_memberships.is_owner, and permission presets are expanded to a flat array at invite
-// time with the preset name discarded, so these are the only words available.
+// The role is the salon's own word for what this account can do, and it is set in exactly one
+// place - Settings → Roles & permissions - so it is reported here and changed there. Ownership is
+// not a role anybody assigns, so it still outranks whatever role the membership carries. A server
+// that does not report a role on the membership yet falls back to the words that were available
+// before roles existed rather than claiming the person has none.
 function staffRoleLine(employee){
   if(!employee.membershipId)return "No linked account";
   if(!staffManages())return "Linked to a workspace account";
   if(!employee.accountEmail)return "Linked account not found";
-  const line=`${employee.accountIsOwner?"Owner":"Workspace member"} · ${employee.accountEmail}`;
+  const member=(state.members||[]).find(item=>item.id===employee.membershipId);
+  const role=employee.accountIsOwner?"Owner":member?.role?.name||member?.roleName||"Workspace member";
+  const line=`${role} · ${employee.accountEmail}`;
   return employee.accountStatus&&employee.accountStatus!=="active"?`${line} · access ${employee.accountStatus}`:line;
 }
 function staffServicesSummary(serviceIds){
@@ -3260,7 +3288,10 @@ function staffDetailHeadMarkup(record){
   return `<div class="staff-detail-head">`
     +`<span class="staff-avatar staff-avatar-lg"${slot===""?"":` data-groomer-slot="${slot}"`} aria-hidden="true">${escape(staffInitial(name))}</span>`
     +`<div><p class="eyebrow">Staff</p><h3>${escape(name)}</h3>`
-    +`<p class="staff-detail-role">${escape(record.draft?"No linked account":staffRoleLine(record))}</p></div>`
+    +`<p class="staff-detail-role">${escape(record.draft?"No linked account":staffRoleLine(record))}</p>`
+    // Read-only on purpose: two screens that both write the role is how the two drift apart.
+    +(record.draft||!record.membershipId||!staffManages()?"":`<p class="staff-detail-role-link"><button type="button" class="text-button staff-availability-link" data-settings-goto="permissions" data-testid="staff-role-link">Change this in Roles &amp; permissions</button></p>`)
+    +`</div>`
     +(record.draft||record.active?"":`<span class="staff-chip is-inactive">Inactive</span>`)
     +`</div>`;
 }
@@ -3326,9 +3357,9 @@ function staffFormMarkup(record){
 function staffActiveRefusalMarkup(refusal){
   const account=refusal.accountEmail?`<strong>${escape(refusal.accountEmail)}</strong>`:"the linked workspace account";
   const copy={
-    disabled:`Cannot reactivate: ${account}'s workspace access was revoked. Clear the linked account above, or restore their access in Settings → Permissions.`,
+    disabled:`Cannot reactivate: ${account}'s workspace access was revoked. Clear the linked account above, or invite them again from Settings → Roles & permissions.`,
     account_disabled:`Cannot reactivate: the account ${account} has been disabled. Clear the linked account above to reactivate this person without a login.`,
-    invited:`Cannot reactivate: ${account} has not accepted their invitation yet. Clear the linked account above, or resend the invitation in Settings → Permissions.`,
+    invited:`Cannot reactivate: ${account} has not accepted their invitation yet. Clear the linked account above, or cancel and re-send the invitation in Settings → Roles & permissions.`,
     removed:`Cannot reactivate: the linked workspace account no longer exists. Clear the linked account above to reactivate this person without a login.`
   }[refusal.accountStatus]
     ||`Cannot reactivate: ${account} is no longer active. Clear the linked account above to reactivate this person without a login.`;
@@ -4702,7 +4733,7 @@ function openTaxPayMethodEditor(methodId){
   // it, so its name and type are read-only text rather than inputs that look editable and fail.
   const identity=method?.builtIn
     ?`<p class="wide fine"><strong>${escape(method.name)}</strong> records as <strong>${escape(taxPaySettlementLabel(method.settlementType))}</strong>. A built-in method's name and settlement type are fixed, because payments already recorded display through them.</p>`
-    :field("name","Method name","text",`required maxlength="60" value="${escapeAttr(method?.name||"")}"`)
+    :field("name","Method name","text",`required maxlength="80" value="${escapeAttr(method?.name||"")}"`)
       +select("settlementType","Records as",types,false,method?.settlementType||"");
   openModal(method?"Edit payment method":"New payment method",
     identity+field("processorLabel","Processor (optional)","text",`maxlength="60" value="${escapeAttr(method?.processorLabel||"")}"`,true),
@@ -4902,7 +4933,7 @@ function openTerminalDrawer(processorId,origin){
 function openTerminalEditor(){
   const processorId=taxPayState.terminalProcessorId;if(!processorId)return;
   openModal("Add terminal",
-    field("name","Terminal name","text",'required maxlength="60"')
+    field("name","Terminal name","text",'required maxlength="80"')
     +field("locationLabel","Location (optional)","text",'maxlength="80"')
     +field("deviceCode","Device code (optional)","text",'maxlength="40"',true),
     async form=>{
@@ -5189,7 +5220,7 @@ function openSquareDeviceEditor(){
     }
     const places=(state.locations||[]).map(location=>[location.id,location.name]);
     openModal("Add terminal",
-      field("label","Terminal name","text",'required maxlength="60" placeholder="Front desk"')
+      field("label","Terminal name","text",'required maxlength="80" placeholder="Front desk"')
       +(places.length>1?select("locationId","Salon location",places,false,state.me?.locationId||""):"")
       +select("squareLocationId","Square location",usable.map(location=>[location.id,location.name||location.id]),true),
       async form=>{
@@ -5402,7 +5433,1160 @@ function checkoutTipPercents(){
   const tips=checkoutOptions.data?.tipPercents;
   return Array.isArray(tips)?tips.map(Number):[];
 }
-function renderSettingsCategory(category=settingsPathCategory(),{history="replace"}={}){const definition=settingsCategories.find(([id])=>id===category)||settingsCategories[0],[id,title]=definition,nav=$("#settings-navigation"),content=$("#settings-content");if(!nav||!content)return;nav.innerHTML=settingsCategories.map(([key,label])=>`<button type="button" data-settings-category="${key}" class="${key===id?"active":""}" ${key===id?'aria-current="page"':""}>${escape(label)}</button>`).join("");let html="";if(id==="account")html=settingsLink("Account","Personal identity and password security remain in your canonical account workspace.","Manage profile & security","profile-account");else if(id==="staff")html=`<div id="staff-root" class="staff-root"></div>`;else if(id==="business")html=`<article class="settings-panel"><h3>Business</h3><p>Manage the workspace name and authoritative timezone, currency, tax rate, and reminder lead time.</p><button type="button" class="primary compact settings-business-action">Edit business settings</button></article>`;else if(id==="availability")html=`<div id="availability-root" class="availability-root"></div>`;else if(id==="permissions")html=allowed("team.manage")?`<article class="settings-panel"><div class="panel-head"><div><h3>Permissions</h3><p>Manage workspace membership and server-authorized access.</p></div><button type="button" class="secondary compact settings-invite">+ Invite</button></div><div id="member-list" class="simple-list"></div><h4>Pending access requests</h4><div id="access-request-list" class="simple-list"></div></article>`:settingsPlaceholder(id,title);else if(id==="services")html=settingsLink("Services","Service names, pricing, durations, and availability have one canonical workspace.","Open Services","services");else if(id==="pet-options")html=`<div id="pet-options-workspace" class="pet-options-workspace"></div>`;else if(id==="tax-payments")html=`<div id="taxpay-root" class="taxpay-root"></div>`;else if(id==="automated-messages")html=`<article class="settings-panel"><h3>Automated messages</h3><p>Pawsh’s durable reminder/outbox flow uses the configured reminder lead time. Template and channel management are deferred.</p><button type="button" class="primary compact settings-business-action">Manage reminder timing</button></article>`;else html=settingsPlaceholder(id,title);content.innerHTML=`<div class="settings-content-head"><p class="eyebrow">Settings</p><h2>${escape(title)}</h2></div>${html}`;nav.querySelectorAll("[data-settings-category]").forEach(button=>button.addEventListener("click",()=>renderSettingsCategory(button.dataset.settingsCategory,{history:"push"})));content.querySelectorAll(".settings-canonical-link").forEach(button=>button.addEventListener("click",()=>showView(button.dataset.target)));content.querySelectorAll(".settings-business-action").forEach(button=>button.addEventListener("click",actions["business-settings"]));content.querySelector(".settings-invite")?.addEventListener("click",actions["invite-member"]);if(id==="permissions")renderSetup();if(id==="staff")renderStaff();if(id==="pet-options")renderPetOptions();if(id==="availability"){renderAvailability();ensureAvailabilityData();}if(id==="tax-payments"){renderTaxPayments();ensureTaxPaymentsData();}if(history!=="none")globalThis.history[history==="push"?"pushState":"replaceState"]({view:"admin-settings",settingsCategory:id},"",`/settings/${id}`);content.focus({preventScroll:true});}
+// ---------------------------------------------------------------------------
+// Settings → Roles & permissions
+//
+// A role is a named set of permissions the salon assigns to people. The workspace is a table of
+// roles over a list of the people holding them, and each role row opens TWO editors rather than
+// one: "Access Control" carries what the reference calls Report & Dashboard - the two masters and
+// the three groups they gate - and "Permissions" carries everything else.
+//
+// Both write the SAME `permissions` array on the role, which is why they share one drawer element
+// and can never be open at once. One editor at a time is what makes `version` a sufficient
+// concurrency check rather than a race between two halves of the same screen.
+//
+// The editor holds the role's WHOLE permission set in `selected`, not the subset its sheet can
+// see, and every save sends that whole set. A filter, a folded group and a master switched off all
+// change what is on screen; none of them change what is saved. Reading the payload off the
+// rendered rows instead would silently drop every permission the operator had filtered away.
+// ---------------------------------------------------------------------------
+
+// Which catalog groups belong to the Access Control sheet. Split by group id because that is the
+// only stable name the contract gives a group, and a group id this list does not know falls
+// through to Permissions - so a group added later is editable somewhere rather than unreachable.
+const ROLE_ACCESS_GROUP_IDS = new Set(["dashboard", "payroll", "sales"]);
+
+const ROLE_TABS = [["roles", "Roles"], ["login-control", "Login Control (only for web)"]];
+const MEMBER_STATUS_LABELS = { active: "Active", invited: "Invited", disabled: "Removed", suspended: "Suspended", revoked: "Removed" };
+
+const rolesState = {
+  tab: "roles", roles: null, catalog: null, loading: false, error: null,
+  invitations: [], invitationsUnavailable: false, editor: null, restoreFocus: null
+};
+
+function rolesManaged(){return allowed("team.manage");}
+function roleCatalogGroups(){return Array.isArray(rolesState.catalog?.groups)?rolesState.catalog.groups:[];}
+// Both halves have to be there. The role list without the catalog is a table of names with no way
+// to say what any of them mean, which is worse than saying the screen is not ready.
+function rolesReady(){return Array.isArray(rolesState.roles)&&roleCatalogGroups().length>0;}
+function roleCatalogPermission(key){
+  for(const group of roleCatalogGroups()){
+    const row=(group.permissions||[]).find(permission=>permission.key===key);
+    if(row)return row;
+  }
+  return null;
+}
+// The catalog names its own masters - it lists `reports.view` and `dashboard.view` in a Reporting
+// group as well as naming them masters - so the label comes from the server like every other one.
+// Restating them here would be a second source of truth for the same words.
+function roleMasterLabel(key){return roleCatalogPermission(key)?.label||key;}
+// Which sheet a group is edited on.
+function roleGroupSurface(group){return ROLE_ACCESS_GROUP_IDS.has(group.id)?"access":"permissions";}
+// Every masterKey ONE SHEET presents. A master is presented once PER SHEET - never twice on the
+// same sheet, as a master switch and again as an ordinary row, which would be two switches for one
+// key sitting where they can be seen disagreeing.
+//
+// Per sheet, not per catalog, and the difference is the whole point. `dashboard.view` and
+// `reports.view` are each a listed row of their own Permissions group AND the masterKey of an
+// Access Control group, so they are MEANT to appear on both sheets: the reference names "Access
+// Dashboard" and "Access Report" in both places, and an owner hunting for either finds it wherever
+// they thought to look. That is safe because both sheets read the same `editor.selected` and only
+// one is open at a time, so the two renderings cannot hold different values - the thing a single
+// catalog-wide check was there to prevent never arises across sheets. Applying it across sheets
+// anyway is what used to make an entire group render as nothing at all.
+function roleMasterKeys(surface){
+  const keys=new Set();
+  for(const group of roleCatalogGroups()){
+    if(group.masterKey&&roleGroupSurface(group)===surface)keys.add(group.masterKey);
+  }
+  return keys;
+}
+/**
+ * A group's own rows: everything it lists, minus any key that is ANOTHER group's master on the
+ * same sheet.
+ *
+ * A group's OWN master stays among its rows, and that is how the Permissions sheet reaches its
+ * masters at all: it renders no master switches of its own - `roleEditorMastersMarkup` is an
+ * Access Control affordance, where one master gates several groups and so belongs above all of
+ * them - so `settings.manage`, `dashboard.view` and `reports.view` are each reachable only as the
+ * listed row of the group they master. Excluding them left three permissions no owner could grant
+ * anywhere on the screen, and left Report as a group with nothing in it.
+ */
+function roleGroupRows(group){
+  const masters=roleMasterKeys(roleGroupSurface(group));
+  return (group.permissions||[]).filter(permission=>
+    permission.key===group.masterKey||!masters.has(permission.key));
+}
+// Whether the group renders its own master among its rows, rather than being gated by one shown
+// above it. True on the Permissions sheet, false on Access Control.
+function roleGroupOwnsMaster(group){
+  return Boolean(group.masterKey)
+    &&roleGroupRows(group).some(permission=>permission.key===group.masterKey);
+}
+// The catalog's own word for a permission shipped ahead of the feature it will gate.
+function roleUnenforced(permission){return permission.enforced===false;}
+// A group is UNBUILT when it has rows and EVERY one of them gates nothing yet. A percentage
+// threshold would be a lie waiting to happen: one enforced row is enough that the heading may not
+// say the group does nothing, however small a fraction it is. Computed from the group's WHOLE row
+// set and never from the filtered one, so a search can never change what a group IS.
+function roleGroupUnbuilt(group){
+  const rows=roleGroupRows(group);
+  return rows.length>0&&rows.every(roleUnenforced);
+}
+function roleGroupUnenforcedCount(group){return roleGroupRows(group).filter(roleUnenforced).length;}
+function roleGroupNoteId(group){return `role-note-${group.id}`;}
+function roleSurfaceGroups(surface){
+  return roleCatalogGroups().filter(group=>
+    roleGroupSurface(group)===surface
+    // A group whose every row is a master shown elsewhere has nothing of its own left to say.
+    &&(Boolean(group.masterKey)||roleGroupRows(group).length>0));
+}
+// Every key one sheet can reach, masters included, so a per-sheet count on the role row means the
+// same thing as the switches inside it.
+function roleSurfaceKeys(surface){
+  const keys=new Set();
+  for(const group of roleSurfaceGroups(surface)){
+    if(group.masterKey)keys.add(group.masterKey);
+    for(const permission of roleGroupRows(group))keys.add(permission.key);
+  }
+  return keys;
+}
+function roleSurfaceCount(role,surface){
+  const keys=roleSurfaceKeys(surface);
+  let granted=0;
+  for(const key of role.permissions||[])if(keys.has(key))granted+=1;
+  return {granted,total:keys.size};
+}
+// THERE IS NO OWNER ROLE, deliberately: ownership is `is_owner` plus a database trigger, not a
+// permission set, so the server returns real roles only and never one called Owner. The pinned
+// row is synthesized here from the memberships that actually carry ownership. Inferring it from a
+// role's NAME instead would hand the pin - and the cannot-be-edited treatment - to any custom role
+// a salon happened to call "Owner".
+function ownerMemberships(){return (state.members||[]).filter(member=>member.isOwner);}
+// The server already orders these `built_in desc, lower(name)`, which is the order this table wants.
+function rolesOrdered(){return [...(rolesState.roles||[])];}
+// Roles somebody can actually be given. A disabled role resolves to the empty set on the server, so
+// assigning one would be handing somebody nothing while telling them they had been given a job.
+function roleAssignable(){return rolesOrdered().filter(role=>role.enabled!==false);}
+// Every role write - create, rename, duplicate, delete, enable, permissions - and every membership
+// write is Owner-only on the server, on top of team.manage. A manager reads this screen and does
+// not edit it, so the controls say so rather than issuing requests that come back 403.
+function rolesEditable(){return Boolean(state.me?.isOwner);}
+
+async function loadRoles(){
+  rolesState.loading=true;rolesState.error=null;
+  try{
+    const [roles,catalog]=await Promise.all([api("/api/roles"),api("/api/permissions")]);
+    rolesState.roles=Array.isArray(roles?.roles)?roles.roles:[];
+    rolesState.catalog=catalog;
+  }catch(error){rolesState.error=error;}
+  finally{rolesState.loading=false;}
+}
+// Pending invitations are a separate read and a separate dependency. A server that does not answer
+// this yet still gets the rest of the People list rather than an error across the whole screen -
+// the invitation rows simply are not there to show, which is exactly what is true.
+async function loadRoleInvitations(){
+  try{
+    const result=await api("/api/members/invitations");
+    rolesState.invitations=Array.isArray(result?.invitations)?result.invitations:Array.isArray(result)?result:[];
+    rolesState.invitationsUnavailable=false;
+  }catch{rolesState.invitations=[];rolesState.invitationsUnavailable=true;}
+}
+function ensureRolesData(){
+  if(!rolesManaged())return;
+  if(rolesState.roles||rolesState.loading||rolesState.error)return;
+  runDetached(async()=>{await loadRoles();if(rolesReady())await loadRoleInvitations();renderRoles();});
+}
+// Writes made straight from a control rather than from a dialog, in the shape Tax & payments uses:
+// a refusal is announced and the screen is re-read, so the switch that moved goes back to whatever
+// the server actually holds instead of keeping the value the click gave it.
+function roleMutation(key,operation,message){
+  return runOnce(key,async()=>{
+    try{
+      await operation();
+      await loadRoles();renderRoles();
+      if(message)toast(message);
+    }catch(error){
+      toast(error.message);
+      await loadRoles();renderRoles();
+    }
+  });
+}
+
+// --- The workspace -------------------------------------------------------
+function rolesTabsMarkup(){
+  return `<div class="settings-tabs" role="tablist" aria-label="Roles and permissions" data-testid="roles-tabs">`
+    +ROLE_TABS.map(([id,label])=>{
+      const active=rolesState.tab===id;
+      return `<button type="button" role="tab" id="roles-tab-${id}" class="settings-tab${active?" active":""}" data-roles-tab="${id}" data-testid="roles-tab-${id}" aria-selected="${active}" aria-controls="roles-panel" tabindex="${active?0:-1}">${escape(label)}</button>`;
+    }).join("")+`</div>`;
+}
+// Listed, not hidden, and honest about why it is empty. Pawsh has no sign-in restriction of any
+// kind, so a tab of switches here would claim a control the product does not have.
+function rolesLoginControlMarkup(){
+  return `<article class="settings-panel settings-placeholder" data-testid="roles-login-control">`
+    +`<p class="eyebrow">Not available yet</p><h3>Login Control (only for web)</h3>`
+    +`<p>Pawsh does not yet restrict where, when, or from which device a workspace account can sign in. There is no address allow-list, no device approval and no sign-in schedule, so nothing configured here would take effect. It is listed rather than hidden so it is clear the capability was not overlooked.</p></article>`;
+}
+function rolesUnavailableMarkup(){
+  return `<article class="settings-panel settings-placeholder" data-testid="roles-unavailable">`
+    +`<p class="eyebrow">Not available yet</p><h3>Roles</h3>`
+    +`<p>This workspace's server does not serve the roles catalogue yet, so there is nothing to list. Everyone's existing access is unchanged in the meantime, and invitations still work.</p></article>`;
+}
+function rolesErrorMarkup(){
+  const error=rolesState.error;
+  // A 404 is the one failure that is not a fault: the roles API lands in phases, and a workspace
+  // whose server does not serve it yet should read as "not here yet" rather than as a broken
+  // screen. Anything else is reported as itself.
+  if(error?.status===404||error?.status===501)return rolesUnavailableMarkup();
+  const message=error?.status===403?"You do not have permission to view this."
+    :error?.status?error.message
+    :"Could not load roles and permissions. Check your connection and try again.";
+  return `<div class="availability-error" data-testid="roles-error"><h4>This could not load</h4><p>${escape(message)}</p>`
+    +`<button type="button" class="secondary compact" data-roles-retry data-testid="roles-retry">Try again</button></div>`;
+}
+function roleSurfaceCell(role,surface,label,testid){
+  const {granted,total}=roleSurfaceCount(role,surface);
+  return `<td class="roles-col-surface"><button type="button" class="text-button" data-role-open="${escapeAttr(role.id)}" data-role-surface="${surface}" data-testid="${testid}"`
+    +` aria-label="${escapeAttr(`${label} for ${role.name}`)}">${escape(label)}</button>`
+    +`<small class="roles-count">${granted} of ${total}</small></td>`;
+}
+// The column header is not a label, so every switch names its own role. `Enable` alone would leave
+// a screen reader on the eighth row with no idea which role it is about to turn off.
+// A built-in role's IDENTITY is fixed - it cannot be renamed or deleted - but it is not permanently
+// on. Switching it off is the supported way to retire one the salon does not use, and re-enabling
+// brings back the same canonical role rather than a copy of it. The only lock left here is the
+// Owner-only one the server enforces.
+function roleEnabledCell(role){
+  const locked=rolesEditable()?"":"Only an Owner can turn a role on or off.";
+  return `<td><label class="roles-switch"><span class="visually-hidden">Enable ${escape(role.name)} role</span>`
+    +`<input type="checkbox" role="switch" class="pref-toggle" data-role-enabled="${escapeAttr(role.id)}" data-testid="role-enabled"`
+    +`${role.enabled!==false?" checked":""}`
+    +`${locked?` disabled aria-disabled="true" title="${escapeAttr(locked)}"`:""}></label></td>`;
+}
+// A built-in role is a Pawsh system template: its name is its identity, so rename and delete are
+// omitted rather than shown disabled - a disabled item invites somebody to hunt for the permission
+// that would enable it, and there is none. Retiring one is what the Enable switch is for.
+function roleMenuMarkup(role){
+  // Every item in it is Owner-only on the server, so a manager gets no menu rather than a menu of
+  // requests that come back 403.
+  if(!rolesEditable())return "";
+  const nameAttr=escapeAttr(role.name);
+  const items=[];
+  if(!role.builtIn)items.push(`<button type="button" class="row-menu-item" data-role-rename="${escapeAttr(role.id)}" data-testid="role-rename">Rename</button>`);
+  items.push(`<button type="button" class="row-menu-item" data-role-duplicate="${escapeAttr(role.id)}" data-testid="role-duplicate">Duplicate</button>`);
+  if(!role.builtIn)items.push(`<button type="button" class="row-menu-item" data-role-delete="${escapeAttr(role.id)}" data-testid="role-delete">Delete</button>`);
+  return `<details class="row-menu roles-menu"><summary class="row-menu-trigger" aria-expanded="false" data-testid="role-row-actions" aria-label="Actions for ${nameAttr}"><span aria-hidden="true">⋯</span></summary>`
+    +`<div class="row-menu-list" role="group" aria-label="Actions for ${nameAttr}">${items.join("")}</div></details>`;
+}
+function roleRow(role){
+  const assigned=Number(role.assignedCount)||0;
+  return `<tr data-testid="role-row" data-role-row="${escapeAttr(role.id)}" data-role-name="${escapeAttr(role.name)}">`
+    +`<td><span class="roles-name"><strong>${escape(role.name)}</strong>${role.builtIn?`<small>Built-in</small>`:""}`
+    // The switch alone carries this state as a shape and a colour. A disabled role grants nothing
+    // to everyone holding it, which is too consequential to leave to either.
+    +(role.enabled===false?`<small class="roles-off" data-testid="role-disabled-mark">Disabled</small>`:"")
+    +(role.description?`<small class="roles-description">${escape(role.description)}</small>`:"")+`</span></td>`
+    +`<td class="roles-col-assigned" data-testid="role-assigned">${assigned}</td>`
+    +roleEnabledCell(role)
+    +roleSurfaceCell(role,"access","Access Control","role-open-access")
+    +roleSurfaceCell(role,"permissions","Permissions","role-open-permissions")
+    +`<td class="roles-actions">${roleMenuMarkup(role)}</td></tr>`;
+}
+// Pinned, and not a role: it carries no permission set to open, nothing to rename, and no switch
+// to throw. `Assigned` counts the memberships that actually hold `is_owner`, which is the only
+// place this fact lives.
+function ownerRowMarkup(){
+  const count=ownerMemberships().length;
+  return `<tr data-testid="role-row" data-role-row="owner" data-role-name="Owner" class="is-owner">`
+    +`<td><span class="roles-name"><strong>Owner</strong><small>Built-in</small>`
+    +`<small class="roles-description">Ownership is not a role. It cannot be granted, edited or switched off &mdash; only transferred.</small></span></td>`
+    +`<td class="roles-col-assigned" data-testid="role-assigned">${count}</td>`
+    +`<td><label class="roles-switch"><span class="visually-hidden">Enable Owner role</span>`
+    +`<input type="checkbox" role="switch" class="pref-toggle" data-testid="role-enabled" checked disabled aria-disabled="true"`
+    +` title="Ownership is always on. It is transferred, not switched off."></label></td>`
+    +`<td class="roles-col-surface"><span class="roles-full">Full access</span></td>`
+    +`<td class="roles-col-surface"><span class="roles-full">Full access</span></td>`
+    +`<td class="roles-actions"></td></tr>`;
+}
+function rolesTableMarkup(){
+  const head=`<thead><tr><th scope="col">Role</th><th scope="col" class="roles-col-assigned">Assigned</th>`
+    +`<th scope="col">Enabled</th><th scope="col" class="roles-col-surface">Report &amp; Dashboard</th>`
+    +`<th scope="col" class="roles-col-surface">Permissions</th>`
+    +`<th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>`;
+  const roles=rolesOrdered();
+  // A workspace that has never invited anybody has no roles at all - an owner takes none - so the
+  // empty row says what is missing rather than reporting the table as broken.
+  const body=ownerRowMarkup()+(roles.length?roles.map(roleRow).join("")
+    :`<tr><td class="empty" colspan="6">No role yet. Anybody but you needs one before they can be invited.</td></tr>`);
+  return `<div class="taxpay-table-wrap" data-allow-horizontal-scroll>`
+    +`<table class="taxpay-table roles-table" data-testid="roles-table">${head}<tbody>${body}</tbody></table></div>`
+    +(rolesEditable()?`<div class="taxpay-foot"><button type="button" class="primary compact" data-role-add data-testid="role-add">+ Add role</button></div>`:"");
+}
+
+// --- People --------------------------------------------------------------
+function roleNameForMember(member){
+  if(member.isOwner)return "Owner";
+  return member.role?.name||member.roleName||"No role";
+}
+function memberStatusLabel(status){
+  const value=String(status||"active");
+  return MEMBER_STATUS_LABELS[value]||value.replaceAll("_"," ");
+}
+function memberDisplayName(member){return member.employeeDisplayName||member.email;}
+// `GET /api/members` returns revoked memberships too, and the old list rendered every one of them
+// as though it were live - so somebody removed months ago still read as staff with access.
+function rolePersonRow(member){
+  const owner=Boolean(member.isOwner);
+  const status=String(member.status||"active");
+  const name=memberDisplayName(member);
+  const nameAttr=escapeAttr(name);
+  const items=[];
+  const live=status!=="disabled"&&status!=="revoked";
+  // Transferring, reassigning and removing are all Owner-only on the server.
+  if(rolesEditable()){
+    if(owner&&member.id===state.me?.membershipId)items.push(`<button type="button" class="row-menu-item" data-member-transfer data-testid="member-transfer">Transfer ownership</button>`);
+    else if(!owner&&live){
+      items.push(`<button type="button" class="row-menu-item" data-member-role="${escapeAttr(member.id)}" data-testid="member-change-role">Change role</button>`);
+      items.push(`<button type="button" class="row-menu-item" data-member-remove="${escapeAttr(member.id)}" data-testid="member-remove">Remove access</button>`);
+    }
+  }
+  const menu=items.length?`<details class="row-menu roles-menu"><summary class="row-menu-trigger" aria-expanded="false" data-testid="member-row-actions" aria-label="Actions for ${nameAttr}"><span aria-hidden="true">⋯</span></summary>`
+    +`<div class="row-menu-list" role="group" aria-label="Actions for ${nameAttr}">${items.join("")}</div></details>`:"";
+  return `<tr data-testid="member-row" data-member-row="${escapeAttr(member.id)}">`
+    +`<td><span class="roles-name"><strong>${escape(name)}</strong>`
+    +(member.employeeDisplayName?`<small>${escape(member.email)}</small>`:"")+`</span></td>`
+    +`<td data-testid="member-role">${escape(roleNameForMember(member))}</td>`
+    +`<td><span class="status-dot${status==="active"?"":" inactive"}" data-testid="member-status">${escape(memberStatusLabel(status))}</span></td>`
+    +`<td class="roles-actions">${menu}</td></tr>`;
+}
+function roleInvitationRow(invitation){
+  const email=String(invitation.email||"");
+  const role=invitation.role?.name||invitation.roleName||"No role";
+  const sent=invitation.createdAt?new Date(invitation.createdAt).toLocaleDateString():"";
+  return `<tr data-testid="invitation-row" data-invitation-row="${escapeAttr(invitation.id)}">`
+    +`<td><span class="roles-name"><strong>${escape(email)}</strong>${sent?`<small>Invited ${escape(sent)}</small>`:""}</span></td>`
+    +`<td>${escape(role)}</td>`
+    +`<td><span class="status-dot inactive">Invitation pending</span></td>`
+    +`<td class="roles-actions">${rolesEditable()?`<button type="button" class="text-button danger" data-invitation-cancel="${escapeAttr(invitation.id)}" data-testid="invitation-cancel" aria-label="${escapeAttr(`Cancel the invitation to ${email}`)}">Cancel</button>`:""}</td></tr>`;
+}
+function rolesPeopleMarkup(){
+  const members=Array.isArray(state.members)?state.members:[];
+  const head=`<thead><tr><th scope="col">Person</th><th scope="col">Role</th><th scope="col">Status</th>`
+    +`<th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>`;
+  const rows=members.map(rolePersonRow).join("")+rolesState.invitations.map(roleInvitationRow).join("");
+  const body=rows||`<tr><td class="empty" colspan="4">Only you have workspace access.</td></tr>`;
+  return `<div class="panel-head"><div><h4>People</h4><p class="fine">Who holds which role, and who has been invited but has not signed in yet.</p></div>`
+    +(rolesEditable()?`<button type="button" class="secondary compact" data-roles-invite data-testid="roles-invite">+ Invite</button>`:"")+`</div>`
+    +`<div class="taxpay-table-wrap" data-allow-horizontal-scroll>`
+    +`<table class="taxpay-table roles-people-table" data-testid="roles-people-table">${head}<tbody>${body}</tbody></table></div>`
+    +(rolesState.invitationsUnavailable?`<p class="fine settings-note" data-testid="roles-invitations-unavailable">Pending invitations cannot be listed on this server yet, so anybody invited appears here only once they have signed in.</p>`:"");
+}
+function rolesAccessRequestsMarkup(){
+  const requests=(state.accessRequests||[]).filter(request=>request.status==="pending");
+  const rows=requests.map(request=>`<div data-testid="access-request-row" data-access-request="${escapeAttr(request.id)}">`
+    +`<span><strong>${escape(request.requesterName)}</strong><small>${escape(request.requesterEmail)} · ${escape(new Date(request.createdAt).toLocaleDateString())}</small></span>`
+    +`<span><button type="button" class="text-button" data-access-approve="${escapeAttr(request.id)}" data-testid="access-request-approve">Approve</button> `
+    +`<button type="button" class="text-button danger" data-access-reject="${escapeAttr(request.id)}" data-testid="access-request-reject">Reject</button></span></div>`).join("");
+  return `<h4>Pending access requests</h4><div class="simple-list" data-testid="roles-access-requests">${rows||`<p class="empty">No pending requests.</p>`}</div>`;
+}
+function rolesPanelBodyMarkup(){
+  if(rolesState.error)return rolesErrorMarkup();
+  if(rolesState.loading&&!rolesState.roles)return `<p class="roles-loading" data-testid="roles-loading">Loading roles…</p>`;
+  if(!rolesReady())return rolesUnavailableMarkup()+rolesAccessRequestsMarkup();
+  return rolesTableMarkup()
+    +`<p class="fine settings-note">A role is what somebody can do; ownership is separate and is transferred rather than granted. Turning a role off leaves it assigned and stops it granting anything.</p>`
+    +`<section class="roles-people">${rolesPeopleMarkup()}</section>`
+    +`<section class="roles-requests">${rolesAccessRequestsMarkup()}</section>`;
+}
+function rolesMarkup(){
+  return rolesTabsMarkup()
+    +`<article class="settings-panel roles-panel" id="roles-panel" role="tabpanel" aria-labelledby="roles-tab-${rolesState.tab}">`
+    +(rolesState.tab==="login-control"?rolesLoginControlMarkup():rolesPanelBodyMarkup())
+    +`</article>`;
+}
+// renderSettingsCategory replaces the whole settings pane on every nav click, so this re-reads
+// module state rather than assuming anything about what is currently on screen. A write re-renders
+// too, which is also how a refused switch goes back to what the server holds; `restoreFocus` is
+// what stops that from dropping focus to the document.
+function renderRoles(){
+  const root=$("#roles-root");if(!root)return;
+  root.innerHTML=rolesMarkup();
+  bindRoles(root);
+  const wanted=rolesState.restoreFocus;rolesState.restoreFocus=null;
+  if(wanted)root.querySelector(wanted)?.focus();
+}
+function selectRolesTab(tab,{focus=true}={}){
+  if(rolesState.tab===tab)return;
+  rolesState.tab=tab;renderRoles();
+  if(focus)$(`#roles-tab-${tab}`)?.focus();
+}
+
+// --- Role writes ---------------------------------------------------------
+// The salon's own words for what the people holding this role are about to lose. "Loses 12
+// permissions" is a number nobody can act on; `topPermissionLabels` is the list of things they
+// will stop being able to do.
+// The labels are VERBATIM from the reference and mixed-case by design - "View calendar" beside
+// "Access Clients Tab" beside "Check Out Appointments" - so the sentence accommodates them rather
+// than the reverse. Lowercasing a label's first character was right while every label was sentence
+// case, and became wrong the day the taxonomy landed: it rendered "access Clients Tab" and "check
+// Out Appointments", broken English in a confirmation dialog. Naming them as a LIST after a colon
+// lets each one keep the exact casing of the switch the owner saw in the editor.
+function roleLabelList(role){
+  return (role.topPermissionLabels||[]).map(label=>String(label).trim()).filter(Boolean);
+}
+function roleLossSentence(role){
+  const labels=roleLabelList(role);
+  if(!labels.length)return "They keep their account and lose everything this role grants.";
+  return `They will lose: ${labels.join(", ")}.`;
+}
+function roleEnabledSelector(role){return `[data-role-row="${role.id}"] [data-role-enabled]`;}
+function toggleRoleEnabled(role,enabled){
+  const patch=()=>api(`/api/roles/${encodeURIComponent(role.id)}`,{method:"PATCH",
+    body:JSON.stringify({version:role.version,enabled})});
+  const commit=()=>{
+    rolesState.restoreFocus=roleEnabledSelector(role);
+    return roleMutation(`role:enabled:${role.id}`,patch,enabled?`${role.name} turned on`:`${role.name} turned off`);
+  };
+  const assigned=Number(role.assignedCount)||0;
+  if(enabled||!assigned)return commit();
+  let committed=false;
+  const dialog=openStackedDialog({
+    title:`Turn off ${role.name}?`,
+    body:`<p data-testid="role-disable-impact">${assigned===1?"One person has":`${assigned} people have`} the ${escape(role.name)} role. ${escape(roleLossSentence(role))}</p>`
+      +`<p class="fine">Their accounts stay, and nothing is deleted. Turning the role back on restores exactly what it grants.</p>`,
+    confirmLabel:"Turn it off",dismissLabel:"Cancel",
+    onConfirm:async()=>{committed=true;await commit();}
+  });
+  // The click already flipped the switch, and Cancel, Escape and the backdrop all end here.
+  // Re-rendering from state is the only revert that is also right when the PATCH was refused.
+  dialog.addEventListener("close",()=>{
+    if(committed)return;
+    rolesState.restoreFocus=roleEnabledSelector(role);
+    renderRoles();
+  },{once:true});
+}
+// A role with no permissions cannot do anything, so the copy source defaults to the role most
+// people already hold rather than to nothing. Starting empty stays available and says what it is.
+function openRoleCreate({copyFromRoleId=null,name=""}={}){
+  const assignable=roleAssignable();
+  const preferred=copyFromRoleId
+    ||[...assignable].sort((left,right)=>(Number(right.assignedCount)||0)-(Number(left.assignedCount)||0))[0]?.id
+    ||"";
+  const options=rolesOrdered().map(role=>
+    `<option value="${escapeAttr(role.id)}"${role.id===preferred?" selected":""}>${escape(role.name)}</option>`).join("");
+  openModal("Add role",
+    field("name","Role name","text",`required maxlength="80" value="${escapeAttr(name)}"`,true)
+    +field("description","Description","text",`maxlength="500"`,true)
+    +`<label class="wide">Copy permissions from`
+    +`<select data-testid="field-copyFromRoleId" name="copyFromRoleId"><option value="">Start with no permissions</option>${options}</select>`
+    +`<small class="field-hint">A role that grants nothing cannot be used, so a new role normally starts from the nearest existing one and is trimmed.</small></label>`,
+    async form=>{
+      const values=Object.fromEntries(form);
+      await api("/api/roles",{method:"POST",body:JSON.stringify({
+        name:values.name,
+        description:values.description||undefined,
+        copyFromRoleId:values.copyFromRoleId||undefined
+      })});
+      await loadRoles();
+      return {afterClose:null,message:`${values.name} created`};
+    },{submitLabel:"Create role"});
+}
+function openRoleRename(role){
+  openModal("Rename role",
+    field("name","Role name","text",`required maxlength="80" value="${escapeAttr(role.name)}"`,true)
+    +field("description","Description","text",`maxlength="500" value="${escapeAttr(role.description||"")}"`,true),
+    async form=>{
+      const values=Object.fromEntries(form);
+      try{
+        await api(`/api/roles/${encodeURIComponent(role.id)}`,{method:"PATCH",body:JSON.stringify({
+          version:role.version,name:values.name,description:values.description||null
+        })});
+      }catch(error){
+        // 409 carries three different refusals here: a built-in role's name is immutable
+        // (ROLE_BUILT_IN_NAME_IMMUTABLE), the name is taken, or somebody else saved first. The
+        // server words each one, so its sentence is what reaches the operator rather than a guess
+        // made from the status alone. Reloading behind the dialog means a retry carries the
+        // current version, and a row that turned out to be built-in stops offering Rename.
+        if(error.status===409){await loadRoles();renderRoles();}
+        throw error;
+      }
+      await loadRoles();
+      return {afterClose:null,message:`${values.name} saved`};
+    });
+}
+function confirmDeleteRole(role){
+  openStackedDialog({
+    title:`Delete ${role.name}?`,
+    body:`<p>It stops being offered when somebody is given access. Nothing anyone has already done under it changes.</p>`
+      +`<p class="error" role="alert"></p>`,
+    confirmLabel:"Delete",dismissLabel:"Cancel",
+    onConfirm:async host=>{
+      const error=host.querySelector(".error");error.textContent="";
+      try{await api(`/api/roles/${encodeURIComponent(role.id)}`,{method:"DELETE"});}
+      catch(problem){
+        // A built-in role refuses deletion outright (ROLE_BUILT_IN_UNDELETABLE) and says so in the
+        // server's own words. The uncoded 409 is the in-use case, which arrives with counts worth
+        // repeating: "still in use" is not actionable, "2 people and 1 invitation" is.
+        const assigned=Number(problem.data?.assignedCount)||0,invited=Number(problem.data?.pendingInvitationCount)||0;
+        const held=[assigned?`${assigned} ${assigned===1?"person holds":"people hold"} it`:"",
+          invited?`${invited} ${invited===1?"invitation is":"invitations are"} waiting on it`:""].filter(Boolean).join(" and ");
+        error.textContent=problem.status!==409?problem.message
+          :problem.data?.code?problem.message
+          :held?`${role.name} cannot be deleted yet: ${held}. Move them to another role first.`
+          :problem.message;
+        if(problem.status===409){await loadRoles();renderRoles();}
+        return false;
+      }
+      await loadRoles();renderRoles();toast(`${role.name} deleted`);return true;
+    }
+  });
+}
+
+// --- The two editors -----------------------------------------------------
+
+/**
+ * How many rows a sheet may carry before it opens folded.
+ *
+ * Access Control holds 23 over three groups and is a list somebody reads; the Permissions sheet
+ * holds 78 over eleven, most of them carrying a sentence of hint, and is a page somebody scrolls
+ * past. Folding turns the second back into the first: eleven headings, each already carrying its
+ * own "6 of 27", so the fold still says where a role's grants actually are, and the filter forces
+ * open whatever it matched.
+ *
+ * The test is on the SHEET'S SIZE, not on the sheet's name, so a sheet that grows past this later
+ * folds on its own instead of waiting for somebody to remember this decision.
+ */
+const ROLE_SHEET_FOLD_THRESHOLD = 40;
+function roleInitialCollapsed(surface){
+  const groups=roleSurfaceGroups(surface);
+  const rows=groups.reduce((sum,group)=>sum+roleGroupRows(group).length,0);
+  const folded=rows>ROLE_SHEET_FOLD_THRESHOLD?groups.map(group=>group.id):[];
+  // Folded, not hidden. Nothing in a wholly unbuilt group is actionable today, and an owner
+  // reading what a role can do should not walk fourteen switches over features that do not exist
+  // to reach the ones that do. The header still reports `n of m`, so a pre-granted group says so
+  // without being opened. This is a union with the size rule above, not a replacement: on Access
+  // Control, which is small enough to open expanded, it folds Payroll and nothing else.
+  return new Set([...folded,...groups.filter(roleGroupUnbuilt).map(group=>group.id)]);
+}
+function openRoleEditor(roleId,surface){
+  const role=(rolesState.roles||[]).find(item=>item.id===roleId);
+  if(!role)return;
+  rolesState.editor={
+    roleId:role.id,roleName:role.name,surface,version:role.version,
+    selected:new Set(role.permissions||[]),baseline:new Set(role.permissions||[]),
+    filter:"",collapsed:roleInitialCollapsed(surface),
+    // Off on arrival, always. These switches exist so a salon can record who should hold a
+    // capability BEFORE it ships; a sheet that hid them by default would quietly undo the decision
+    // that put them here.
+    hideUnbuilt:false,
+    saving:false,error:null,conflict:false
+  };
+  renderRoleEditor();
+  const drawer=$("#role-editor");
+  if(!drawer.open)drawer.showModal();
+  drawer.querySelector(".drawer-head .close")?.focus();
+}
+function roleEditorRows(group){
+  const editor=rolesState.editor;
+  const filter=editor.filter.trim().toLowerCase();
+  let rows=roleGroupRows(group);
+  // Before the text filter, deliberately: the group tools, the bulk write and the summary count
+  // all read this one set, so "All" can never grant a row the sheet is not showing.
+  if(editor.hideUnbuilt)rows=rows.filter(permission=>!roleUnenforced(permission));
+  if(!filter)return rows;
+  return rows.filter(permission=>
+    `${permission.label||""} ${permission.hint||""} ${permission.key||""}`.toLowerCase().includes(filter));
+}
+function roleEditorMasterOff(group){
+  return Boolean(group.masterKey)&&!rolesState.editor.selected.has(group.masterKey);
+}
+function roleEditorMasterKeys(){
+  const keys=[];
+  for(const group of roleSurfaceGroups(rolesState.editor.surface)){
+    if(group.masterKey&&!keys.includes(group.masterKey))keys.push(group.masterKey);
+  }
+  return keys;
+}
+function roleEditorMastersMarkup(){
+  const editor=rolesState.editor;
+  const keys=roleEditorMasterKeys();
+  if(!keys.length)return "";
+  const groups=roleSurfaceGroups(editor.surface);
+  return `<div class="role-masters" data-testid="role-masters">`+keys.map(key=>{
+    const checked=editor.selected.has(key);
+    const gated=groups.filter(group=>group.masterKey===key).map(group=>group.label);
+    const plural=gated.length>1;
+    const hint=checked
+      ?`On. ${gated.join(" and ")} ${plural?"are":"is"} in effect for this role.`
+      :`Off. ${gated.join(" and ")} keep${plural?"":"s"} ${plural?"their":"its"} values below but ${plural?"are":"is"} not in effect for this role.`;
+    return `<label class="pref-row role-master-row"><span class="pref-text">`
+      +`<span class="pref-name">${escape(roleMasterLabel(key))}</span>`
+      // Both masters shipped here are enforced today, so this renders nothing. It is here so that a
+      // master that ever ships ahead of its feature says so in the same words as every other row,
+      // rather than being the one switch on the screen that quietly overstates itself.
+      +(roleCatalogPermission(key)?.enforced===false
+        ?`<span class="pref-unenforced">Not yet available in Pawsh</span>`:"")
+      +`<span class="pref-hint">${escape(hint)}</span></span>`
+      +`<input type="checkbox" role="switch" class="pref-toggle" data-role-master="${escapeAttr(key)}" data-testid="role-master"${checked?" checked":""}${rolesEditable()?"":` disabled aria-disabled="true" title="Only an Owner can change what a role grants."`}></label>`;
+  }).join("")+`</div>`;
+}
+function roleEditorRowMarkup(permission,off,{badge:showBadge=true,noteId=null,master=false}={}){
+  const editor=rolesState.editor;
+  const locked=off||!rolesEditable();
+  const checked=editor.selected.has(permission.key);
+  const unbuilt=roleUnenforced(permission);
+  const hints=[];
+  // A master that lives among its own rows behaves unlike its neighbours - it decides whether they
+  // apply - and nothing about the row would otherwise say so.
+  if(master)hints.push("Turns this whole group on. The rows below keep their values while it is off.");
+  if(permission.hint)hints.push(escape(permission.hint));
+  // The BADGE stays inside the label, so it stays inside the switch's ACCESSIBLE NAME: "Void a
+  // payment, Not yet available in Pawsh" is the fact a screen-reader user needs at the instant of
+  // focus, and it is four words. The SENTENCE has moved out to the group note. It was identical on
+  // every unbuilt row, and because `.pref-row` is the label, every copy was being read out IN FULL
+  // as part of the switch's name, after a badge that had just said the same thing.
+  return `<label class="pref-row role-permission-row${off?" is-off":""}${master?" is-group-master":""}" data-testid="role-permission-row"`
+    +` data-role-permission-row="${escapeAttr(permission.key)}"${unbuilt?` data-role-unenforced="true"`:""}${master?' data-role-group-master="true"':""}>`
+    +`<span class="pref-text"><span class="pref-name">${escape(permission.label||permission.key)}</span>`
+    +(unbuilt&&showBadge?`<span class="pref-unenforced">Not yet available in Pawsh</span>`:"")
+    +(hints.length?`<span class="pref-hint">${hints.join(" ")}</span>`:"")+`</span>`
+    +`<input type="checkbox" role="switch" class="pref-toggle" data-role-permission="${escapeAttr(permission.key)}"`
+    +`${checked?" checked":""}`
+    // Only where the badge was dropped, so the fact is never announced twice on one control. And
+    // never `aria-disabled`: these switches are operable, and that is the entire point of them.
+    +`${unbuilt&&!showBadge&&noteId?` aria-describedby="${noteId}"`:""}`
+    +`${locked?` disabled aria-disabled="true" title="${off?"Turn the master switch above on to change this.":"Only an Owner can change what a role grants."}"`:""}></label>`;
+}
+function roleEditorGroupMarkup(group){
+  const editor=rolesState.editor;
+  const filtering=editor.filter.trim().length>0;
+  // Both narrow the sheet, and both break the group note's one precondition - see below.
+  const narrowing=filtering||editor.hideUnbuilt;
+  const rows=roleEditorRows(group);
+  if(narrowing&&!rows.length)return "";
+  const off=roleEditorMasterOff(group);
+  const all=roleGroupRows(group);
+  const granted=all.filter(permission=>editor.selected.has(permission.key)).length;
+  // A match folded inside a collapsed group is the one way this screen can lie: it reads as "no
+  // results" while the row somebody searched for sits one fold away. A filter therefore forces
+  // every matching group open, whatever the master says and whatever was folded earlier.
+  // A master switched off folds the group it gates away - UNLESS the group is where that master
+  // lives, because folding it would hide the only switch that can turn it back on.
+  const owns=roleGroupOwnsMaster(group);
+  const open=filtering?true:(off&&!owns)?false:!editor.collapsed.has(group.id);
+  // "Off" rather than "0 of 9". The rows keep their values while the master is down, and a zero
+  // would claim they had been cleared.
+  const count=off?"Off":`${granted} of ${all.length}`;
+  const unbuiltGroup=roleGroupUnbuilt(group);
+  const unbuiltCount=roleGroupUnenforcedCount(group);
+  // ONE STATEMENT PER ROW-IN-CONTEXT. The note speaks for the whole group, so it is only truthful
+  // while the whole group is on screen: a filter shows rows out of their group, and hiding removes
+  // the very rows it describes. In both cases the note stands down and the per-row badge comes
+  // back, so a filtered match is never left unmarked.
+  const showNote=!narrowing&&unbuiltCount>0;
+  const groupSpeaks=showNote&&unbuiltGroup;   // the summary is saying it for every row
+  const noteId=roleGroupNoteId(group);
+  const note=showNote?`<p class="role-group-note" id="${noteId}" data-testid="role-group-note">`
+    +(unbuiltGroup
+      ? `<strong>Pawsh has not built this yet.</strong> None of these switches gates anything today, so leaving one on restricts nobody and turning one off protects nothing. What is set here is saved, and takes effect the day the feature ships.`
+      : `<strong>${unbuiltCount} of these ${all.length} are marked “Not yet available in Pawsh”.</strong> Those gate nothing today; what is set for them is saved and takes effect the day the feature ships. The rest are in effect now.`)
+    +`</p>`:"";
+  const bulk=filtering?["All matching","None matching"]:editor.hideUnbuilt?["All available","None available"]:["All","None"];
+  return `<details class="role-group${off?" is-off":""}${unbuiltGroup?" is-unbuilt":""}" data-testid="role-group" data-role-group-panel="${escapeAttr(group.id)}"${unbuiltGroup?` data-role-group-unbuilt="true"`:""}${open?" open":""}>`
+    // The badge lives in the `<summary>`, which `<details>` renders whether open or shut, so a
+    // folded unbuilt group still announces the fact - which the note alone could never do.
+    +`<summary class="role-group-summary"><span class="role-group-heading">`
+    +`<span class="role-group-name">${escape(group.label)}</span>`
+    +(unbuiltGroup?`<span class="pref-unenforced role-group-unenforced" data-testid="role-group-unenforced">Not yet available in Pawsh</span>`:"")
+    +`</span><span class="role-group-count" data-testid="role-group-count">${escape(count)}</span></summary>`
+    +note
+    +`<div class="role-group-tools">`
+    +`<button type="button" class="text-button" data-role-bulk="all" data-role-group="${escapeAttr(group.id)}"${off||!rolesEditable()?" disabled":""}>${bulk[0]}</button>`
+    +`<button type="button" class="text-button" data-role-bulk="none" data-role-group="${escapeAttr(group.id)}"${off||!rolesEditable()?" disabled":""}>${bulk[1]}</button></div>`
+    +`<div class="role-group-rows">${rows.map(permission=>
+      // The master itself is never dimmed by its own off state; every other row in the group is.
+      roleEditorRowMarkup(permission,off&&permission.key!==group.masterKey,
+        {badge:!groupSpeaks,noteId,master:permission.key===group.masterKey})
+    ).join("")}</div></details>`;
+}
+function roleEditorUnbuiltCount(surface){
+  return roleSurfaceGroups(surface).reduce((sum,group)=>sum+roleGroupUnenforcedCount(group),0);
+}
+function roleEditorFilterSummary(){
+  const editor=rolesState.editor;
+  const groups=roleSurfaceGroups(editor.surface);
+  const term=editor.filter.trim();
+  const total=groups.reduce((sum,group)=>sum+roleGroupRows(group).length,0);
+  if(!term&&!editor.hideUnbuilt)return `${total} permission${total===1?"":"s"}`;
+  const shown=groups.reduce((sum,group)=>sum+roleEditorRows(group).length,0);
+  // Hiding says what it took away, in the same breath as what is left. A count that only reported
+  // what remained would read as though the sheet had shrunk rather than been narrowed.
+  if(!term)return `${shown} of ${total} permissions · ${roleEditorUnbuiltCount(editor.surface)} not built yet, hidden`;
+  return shown?`${shown} of ${total} permissions shown`:`No permission matches “${term}”`;
+}
+/**
+ * The groups that vanish entirely while the hide switch is on.
+ *
+ * Hiding must not make a group DISAPPEAR without saying so - an owner would otherwise conclude the
+ * taxonomy has no Cash Drawer at all, and that what a role was set to for it had been discarded.
+ * The rows go; the fact that they exist does not.
+ */
+function roleEditorHiddenNoteMarkup(){
+  const editor=rolesState.editor;
+  if(!editor.hideUnbuilt)return "";
+  const hidden=roleSurfaceGroups(editor.surface).filter(roleGroupUnbuilt).map(group=>group.label);
+  if(!hidden.length)return "";
+  const many=hidden.length>1;
+  const listed=many?`${hidden.slice(0,-1).join(", ")} and ${hidden.at(-1)}`:hidden[0];
+  return `<p class="role-hidden-note" data-testid="role-hidden-note">${escape(listed)} `
+    +`${many?"are":"is"} not listed while this is on — Pawsh has not built ${many?"them":"it"} yet. `
+    +`What this role is set to for ${many?"them":"it"} is unchanged and still saved.</p>`;
+}
+function roleEditorDirtyCount(){
+  const editor=rolesState.editor;
+  let count=0;
+  for(const key of editor.selected)if(!editor.baseline.has(key))count+=1;
+  for(const key of editor.baseline)if(!editor.selected.has(key))count+=1;
+  return count;
+}
+function roleEditorToolsMarkup(){
+  const editor=rolesState.editor;
+  const unbuilt=roleEditorUnbuiltCount(editor.surface);
+  return `<label class="role-filter"><span class="visually-hidden">Filter permissions</span>`
+    +`<input type="search" id="role-filter-input" data-testid="role-filter" placeholder="Filter permissions" autocomplete="off" value="${escapeAttr(editor.filter)}"></label>`
+    +`<span class="role-filter-count" data-testid="role-filter-count" aria-live="polite">${escape(roleEditorFilterSummary())}</span>`
+    // A CHECKBOX, deliberately not a `.pref-toggle`. Every switch on this sheet grants something to
+    // a role; a switch here would be the one that does not, sitting directly above seventy-eight
+    // that do. And the label says HIDE rather than "show only", because on a screen whose whole job
+    // is not to overstate what has been restricted, the verb that admits something is being taken
+    // off screen is the honest one.
+    +(unbuilt?`<label class="role-hide-unbuilt"><input type="checkbox" id="role-hide-unbuilt" data-testid="role-hide-unbuilt"${editor.hideUnbuilt?" checked":""}>`
+      +`<span>Hide what Pawsh has not built yet <small>(${unbuilt})</small></span></label>`:"");
+}
+function roleEditorBodyMarkup(){
+  const editor=rolesState.editor;
+  if(editor.conflict)return `<div class="availability-error" data-testid="role-editor-conflict"><h4>Somebody else changed this role</h4>`
+    +`<p>${escape(editor.roleName)} was saved by someone else while this was open, so saving now would quietly undo their change. Reload it to start again from what the server holds. The changes made here are not kept.</p>`
+    +`<button type="button" class="secondary compact" data-role-editor-reload data-testid="role-editor-reload">Reload the role</button></div>`;
+  const rendered=roleSurfaceGroups(editor.surface).map(roleEditorGroupMarkup).join("");
+  return (rolesEditable()?"":`<p class="fine roles-readonly" data-testid="role-editor-readonly">Only an Owner can change what a role grants. This is what it grants today.</p>`)
+    +(editor.surface==="access"?roleEditorMastersMarkup():"")
+    +(rendered||`<p class="roles-empty" data-testid="role-editor-empty">No permission matches this filter.</p>`)
+    +roleEditorHiddenNoteMarkup();
+}
+function renderRoleEditorBody(){
+  const body=$("#role-editor-body");if(!body)return;
+  body.innerHTML=roleEditorBodyMarkup();
+  bindRoleEditorBody(body);
+}
+// Counts only. Re-rendering the body on every switch would take focus off the switch that was
+// just pressed, so the two live regions and the group headings are updated in place instead.
+function updateRoleEditorCounts(){
+  const editor=rolesState.editor;if(!editor)return;
+  for(const group of roleSurfaceGroups(editor.surface)){
+    const panel=$(`#role-editor-body [data-role-group-panel="${group.id}"] [data-testid="role-group-count"]`);
+    if(!panel)continue;
+    const all=roleGroupRows(group);
+    panel.textContent=roleEditorMasterOff(group)
+      ?"Off"
+      :`${all.filter(permission=>editor.selected.has(permission.key)).length} of ${all.length}`;
+  }
+  const filterCount=$('[data-testid="role-filter-count"]');
+  if(filterCount)filterCount.textContent=roleEditorFilterSummary();
+  const dirty=roleEditorDirtyCount();
+  const dirtyNode=$("#role-editor-dirty");
+  if(dirtyNode)dirtyNode.textContent=dirty?`${dirty} change${dirty===1?"":"s"} not saved`:"No changes";
+  const save=$('[data-testid="role-editor-save"]');
+  if(save)save.disabled=editor.conflict||editor.saving||dirty===0;
+}
+function renderRoleEditor(){
+  const editor=rolesState.editor;if(!editor)return;
+  const drawer=$("#role-editor");if(!drawer)return;
+  $("#role-editor-eyebrow").textContent=editor.surface==="access"?"Access Control":"Permissions";
+  $("#role-editor-title").textContent=editor.roleName;
+  const tools=$("#role-editor-tools");
+  tools.hidden=editor.conflict;
+  tools.innerHTML=editor.conflict?"":roleEditorToolsMarkup();
+  if(!editor.conflict)bindRoleEditorTools(tools);
+  renderRoleEditorBody();
+  $("#role-editor-error").textContent=editor.error||"";
+  const save=$('[data-testid="role-editor-save"]');
+  save.hidden=!rolesEditable();
+  save.textContent=editor.saving?"Saving…":"Save";
+  updateRoleEditorCounts();
+}
+function bindRoleEditorTools(tools){
+  const input=tools.querySelector("#role-filter-input");
+  if(input)input.addEventListener("input",()=>{
+    rolesState.editor.filter=input.value;
+    renderRoleEditorBody();
+    updateRoleEditorCounts();
+  });
+  const hide=tools.querySelector("#role-hide-unbuilt");
+  // The BODY only, never the tools - re-rendering the tools would pull focus off the checkbox that
+  // was just pressed, which is the same reason the filter input redraws the body and not itself.
+  // `updateRoleEditorCounts` rewrites `role-filter-count`, which is already `aria-live="polite"`,
+  // so the change is announced without a second live region.
+  if(hide)hide.addEventListener("change",()=>{
+    rolesState.editor.hideUnbuilt=hide.checked;
+    renderRoleEditorBody();
+    updateRoleEditorCounts();
+  });
+}
+function bindRoleEditorBody(body){
+  body.querySelectorAll("[data-role-permission]").forEach(input=>input.addEventListener("change",()=>{
+    const key=input.dataset.rolePermission;
+    if(input.checked)rolesState.editor.selected.add(key);else rolesState.editor.selected.delete(key);
+    // An ordinary row changes nothing but its own value, so the counts are updated in place and
+    // focus stays on the switch. A row that is ALSO its group's master decides whether every other
+    // row in that group applies, so the group has to be redrawn - and focus put back by hand.
+    if(roleSurfaceGroups(rolesState.editor.surface).some(group=>group.masterKey===key)){
+      renderRoleEditorBody();updateRoleEditorCounts();
+      $(`#role-editor-body [data-role-permission="${key}"]`)?.focus();
+      return;
+    }
+    updateRoleEditorCounts();
+  }));
+  body.querySelectorAll("[data-role-master]").forEach(input=>input.addEventListener("change",()=>{
+    const key=input.dataset.roleMaster;
+    if(input.checked)rolesState.editor.selected.add(key);else rolesState.editor.selected.delete(key);
+    // Every group this master gates changes state at once, so the body is redrawn and focus put
+    // back on the switch that did it.
+    renderRoleEditorBody();updateRoleEditorCounts();
+    $(`#role-editor-body [data-role-master="${key}"]`)?.focus();
+  }));
+  body.querySelectorAll("[data-role-bulk]").forEach(button=>button.addEventListener("click",()=>{
+    const group=roleCatalogGroups().find(item=>item.id===button.dataset.roleGroup);
+    if(!group)return;
+    const on=button.dataset.roleBulk==="all";
+    // The rows the filter is showing, taken from the catalog rather than from the DOM - so this
+    // stays a state operation even though it is scoped to what is on screen.
+    for(const permission of roleEditorRows(group)){
+      if(on)rolesState.editor.selected.add(permission.key);else rolesState.editor.selected.delete(permission.key);
+    }
+    renderRoleEditorBody();updateRoleEditorCounts();
+    // "None" over a group that holds its own master turns that master off, which disables the very
+    // button that was just pressed. Focus then has to land somewhere deliberate - the group's own
+    // heading - rather than falling back to <body> and losing the operator's place entirely.
+    const pressed=$(`#role-editor-body [data-role-bulk="${button.dataset.roleBulk}"][data-role-group="${group.id}"]`);
+    (pressed&&!pressed.disabled?pressed
+      :$(`#role-editor-body [data-role-group-panel="${group.id}"] > summary`))?.focus();
+  }));
+  body.querySelectorAll("[data-role-group-panel]").forEach(details=>details.addEventListener("toggle",()=>{
+    const id=details.dataset.roleGroupPanel;
+    if(details.open)rolesState.editor.collapsed.delete(id);else rolesState.editor.collapsed.add(id);
+  }));
+  body.querySelector("[data-role-editor-reload]")?.addEventListener("click",()=>{
+    const {roleId,surface}=rolesState.editor;
+    openRoleEditor(roleId,surface);
+  });
+}
+async function saveRoleEditor(){
+  const editor=rolesState.editor;
+  if(!editor||editor.saving||editor.conflict||!rolesEditable()||!roleEditorDirtyCount())return;
+  editor.saving=true;editor.error=null;renderRoleEditor();
+  try{
+    await api(`/api/roles/${encodeURIComponent(editor.roleId)}`,{method:"PATCH",body:JSON.stringify({
+      version:editor.version,
+      // The whole set, always. Two sheets write this one array and a filter hides rows from the
+      // screen, so a payload assembled from what is rendered would drop everything else the role
+      // holds.
+      permissions:[...editor.selected]
+    })});
+    editor.saving=false;
+    await loadRoles();
+    $("#role-editor").close();
+    renderRoles();
+    toast(`${editor.roleName} saved`);
+  }catch(error){
+    editor.saving=false;
+    // A CODED 409 is a refusal of the change itself, not a concurrency conflict, so it is reported
+    // as what it is. The editor never sends `name`, so neither built-in code should reach here -
+    // but a stale page is exactly the thing that would, and mislabelling it "somebody else changed
+    // this role" would send the operator to reload something that will refuse again.
+    if(error.status===409&&!error.data?.code){editor.conflict=true;await loadRoles();renderRoles();}
+    else editor.error=error.message;
+    renderRoleEditor();
+  }
+}
+function setupRoleEditorDrawer(){
+  const drawer=$("#role-editor");if(!drawer)return;
+  const close=()=>{
+    if(!roleEditorDirtyCount()||rolesState.editor?.conflict){drawer.close();return;}
+    openStackedDialog({
+      title:"Discard unsaved changes?",
+      body:`<p>Nothing has been sent to the server yet, so closing now leaves the role exactly as it was.</p>`,
+      confirmLabel:"Discard",dismissLabel:"Keep editing",
+      onConfirm:()=>{drawer.close();}
+    });
+  };
+  drawer.querySelector('[data-testid="role-editor-close"]')?.addEventListener("click",close);
+  drawer.querySelector('[data-testid="role-editor-cancel"]')?.addEventListener("click",close);
+  drawer.querySelector('[data-testid="role-editor-save"]')?.addEventListener("click",()=>runDetached(saveRoleEditor));
+  // Escape reaches the dialog as a cancelable `cancel`, which is the only place unsaved work can
+  // still be defended. The backdrop click is the dialog itself and never its panel.
+  drawer.addEventListener("cancel",event=>{
+    if(!rolesState.editor||!roleEditorDirtyCount()||rolesState.editor.conflict)return;
+    event.preventDefault();close();
+  });
+  drawer.addEventListener("click",event=>{if(event.target===drawer)close();});
+  drawer.addEventListener("close",()=>{rolesState.editor=null;});
+}
+
+// --- People writes -------------------------------------------------------
+function openMemberRolePicker(member){
+  const roles=roleAssignable();
+  if(!roles.length){toast("There is no role to assign yet. Add one first.");return;}
+  const current=member.role?.id||member.roleId||"";
+  openStackedDialog({
+    title:`Role for ${memberDisplayName(member)}`,
+    body:`<p>What this person can do is whatever their role grants. Changing it takes effect the next time they load a screen.</p>`
+      +`<div class="stacked-dialog-options" data-testid="member-role-options">${roles.map((role,index)=>
+        `<label><input type="radio" name="memberRole" value="${escapeAttr(role.id)}"${role.id===current||(!current&&index===0)?" checked":""}> <span>${escape(role.name)}${role.description?`<small>${escape(role.description)}</small>`:""}</span></label>`).join("")}</div>`
+      +`<p class="error" role="alert"></p>`,
+    confirmLabel:"Save role",dismissLabel:"Cancel",
+    onConfirm:async host=>{
+      const error=host.querySelector(".error");error.textContent="";
+      const chosen=host.querySelector('input[name="memberRole"]:checked');
+      if(!chosen){error.textContent="Choose a role to continue.";return false;}
+      try{await api(`/api/members/${encodeURIComponent(member.id)}/role`,{method:"PATCH",body:JSON.stringify({roleId:chosen.value})});}
+      catch(problem){error.textContent=problem.message;return false;}
+      await refresh();
+      if(rolesState.roles)await loadRoles();
+      renderRoles();
+      toast(`${memberDisplayName(member)} moved`);
+      return true;
+    }
+  });
+}
+async function removeMember(id){
+  const member=(state.members||[]).find(item=>item.id===id);
+  const name=member?memberDisplayName(member):"this member";
+  openStackedDialog({
+    title:`Remove ${name}?`,
+    body:`<p>They stop being able to sign in to this workspace. Everything they recorded stays, and stays attributed to them.</p>`
+      +`<p class="error" role="alert"></p>`,
+    confirmLabel:"Remove access",dismissLabel:"Cancel",
+    onConfirm:async host=>{
+      const error=host.querySelector(".error");error.textContent="";
+      try{await api(`/api/members/${encodeURIComponent(id)}`,{method:"DELETE"});}
+      catch(problem){error.textContent=problem.message;return false;}
+      await refresh();toast("Member access removed");return true;
+    }
+  });
+}
+function cancelInvitation(invitation){
+  openStackedDialog({
+    title:`Cancel the invitation to ${invitation.email}?`,
+    body:`<p>The link they were sent stops working. Inviting them again issues a new one.</p><p class="error" role="alert"></p>`,
+    confirmLabel:"Cancel invitation",dismissLabel:"Keep it",
+    onConfirm:async host=>{
+      const error=host.querySelector(".error");error.textContent="";
+      try{await api(`/api/members/invitations/${encodeURIComponent(invitation.id)}`,{method:"DELETE"});}
+      catch(problem){error.textContent=problem.message;return false;}
+      await loadRoleInvitations();renderRoles();toast("Invitation cancelled");return true;
+    }
+  });
+}
+// Ownership was a checkbox at the bottom of a 22-checkbox grid, where the most destructive act in
+// the product sat one stray click from a save. It is its own two-step action now: choose the
+// person, then confirm what it costs, with the consequence spelled out rather than implied.
+function openOwnershipTransfer(){
+  const candidates=(state.members||[]).filter(member=>!member.isOwner&&String(member.status||"active")==="active");
+  if(!candidates.length){toast("Nobody else has active workspace access, so there is nobody to transfer ownership to.");return;}
+  openStackedDialog({
+    title:"Transfer ownership",
+    body:`<p>Ownership is the one thing a role cannot grant: the Owner can do everything, cannot be locked out, and is the only account that can pass it on. Choose who receives it.</p>`
+      +`<div class="stacked-dialog-options" data-testid="ownership-candidates">${candidates.map((member,index)=>
+        `<label><input type="radio" name="ownershipCandidate" value="${escapeAttr(member.id)}"${index===0?" checked":""}> <span>${escape(memberDisplayName(member))}<small>${escape(member.email)}</small></span></label>`).join("")}</div>`,
+    confirmLabel:"Continue",dismissLabel:"Cancel",
+    onConfirm:host=>{
+      const chosen=host.querySelector('input[name="ownershipCandidate"]:checked');
+      if(!chosen)return false;
+      const member=candidates.find(candidate=>candidate.id===chosen.value);
+      // Both steps use the one stacked dialog, and showModal() throws on a dialog already open,
+      // so the second waits for the first to finish closing - the same hand-off the shared modal
+      // uses everywhere else.
+      setTimeout(()=>confirmOwnershipTransfer(member),50);
+      return true;
+    }
+  });
+}
+// What one role would leave the outgoing owner holding, in the salon's own words.
+// The same builder's twin, with the same mis-casing for the same reason - see `roleLossSentence`.
+function roleKeepSentence(role){
+  const labels=roleLabelList(role);
+  if(!labels.length)return "Grants nothing at all. You would keep an account and no access.";
+  return `Lets you: ${labels.join(", ")}.`;
+}
+function confirmOwnershipTransfer(member){
+  if(!member)return;
+  const name=memberDisplayName(member);
+  const roles=roleAssignable();
+  // Ownership is not a role, so it cannot simply be handed over: the outgoing owner has to land
+  // somewhere, and the server refuses the transfer outright without a role for them. Better to say
+  // that here than to let the confirm 404.
+  if(!roles.length){toast("Add a role first. Ownership cannot be transferred until there is one for you to keep.");return;}
+  openStackedDialog({
+    title:`Make ${name} the owner?`,
+    body:`<p data-testid="ownership-consequence"><strong>${escape(name)}</strong> (${escape(member.email)}) becomes the Owner of this workspace. Your account stops being the Owner, and from then on only they can transfer it — including back to you.</p>`
+      +`<p>Ownership is not a role, so yours cannot be handed over with it. Choose what you will hold once you are no longer the Owner.</p>`
+      +`<div class="stacked-dialog-options" data-testid="ownership-outgoing-roles">${roles.map((role,index)=>
+        `<label><input type="radio" name="outgoingOwnerRole" value="${escapeAttr(role.id)}"${index===0?" checked":""}> <span>${escape(role.name)}<small>${escape(roleKeepSentence(role))}</small></span></label>`).join("")}</div>`
+      +`<p class="error" role="alert"></p>`,
+    confirmLabel:"Transfer ownership",dismissLabel:"Cancel",
+    onConfirm:async host=>{
+      const error=host.querySelector(".error");error.textContent="";
+      const chosen=host.querySelector('input[name="outgoingOwnerRole"]:checked');
+      if(!chosen){error.textContent="Choose the role you will keep.";return false;}
+      try{
+        await api("/api/business/transfer-ownership",{method:"POST",body:JSON.stringify({
+          membershipId:member.id,outgoingOwnerRoleId:chosen.value})});
+        state.me=await api("/api/me");
+      }catch(problem){error.textContent=problem.message;return false;}
+      // Ownership has just left this session, so what this screen may show has changed with it.
+      // Dropping the cache and re-rendering the category re-evaluates the team.manage gate rather
+      // than leaving a table of controls this account can no longer use.
+      rolesState.roles=null;rolesState.catalog=null;rolesState.error=null;
+      applyPermissions();
+      await refresh();
+      renderSettingsCategory("permissions",{history:"none"});
+      toast(`${name} is now the owner`);
+      return true;
+    }
+  });
+}
+// Approving grants access, so it has to say what access. The old flow approved into whatever the
+// server chose and told nobody.
+function openAccessRequestApproval(request){
+  const roles=roleAssignable();
+  if(!roles.length){toast("There is no role to approve them into yet. Add one first.");return;}
+  openStackedDialog({
+    title:`Approve ${request.requesterName}?`,
+    body:`<p>${escape(request.requesterEmail)} gets a secure setup link and the role chosen here.</p>`
+      +`<div class="stacked-dialog-options" data-testid="access-request-roles">${roles.map((role,index)=>
+        `<label><input type="radio" name="accessRequestRole" value="${escapeAttr(role.id)}"${index===0?" checked":""}> <span>${escape(role.name)}</span></label>`).join("")}</div>`
+      +`<p class="error" role="alert"></p>`,
+    confirmLabel:"Approve",dismissLabel:"Cancel",
+    onConfirm:async host=>{
+      const error=host.querySelector(".error");error.textContent="";
+      const chosen=host.querySelector('input[name="accessRequestRole"]:checked');
+      if(!chosen){error.textContent="Choose a role to continue.";return false;}
+      let result;
+      try{result=await api(`/api/workspace-access-requests/${encodeURIComponent(request.id)}/approve`,{method:"POST",body:JSON.stringify({roleId:chosen.value})});}
+      catch(problem){error.textContent=problem.message;return false;}
+      let copied=false;
+      if(result?.acceptancePath&&navigator.clipboard){
+        try{await navigator.clipboard.writeText(`${location.origin}${result.acceptancePath}`);copied=true;}catch{copied=false;}
+      }
+      await refresh();
+      if(rolesState.roles)await loadRoles();
+      await loadRoleInvitations();
+      renderRoles();
+      toast(copied?"Approved; secure setup link copied":"Approved; the requester invitation was queued");
+      return true;
+    }
+  });
+}
+function confirmRejectAccessRequest(request){
+  openStackedDialog({
+    title:`Reject ${request.requesterName}?`,
+    body:`<p>They get no access and no link. They can request access again.</p><p class="error" role="alert"></p>`,
+    confirmLabel:"Reject",dismissLabel:"Cancel",
+    onConfirm:async host=>{
+      const error=host.querySelector(".error");error.textContent="";
+      try{await api(`/api/workspace-access-requests/${encodeURIComponent(request.id)}/reject`,{method:"POST"});}
+      catch(problem){error.textContent=problem.message;return false;}
+      await refresh();renderRoles();toast("Access request rejected");return true;
+    }
+  });
+}
+
+function closeRolesMenu(menu){menu.open=false;menu.querySelector("summary")?.setAttribute("aria-expanded","false");}
+function closeRolesMenus(){$$("#roles-root .roles-menu[open]").forEach(closeRolesMenu);}
+// Bound once on the document, not on the root: the workspace is rebuilt on every write, and a
+// listener per render would stack up. Escape has to reach these too - a menu that only closes by
+// clicking elsewhere is a keyboard trap in everything but name.
+let rolesMenusBound=false;
+function bindRolesMenuDismissal(){
+  if(rolesMenusBound)return;rolesMenusBound=true;
+  document.addEventListener("click",event=>{if(!event.target.closest?.(".roles-menu"))closeRolesMenus();});
+  document.addEventListener("keydown",event=>{
+    if(event.key!=="Escape")return;
+    const open=$("#roles-root .roles-menu[open]");
+    if(!open)return;
+    event.preventDefault();
+    const trigger=open.querySelector("summary");
+    closeRolesMenu(open);trigger?.focus();
+  });
+}
+// --- Binding -------------------------------------------------------------
+function bindRoles(root){
+  bindRolesMenuDismissal();
+  // Arrows move focus, Enter and Space commit, matching the Tax & payments tablist. Activating on
+  // focus would swap the panel out from under somebody simply passing along the bar.
+  root.querySelector('[role="tablist"]')?.addEventListener("keydown",event=>{
+    const buttons=[...root.querySelectorAll("[data-roles-tab]")],index=buttons.indexOf(document.activeElement);
+    if(index<0)return;
+    if(event.key==="Enter"||event.key===" "||event.key==="Spacebar"){event.preventDefault();selectRolesTab(buttons[index].dataset.rolesTab);return;}
+    if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;
+    event.preventDefault();
+    const next=event.key==="Home"?0:event.key==="End"?buttons.length-1:(index+(event.key==="ArrowRight"?1:-1)+buttons.length)%buttons.length;
+    buttons[next]?.focus();
+  });
+  root.querySelectorAll("[data-roles-tab]").forEach(button=>button.addEventListener("click",()=>selectRolesTab(button.dataset.rolesTab,{focus:false})));
+  root.querySelector("[data-roles-retry]")?.addEventListener("click",()=>{
+    rolesState.error=null;rolesState.roles=null;rolesState.catalog=null;renderRoles();ensureRolesData();
+  });
+  const role=id=>(rolesState.roles||[]).find(item=>item.id===id);
+  root.querySelectorAll("[data-role-open]").forEach(button=>button.addEventListener("click",()=>
+    openRoleEditor(button.dataset.roleOpen,button.dataset.roleSurface)));
+  root.querySelectorAll("[data-role-enabled]").forEach(input=>input.addEventListener("change",()=>{
+    const target=role(input.dataset.roleEnabled);
+    if(target)toggleRoleEnabled(target,input.checked);
+  }));
+  root.querySelector("[data-role-add]")?.addEventListener("click",()=>openRoleCreate());
+  root.querySelectorAll("[data-role-rename]").forEach(button=>button.addEventListener("click",()=>{
+    const target=role(button.dataset.roleRename);if(target)openRoleRename(target);
+  }));
+  root.querySelectorAll("[data-role-duplicate]").forEach(button=>button.addEventListener("click",()=>{
+    const target=role(button.dataset.roleDuplicate);
+    if(target)openRoleCreate({copyFromRoleId:target.id,name:`${target.name} copy`});
+  }));
+  root.querySelectorAll("[data-role-delete]").forEach(button=>button.addEventListener("click",()=>{
+    const target=role(button.dataset.roleDelete);if(target)confirmDeleteRole(target);
+  }));
+  root.querySelector("[data-roles-invite]")?.addEventListener("click",()=>runDetached(()=>actions["invite-member"]()));
+  root.querySelectorAll("[data-member-role]").forEach(button=>button.addEventListener("click",()=>{
+    const member=(state.members||[]).find(item=>item.id===button.dataset.memberRole);
+    if(member)openMemberRolePicker(member);
+  }));
+  root.querySelectorAll("[data-member-remove]").forEach(button=>button.addEventListener("click",()=>
+    runDetached(()=>removeMember(button.dataset.memberRemove))));
+  root.querySelector("[data-member-transfer]")?.addEventListener("click",openOwnershipTransfer);
+  root.querySelectorAll("[data-invitation-cancel]").forEach(button=>button.addEventListener("click",()=>{
+    const invitation=rolesState.invitations.find(item=>item.id===button.dataset.invitationCancel);
+    if(invitation)cancelInvitation(invitation);
+  }));
+  const accessRequest=id=>(state.accessRequests||[]).find(item=>item.id===id);
+  root.querySelectorAll("[data-access-approve]").forEach(button=>button.addEventListener("click",()=>{
+    const request=accessRequest(button.dataset.accessApprove);if(request)openAccessRequestApproval(request);
+  }));
+  root.querySelectorAll("[data-access-reject]").forEach(button=>button.addEventListener("click",()=>{
+    const request=accessRequest(button.dataset.accessReject);if(request)confirmRejectAccessRequest(request);
+  }));
+  // The row menus reuse the client directory's `.row-menu`, whose list is positioned absolutely
+  // here rather than fixed, so it needs no placement pass - only the usual close-the-others.
+  root.querySelectorAll(".roles-menu").forEach(menu=>menu.addEventListener("toggle",()=>{
+    menu.querySelector("summary")?.setAttribute("aria-expanded",String(menu.open));
+    if(!menu.open)return;
+    root.querySelectorAll(".roles-menu[open]").forEach(other=>{if(other!==menu)closeRolesMenu(other);});
+  }));
+  root.querySelectorAll(".roles-menu .row-menu-item").forEach(button=>button.addEventListener("click",closeRolesMenus));
+}
+
+function renderSettingsCategory(category=settingsPathCategory(),{history="replace"}={}){const definition=settingsCategories.find(([id])=>id===category)||settingsCategories[0],[id,title]=definition,nav=$("#settings-navigation"),content=$("#settings-content");if(!nav||!content)return;nav.innerHTML=settingsCategories.map(([key,label])=>`<button type="button" data-settings-category="${key}" class="${key===id?"active":""}" ${key===id?'aria-current="page"':""}>${escape(label)}</button>`).join("");let html="";if(id==="account")html=settingsLink("Account","Personal identity and password security remain in your canonical account workspace.","Manage profile & security","profile-account");else if(id==="staff")html=`<div id="staff-root" class="staff-root"></div>`;else if(id==="business")html=`<article class="settings-panel"><h3>Business</h3><p>Manage the workspace name and authoritative timezone, currency, tax rate, and reminder lead time.</p><button type="button" class="primary compact settings-business-action">Edit business settings</button></article>`;else if(id==="availability")html=`<div id="availability-root" class="availability-root"></div>`;else if(id==="permissions")html=allowed("team.manage")?`<div id="roles-root" class="roles-root"></div>`:settingsPlaceholder(id,title);else if(id==="services")html=settingsLink("Services","Service names, pricing, durations, and availability have one canonical workspace.","Open Services","services");else if(id==="pet-options")html=`<div id="pet-options-workspace" class="pet-options-workspace"></div>`;else if(id==="tax-payments")html=`<div id="taxpay-root" class="taxpay-root"></div>`;else if(id==="automated-messages")html=`<article class="settings-panel"><h3>Automated messages</h3><p>Pawsh’s durable reminder/outbox flow uses the configured reminder lead time. Template and channel management are deferred.</p><button type="button" class="primary compact settings-business-action">Manage reminder timing</button></article>`;else html=settingsPlaceholder(id,title);content.innerHTML=`<div class="settings-content-head"><p class="eyebrow">Settings</p><h2>${escape(title)}</h2></div>${html}`;nav.querySelectorAll("[data-settings-category]").forEach(button=>button.addEventListener("click",()=>renderSettingsCategory(button.dataset.settingsCategory,{history:"push"})));content.querySelectorAll(".settings-canonical-link").forEach(button=>button.addEventListener("click",()=>showView(button.dataset.target)));content.querySelectorAll(".settings-business-action").forEach(button=>button.addEventListener("click",actions["business-settings"]));if(id==="permissions"){renderRoles();ensureRolesData();}if(id==="staff")renderStaff();if(id==="pet-options")renderPetOptions();if(id==="availability"){renderAvailability();ensureAvailabilityData();}if(id==="tax-payments"){renderTaxPayments();ensureTaxPaymentsData();}if(history!=="none")globalThis.history[history==="push"?"pushState":"replaceState"]({view:"admin-settings",settingsCategory:id},"",`/settings/${id}`);content.focus({preventScroll:true});}
 
 async function openClientProfile(customerId,{petId=null,appointmentId=null,returnView=null}={}){
   if(returnView)state.clientProfileReturnView=returnView;
@@ -7153,6 +8337,7 @@ if (inviteToken || resetToken) {
 }
 setupBreedDrawer();
 setupStaffServicesDrawer();
+setupRoleEditorDrawer();
 setupTerminalDrawer();
 setupTerminalCapture();
 bootstrap();

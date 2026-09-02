@@ -2,7 +2,7 @@ import { z } from "zod";
 import { passwordSchema } from "../security/passwords.js";
 import { rabiesVerificationMethods, rabiesVerificationStatuses } from "@pawsh/domain";
 import { petHealthIssues } from "@pawsh/domain";
-import { permissions } from "@pawsh/domain";
+import { permissions, type Permission } from "@pawsh/domain";
 import {pricingClasses,weightTiers} from "@pawsh/domain";
 import {cardProcessorProviders,paymentMethods} from "@pawsh/domain";
 import {groomerPaletteSize} from "@pawsh/domain";
@@ -150,12 +150,32 @@ export const roleCreateSchema = z.object({
  * is validated against the domain tuple rather than a list restated here, so a permission cannot
  * be grantable through this endpoint while unknown to the authorization layer.
  */
+/**
+ * ONE PERMISSION KEY, checked against the domain tuple.
+ *
+ * The membership test is `z.enum(permissions)`'s, and the reason this is not written that way is
+ * the failure body. Zod's `invalid_value` issue carries the full `values` array, and
+ * `app.setErrorHandler` sends the ZodError as `details` - so one misspelt permission answered
+ * with roughly 4KB enumerating all 101 valid keys, most of a response spent restating a catalog
+ * the client can already fetch from `GET /api/permissions`. Naming a custom error keeps the
+ * message short but not the issue: `values` is on the issue object regardless. So the check is
+ * expressed as set membership, which fails in about 170 bytes and says the same thing.
+ *
+ * The set is DERIVED from the tuple, never restated, so a permission cannot become grantable
+ * through this endpoint while being unknown to the authorization layer.
+ */
+const permissionKeys = new Set<string>(permissions);
+const permissionKey = z.custom<Permission>(
+  (value) => typeof value === "string" && permissionKeys.has(value),
+  { error: "Unknown permission" }
+);
+
 export const roleUpdateSchema = z.object({
   version: z.number().int().min(1),
   name: z.string().trim().min(1).max(80).optional(),
   description: z.preprocess(blankToNull, z.string().trim().max(500).nullable()).optional(),
   enabled: z.boolean().optional(),
-  permissions: z.array(z.enum(permissions)).optional()
+  permissions: z.array(permissionKey).optional()
 }).strict();
 
 /**

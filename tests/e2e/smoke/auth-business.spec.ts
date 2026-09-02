@@ -1,13 +1,17 @@
 import { test, expect, login } from "../fixtures/tenant.js";
 
 test("@smoke auth session lifecycle is usable and safe",async({page,tenant})=>{
+  const email=page.getByTestId("login-email"),secret=page.getByTestId("login-password");
   await page.goto("/");
   await page.getByRole("button",{name:/already have an account/i}).click();
-  await page.getByTestId("login-email").fill(tenant.ownerEmail);
-  await page.getByTestId("login-password").fill("wrong password");
+  await email.fill(tenant.ownerEmail);
+  await secret.fill("wrong password");
   await page.getByTestId("auth-submit").click();
   await expect(page.getByRole("alert")).toContainText("Invalid email or password");
-  await page.getByTestId("login-password").fill(tenant.password);
+  // A refused password arrives as a 401 like a lapsed session does, but it is not one: the address
+  // has to survive it, or correcting a typo in the password would mean retyping both fields.
+  await expect(email).toHaveValue(tenant.ownerEmail);
+  await secret.fill(tenant.password);
   await page.getByTestId("auth-submit").click();
   await expect(page.getByTestId("dashboard")).toBeVisible();
   await page.reload();
@@ -15,16 +19,54 @@ test("@smoke auth session lifecycle is usable and safe",async({page,tenant})=>{
   await page.getByTestId("account-trigger").click();
   await page.getByTestId("logout").click();
   await expect(page.getByTestId("auth-form")).toBeVisible();
+  // A front desk is a shared machine, so signing out leaves nothing of the last person behind and
+  // puts the cursor where the next one types. The browser is told not to offer the address back
+  // either; without this attribute Chromium restores it on a back navigation to the sign-in page.
+  await expect(email).toBeFocused();
+  await expect(email).toHaveAttribute("autocomplete","off");
   const deniedStatus=await page.evaluate(async()=>{
     const response=await fetch("/api/me",{credentials:"include"});
     return response.status;
   });
   expect(deniedStatus).toBe(401);
   await page.getByRole("button",{name:/already have an account/i}).click();
+  await email.fill(tenant.ownerEmail);
+  await secret.fill(tenant.password);
+  await page.getByTestId("auth-submit").click();
+  await expect(page.getByTestId("dashboard")).toBeVisible();
+  // Signing out of this second session is what proves the values themselves are cleared: nothing
+  // reloaded the page since they were typed, so the fields still held them until now.
+  await page.getByTestId("account-trigger").click();
+  await page.getByTestId("logout").click();
+  await expect(page.getByTestId("auth-form")).toBeVisible();
+  await expect(email).toHaveValue("");
+  await expect(secret).toHaveValue("");
+});
+
+test("@smoke a lapsed session returns to an emptied sign-in form",async({page,tenant})=>{
+  await page.goto("/");
+  // Someone who starts creating a salon and signs in to an existing one instead leaves a value in
+  // the signup-only field, so it has to be cleared alongside the two credentials.
+  await page.getByTestId("signup-business-name").fill("Front Desk Salon");
+  await page.getByRole("button",{name:/already have an account/i}).click();
   await page.getByTestId("login-email").fill(tenant.ownerEmail);
   await page.getByTestId("login-password").fill(tenant.password);
   await page.getByTestId("auth-submit").click();
-  await expect(page.getByTestId("dashboard")).toBeVisible();
+  await expect(page.locator("#app-view")).toBeVisible();
+
+  // Deliberately not the Sign out button. The session lapsing underneath the app is the other way
+  // back to this screen, and no handler on the button can cover it - the clearing belongs to the
+  // one place both routes pass through.
+  await page.context().clearCookies({name:"pawsh_session"});
+  await page.evaluate(()=>document.dispatchEvent(new Event("visibilitychange")));
+  await expect(page.getByTestId("auth-form")).toBeVisible();
+  await expect(page.locator("#app-view")).toBeHidden();
+
+  await expect(page.getByTestId("login-email")).toHaveValue("");
+  await expect(page.getByTestId("login-password")).toHaveValue("");
+  await expect(page.getByTestId("login-email")).toBeFocused();
+  await page.getByRole("button",{name:/create a workspace/i}).click();
+  await expect(page.getByTestId("signup-business-name")).toHaveValue("");
 });
 
 test("@smoke business configuration persists through the GUI",async({page,tenant})=>{
@@ -213,7 +255,7 @@ test("@smoke Settings owns administration while Profile and Services remain sepa
   const settings=page.getByTestId("nav-settings");await expect(settings).toHaveAccessibleName("Settings");await settings.click();
   await expect(page.getByTestId("admin-settings-view")).toBeVisible();
   await expect(page.locator("#settings-navigation").getByRole("button",{name:"Account"})).toHaveAttribute("aria-current","page");
-  await page.locator("#settings-navigation").getByRole("button",{name:"Permissions"}).click();await expect(page.getByTestId("admin-settings-view").locator("h2",{hasText:"Permissions"})).toBeVisible();
+  await page.locator("#settings-navigation").getByRole("button",{name:"Roles & permissions",exact:true}).click();await expect(page.getByTestId("admin-settings-view").locator("h2",{hasText:"Roles & permissions"})).toBeVisible();
   await page.getByTestId("account-trigger").click();await page.getByTestId("profile-account-link").click();
   await expect(page.getByTestId("profile-account-view")).toBeVisible();
   await expect(page.getByTestId("admin-settings-view")).toBeHidden();
@@ -238,7 +280,7 @@ test("@smoke desktop navigation is an accessible minimized icon rail",async({pag
 
 test("@smoke Settings is a deep-linkable categorized workspace with honest canonical links and placeholders",async({page,tenant})=>{
   await login(page,tenant.ownerEmail);await page.getByTestId("nav-settings").click();const navigation=page.locator("#settings-navigation");
-  const categories=["Account","Staff","Business","Availability","Appointment schedule","Locations","Permissions","Services","Payroll","Pet options","Tax & payments","Coupons & discounts","Automated messages","SMS auto-reply","Agreements","Online booking","Intake form","Client portal","Loyalty program","Review booster","Report card","Integrations"];
+  const categories=["Account","Staff","Business","Availability","Appointment schedule","Locations","Roles & permissions","Services","Payroll","Pet options","Tax & payments","Coupons & discounts","Automated messages","SMS auto-reply","Agreements","Online booking","Intake form","Client portal","Loyalty program","Review booster","Report card","Integrations"];
   for(const category of categories)await expect(navigation.getByRole("button",{name:category,exact:true})).toBeVisible();
   await navigation.getByRole("button",{name:"Payroll",exact:true}).click();await expect(page).toHaveURL(/\/settings\/payroll$/);await expect(page.getByTestId("settings-placeholder")).toContainText("not yet available");await expect(page.getByTestId("settings-placeholder").locator("input,select,textarea")).toHaveCount(0);
   await page.reload();await expect(page.getByTestId("admin-settings-view").locator("h2",{hasText:"Payroll"})).toBeVisible();await expect(navigation.getByRole("button",{name:"Payroll",exact:true})).toHaveAttribute("aria-current","page");

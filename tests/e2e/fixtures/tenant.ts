@@ -176,12 +176,17 @@ export async function createMember(
   ownerApi: APIRequestContext,
   email: string,
   permissions: string[]
-): Promise<{email:string;membershipId:string;roleId:string}> {
+): Promise<{email:string;membershipId:string;roleId:string;roleName:string}> {
   // A member's access is their role, so the permissions a spec asks for become a role first. The
   // role is named after the caller's request rather than reused, so two specs asking for different
   // permission sets never collide on the unique (business_id, lower(name)) index.
+  //
+  // The local part alone carries the run id, so it is unique without the domain - and the domain is
+  // what pushed longer fixture addresses past `roleCreateSchema`'s 80-character cap, which failed
+  // the whole spec with a 400 before it had run an assertion.
+  const roleName = `Fixture ${email.split("@")[0]!.slice(0,60)}`;
   const role = await json<{id:string}>(await ownerApi.post("/api/roles",{
-    data:{name:`Fixture ${email}`}
+    data:{name:roleName}
   }));
   await json(await ownerApi.patch(`/api/roles/${role.id}`,{data:{version:1,permissions}}));
   const invitation = await json<{acceptancePath:string}>(await ownerApi.post("/api/members/invitations",{
@@ -192,7 +197,7 @@ export async function createMember(
   await json(await memberApi.post("/api/auth/invitations/accept",{data:{token,password}}));
   await memberApi.dispose();
   const members = await json<Array<{id:string;email:string}>>(await ownerApi.get("/api/members"));
-  return {email,membershipId:members.find((member)=>member.email===email)!.id,roleId:role.id};
+  return {email,membershipId:members.find((member)=>member.email===email)!.id,roleId:role.id,roleName};
 }
 
 /**
@@ -266,5 +271,9 @@ export async function login(page: Page,email:string,passwordValue=password) {
   );
   await page.getByTestId("auth-submit").click();
   expect((await loginResponse).status()).toBe(200);
-  await expect(page.getByTestId("dashboard")).toBeVisible();
+  // The authenticated shell, not the dashboard. Dashboard is gated on `dashboard.view` now, and a
+  // session without it lands on the first destination it actually has - so waiting on the
+  // dashboard specifically would be waiting for a screen this member is right not to be shown.
+  await expect(page.locator("#app-view")).toBeVisible();
+  await expect(page.locator("#auth-view")).toBeHidden();
 }

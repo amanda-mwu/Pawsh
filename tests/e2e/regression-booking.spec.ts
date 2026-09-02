@@ -5,6 +5,7 @@ import {
   expect,
   login,
   prepareReceipt,
+  setMemberPermissions,
   test,
   type TenantFixture
 } from "./fixtures/tenant.js";
@@ -186,10 +187,9 @@ test("@regression-booking reconciles stale override permission without committin
   await page.getByTestId("booking-submit").click();
   await expect(page.getByTestId("confirm-conflict-override")).toBeVisible();
 
-  const revoked = await request.patch(`/api/members/${member.membershipId}/permissions`, {
-    data: { permissions: retainedPermissions }
-  });
-  expect(revoked.status()).toBe(200);
+  // A member's access is their role now, so revoking mid-flight edits the role they hold. The
+  // per-member permission column this used to write was retired with migration 0042.
+  await setMemberPermissions(request, member.roleId, retainedPermissions);
   await page.getByTestId("confirm-conflict-override").click();
   await expect(page.locator("#booking-error")).toContainText("Missing permission: appointments.override_conflict");
   await expect(page.getByTestId("confirm-conflict-override")).toHaveCount(0);

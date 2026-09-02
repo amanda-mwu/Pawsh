@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
-import { permissions } from "@pawsh/domain";
+import { builtInRoles, permissionLabels, permissions, type Permission } from "@pawsh/domain";
+import { provisionBusinessCatalog } from "../../src/domain/catalog-seed.js";
 import { createRole } from "../support/roles.js";
 
 /**
@@ -193,8 +194,12 @@ describeDatabase("roles API", () => {
     expect(listed.assignedCount).toBe(1);
     expect(listed.grantedCount).toBe(3);
     // Ordered by the domain tuple and capped, so the same role always describes itself the same
-    // way and the confirmation can say "and N more" from grantedCount.
-    expect(listed.topPermissionLabels).toEqual(["View calendar", "View pets", "Manage team"]);
+    // way and the confirmation can say "and N more" from grantedCount. Read through
+    // `permissionLabels` rather than restated: a label is display copy and may be reworded, and a
+    // test that hard-codes it fails on the wording instead of on the ordering it is here to pin.
+    expect(listed.topPermissionLabels).toEqual(
+      ["calendar.view", "pets.view", "team.manage"].map((key) => permissionLabels[key as Permission])
+    );
 
     // The delete gate mirrors the `on delete restrict` foreign key exactly, so the caller gets a
     // 409 naming what is in the way rather than a 500 describing a constraint.
@@ -319,6 +324,243 @@ describeDatabase("roles API", () => {
     expect(successor.isOwner).toBe(true);
     expect(successor.role).toBeNull();
     expect(successor.permissions).toEqual([...permissions]);
+  });
+
+  /** Signs a brand-new workspace up, the way a real salon arrives. */
+  const signUp = async (label: string) => {
+    const response = await app.inject({
+      method: "POST", url: "/api/auth/signup",
+      payload: {
+        email: `${label}-${suffix}@example.test`,
+        password: "correct horse provisioning",
+        businessName: `${label} ${suffix}`
+      }
+    });
+    expect(response.statusCode, response.body).toBe(201);
+    return { cookie: cookie(response), businessId: response.json().businessId as string };
+  };
+  interface ListedRole {
+    id: string; name: string; description: string | null; builtIn: boolean; enabled: boolean;
+    version: number; permissions: string[]; assignedCount: number;
+  }
+  const rolesOf = async (sessionCookie: string): Promise<ListedRole[]> =>
+    (await app.inject({ method: "GET", url: "/api/roles", headers: { cookie: sessionCookie } }))
+      .json().roles;
+
+  /**
+   * A BUSINESS CREATED TODAY MUST ARRIVE WITH THE SAME ROLES A MIGRATED ONE HAS.
+   *
+   * 0041 seeded the three built-ins into every business that existed when it ran and could not
+   * reach one created afterwards, so a new signup had NO roles at all - and because an invitation
+   * must name a `roleId`, its owner could not invite anybody until they had hand-built one.
+   */
+  it("gives a newly created business exactly the built-in Pawsh roles", async () => {
+    const fresh = await signUp("provisioned");
+    const roles = await rolesOf(fresh.cookie);
+    // Exactly the built-ins and nothing else: the provisioner does not invent a fourth, and it
+    // does not leave the workspace empty.
+    expect(roles.map((role) => role.name).sort())
+      .toEqual(builtInRoles.map((role) => role.name).sort());
+    for (const definition of builtInRoles) {
+      const role = roles.find((candidate) => candidate.name === definition.name)!;
+      expect(role.builtIn, definition.name).toBe(true);
+      expect(role.enabled, definition.name).toBe(true);
+      expect(role.assignedCount, definition.name).toBe(0);
+      // The permissions are the canonical definitions, not a second hand-written copy of them.
+      expect([...role.permissions].sort(), definition.name)
+        .toEqual([...definition.permissions].sort());
+    }
+    // And the owner can now invite somebody immediately, which is the defect this closes.
+    const invited = await app.inject({
+      method: "POST", url: "/api/members/invitations", headers: { cookie: fresh.cookie },
+      payload: {
+        email: `provisioned-hire-${suffix}@example.test`,
+        roleId: roles.find((role) => role.name === "Groomer")!.id
+      }
+    });
+    expect(invited.statusCode, invited.body).toBe(201);
+  });
+
+  it("provisions idempotently, per business, and never resets what is already there", async () => {
+    const first = await signUp("idempotent-one");
+    const second = await signUp("idempotent-two");
+    const houseRole = await createRole(app, first.cookie, `House style ${suffix}`, ["calendar.view"]);
+    const before = await rolesOf(first.cookie);
+
+    // Running the authority again is what `npm run db:migrate` does to every business, and what a
+    // re-seeded QA workspace does to itself. It must be a no-op.
+    for (let run = 0; run < 2; run++) {
+      await db.begin(async (tx) => { await provisionBusinessCatalog(tx, first.businessId); });
+    }
+
+    const after = await rolesOf(first.cookie);
+    // Same rows, same ids. Not "three built-ins again" - the SAME three, because a duplicate set
+    // would break the unique index and a replaced set would strand every assignment pointing at
+    // the old ids.
+    expect(after.map((role) => role.id).sort()).toEqual(before.map((role) => role.id).sort());
+    expect(after.filter((role) => role.builtIn)).toHaveLength(builtInRoles.length);
+    const custom = after.find((role) => role.id === houseRole)!;
+    expect(custom).toMatchObject({ name: `House style ${suffix}`, builtIn: false });
+    expect(custom.permissions).toEqual(["calendar.view"]);
+
+    // No leakage: the second workspace has its own three rows, sharing no id with the first.
+    const neighbour = await rolesOf(second.cookie);
+    expect(neighbour.filter((role) => role.builtIn)).toHaveLength(builtInRoles.length);
+    const mine = new Set(after.map((role) => role.id));
+    expect(neighbour.filter((role) => mine.has(role.id))).toEqual([]);
+  });
+
+  it("leaves a salon's own role alone when it already owns the name", async () => {
+    // A business that predates provisioning may already have written its own "manager". The
+    // built-in must not be forced alongside it - `roles_unique_name_per_business` compares
+    // case-insensitively, so that would be a constraint violation - and must not overwrite it.
+    const [legacy] = await db<{ id: string }[]>`
+      insert into businesses (name,email)
+      values (${`Legacy ${suffix}`},${`legacy-${suffix}@example.test`})
+      returning id
+    `;
+    await db`
+      insert into roles (business_id,name,permissions)
+      values (${legacy!.id},'manager',${["calendar.view"]}::text[])
+    `;
+    await db.begin(async (tx) => { await provisionBusinessCatalog(tx, legacy!.id); });
+
+    const rows = await db<{ name: string; builtIn: boolean; permissions: string[] }[]>`
+      select name,built_in,permissions from roles where business_id=${legacy!.id}
+    `;
+    expect(rows.map((role) => role.name).sort()).toEqual(["Groomer", "Receptionist", "manager"]);
+    const kept = rows.find((role) => role.name === "manager")!;
+    expect(kept.builtIn).toBe(false);
+    expect(kept.permissions).toEqual(["calendar.view"]);
+  });
+
+  it("lists roles in the order Pawsh states, not the order their names are spelled", async () => {
+    const fresh = await signUp("role-order");
+
+    // `builtInRoles` is the source and `sort_order` carries it into the database, so the top staff
+    // role sits directly under the Owner because it is FIRST THERE. Sorted by name these are
+    // Groomer, Manager, Receptionist - the most powerful of the three in the middle, and nobody
+    // decided that. The assertion is against the array rather than a literal list of names so that
+    // reordering the array is all it takes to move a role, and adding a fourth built-in cannot
+    // land somewhere nobody chose.
+    expect((await rolesOf(fresh.cookie)).map((role) => role.name))
+      .toEqual(builtInRoles.map((role) => role.name));
+
+    // A custom role sorts after every built-in whatever it is called: `built_in desc` decides
+    // that before `sort_order` is consulted. "Aardvark" would otherwise lead the list.
+    await createRole(app, fresh.cookie, `Aardvark ${suffix}`);
+    await createRole(app, fresh.cookie, `Zebra ${suffix}`);
+    expect((await rolesOf(fresh.cookie)).map((role) => role.name)).toEqual([
+      ...builtInRoles.map((role) => role.name), `Aardvark ${suffix}`, `Zebra ${suffix}`
+    ]);
+  });
+
+  it("publishes the taxonomy's groups, masters and descriptions", async () => {
+    const catalog = (await app.inject({
+      method: "GET", url: "/api/permissions", headers: { cookie: ownerCookie }
+    })).json();
+    type Entry = { key: string; label: string; hint?: string; enforced: boolean };
+    type Group = { id: string; label: string; masterKey: string | null; permissions: Entry[] };
+    const groups: Group[] = catalog.groups;
+    const entries = groups.flatMap((group) => group.permissions);
+
+    // A master is a real permission, and it is a listed row of exactly one group - being another
+    // group's master is not membership, which is what lets `dashboard.view` head the Access
+    // Control sheet's Dashboard group while living in the Permissions sheet's.
+    for (const group of groups) {
+      if (group.masterKey === null) continue;
+      expect(entries.some((entry) => entry.key === group.masterKey), group.id).toBe(true);
+    }
+    expect(groups.find((group) => group.id === "setting")?.masterKey).toBe("settings.manage");
+    expect(groups.find((group) => group.id === "dashboard-access")?.masterKey).toBe("dashboard.view");
+    expect(groups.find((group) => group.id === "report-access")?.masterKey).toBe("reports.view");
+
+    // EVERY KEY OF THE NEW TAXONOMY IS PUBLISHED AS UNENFORCED. The catalog is what tells an owner
+    // whether a switch does anything, so one arriving as `enforced: true` while no route consults
+    // it would be the editor claiming a restriction that is not there.
+    for (const key of ["payments.edit", "customers.contact_info", "messages.view",
+      "settings.business", "pets.breeds_edit", "dashboard.all_staff", "gift_cards.sell"]) {
+      expect(entries.find((entry) => entry.key === key), key)
+        .toMatchObject({ enforced: false });
+    }
+    // And the ones that do gate something still say so.
+    expect(entries.find((entry) => entry.key === "settings.manage")).toMatchObject({ enforced: true });
+    expect(entries.find((entry) => entry.key === "customers.view")).toMatchObject({ enforced: true });
+
+    // The hint is the sentence the editor renders under the row and searches on. It is optional,
+    // and where it is present it must not be blank - an empty string would render an empty line
+    // under the badge and match every filter term.
+    for (const entry of entries) {
+      if (entry.hint === undefined) continue;
+      expect(entry.hint.trim().length, entry.key).toBeGreaterThan(0);
+    }
+    expect(entries.find((entry) => entry.key === "customers.archive")?.hint)
+      .toContain("rather than erasing");
+  });
+
+  /**
+   * BUILT-IN ROLES ARE PAWSH TEMPLATES, NOT SALON PROPERTY.
+   *
+   * Their name is their identity, so they cannot be renamed and cannot be deleted. Retiring one is
+   * expressed by DISABLING it, which grants nothing while off, keeps the assignments, and restores
+   * exactly the same access under the same id when it is switched back on.
+   */
+  it("refuses to rename or delete a built-in role, and disables and restores it instead", async () => {
+    const fresh = await signUp("built-in-authority");
+    const seeded = (await rolesOf(fresh.cookie)).find((role) => role.name === "Manager")!;
+    const editBuiltIn = async (payload: Record<string, unknown>) => await app.inject({
+      method: "PATCH", url: `/api/roles/${seeded.id}`, headers: { cookie: fresh.cookie }, payload
+    });
+
+    const renamed = await editBuiltIn({ version: seeded.version, name: `Shift lead ${suffix}` });
+    expect(renamed.statusCode).toBe(409);
+    expect(renamed.json().code).toBe("ROLE_BUILT_IN_NAME_IMMUTABLE");
+
+    const removed = await app.inject({
+      method: "DELETE", url: `/api/roles/${seeded.id}`, headers: { cookie: fresh.cookie }
+    });
+    expect(removed.statusCode).toBe(409);
+    expect(removed.json().code).toBe("ROLE_BUILT_IN_UNDELETABLE");
+
+    // Neither refusal touched anything, not even the concurrency token.
+    expect((await rolesOf(fresh.cookie)).find((role) => role.id === seeded.id))
+      .toMatchObject({ name: "Manager", builtIn: true, enabled: true, version: seeded.version });
+
+    // Carrying the name it already has is a save, not a rename, so an editor that PATCHes the
+    // whole role back is not refused for repeating what it was given.
+    const described = await editBuiltIn({
+      version: seeded.version, name: "Manager", description: "Runs the floor."
+    });
+    expect(described.statusCode, described.body).toBe(200);
+    expect(described.json().description).toBe("Runs the floor.");
+
+    const off = await editBuiltIn({ version: described.json().version, enabled: false });
+    expect(off.statusCode, off.body).toBe(200);
+    expect(off.json()).toMatchObject({ id: seeded.id, name: "Manager", builtIn: true, enabled: false });
+
+    const on = await editBuiltIn({ version: off.json().version, enabled: true });
+    expect(on.statusCode, on.body).toBe(200);
+    // Canonical identity survives the round trip: same row, same name, same grants.
+    expect(on.json()).toMatchObject({ id: seeded.id, name: "Manager", builtIn: true, enabled: true });
+    expect([...on.json().permissions].sort()).toEqual([...seeded.permissions].sort());
+  });
+
+  it("hides a built-in role from every other business", async () => {
+    const owner = await signUp("built-in-owner");
+    const rival = await signUp("built-in-rival");
+    const target = (await rolesOf(owner.cookie)).find((role) => role.name === "Receptionist")!;
+
+    // The rival is a genuine owner of their own workspace, so `isOwner` passes and the tenant
+    // predicate is the only thing standing between them and somebody else's role.
+    expect((await app.inject({
+      method: "PATCH", url: `/api/roles/${target.id}`, headers: { cookie: rival.cookie },
+      payload: { version: target.version, enabled: false }
+    })).statusCode).toBe(404);
+    expect((await app.inject({
+      method: "DELETE", url: `/api/roles/${target.id}`, headers: { cookie: rival.cookie }
+    })).statusCode).toBe(404);
+    expect((await rolesOf(owner.cookie)).find((role) => role.id === target.id))
+      .toMatchObject({ enabled: true, name: "Receptionist" });
   });
 
   it("refuses every roles route to a member without team.manage", async () => {

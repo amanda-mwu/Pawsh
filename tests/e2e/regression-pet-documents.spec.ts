@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { test, expect, login, createMember } from "./fixtures/tenant.js";
+import { test, expect, login, createMember, setMemberPermissions } from "./fixtures/tenant.js";
 import { petAction, petActionSelector } from "./helpers/clients.js";
 
 const fixture = resolve("tests/fixtures/rabies-vaccination.pdf");
@@ -49,10 +49,9 @@ test("@regression-pet-documents enforces Pet Care document permissions", async (
   await expect(page.getByTestId("modal")).toBeVisible();
   await expect(page.getByTestId("field-rabiesPdf")).toHaveCount(0);
 
-  const revoked = await request.patch(`/api/members/${member.membershipId}/permissions`, {
-    data: { permissions: ["customers.view", "pets.view"] }
-  });
-  expect(revoked.ok()).toBeTruthy();
+  // A member's access is their role now, so revoking Pet Care edits the role they hold. The
+  // per-member permission column this used to write was retired with migration 0042.
+  await setMemberPermissions(request, member.roleId, ["customers.view", "pets.view"]);
   await page.getByRole("button", { name: "Cancel" }).click();
   await page.reload();
   await page.getByTestId("nav-customers").click();

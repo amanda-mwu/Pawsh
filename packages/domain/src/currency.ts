@@ -34,11 +34,11 @@
  *
  * ICU IS NOT ISO, AND THE DIFFERENCE MATTERS HERE. `Intl.NumberFormat` reports CLDR's *display*
  * convention, which is how many decimals a place actually shows in practice, not the exponent ISO
- * defines. Twelve codes here have an ISO minor unit of 2 while CLDR formats them with none,
- * because the subunit has been inflated into irrelevance: AFN, ALL, IRR, KPW, LAK, LBP, MGA, MMK,
- * RSD, SOS, SYP, YER. They are correct members - a hundred minor units really is one AFN - but
- * they are the reason `formatMinor` now PINS two fraction digits. Left to CLDR, 1250 minor units
- * of AFN rendered as "AFN 13": a rounded number on an invoice. See the note there.
+ * defines. Fifteen codes here have an ISO minor unit of 2 while CLDR formats them with none,
+ * because the subunit has been inflated into irrelevance: AFN, ALL, COP, HUF, IDR, IRR, KPW, LAK,
+ * LBP, MGA, MMK, PKR, SOS, SYP, YER. They are correct members - a hundred minor units really is
+ * one AFN - but they are the reason `formatMinor` now PINS two fraction digits. Left to CLDR, 1250
+ * minor units of AFN rendered as "AFN 13": a rounded number on an invoice. See the note there.
  *
  * Adding a code is a one-line change here and never a migration - the same arrangement
  * `groomerPaletteSize` and the permission tuple use, so the picker an operator sees and the set
@@ -75,16 +75,31 @@ export const supportedCurrencies = [
 export type SupportedCurrency = typeof supportedCurrencies[number];
 
 /**
- * The twelve members whose CLDR display convention shows no decimals even though their ISO 4217
+ * The fifteen members whose CLDR display convention shows no decimals even though their ISO 4217
  * minor unit is two.
+ *
+ * THIS LIST IS ABOUT PRESENTATION, NOT PRECISION. Every code here is stored and arithmetic'd in
+ * two-decimal minor units exactly like every other supported currency; all that differs is how
+ * many decimals `Intl` chooses to print. Nothing may read this list to decide how to store, round
+ * or total money.
  *
  * Named here, and asserted in the test, so that the cross-check against `Intl` stays a real check
  * rather than one loosened until it passed. Every entry is an ISO-2 code; a code with an ISO minor
  * unit of 0 or 3 may never be added to this list, because that is precisely the class of mistake
  * the check exists to catch. Exported so the test can assert the two sets partition exactly.
+ *
+ * CLDR MOVES, AND THIS LIST MOVES WITH IT. `COP`, `HUF`, `IDR` and `PKR` joined when a newer ICU
+ * began printing them without their subunits, and `RSD` left when the same release started printing
+ * the dinar with its para again. Every one of those five still has an ISO minor unit of two, so the
+ * membership rule above is untouched: what changed is CLDR's presentation, not the money.
+ *
+ * The symptom of the next such change is this list's own test failing on a code it names or omits.
+ * That is the check working, and the fix is to decide which side of the list the code now belongs
+ * on - never to relax the comparison, which would let a genuinely zero-decimal code through.
  */
 export const currenciesWithoutMinorUnitDisplay = [
-  "AFN", "ALL", "IRR", "KPW", "LAK", "LBP", "MGA", "MMK", "RSD", "SOS", "SYP", "YER"
+  "AFN", "ALL", "COP", "HUF", "IDR", "IRR", "KPW", "LAK", "LBP", "MGA", "MMK", "PKR", "SOS",
+  "SYP", "YER"
 ] as const;
 
 const supported = new Set<string>(supportedCurrencies);

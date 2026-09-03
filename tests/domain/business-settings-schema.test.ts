@@ -269,11 +269,16 @@ describe("supported currencies", () => {
     // slipping into the tuple fails here, and that is the class of mistake that puts a number off
     // by a factor of a hundred on an invoice.
     //
-    // Twelve members are known to disagree, and they are ENUMERATED rather than tolerated. Their
+    // Fifteen members are known to disagree, and they are ENUMERATED rather than tolerated. Their
     // ISO minor unit is two - a hundred pul really is one afghani - while CLDR formats them with
     // no decimals because the subunit has been inflated out of use. Listing them by name is what
     // keeps this assertion honest: the check is not weakened to "0 or 2", which would let JPY in;
-    // it is weakened for exactly twelve named codes and no others.
+    // it is weakened for exactly fifteen named codes and no others.
+    //
+    // The count is not fixed by nature: CLDR changes, and a newer ICU printing a supported code
+    // without its decimals fails this assertion by name. That is the intended signal, and the fix
+    // is to decide whether the code belongs on the exception list or out of the tuple - never to
+    // relax the comparison. `COP` arrived that way.
     for (const currency of supportedCurrencies) {
       const expected = (currenciesWithoutMinorUnitDisplay as readonly string[]).includes(currency)
         ? 0 : 2;

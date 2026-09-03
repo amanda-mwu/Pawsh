@@ -186,7 +186,7 @@ describeDatabase("stored appointment check-in and check-out times", () => {
           and action='appointment.completed') as completed
     `;
     // Same transaction, same `now()`. The stored value and the audit trail are one series, which
-    // is what makes the 0047 backfill and every write after it comparable.
+    // is what makes the 0049 backfill and every write after it comparable.
     expect(row.checkedInAt!.getTime()).toBe(audits!.checkedIn.getTime());
     expect(row.checkedOutAt!.getTime()).toBe(audits!.completed.getTime());
   });

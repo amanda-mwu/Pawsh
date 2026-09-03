@@ -6,7 +6,7 @@ import type { SqlExecutor } from "../db/client.js";
  *
  * ONE DEFINITION OF THE BALANCE, IN ONE PLACE. The balance is `sum(amount_minor)` over
  * `customer_credit_entries` and there is no stored column beside it - see the header of migration
- * 0048 - so the only way that sum can be wrong is if two call sites compute it differently. Three
+ * 0050 - so the only way that sum can be wrong is if two call sites compute it differently. Three
  * places need it (the payment transaction, the grant/adjust transaction, and the profile read) and
  * they all read it from here.
  *
@@ -21,7 +21,7 @@ import type { SqlExecutor } from "../db/client.js";
  * THE LOCK IS THE ENTIRE OVERDRAFT DEFENCE. `sum(amount_minor) >= amount` is a statement about a
  * SET of rows, so no check constraint and no unique index can enforce it - a constraint sees one
  * row and an index sees one tuple. Two concurrent redemptions that both read a $50 balance before
- * either writes will both believe they can spend $50, and the partial unique indexes in 0048 will
+ * either writes will both believe they can spend $50, and the partial unique indexes in 0050 will
  * not notice: they exist to stop one PAYMENT being counted twice, which is a different failure.
  *
  * So the customer row is locked first, and the sum is read under it. The second transaction blocks

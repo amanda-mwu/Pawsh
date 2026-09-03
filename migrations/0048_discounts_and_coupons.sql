@@ -228,7 +228,7 @@ create index coupon_redemption_by_client
 -- are different numbers - "20% off" and "$14.40" - and a receipt needs both.
 --
 -- THE TOTAL INVARIANT: for every invoice, sum(applied_minor) = discount_minor.
--- The backfill below is what makes it total rather than "total since 0046",
+-- The backfill below is what makes it total rather than "total since 0048",
 -- which is why it copies `discount_type` VERBATIM INCLUDING ITS NULLS instead
 -- of inventing a name for the rows that never had one.
 -- ---------------------------------------------------------------------------
@@ -344,5 +344,5 @@ begin
   end loop;
 end $$;
 
-insert into schema_migrations(version) values ('0046_discounts_and_coupons');
+insert into schema_migrations(version) values ('0048_discounts_and_coupons');
 commit;

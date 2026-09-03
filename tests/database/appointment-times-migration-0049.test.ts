@@ -4,7 +4,7 @@ import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 /**
- * 0047 promotes check-in and check-out from a client-side derivation to stored columns, and the
+ * 0049 promotes check-in and check-out from a client-side derivation to stored columns, and the
  * ONE property that makes that safe to ship is that nothing a screen can currently see goes
  * blank.
  *
@@ -17,8 +17,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
  * It runs against its own throwaway database rather than the shared test one, following
  * `square-migration-0039.test.ts` and `roles-backfill.test.ts`: the property under test is what
  * the migration DOES to pre-existing rows, which a suite sharing an already-migrated database
- * cannot observe. The schema is built to exactly 0046, appointments and audit events are planted
- * in the shapes real data actually takes, and only then is 0047 applied.
+ * cannot observe. The schema is built to exactly 0048, appointments and audit events are planted
+ * in the shapes real data actually takes, and only then is 0049 applied.
  *
  * THE ONE DELIBERATE DIVERGENCE FROM THE CLIENT IS ASSERTED AS A DIVERGENCE. The derivation
  * treats `appointment.cancelled` and `appointment.no_show` as check-outs. A cancelled visit did
@@ -30,9 +30,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 const databaseUrl = process.env.DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
 
-const scratchDatabase = "pawsh_migration_0047_vitest";
-const lastMigrationBefore = "0046_discounts_and_coupons";
-const migrationUnderTest = "0047_appointment_lifecycle_times";
+const scratchDatabase = "pawsh_migration_0049_vitest";
+const lastMigrationBefore = "0048_discounts_and_coupons";
+const migrationUnderTest = "0049_appointment_lifecycle_times";
 
 /**
  * The client derivation, ported verbatim from `appointmentLifecycleTimes()` in `public/app.js`.
@@ -51,7 +51,7 @@ function derived(events: { action: string; createdAt: Date }[]) {
   return { checkedIn, finished, minutes };
 }
 
-describeDatabase("migration 0047 appointment lifecycle times", () => {
+describeDatabase("migration 0049 appointment lifecycle times", () => {
   let admin: postgres.Sql;
   let scratchUrl: string;
 
@@ -67,7 +67,7 @@ describeDatabase("migration 0047 appointment lifecycle times", () => {
     await admin.end();
   });
 
-  /** A database at exactly 0046, with nothing of 0047 applied. */
+  /** A database at exactly 0048, with nothing of 0049 applied. */
   async function databaseAt0046(): Promise<postgres.Sql> {
     await admin.unsafe(`drop database if exists ${scratchDatabase} with (force)`);
     await admin.unsafe(`create database ${scratchDatabase}`);
@@ -85,7 +85,7 @@ describeDatabase("migration 0047 appointment lifecycle times", () => {
     return sql;
   }
 
-  /** Applies 0047, leaving the connection usable if it refused. See 0039's suite for why. */
+  /** Applies 0049, leaving the connection usable if it refused. See 0039's suite for why. */
   async function apply0047(sql: postgres.Sql): Promise<void> {
     try {
       await sql.unsafe(await readFile(resolve("migrations", `${migrationUnderTest}.sql`), "utf8"));
@@ -174,7 +174,7 @@ describeDatabase("migration 0047 appointment lifecycle times", () => {
       await audit(sql, alpha, inService, "appointment.checked_in", "2034-03-01T11:02:00Z");
       await audit(sql, alpha, inService, "appointment.in_service", "2034-03-01T11:09:00Z");
 
-      // Checked in, then called off. The client calls the cancellation a check-out; 0047 does not.
+      // Checked in, then called off. The client calls the cancellation a check-out; 0049 does not.
       const cancelled = await appointment(sql, alpha, 13, "cancelled");
       await audit(sql, alpha, cancelled, "appointment.checked_in", "2034-03-01T13:03:00Z");
       await audit(sql, alpha, cancelled, "appointment.cancelled", "2034-03-01T13:40:00Z");

@@ -292,7 +292,7 @@ export interface FinancialHooks {
 
 /**
  * `credit.adjust` covers granting and adjusting a client's credit balance, and it is the only new
- * one 0048 needed. A REDEMPTION takes no key of its own: it is written inside the existing
+ * one 0050 needed. A REDEMPTION takes no key of its own: it is written inside the existing
  * `payment.record` transaction and is therefore already covered by that operation's replay
  * protection, and a reversal rides on `payment.void` the same way. Giving either its own key would
  * be a second identity for one request, and a replay could then be honoured on one half and
@@ -300,7 +300,7 @@ export interface FinancialHooks {
  *
  * `financial_idempotency_requests.operation` carries a check constraint listing these by name, so
  * a value added here without the matching migration fails at RUNTIME on the first request rather
- * than at build time. 0048 widened it.
+ * than at build time. 0050 widened it.
  */
 export type FinancialOperation =
   | "checkout.create-invoice" | "payment.record" | "payment.void" | "payment.refund"
@@ -1495,7 +1495,7 @@ function salonClosedError(closure: { localDate: string; reason: string | null })
  *
  * A manually keyed amount, a configured discount and a redeemed coupon all become this. Keeping
  * them one shape is what makes "`invoice_discounts` sums to `discount_minor`" a TOTAL invariant
- * rather than a rule with a manual-path exception - and it is the same shape the 0046 backfill
+ * rather than a rule with a manual-path exception - and it is the same shape the 0048 backfill
  * gave every historical invoice.
  */
 interface ResolvedDiscount {
@@ -1679,7 +1679,7 @@ async function resolveCheckoutDiscounts(
   }
 
   // A HARD SERVER CONSTRAINT, not a client convention. `one_per_appointment` is the default and it
-  // is the truthful description of what checkout did before 0046 - one `discount_minor` column is
+  // is the truthful description of what checkout did before 0048 - one `discount_minor` column is
   // one discount - so a client that offered a second row would be offering something the salon
   // never enabled. A manual amount counts as one of them: it is money off the same bill.
   if (input.stackingMode === "one_per_appointment" && resolved.length > 1) {
@@ -3859,7 +3859,7 @@ export function registerRoutes(
     return discountReply(reply, context.businessId, outcome);
   });
 
-  /** Soft delete, as above. The CODE STAYS CLAIMED - see `coupon_code_per_business` in 0046. */
+  /** Soft delete, as above. The CODE STAYS CLAIMED - see `coupon_code_per_business` in 0048. */
   app.delete("/api/settings/coupons/:id", {
     preHandler: [authenticate, requirePermission("settings.discounts")]
   }, async (request, reply) => {
@@ -6218,7 +6218,7 @@ export function registerRoutes(
    * CLIENT CREDIT.
    *
    * An APPEND-ONLY LEDGER. The balance is `sum(amount_minor)` over `customer_credit_entries` and
-   * there is no `customers.credit_minor` beside it, for the reason migration 0046 refused a stored
+   * there is no `customers.credit_minor` beside it, for the reason migration 0048 refused a stored
    * `coupons.redeemed_count`: a second source of truth for a number an aggregate already answers
    * buys nothing and can drift. Rows are immutable in the database, so a mistake is corrected by a
    * compensating entry rather than by an edit.
@@ -6331,7 +6331,7 @@ export function registerRoutes(
    * about the invoice. The check runs under the customer row lock, so it is a rule and not a race.
    *
    * REPLAY-PROTECTED like every other financial write, under the `credit.adjust` operation that
-   * 0048 added to `financial_idempotency_requests`. A double-tapped Add Credit button must add
+   * 0050 added to `financial_idempotency_requests`. A double-tapped Add Credit button must add
    * credit once.
    */
   app.post("/api/customers/:id/credit", {
@@ -8992,7 +8992,7 @@ export function registerRoutes(
        * appointment can never be `checked_in` without a check-in time or carry one without the
        * status. `now()` is transaction time, which is the same instant `record()` stamps the
        * audit event with below - the stored column and the audit trail cannot disagree by so
-       * much as a millisecond, which is what makes the 0047 backfill and the live writes one
+       * much as a millisecond, which is what makes the 0049 backfill and the live writes one
        * consistent series rather than two.
        *
        * Every branch assigns, and the branch that has nothing to say assigns the column to
@@ -9063,7 +9063,7 @@ export function registerRoutes(
     const input = body(appointmentTimesSchema, request.body);
     const checkedInAt = input.checkedInAt ? new Date(input.checkedInAt) : null;
     const checkedOutAt = input.checkedOutAt ? new Date(input.checkedOutAt) : null;
-    // The ordering rule is enforced by `appointment_times_ordered` in 0047 and re-stated here,
+    // The ordering rule is enforced by `appointment_times_ordered` in 0049 and re-stated here,
     // because a constraint violation surfaces as a 500 and this is an operator typing two times
     // into a form. The database keeps the invariant; this keeps the sentence readable. Equality
     // passes in both places.
@@ -9529,7 +9529,7 @@ export function registerRoutes(
        * The receipt breakdown, IN APPLIED ORDER, snapshotting what each row said at the time. The
        * aggregate written to `invoices.discount_minor` above is the difference the fold made, and
        * these rows are the steps that made it, so they sum to it exactly with no rounding drift
-       * possible. The 0046 backfill gave every historical invoice the same guarantee.
+       * possible. The 0048 backfill gave every historical invoice the same guarantee.
        */
       for (const [position, step] of application.applied.entries()) {
         const entry = resolved[step.index]!;
@@ -9552,7 +9552,7 @@ export function registerRoutes(
        * lock is ever lost.
        *
        * KNOWN LIMITATION: there is no route that voids an invoice, so a redemption is consumed
-       * permanently and cannot be given back. See the header of migration 0046.
+       * permanently and cannot be given back. See the header of migration 0048.
        */
       for (const step of application.applied) {
         const entry = resolved[step.index]!;
@@ -9661,7 +9661,7 @@ export function registerRoutes(
        * The ledger debit, in the SAME transaction as the payment it settles.
        *
        * Stored NEGATIVE, because `sum(amount_minor)` IS the balance and a redemption reduces it -
-       * see the header of migration 0048. It names both the payment and the invoice: the payment
+       * see the header of migration 0050. It names both the payment and the invoice: the payment
        * is the identity of the event and what `customer_credit_redemption_per_payment` keys on,
        * the invoice is what the ledger line needs in order to read as a sentence without a join.
        */
@@ -9873,7 +9873,7 @@ export function registerRoutes(
       // WHAT CAME OFF THIS BILL, AND WHY, in the order it was applied - which is what makes the
       // compounding legible: the second line took its percentage off what the first line left.
       //
-      // `nameSnapshot` IS NULLABLE AND THAT IS DELIBERATE. Every invoice that predates 0046 got a
+      // `nameSnapshot` IS NULLABLE AND THAT IS DELIBERATE. Every invoice that predates 0048 got a
       // backfilled row carrying its `discount_type` verbatim, nulls included, because most of them
       // never had one and the client has always rendered a plain "Discount" for those. A name
       // invented here would have changed what those receipts say.

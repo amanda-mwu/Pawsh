@@ -59,7 +59,7 @@ export const paymentStatusLabels: Record<PaymentStatus, string> = {
 /**
  * How a payment settled.
  *
- * `client_credit` was added by migration 0048 and it is DELIBERATELY NOT A KIND OF `other`.
+ * `client_credit` was added by migration 0050 and it is DELIBERATELY NOT A KIND OF `other`.
  * `other` means money collected outside Pawsh in a form Pawsh does not name - a transfer, a
  * favour, a barter. Credit is the opposite: money Pawsh itself is tracking in a ledger it owns.
  * It needs its own row in the payment-method report, because a salon that cannot separate
@@ -90,7 +90,7 @@ export const paymentMethodLabels: Record<PaymentMethod, string> = {
  * through the branch in `POST /api/invoices/:id/payments` that debits the ledger under the
  * customer row lock.
  *
- * `payment_methods.settlement_type` in migration 0034 was deliberately NOT widened by 0048, so the
+ * `payment_methods.settlement_type` in migration 0034 was deliberately NOT widened by 0050, so the
  * database refuses the row even if this list is ever bypassed. This is the same list stated where
  * the form can read it.
  *
@@ -152,7 +152,7 @@ export const serviceCategoryLabels: Record<ServiceCategory, string> = {
  * and therefore can never exceed its own base. `applyDiscounts` in `money.ts` is the one place
  * that distinction is spelled out.
  *
- * Source: `migrations/0046_discounts_and_coupons.sql` (`discounts.kind`, `coupons.kind`).
+ * Source: `migrations/0048_discounts_and_coupons.sql` (`discounts.kind`, `coupons.kind`).
  */
 export const discountKinds = ["amount", "percentage"] as const;
 export type DiscountKind = (typeof discountKinds)[number];
@@ -175,7 +175,7 @@ export const discountKindLabels: Record<DiscountKind, string> = {
  * forbidding the combination. An operator who picks it has said something harmless, and refusing
  * it would be a constraint that exists only to police a UI.
  *
- * Source: `migrations/0046_discounts_and_coupons.sql` (`discounts.apply_scope`).
+ * Source: `migrations/0048_discounts_and_coupons.sql` (`discounts.apply_scope`).
  */
 export const discountApplyScopes = ["per_appointment", "per_pet"] as const;
 export type DiscountApplyScope = (typeof discountApplyScopes)[number];
@@ -188,7 +188,7 @@ export const discountApplyScopeLabels: Record<DiscountApplyScope, string> = {
 /**
  * What a salon allows when more than one discount could come off one bill.
  *
- * `one_per_appointment` IS THE DEFAULT AND IT DESCRIBES TODAY. Before 0046 an invoice carried one
+ * `one_per_appointment` IS THE DEFAULT AND IT DESCRIBES TODAY. Before 0048 an invoice carried one
  * `discount_minor` and one `discount_type`, so exactly one discount was representable; a business
  * row defaulting to anything else would have been the migration quietly changing what checkout
  * permits. It is enforced by the server with a 409, not by the client declining to offer a second
@@ -198,7 +198,7 @@ export const discountApplyScopeLabels: Record<DiscountApplyScope, string> = {
  * discounts compound off the reduced amount: $20 off then 10% off a $100 bill is $72, and 10% off
  * then $20 off is $70. Neither is more correct, which is exactly why it is a setting.
  *
- * Source: `migrations/0046_discounts_and_coupons.sql` (`businesses.discount_stacking_mode`).
+ * Source: `migrations/0048_discounts_and_coupons.sql` (`businesses.discount_stacking_mode`).
  */
 export const discountStackingModes = [
   "one_per_appointment", "amount_first", "percentage_first"
@@ -222,7 +222,7 @@ export const discountStackingModeLabels: Record<DiscountStackingMode, string> = 
  * "we took $20 back" are different sentences on a screen and different events in a dispute, even
  * though the schema stores both in one signed column.
  *
- * Source: `migrations/0048_client_credit.sql` (`customer_credit_entries.kind`).
+ * Source: `migrations/0050_client_credit.sql` (`customer_credit_entries.kind`).
  */
 export const creditEntryKinds = [
   "grant", "adjustment", "redemption", "redemption_reversal"

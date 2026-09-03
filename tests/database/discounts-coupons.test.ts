@@ -403,7 +403,7 @@ describeDatabase("discounts and coupons", () => {
 
   it("carries a tenant_isolation policy on all four new tables", async () => {
     // 0034 shipped five tables without one and 0035 existed solely to repair that. These are
-    // declared in 0046 itself so no follow-up is needed.
+    // declared in 0048 itself so no follow-up is needed.
     const rows = await db<{ tablename: string; rowsecurity: boolean; policies: number }[]>`
       select c.relname as tablename, c.relrowsecurity as rowsecurity,
         (select count(*)::int from pg_policies p
@@ -926,7 +926,7 @@ describeDatabase("discounts and coupons", () => {
       select source,name_snapshot,kind_snapshot,applied_minor,discount_id,coupon_id
       from invoice_discounts where business_id=${businessId} and invoice_id=${manual.json().id}
     `;
-    // The same shape the 0046 backfill gave every historical manual discount.
+    // The same shape the 0048 backfill gave every historical manual discount.
     expect(row).toMatchObject({
       source: "manual", nameSnapshot: "courtesy", kindSnapshot: "amount",
       appliedMinor: 500, discountId: null, couponId: null
@@ -945,7 +945,7 @@ describeDatabase("discounts and coupons", () => {
 
   it("keeps every invoice's breakdown summing to its discount, backfilled ones included", async () => {
     // THE TOTAL INVARIANT, checked across the ENTIRE database rather than across this suite's own
-    // rows: every invoice any suite has ever created here, plus every row the 0046 backfill
+    // rows: every invoice any suite has ever created here, plus every row the 0048 backfill
     // wrote, must agree. An invariant with an exception is not an invariant.
     const [mismatched] = await db<{ count: number }[]>`
       select count(*)::int count from invoices i

@@ -342,9 +342,9 @@ describe("database migrations", () => {
     expect(retire).toContain("alter table business_memberships drop column permissions");
     expect(retire).toContain("alter table membership_invitations drop column permissions");
 
-    // 0046 is the Coupon & Discount schema. What it must NOT do is as load-bearing as what it
+    // 0048 is the Coupon & Discount schema. What it must NOT do is as load-bearing as what it
     // does, and each absence below is a decision a later migration could quietly reverse.
-    const discounts = await readMigration("0046_discounts_and_coupons.sql");
+    const discounts = await readMigration("0048_discounts_and_coupons.sql");
     expect(discounts).toContain("create table discounts");
     expect(discounts).toContain("create table coupons");
     expect(discounts).toContain("create table coupon_redemptions");
@@ -409,7 +409,7 @@ describe("database migrations", () => {
     expect(discounts).not.toContain("drop table");
 
     // THE BACKFILL IS WHAT MAKES "the breakdown sums to discount_minor" A TOTAL INVARIANT rather
-    // than "total since 0046". It copies `discount_type` VERBATIM INCLUDING ITS NULLS - the client
+    // than "total since 0048". It copies `discount_type` VERBATIM INCLUDING ITS NULLS - the client
     // renders a plain "Discount" for a null snapshot, which is what it renders today - and it
     // carries no status filter, because an invariant with an exception is not an invariant.
     expect(discounts).toContain("insert into invoice_discounts");
@@ -422,17 +422,17 @@ describe("database migrations", () => {
     expect(discounts).toContain("raise exception");
     expect(discounts).toContain("does not sum to discount_minor");
 
-    // RLS IS DECLARED IN 0046 ITSELF. 0034 shipped five tables without it and 0035 existed solely
+    // RLS IS DECLARED IN 0048 ITSELF. 0034 shipped five tables without it and 0035 existed solely
     // to repair that; the bulk loop in 0001 cannot cover a table that did not exist yet.
     expect(discounts).toContain("create policy tenant_isolation on %I");
     expect(discounts).toContain("enable row level security");
     expect(discounts).toContain("'discounts', 'coupons', 'coupon_redemptions', 'invoice_discounts'");
-    expect(discounts).toContain("0046_discounts_and_coupons");
+    expect(discounts).toContain("0048_discounts_and_coupons");
 
-    // 0047 promotes check-in and check-out from a client-side derivation over `audit_events` to
+    // 0049 promotes check-in and check-out from a client-side derivation over `audit_events` to
     // stored columns. Every assertion below is a decision that a later migration could reverse
     // without noticing what it was for.
-    const lifecycle = await readMigration("0047_appointment_lifecycle_times.sql");
+    const lifecycle = await readMigration("0049_appointment_lifecycle_times.sql");
     expect(lifecycle).toContain("add column checked_in_at timestamptz");
     expect(lifecycle).toContain("add column checked_out_at timestamptz");
     // NULLABLE, NO DEFAULT. "Not checked in" is null, exactly as 0023 established for partial
@@ -479,15 +479,15 @@ describe("database migrations", () => {
     // NO INDEX. Nothing filters or sorts on either column; the calendar projection reads them
     // through `a.*` on rows already selected by `(business_id, start_at)`.
     expect(lifecycle).not.toContain("create index");
-    expect(lifecycle).toContain("0047_appointment_lifecycle_times");
+    expect(lifecycle).toContain("0049_appointment_lifecycle_times");
 
-    // 0048 is the client credit ledger. Every assertion below is a decision whose reversal would
+    // 0050 is the client credit ledger. Every assertion below is a decision whose reversal would
     // be silent: the schema would still apply, the routes would still compile, and money would be
     // wrong.
-    const credit = await readMigration("0048_client_credit.sql");
+    const credit = await readMigration("0050_client_credit.sql");
 
     // THE BALANCE IS A SUM AND NOTHING ELSE. A stored counter on `customers` is the second source
-    // of truth 0046 already refused for `coupons.redeemed_count`, and it is refused again here.
+    // of truth 0048 already refused for `coupons.redeemed_count`, and it is refused again here.
     expect(credit).not.toMatch(/alter table customers/);
     // The name appears in the header only, as the thing being refused - never as a column.
     expect(credit).not.toMatch(/credit_minor\s+(integer|bigint|numeric)/);
@@ -500,7 +500,7 @@ describe("database migrations", () => {
     expect(credit).toContain("amount_minor integer not null check (amount_minor <> 0)");
     expect(credit).not.toContain("amount_minor integer not null check (amount_minor >= 0)");
 
-    // The sign is tied to the kind, in the shape of 0046's `discount_value_matches_kind`, so a
+    // The sign is tied to the kind, in the shape of 0048's `discount_value_matches_kind`, so a
     // redemption that ADDS credit is not representable at all.
     expect(credit).toContain("credit_entry_sign_matches_kind");
     expect(credit).toContain("(kind = 'grant' and amount_minor > 0)");
@@ -542,7 +542,7 @@ describe("database migrations", () => {
     );
 
     // AND THE HEADER SAYS SO HONESTLY. Neither index prevents overdraft, because no index can
-    // enforce an aggregate - so 0046's "this is what holds if that lock is ever lost" sentence is
+    // enforce an aggregate - so 0048's "this is what holds if that lock is ever lost" sentence is
     // NOT repeated here. The lock is the only guarantee, and the migration says that rather than
     // implying a backstop that does not exist. This assertion exists so nobody later pastes the
     // reassuring sentence in.
@@ -569,7 +569,7 @@ describe("database migrations", () => {
       expect(credit, operation).toContain(operation);
     }
 
-    // RLS declared here, for the reason 0046 restated: the bulk loop in 0001 cannot cover a table
+    // RLS declared here, for the reason 0048 restated: the bulk loop in 0001 cannot cover a table
     // that did not exist yet.
     expect(credit).toContain("alter table customer_credit_entries enable row level security");
     expect(credit).toContain("create policy tenant_isolation on customer_credit_entries");
@@ -582,6 +582,6 @@ describe("database migrations", () => {
     // NO EXPIRY. Expiring credit is taking money back on a timer, and nobody decided that.
     expect(credit).not.toMatch(/expires_at\s+(timestamptz|date)/);
 
-    expect(credit).toContain("0048_client_credit");
+    expect(credit).toContain("0050_client_credit");
   });
 });

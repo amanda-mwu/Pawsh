@@ -131,5 +131,5 @@ alter table appointments
   add constraint appointment_times_ordered
     check (checked_out_at is null or checked_in_at is null or checked_out_at >= checked_in_at);
 
-insert into schema_migrations(version) values ('0047_appointment_lifecycle_times');
+insert into schema_migrations(version) values ('0049_appointment_lifecycle_times');
 commit;

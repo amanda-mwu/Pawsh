@@ -771,7 +771,7 @@ export const checkoutSchema = z.object({
  * Recording a payment against an invoice.
  *
  * `method` reads the domain tuple rather than restating the database check, so `client_credit`
- * became postable the moment 0048 widened `payments_method_check` - and it is the ONE method whose
+ * became postable the moment 0050 widened `payments_method_check` - and it is the ONE method whose
  * amount the server will not simply believe. Every other method is money the operator says they
  * collected; credit is money Pawsh itself is holding, so the route re-reads the balance under a
  * row lock on the customer and refuses an overdraft. See the `client_credit` branch in
@@ -966,7 +966,7 @@ export const cardProcessorTerminalParams = z.object({
 // "Store credit" tile here would be able to record a credit payment through the ordinary method
 // picker without ever debiting `customer_credit_entries` - an invoice settled against a balance
 // that never moved. `payment_methods.settlement_type` (migration 0034, deliberately not widened by
-// 0048) refuses it in the database too.
+// 0050) refuses it in the database too.
 export const paymentMethodCreateSchema = z.object({
   name: z.string().trim().min(1).max(60),
   settlementType: z.enum(configurableSettlementTypes),
@@ -1048,7 +1048,7 @@ export const cardProcessorTerminalSchema = z.object({
 /**
  * Settings -> Coupon & Discount.
  *
- * Every one of these mirrors a check constraint in 0046 rather than inventing a second, looser
+ * Every one of these mirrors a check constraint in 0048 rather than inventing a second, looser
  * rule: a request that would violate the schema is refused here with a message a form can render,
  * and reaching the database with a bad shape means this file and that migration have drifted.
  *
@@ -1112,7 +1112,7 @@ const LOCAL_DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 /**
  * Creating or replacing a customer-presented coupon.
  *
- * Every limitation is optional and its absence means UNSET, matching 0046 and the convention 0023
+ * Every limitation is optional and its absence means UNSET, matching 0048 and the convention 0023
  * established: `endsOn: null` is "no end date", not a date stood in for.
  *
  * `startsOn` and `endsOn` are plain civil dates, not instants, because the comparison they take

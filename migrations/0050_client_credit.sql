@@ -16,7 +16,7 @@ begin;
 -- balance is a second source of truth for a number `sum(amount_minor)` already
 -- answers, and it would need the same row lock the redemption check takes
 -- anyway - so it would buy nothing and could drift. This is the identical
--- refusal 0046 made for `coupons.redeemed_count`.
+-- refusal 0048 made for `coupons.redeemed_count`.
 --
 -- `amount_minor` IS SIGNED, WHICH DIVERGES FROM EVERY OTHER MONEY COLUMN IN
 -- THIS SCHEMA, and the divergence is the point rather than an oversight. The
@@ -75,7 +75,7 @@ create table customer_credit_entries (
   amount_minor integer not null check (amount_minor <> 0),
 
   -- Set by `kind`, under `credit_entry_source_reference` below. Both nullable
-  -- because a grant has neither, in the shape 0046 used for
+  -- because a grant has neither, in the shape 0048 used for
   -- `invoice_discount_source_reference`.
   invoice_id uuid,
   payment_id uuid,
@@ -108,7 +108,7 @@ create table customer_credit_entries (
   foreign key (business_id, corrects_entry_id)
     references customer_credit_entries (business_id, id),
 
-  -- The sign is not free. Written in the shape of 0046's
+  -- The sign is not free. Written in the shape of 0048's
   -- `discount_value_matches_kind`: the kind decides which values are
   -- representable, so a redemption that adds to a balance cannot be inserted at
   -- all. `adjustment` is the one kind that admits both signs, which is exactly
@@ -166,7 +166,7 @@ create table customer_credit_entries (
 --
 -- NEITHER INDEX PREVENTS OVERDRAFT, AND NO INDEX CAN. "The redemptions against
 -- a customer may not exceed what they were granted" is a statement about an
--- AGGREGATE over a set of rows, and a unique index sees a tuple. 0046 could
+-- AGGREGATE over a set of rows, and a unique index sees a tuple. 0048 could
 -- write "this is what holds if that lock is ever lost" under its coupon index
 -- because one-coupon-one-invoice really is a tuple-shaped rule. THAT SENTENCE
 -- CANNOT BE WRITTEN TRUTHFULLY HERE. Overdraft is prevented by
@@ -276,7 +276,7 @@ alter table financial_idempotency_requests
 
 -- ---------------------------------------------------------------------------
 -- Row-level tenant isolation, DECLARED HERE rather than in a follow-up, for the
--- reason 0046 restated: the bulk loop in 0001 ran once and cannot cover a table
+-- reason 0048 restated: the bulk loop in 0001 ran once and cannot cover a table
 -- that did not exist yet. As there, this enforces nothing while Pawsh connects
 -- as the table owner without FORCE ROW LEVEL SECURITY - the composite foreign
 -- keys above are the defence that actually holds.
@@ -287,5 +287,5 @@ create policy tenant_isolation on customer_credit_entries
 using (business_id = nullif(current_setting('app.business_id', true), '')::uuid)
 with check (business_id = nullif(current_setting('app.business_id', true), '')::uuid);
 
-insert into schema_migrations(version) values ('0048_client_credit');
+insert into schema_migrations(version) values ('0050_client_credit');
 commit;

@@ -834,7 +834,7 @@ describeDatabase("client credit", () => {
     });
     expect(settings.json().settlementTypes.map((type: { value: string }) => type.value))
       .not.toContain("client_credit");
-    // ...and migration 0034's check, deliberately left unwidened by 0048, refuses it underneath.
+    // ...and migration 0034's check, deliberately left unwidened by 0050, refuses it underneath.
     await expect(db`
       insert into payment_methods(business_id,name,settlement_type,sort_order)
       values (${businessId},'Sneaky credit','client_credit',99)

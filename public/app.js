@@ -1671,7 +1671,7 @@ function receiptBodyMarkup(receipt) {
  * `nameSnapshot` IS NULLABLE, and it can also be the literal `"manual"` - the token the checkout
  * dialog has always sent as `discountType` - so neither of those reaches the reader. Both render
  * as "Discount", which is exactly what every receipt said before there was a breakdown to show.
- * A legacy invoice whose `discount_type` was a real label keeps it, because the 0046 backfill
+ * A legacy invoice whose `discount_type` was a real label keeps it, because the 0048 backfill
  * carried that column through verbatim and inventing a name here would rewrite what those
  * receipts say.
  */

@@ -889,7 +889,7 @@ await sql.begin(async (tx) => {
     `;
     // IN APPLIED ORDER, and `applied_minor` is what each line actually took off rather than what
     // the catalog row says it is worth - so `sum(applied_minor) = discount_minor` holds here
-    // exactly as 0046 requires it to for every invoice in the table.
+    // exactly as 0048 requires it to for every invoice in the table.
     for (const [position,step] of application.applied.entries()) {
       const line = breakdown[step.index]!;
       await tx`

@@ -1,4 +1,5 @@
 import { test, expect, login, createAppointment, completeAppointment, appointmentAction } from "../fixtures/tenant.js";
+import { openCheckout, openAdjustment, chooseMethod } from "../helpers/checkout.js";
 
 test("@smoke operations expose safety context and enforce the state machine",async({page,request,tenant})=>{
   const appointment=await createAppointment(request,tenant,{
@@ -36,12 +37,16 @@ test("@smoke @regression-checkout checkout totals persist and manual payment cor
   const appointment=await completeAppointment(request,tenant);
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
-  await (await appointmentAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"appointment-completed")).click();
-  await page.getByTestId("field-discount").fill("5");
-  await page.getByTestId("field-tip").fill("15");
-  await page.getByTestId("field-method").selectOption({label:"Cash"});
-  await page.getByTestId("modal-submit").click();
-  const receipt=page.getByTestId("receipt");
+  await page.waitForLoadState("networkidle");
+  const surface=await openCheckout(page,appointment.id);
+  // Money off and a tip are adjustments, so they sit behind their own disclosures: the common case
+  // at a counter is taking the amount already on the screen.
+  await (await openAdjustment(page,"discount")).getByTestId("field-discount").fill("5");
+  await (await openAdjustment(page,"tip")).getByTestId("field-tip").fill("15");
+  await chooseMethod(page,"Cash");
+  await page.getByTestId("checkout-submit").click();
+  // A settled checkout IS the receipt, rendered in place rather than behind a second dialog.
+  const receipt=surface.getByTestId("receipt");
   await expect(receipt).toContainText("Subtotal$85.00");
   await expect(receipt).toContainText("Discount-$5.00");
   await expect(receipt).toContainText("Tax$6.60");
@@ -55,7 +60,8 @@ test("@smoke @regression-checkout checkout totals persist and manual payment cor
     else await dialog.accept();
   });
   await page.getByRole("button",{name:"Void record"}).click();
-  await expect(page.getByTestId("receipt")).toContainText("Balance$101.60");
+  // The void puts the money back on the bill, so Check Out returns to collecting it.
+  await expect(page.getByTestId("checkout-balance")).toHaveText("Balance $101.60");
   expect(dialogs.join(" ")).toContain("does not refund external funds");
   const audit=await page.evaluate(async()=>(
     await fetch("/api/audit",{credentials:"include"})

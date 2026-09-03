@@ -301,8 +301,14 @@ export const unenforcedPermissions: ReadonlySet<Permission> = new Set<Permission
   // EVERY KEY OF THE ROLE PERMISSION TAXONOMY, WITHOUT EXCEPTION.
   //
   // Most are here for the ordinary reason: Pawsh has no retail, no packages, no gift cards, no
-  // cash drawer, no time clock, no client merge, no account credit, no export, no client tags, no
-  // online booking and no desktop login control, so there is nothing for the switch to protect.
+  // cash drawer, no time clock, no client merge, no export, no client tags, no online booking and
+  // no desktop login control, so there is nothing for the switch to protect.
+  //
+  // ACCOUNT CREDIT USED TO BE ON THAT LIST AND IS NOT ANY MORE. `customers.credit_edit` graduated
+  // when the credit ledger landed; see the note where it was removed below. Gift cards remain a
+  // deliberate non-goal - they need `invoices.appointment_id` to become nullable, which is a
+  // change to the core financial model - so `sales.by_product` and the rest stay exactly as they
+  // are.
   //
   // But roughly a dozen COULD be enforced today - `payments.edit` over void and refund,
   // `customers.contact_info` over the fields the customer projections return, `pets.breeds_edit`
@@ -332,7 +338,21 @@ export const unenforcedPermissions: ReadonlySet<Permission> = new Set<Permission
   "customers.contact_info",
   "customers.archive",
   "customers.merge",
-  "customers.credit_edit",
+  // `customers.credit_edit` GRADUATED HERE and is deliberately absent, the second of the 55 to do
+  // so after `settings.discounts`. Client credit is a real ledger now, and this key alone gates
+  // `POST /api/customers/:id/credit` - creating money the salon owes a client.
+  //
+  // IT MUST NOT STAY ON THIS LIST NOW THAT IT BITES. `unenforcedPermissions` drives
+  // `enforced: false` in the permission catalog, which the editor renders as "Not yet available in
+  // Pawsh". Leaving it here would tell an owner that a switch does nothing while it is in fact
+  // refusing their staff - the same class of mistake this list exists to prevent, pointed the
+  // other way.
+  //
+  // SPENDING credit did NOT graduate anything, because it needs no key of its own: applying an
+  // existing balance at checkout is gated on `checkout.perform`, exactly as redeeming a coupon is,
+  // so a receptionist can honour what the salon already owes without being able to invent it.
+  // 0045 granted this key to every role that could already do everything, so a Manager keeps
+  // access and a Receptionist does not gain it - which is why graduating it needs no migration.
   "customers.bulk_update",
   "customers.export",
   "customers.tags_edit",
@@ -349,7 +369,13 @@ export const unenforcedPermissions: ReadonlySet<Permission> = new Set<Permission
   "settings.pet_options",
   "settings.services",
   "settings.payments",
-  "settings.discounts",
+  // `settings.discounts` GRADUATED HERE and is deliberately absent. Settings -> Coupon & Discount
+  // is the first of the 55 to become a real route family, and its routes are gated on this key
+  // ALONE rather than on it plus `settings.manage`: the taxonomy makes `settings.manage` a group
+  // MASTER WITH INDEPENDENT CHILDREN, and this key's own hint has always promised that applying a
+  // discount at checkout is a separate switch. 0045 already granted it to every role that could
+  // already do everything, so a Manager keeps access and a Receptionist does not gain it - which
+  // is why graduating it needs no migration of its own.
   "settings.auto_messages",
   "settings.auto_reply",
   "settings.mobile",

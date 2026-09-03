@@ -4,7 +4,8 @@ import { rabiesVerificationMethods, rabiesVerificationStatuses } from "@pawsh/do
 import { petHealthIssues } from "@pawsh/domain";
 import { permissions, type Permission } from "@pawsh/domain";
 import {pricingClasses,weightTiers} from "@pawsh/domain";
-import {cardProcessorProviders,paymentMethods} from "@pawsh/domain";
+import {cardProcessorProviders,configurableSettlementTypes,paymentMethods,staffCreditEntryKinds} from "@pawsh/domain";
+import {discountApplyScopes,discountKinds,discountStackingModes} from "@pawsh/domain";
 import {groomerPaletteSize} from "@pawsh/domain";
 
 export const idParams = z.object({ id: z.string().uuid() });
@@ -709,17 +710,120 @@ export const transitionSchema = z.object({
   version: z.number().int().positive().optional()
 });
 
+/**
+ * Correcting the recorded check-in and check-out times.
+ *
+ * A SEPARATE SCHEMA AND A SEPARATE ROUTE FROM `transitionSchema`, deliberately. A transition is
+ * the PERFORMANCE OF AN OPERATION - somebody is checking this dog in, right now - and it is
+ * gated on `operations.*`, guarded by `canTransition`, and stamps the clock itself. This is a
+ * CORRECTION TO A RECORD of something that already happened, gated on `appointments.edit`, and
+ * the whole point of it is to write a time that is not now. Folding it into the transition route
+ * would mean teaching `canTransition` to accept a no-op status change, which would put a hole in
+ * the one function that decides whether a lifecycle move is legal at all.
+ *
+ * BOTH FIELDS ARE REQUIRED AND BOTH ARE NULLABLE, which is not the same as optional. The screen
+ * shows two times and submits both; `null` is how it says "this one was never recorded", and it
+ * has to be able to say that, because clearing a time entered by mistake is as much a correction
+ * as changing one. If they were optional, an absent field and a cleared field would arrive
+ * identically and the route would have to guess which was meant.
+ *
+ * `offset: true` refuses a bare local timestamp. These columns are `timestamptz` and a check-in
+ * is an instant, not a wall reading - "14:30" is not a time until something says where. The
+ * scheduling path resolves wall times against a location timezone because a BOOKING is made in
+ * local terms; a stamp of when something happened is not.
+ */
+export const appointmentTimesSchema = z.object({
+  checkedInAt: z.iso.datetime({ offset: true }).nullable(),
+  checkedOutAt: z.iso.datetime({ offset: true }).nullable(),
+  reason: z.string().trim().max(500).nullish(),
+  version: z.number().int().positive().optional()
+});
+
+/**
+ * Checking out an appointment.
+ *
+ * `discountMinor` and `discountType` are THE MANUAL PATH and they are unchanged: a number and a
+ * label the operator keys in, trusted as sent, gated on `discounts.apply`. The two new fields are
+ * not amounts and never could be - the server looks every configured discount and every coupon up
+ * for itself and recomputes what they are worth, because a client that could name its own
+ * discount amount could name any discount amount.
+ */
 export const checkoutSchema = z.object({
   discountMinor: z.number().int().nonnegative().default(0),
   discountType: z.string().trim().max(80).nullish(),
-  tipMinor: z.number().int().nonnegative().default(0)
+  tipMinor: z.number().int().nonnegative().default(0),
+  // Configured discounts the operator applied, IN THE ORDER THEY APPLIED THEM. That order is what
+  // breaks ties within a stacking rank, so it is data and not incidental.
+  appliedDiscountIds: z.array(z.string().uuid()).max(10).default([]),
+  // A coupon is customer-presented and needs `checkout.perform` only; the operator is keying in
+  // something that was already earned, not granting anything.
+  couponCode: z.preprocess(blankToNull, z.string().trim().min(1).max(40).nullish())
+}).superRefine((value, context) => {
+  if (new Set(value.appliedDiscountIds).size !== value.appliedDiscountIds.length) {
+    context.addIssue({
+      code: "custom", path: ["appliedDiscountIds"],
+      message: "A discount can only be applied once to one bill."
+    });
+  }
 });
 
+/**
+ * Recording a payment against an invoice.
+ *
+ * `method` reads the domain tuple rather than restating the database check, so `client_credit`
+ * became postable the moment 0048 widened `payments_method_check` - and it is the ONE method whose
+ * amount the server will not simply believe. Every other method is money the operator says they
+ * collected; credit is money Pawsh itself is holding, so the route re-reads the balance under a
+ * row lock on the customer and refuses an overdraft. See the `client_credit` branch in
+ * `POST /api/invoices/:id/payments`.
+ *
+ * `externalReference` stays free text for every method. A credit payment has nothing external to
+ * reference, but forbidding it here would be a rule the schema cannot explain and the ledger row
+ * carries the real linkage anyway.
+ */
 export const paymentSchema = z.object({
   amountMinor: z.number().int().positive(),
   expectedBalanceMinor: z.number().int().nonnegative(),
-  method: z.enum(["cash", "external_card", "check", "other"]),
+  method: z.enum(paymentMethods),
   externalReference: z.string().trim().max(200).nullish()
+});
+
+/**
+ * Granting or adjusting a client's credit.
+ *
+ * `amountMinor` IS SIGNED and non-zero, mirroring `customer_credit_entries.amount_minor`, because
+ * the operation being requested is "move this balance by this much" and a separate direction flag
+ * would be a second way to say the same thing. `credit_entry_sign_matches_kind` in the database
+ * ties the sign to the kind: a `grant` must be positive, an `adjustment` may be either.
+ *
+ * `reason` IS REQUIRED, for both kinds, and the deduction is the case that earns it. A negative
+ * adjustment takes money off a customer's account, which is more contestable than giving it, and
+ * this string is the row a dispute lands on. The schema refuses a blank one rather than storing
+ * whitespace that renders as an empty explanation.
+ *
+ * `correctsEntryId` names the entry this one compensates for, which is how a mistake is undone in
+ * an append-only ledger: nothing is edited, a second row says what the first one should have said.
+ * Only an adjustment may carry it - a grant is not a correction - and the database says so too.
+ */
+export const creditEntrySchema = z.object({
+  kind: z.enum(staffCreditEntryKinds),
+  amountMinor: z.number().int().refine((value) => value !== 0, {
+    message: "A credit entry must move the balance"
+  }),
+  reason: z.string().trim().min(1).max(500),
+  correctsEntryId: z.string().uuid().nullish()
+}).strict().refine(
+  (value) => value.kind !== "grant" || value.amountMinor > 0,
+  { path: ["amountMinor"], message: "A grant must add credit; use an adjustment to deduct it" }
+).refine(
+  (value) => value.kind === "adjustment" || !value.correctsEntryId,
+  { path: ["correctsEntryId"], message: "Only an adjustment corrects an earlier entry" }
+);
+
+/** One page of a client's credit ledger, newest first. */
+export const creditLedgerQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(10).max(100).default(50)
 });
 
 export const businessSettingsSchema = z.object({
@@ -854,11 +958,18 @@ export const cardProcessorTerminalParams = z.object({
   terminalId: z.string().uuid()
 });
 
-// A configured method is a label over one of the four settlement types the ledger can tell
-// apart, so `settlementType` reuses the payment enum rather than restating it.
+// A configured method is a label over one of the settlement types the ledger can tell apart, so
+// `settlementType` reuses a domain tuple rather than restating a database check constraint.
+//
+// `configurableSettlementTypes`, NOT `paymentMethods`. The two differ by exactly one value:
+// `client_credit` is a real settlement type but not a configurable one. A salon that could build a
+// "Store credit" tile here would be able to record a credit payment through the ordinary method
+// picker without ever debiting `customer_credit_entries` - an invoice settled against a balance
+// that never moved. `payment_methods.settlement_type` (migration 0034, deliberately not widened by
+// 0048) refuses it in the database too.
 export const paymentMethodCreateSchema = z.object({
   name: z.string().trim().min(1).max(60),
-  settlementType: z.enum(paymentMethods),
+  settlementType: z.enum(configurableSettlementTypes),
   enabled: z.boolean().default(true),
   processorLabel: z.preprocess(blankToNull, z.string().trim().min(1).max(60).nullish())
 }).strict();
@@ -868,7 +979,7 @@ export const paymentMethodCreateSchema = z.object({
 // and therefore the only one that can leave it without gaps or ties.
 export const paymentMethodUpdateSchema = z.object({
   name: z.string().trim().min(1).max(60).optional(),
-  settlementType: z.enum(paymentMethods).optional(),
+  settlementType: z.enum(configurableSettlementTypes).optional(),
   enabled: z.boolean().optional(),
   processorLabel: z.preprocess(blankToNull, z.string().trim().min(1).max(60).nullish()).optional()
 }).strict().refine(
@@ -932,6 +1043,109 @@ export const cardProcessorTerminalSchema = z.object({
   name: z.string().trim().min(1).max(60),
   locationLabel: z.preprocess(blankToNull, z.string().trim().min(1).max(80).nullish()),
   deviceCode: z.preprocess(blankToNull, z.string().trim().min(1).max(40).nullish())
+}).strict();
+
+/**
+ * Settings -> Coupon & Discount.
+ *
+ * Every one of these mirrors a check constraint in 0046 rather than inventing a second, looser
+ * rule: a request that would violate the schema is refused here with a message a form can render,
+ * and reaching the database with a bad shape means this file and that migration have drifted.
+ *
+ * The value pairing is the interesting one. `kind` decides WHICH of `amountMinor` and
+ * `rateBasisPoints` must be present, and the other must be absent - the same either/or that
+ * `discount_value_matches_kind` enforces. Sending both is refused rather than silently ignoring
+ * one, because an operator who sent both does not know which they will get.
+ */
+function refineDiscountValue(
+  value: {
+    kind: "amount" | "percentage";
+    amountMinor?: number | null | undefined;
+    rateBasisPoints?: number | null | undefined;
+  },
+  context: z.RefinementCtx
+): void {
+  if (value.kind === "amount") {
+    if (value.amountMinor === undefined || value.amountMinor === null) {
+      context.addIssue({ code: "custom", path: ["amountMinor"], message: "A fixed discount needs an amount." });
+    }
+    if (value.rateBasisPoints !== undefined && value.rateBasisPoints !== null) {
+      context.addIssue({ code: "custom", path: ["rateBasisPoints"], message: "A fixed discount cannot also carry a percentage." });
+    }
+    return;
+  }
+  if (value.rateBasisPoints === undefined || value.rateBasisPoints === null) {
+    context.addIssue({ code: "custom", path: ["rateBasisPoints"], message: "A percentage discount needs a rate." });
+  }
+  if (value.amountMinor !== undefined && value.amountMinor !== null) {
+    context.addIssue({ code: "custom", path: ["amountMinor"], message: "A percentage discount cannot also carry a fixed amount." });
+  }
+}
+
+const discountValueFields = {
+  kind: z.enum(discountKinds),
+  // Bounded well below the integer column so a typo is a validation error and not an overflow.
+  amountMinor: z.number().int().min(0).max(100_000_000).nullish(),
+  rateBasisPoints: z.number().int().min(0).max(10_000).nullish(),
+  // Recorded whatever the kind. For a percentage it changes no arithmetic - see
+  // `discountApplyScopes` - and it is accepted rather than refused because refusing it would be a
+  // rule that exists only to police a form.
+  applyScope: z.enum(discountApplyScopes).default("per_appointment")
+};
+
+/**
+ * Creating or replacing an operator-granted discount.
+ *
+ * A full replacement rather than a partial patch, following `PUT /api/services/:id`. A partial
+ * patch cannot check the kind/value pairing: sending `rateBasisPoints` alone against a stored
+ * `amount` discount is either a refusal or a silent kind change, and neither is something a
+ * caller can predict.
+ */
+export const discountWriteSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  ...discountValueFields,
+  active: z.boolean().default(true)
+}).strict().superRefine(refineDiscountValue);
+
+const LOCAL_DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Creating or replacing a customer-presented coupon.
+ *
+ * Every limitation is optional and its absence means UNSET, matching 0046 and the convention 0023
+ * established: `endsOn: null` is "no end date", not a date stood in for.
+ *
+ * `startsOn` and `endsOn` are plain civil dates, not instants, because the comparison they take
+ * part in is a civil one: the appointment's local date in its own snapshotted timezone against
+ * the range the salon typed. Sending a timestamp here would imply a precision the rule does not
+ * have.
+ */
+export const couponWriteSchema = z.object({
+  // No internal whitespace: a customer reads this off a card and types it, and a code with a
+  // space in the middle is a code that will be mistyped. `btrim` in the index handles the ends.
+  code: z.string().trim().min(1).max(40)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "Use letters, numbers, dots, dashes and underscores."),
+  name: z.preprocess(blankToNull, z.string().trim().min(1).max(80).nullish()),
+  ...discountValueFields,
+  startsOn: z.preprocess(blankToNull, z.string().trim().regex(LOCAL_DATE_ONLY, "Use YYYY-MM-DD.").nullish()),
+  endsOn: z.preprocess(blankToNull, z.string().trim().regex(LOCAL_DATE_ONLY, "Use YYYY-MM-DD.").nullish()),
+  // 0 is Sunday, matching the weekday convention `working_hours` already uses. Null is any day;
+  // an empty array is refused, because a coupon good on no day is a mistake and not a setting.
+  weekdays: z.array(z.number().int().min(0).max(6)).min(1).max(7).nullish(),
+  newClientsOnly: z.boolean().default(false),
+  maxRedemptions: z.number().int().min(1).max(1_000_000).nullish(),
+  maxRedemptionsPerClient: z.number().int().min(1).max(1_000_000).nullish(),
+  active: z.boolean().default(true)
+}).strict().superRefine((value, context) => {
+  refineDiscountValue(value, context);
+  if (value.startsOn && value.endsOn && value.startsOn > value.endsOn) {
+    context.addIssue({ code: "custom", path: ["endsOn"], message: "The end date cannot be before the start date." });
+  }
+});
+
+/** The one business-level rule: whether more than one discount may come off a bill, and in what order. */
+export const discountStackingSchema = z.object({
+  stackingMode: z.enum(discountStackingModes)
 }).strict();
 
 export function normalizeEmail(value: string): string {

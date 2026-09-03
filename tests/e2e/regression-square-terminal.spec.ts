@@ -1,4 +1,5 @@
-import { test, expect, login, completeAppointment, appointmentAction } from "./fixtures/tenant.js";
+import { test, expect, login, completeAppointment } from "./fixtures/tenant.js";
+import { openCheckout, chooseMethod } from "./helpers/checkout.js";
 import type { Page } from "@playwright/test";
 import {
   routeSquareIntegration, routeCheckoutTerminal, stubDevice, pairedCode,
@@ -69,7 +70,7 @@ test("@regression-square-terminal drawer terminal controls act on the device the
   await expect(drawer.getByText("Ready to take payments.")).toBeVisible();
 });
 
-/** Drives a completed appointment through checkout on the card terminal, leaving the modal open. */
+/** Drives a completed appointment through Check Out on the card terminal, leaving the capture open. */
 async function openCaptureModal(
   page: Page,
   tenant: { ownerEmail: string },
@@ -93,12 +94,15 @@ async function openCaptureModal(
 
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
-  await (await appointmentAction(page.locator(`[data-appointment-id="${appointmentId}"]`), "appointment-completed")).click();
-  await page.getByTestId("field-method").selectOption({ label: "Card terminal" });
-  // Choosing the terminal takes the tip controls away and says what the button is about to do.
+  await page.waitForLoadState("networkidle");
+  await openCheckout(page, appointmentId);
+  await chooseMethod(page, "Card terminal");
+  // Choosing the terminal takes the amount and the tip controls away and says what the button is
+  // about to do. The terminal derives both and asks the customer for the tip itself.
   await expect(page.getByTestId("checkout-terminal-note")).toBeVisible();
-  await expect(page.getByTestId("modal-submit")).toHaveText("Send to terminal");
-  await page.getByTestId("modal-submit").click();
+  await expect(page.getByTestId("field-pay")).toHaveCount(0);
+  await expect(page.getByTestId("checkout-submit")).toHaveText("Send to terminal");
+  await page.getByTestId("checkout-submit").click();
 
   const capture = page.getByTestId("terminal-capture");
   await expect(capture).toBeVisible();
@@ -166,7 +170,7 @@ test("@regression-square-terminal a lapsed session closes the capture modal and 
   alive = false;
   await expect(capture).toBeHidden();
   await expect(page.getByTestId("auth-form")).toBeVisible();
-  await expect(page.locator("#modal")).toBeHidden();
+  await expect(page.locator("#appointment-checkout")).toBeHidden();
 
   const settled = polls.length;
   await page.waitForTimeout(6_000);

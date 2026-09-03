@@ -104,11 +104,7 @@
         <div class="directory-table-wrap" data-allow-horizontal-scroll><table class="directory-table clients-table"><thead><tr><th scope="col">Name</th><th scope="col">Pets</th><th scope="col">Groomer</th><th scope="col">Phone</th><th scope="col">Email</th><th scope="col">Last visit</th><th scope="col">Next appt.</th><th scope="col">Status</th><th scope="col"><span class="visually-hidden">Row actions</span></th></tr></thead><tbody id="customer-grid"></tbody></table></div>
         <div class="directory-pagination">
           <span id="customer-page-status" role="status"></span>
-          <nav class="pager" aria-label="Client pages">
-            <button type="button" class="pager-arrow" id="customer-prev" aria-label="Previous page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg></button>
-            <span class="pager-pages" id="customer-pages"></span>
-            <button type="button" class="pager-arrow" id="customer-next" aria-label="Next page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>
-          </nav>
+          <div data-pager-slot="customer" data-pager-label="Client pages"></div>
           <label class="pager-size"><span class="visually-hidden">Clients per page</span><select id="customer-page-size" data-testid="customer-page-size"><option value="10">10 / page</option><option value="20" selected>20 / page</option><option value="50">50 / page</option><option value="100">100 / page</option></select></label>
         </div>
       </section>
@@ -294,6 +290,28 @@
       <button type="button" class="primary compact" data-testid="role-editor-save">Save</button>
     </div>
   </dialog>
+  <dialog id="coupon-editor" class="drawer" aria-labelledby="coupon-editor-title" data-testid="coupon-editor">
+    <div class="drawer-head">
+      <div><p class="eyebrow">Coupons &amp; discounts</p><h3 id="coupon-editor-title">Coupon</h3></div>
+      <button type="button" class="close" data-testid="coupon-editor-close" aria-label="Close coupon editor">&#215;</button>
+    </div>
+    <form id="coupon-editor-form" class="drawer-body"></form>
+    <p id="coupon-editor-error" class="error drawer-status" role="alert" data-testid="coupon-editor-error"></p>
+    <div class="drawer-foot">
+      <button type="button" class="secondary compact" data-testid="coupon-editor-cancel">Cancel</button>
+      <button type="submit" form="coupon-editor-form" class="primary compact" data-testid="coupon-editor-save">Save</button>
+    </div>
+  </dialog>
+  <!-- The appointment surface stack: three dedicated full-screen dialogs, opened with showModal()
+       so the browser supplies the top layer, the backdrop, inertness of everything beneath,
+       Escape-to-topmost, and focus containment. They are deliberately NOT the shared #modal,
+       which already hosts this surface's own children (Move, Adjust services) and would throw
+       on showModal() while open, and NOT #stacked-dialog, which is a single fixed element and
+       so cannot be level 2 and level 3 at the same time. Checkout and ticket are created here
+       in stage 1 and filled in later stages. -->
+  <dialog id="appointment-detail" class="fullscreen-surface" aria-labelledby="appointment-detail-title" data-testid="appointment-detail-surface"></dialog>
+  <dialog id="appointment-checkout" class="fullscreen-surface" aria-labelledby="appointment-checkout-title" data-testid="checkout-surface"></dialog>
+  <dialog id="appointment-ticket" class="fullscreen-surface ticket-surface" aria-labelledby="appointment-ticket-title" data-testid="ticket-surface"></dialog>
   <dialog id="modal" data-testid="modal">
     <form id="modal-form">
       <div class="modal-head"><div><p class="eyebrow">Pawsh workflow</p><h3 id="modal-title">Dialog</h3></div><button type="button" class="close" aria-label="Close">×</button></div>

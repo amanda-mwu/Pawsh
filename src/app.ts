@@ -61,6 +61,24 @@ export const uniqueViolations: Record<string, { code: string; error: string }> =
     code: "CARD_PROCESSOR_EXISTS",
     error: "That processor is already configured. Edit the existing one instead."
   },
+  discount_name_per_business: {
+    code: "DISCOUNT_NAME_TAKEN",
+    error: "A discount with that name already exists."
+  },
+  // NOT partial on `active`, unlike the discount name index: a code that was handed out to a
+  // customer stays claimed even after the coupon is retired, so this can be reached by a code the
+  // operator cannot see on the screen. The route checks first and says which of the two it is;
+  // reaching here means two writers raced.
+  coupon_code_per_business: {
+    code: "COUPON_CODE_TAKEN",
+    error: "A coupon with that code already exists."
+  },
+  // One invoice consumes one coupon once. The checkout locks the coupon row before counting, so
+  // this is the structural backstop rather than the expected path.
+  coupon_redemptions_business_id_coupon_id_invoice_id_key: {
+    code: "COUPON_ALREADY_REDEEMED",
+    error: "That coupon was already redeemed on this invoice."
+  },
   card_processor_single_default: {
     code: "CARD_PROCESSOR_DEFAULT_CONFLICT",
     error: "Another processor was made the default at the same moment. Refresh and try again."

@@ -7,19 +7,51 @@ accounts and records. Stable prerequisites include Grace Groomer, Full Groom,
 Emma/Charlie, Daniel/Rocky, and Sophia/Mochi/Boba. Transactional appointments,
 invoices, and payments are test-created and never shared across tests.
 
-`QA_ANCHOR_DATE` accepts `YYYY-MM-DD`; when absent, tests derive the next Monday.
-Browser and business time use `America/Los_Angeles`.
+`QA_ANCHOR_DATE` accepts `YYYY-MM-DD`, and the manual QA seed also accepts a full
+instant, which it resolves to a civil date in the location's timezone. When
+absent, tests derive the next Monday and the manual seed uses today. Browser and
+business time use `America/Los_Angeles`.
 
 ## Manual QA tenant
 
 `npm run seed:qa` provisions the recognizable `Pawsh QA Grooming` tenant for
 local or staging human QA. It seeds location/settings, Olivia Owner, Marcus
 Manager, Riley Reception, Grace and Gabriel Groomer, services, canonical
-customers/pets, safety data, working hours, blocked time, and one historical
-inactive-service snapshot. It does not seed active invoices, payments, or the
-automated smoke flow.
+customers/pets, safety data, and working hours. It does not seed the automated
+smoke flow, and it seeds no Square connection, device, or terminal state.
 
-The seed is idempotent and refuses to run unless all safeguards pass:
+It also seeds a day a reviewer can walk a visit through. Every date is derived
+from the moment the seed runs, in the location's timezone, and every time falls
+inside the business and groomer hours the same seed writes, so the workspace
+cannot rot into the past. The day is built around today unless the salon is shut
+today, in which case it moves to the next open day; each groomer's appointments
+land on the next date their own rota covers, which is not always the same date
+for both. The seed prints the day it resolved.
+
+That day holds eleven visits across the two groomers: `scheduled` bookings to
+walk through, one `checked_in`, one `in_service`, one `completed` and awaiting
+checkout, one `completed` with a paid invoice already on it, two blocked times,
+and a pair of same-groomer appointments an hour apart that raise the scheduling
+conflict when either is dragged onto the other. Two bookings sit a week out so
+the directory's next-appointment column has something in it, and one historical
+inactive-service snapshot sits a week back. Alongside them it seeds the
+Coupon & Discount catalog — amount, percentage, per-pet, and one retired
+discount, plus a live coupon with a date range and redemption caps, an expired
+one, and a new-clients-only one — and sets the business's discount stacking mode
+to `amount_first` so two discounts can compound on one bill.
+
+The seeded invoice is built with the same `applyDiscounts` and
+`calculateInvoice` the checkout route calls, so its receipt is arithmetically
+identical to one produced through the UI.
+
+The seed is idempotent: a second run against an unchanged workspace writes
+nothing at all, and a run on a later day repositions what is already there
+rather than adding a second copy. An appointment that has acquired a non-void
+invoice during QA is left exactly where QA left it and a fresh one is booked for
+its slot, so a reseed never destroys work or resets a checked-out visit
+underneath its own receipt.
+
+It refuses to run unless all safeguards pass:
 
 - `PAWSH_ALLOW_QA_SEED=true`;
 - `NODE_ENV` is not `production`;

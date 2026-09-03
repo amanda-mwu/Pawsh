@@ -6,7 +6,12 @@ import type { Config } from "../config.js";
 import { setTenant, type Database } from "../db/client.js";
 import { DocumentStorageError, sha256, type DocumentStorage } from "../storage/documents.js";
 import { canTransition, invoiceSettledStatuses, type AppointmentStatus } from "@pawsh/domain";
-import { calculateInvoice } from "@pawsh/domain";
+import { applyDiscounts, calculateInvoice } from "@pawsh/domain";
+import {
+  discountApplyScopeLabels, discountApplyScopes, discountKindLabels, discountKinds,
+  discountStackingModeLabels, discountStackingModes,
+  type DiscountApplyScope, type DiscountKind, type DiscountLine, type DiscountStackingMode
+} from "@pawsh/domain";
 import { canonicalHash } from "../domain/canonical.js";
 import { applyInvoiceSettlement } from "../domain/invoice-settlement.js";
 import { refundPresentation, type RefundStatus } from "../domain/refunds.js";
@@ -21,12 +26,14 @@ import {
   appointmentSchema, checkoutSchema, customerSchema, employeeSchema, employeeUpdateSchema,
   idParams, loginSchema,
   normalizeEmail, normalizePhone, paymentSchema, petSchema, serviceSchema, signupSchema,
-  transitionSchema, businessSettingsSchema, workingHoursSchema, blockedTimeSchema,
+  transitionSchema, appointmentTimesSchema, businessSettingsSchema, workingHoursSchema, blockedTimeSchema,
   operationalUpdateSchema, voidPaymentSchema, appointmentMoveSchema, appointmentServicesSchema,
   passwordResetRequestSchema, passwordResetConfirmSchema, invitationSchema,
   invitationAcceptSchema, ownershipTransferSchema, petProfileUpdateSchema, petCareUpdateSchema,
   workspaceAccessApprovalSchema,
   roleCreateSchema, roleUpdateSchema, memberRoleSchema,
+  discountWriteSchema,couponWriteSchema,discountStackingSchema,
+  creditEntrySchema,creditLedgerQuerySchema,
   servicePricingSchema,petTypeParams,breedParams,breedSettingsSchema,priceResolutionSchema,
   breedCreateSchema,breedRenameSchema,
   ownProfileUpdateSchema,passwordChangeSchema,workspaceAccessRequestSchema,workspaceSelectionSchema,
@@ -58,8 +65,12 @@ import {
 } from "@pawsh/domain";
 import { normalizeBreedSearch } from "@pawsh/domain";
 import {
-  cardProcessorProviderLabels, cardProcessorProviders, paymentMethodLabels, paymentMethods
+  cardProcessorProviderLabels, cardProcessorProviders, configurableSettlementTypes,
+  creditEntryKindLabels, creditEntryKinds, paymentMethodLabels
 } from "@pawsh/domain";
+import {
+  creditBalanceMinor, creditLedgerPage, creditLedgerSummary, lockCustomerForCredit
+} from "../domain/client-credit.js";
 import {provisionBusinessCatalog} from "../domain/catalog-seed.js";
 import {resolveServicePrices} from "../domain/service-pricing.js";
 
@@ -108,6 +119,15 @@ const profileUpcomingLimit=25;
 // means growing the visible window costs no round trip, while a client with years of visits
 // never ships years of rows to render two of them.
 const profileHistoryPreviewLimit=5;
+/**
+ * How many credit ledger lines the client profile shows before the full-ledger dialog is needed.
+ *
+ * Larger than the appointment preview because a credit ledger is READ TO BE RECONCILED - an
+ * operator looking at it is usually answering "where did this balance come from", and five rows
+ * answers that for almost nobody. `summary.credit.entryTotal` reports the real size so the
+ * interface can say how much more there is.
+ */
+const profileCreditPreviewLimit=10;
 const preferredGroomerSchema=z.object({employeeId:z.string().uuid().nullable()}).strict();
 const reminderQuerySchema=z.object({type:z.enum(["appointment_reminder","secondary_reminder","same_day_reminder","rebook_reminder","vaccination_reminder","birthday_reminder"])}).strict();
 
@@ -270,8 +290,21 @@ export interface FinancialHooks {
   afterFinancialCommit?: (operation: FinancialOperation) => Promise<void>;
 }
 
+/**
+ * `credit.adjust` covers granting and adjusting a client's credit balance, and it is the only new
+ * one 0048 needed. A REDEMPTION takes no key of its own: it is written inside the existing
+ * `payment.record` transaction and is therefore already covered by that operation's replay
+ * protection, and a reversal rides on `payment.void` the same way. Giving either its own key would
+ * be a second identity for one request, and a replay could then be honoured on one half and
+ * refused on the other.
+ *
+ * `financial_idempotency_requests.operation` carries a check constraint listing these by name, so
+ * a value added here without the matching migration fails at RUNTIME on the first request rather
+ * than at build time. 0048 widened it.
+ */
 export type FinancialOperation =
-  | "checkout.create-invoice" | "payment.record" | "payment.void" | "payment.refund";
+  | "checkout.create-invoice" | "payment.record" | "payment.void" | "payment.refund"
+  | "credit.adjust";
 type SchedulingOperation = "appointment.create" | "appointment.reschedule";
 type SchedulingCanonicalVersion = "appointment.create:v2" | "appointment.reschedule:v2";
 type SchedulingResultVersion = "appointment.create.result:v1" | "appointment.reschedule.result:v1";
@@ -580,6 +613,11 @@ function appointmentCalendarRows(db: Database, scope: SqlFragment) {
       -- number, and re-deriving it in the client would be a second opinion about a total the
       -- server already owns. The invoice taxable subtotal is this minus the operator's discount.
       coalesce(sum(aps.price_minor_snapshot),0)::int as services_subtotal_minor,
+      -- The invoice ID, beside the status and balance this projection has always carried. The
+      -- join was already here; only the id was missing, and without it a screen that can see
+      -- "Paid · $0 due" has no way to open the bill that says so. Null for an uninvoiced visit,
+      -- which is a different thing from an unpaid one and reads differently.
+      inv.id as invoice_id,
       inv.status as invoice_status, inv.balance_minor as invoice_balance_minor
     from appointments a
     join customers c on c.id=a.customer_id
@@ -702,8 +740,44 @@ async function customerSalesSummary(
   ]);
   const counts = Object.fromEntries(statuses.map((row) => [row.status, row.count]));
   const appointmentTotal = statuses.reduce((sum, row) => sum + row.count, 0);
+  /**
+   * The credit block, read INSIDE this function so it inherits the withholding.
+   *
+   * `customerSalesSummary` is only called when the caller holds `payments.view`, and the profile
+   * route sends `summary: null` otherwise. Putting credit here rather than beside it in the route
+   * is what makes "absent, not zeroed" true for credit for free - a viewer without `payments.view`
+   * gets no `summary` at all, so they cannot mistake a withheld balance for a client who has
+   * never been given any. That is the same distinction the money figures above already draw, and
+   * it matters more here: a zero balance is a normal state, so a zero shown in place of a
+   * withheld figure is indistinguishable from the truth.
+   */
+  const [creditSummary, creditEntries] = await Promise.all([
+    creditLedgerSummary(db, { businessId: input.businessId, customerId: input.customerId }),
+    creditLedgerPage(db, {
+      businessId: input.businessId, customerId: input.customerId,
+      limit: profileCreditPreviewLimit, offset: 0
+    })
+  ]);
   return {
     invoicedMinor: money?.invoicedMinor ?? 0,
+    /**
+     * `granted - used = balance`, and all three come from ONE `group by kind` so they cannot
+     * disagree. `usedMinor` is NET OF REVERSALS - see `creditLedgerTotals` - because a tile that
+     * counted a redemption which had already been given back would show arithmetic that visibly
+     * does not add up in front of the operator.
+     *
+     * `entryCount` is how many lines are in `entries`; `entryTotal` is how many the ledger holds.
+     * The two differ exactly when there is more to see, which is the only thing the interface
+     * needs in order to decide whether to offer the full-ledger dialog.
+     */
+    credit: {
+      balanceMinor: creditSummary.balanceMinor,
+      grantedMinor: creditSummary.grantedMinor,
+      usedMinor: creditSummary.usedMinor,
+      entryCount: creditEntries.length,
+      entryTotal: creditSummary.entryTotal,
+      entries: creditEntries
+    },
     paidMinor: money?.paidMinor ?? 0,
     refundedMinor: returned?.refundedMinor ?? 0,
     outstandingMinor: money?.outstandingMinor ?? 0,
@@ -1416,6 +1490,205 @@ function salonClosedError(closure: { localDate: string; reason: string | null })
   );
 }
 
+/**
+ * One discount resolved against the catalog, ready to be folded and then snapshotted.
+ *
+ * A manually keyed amount, a configured discount and a redeemed coupon all become this. Keeping
+ * them one shape is what makes "`invoice_discounts` sums to `discount_minor`" a TOTAL invariant
+ * rather than a rule with a manual-path exception - and it is the same shape the 0046 backfill
+ * gave every historical invoice.
+ */
+interface ResolvedDiscount {
+  source: "manual" | "discount" | "coupon";
+  discountId: string | null;
+  couponId: string | null;
+  nameSnapshot: string | null;
+  kind: DiscountKind;
+  amountMinor: number | null;
+  rateBasisPoints: number | null;
+  applyScope: DiscountApplyScope | null;
+  units: number;
+}
+
+/**
+ * Turns what the client asked for into what the bill will actually carry.
+ *
+ * THE CLIENT NEVER SENDS AN AMOUNT FOR A CONFIGURED DISCOUNT OR A COUPON. It sends ids and a
+ * code; every figure below is read from the catalog inside this transaction. The one number still
+ * taken on trust is `discountMinor`, which is the manual path and is exactly as it has always
+ * been: a person with `discounts.apply` typing a number.
+ *
+ * WHAT THE COUPON RULES ARE EVALUATED AGAINST. The appointment's LOCAL START DATE in its own
+ * snapshotted `scheduling_timezone` - not checkout time, and not the location's current timezone.
+ * A Tuesday groom checked out on Wednesday morning still qualifies for a Tuesday coupon, and a
+ * salon that changed timezone last year did not retroactively move the visits it had booked.
+ *
+ * LOCKING. `select ... for update` on the coupon row: a REAL ROW LOCK, not the advisory-lock
+ * idiom used elsewhere in this file. That idiom exists where there is no single row to lock (a
+ * partial unique index racing between a clear and a set); here there is exactly one row, and the
+ * checkout reads it anyway. It is taken AFTER the appointment lock the caller already holds, and
+ * that order is fixed: every checkout takes appointment then coupon, so two of them cannot
+ * deadlock against each other.
+ *
+ * `excludeInvoiceId` is the invoice this appointment already has, if any. Excluding it from both
+ * redemption counts and from the new-client test is what lets an idempotent REPLAY of a checkout
+ * that consumed the coupon's last redemption return the existing invoice instead of being refused
+ * by the cap its own first attempt filled.
+ */
+async function resolveCheckoutDiscounts(
+  tx: Transaction,
+  input: {
+    businessId: string;
+    customerId: string;
+    appointmentStartAt: Date;
+    schedulingTimezone: string;
+    stackingMode: DiscountStackingMode;
+    discountMinor: number;
+    discountType: string | null;
+    appliedDiscountIds: readonly string[];
+    couponCode: string | null;
+    excludeInvoiceId: string | null;
+  }
+): Promise<ResolvedDiscount[]> {
+  // `appointments.pet_id` is a single non-null column and one appointment produces one invoice, so
+  // a per-pet amount comes off exactly once. THIS IS THE ONE LINE TO CHANGE if that ever alters.
+  const petCount = 1; // appointments.pet_id is singular
+  const unitsFor = (scope: DiscountApplyScope): number => (scope === "per_pet" ? petCount : 1);
+
+  const resolved: ResolvedDiscount[] = [];
+
+  // The manual path goes first, in the operator's own order, so a bill mixing a keyed-in amount
+  // with a configured discount folds in the order the operator built it.
+  if (input.discountMinor > 0) {
+    resolved.push({
+      source: "manual", discountId: null, couponId: null,
+      nameSnapshot: input.discountType, kind: "amount",
+      amountMinor: input.discountMinor, rateBasisPoints: null, applyScope: null, units: 1
+    });
+  }
+
+  if (input.appliedDiscountIds.length) {
+    const rows = await tx<{
+      id: string; name: string; kind: DiscountKind; amountMinor: number | null;
+      rateBasisPoints: number | null; applyScope: DiscountApplyScope;
+    }[]>`
+      select id,name,kind,amount_minor,rate_basis_points,apply_scope from discounts
+      where business_id=${input.businessId} and active
+        and id = any(${input.appliedDiscountIds as string[]}::uuid[])
+    `;
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    // Reordered to the ORDER THE OPERATOR APPLIED THEM, not the order the database returned. That
+    // order breaks ties within a stacking rank, so it is data.
+    for (const discountId of input.appliedDiscountIds) {
+      const row = byId.get(discountId);
+      if (!row) {
+        throw new FinancialRequestError(409, "DISCOUNT_NOT_AVAILABLE",
+          "A discount that was applied no longer exists or has been retired. Refresh and try again.");
+      }
+      resolved.push({
+        source: "discount", discountId: row.id, couponId: null, nameSnapshot: row.name,
+        kind: row.kind, amountMinor: row.amountMinor, rateBasisPoints: row.rateBasisPoints,
+        applyScope: row.applyScope, units: unitsFor(row.applyScope)
+      });
+    }
+  }
+
+  if (input.couponCode) {
+    const [coupon] = await tx<{
+      id: string; code: string; name: string | null; kind: DiscountKind;
+      amountMinor: number | null; rateBasisPoints: number | null;
+      applyScope: DiscountApplyScope; startsOn: string | null; endsOn: string | null;
+      weekdays: number[] | null; newClientsOnly: boolean; maxRedemptions: number | null;
+      maxRedemptionsPerClient: number | null; active: boolean;
+    }[]>`
+      select id,code,name,kind,amount_minor,rate_basis_points,apply_scope,
+        to_char(starts_on,'YYYY-MM-DD') as starts_on, to_char(ends_on,'YYYY-MM-DD') as ends_on,
+        weekdays,new_clients_only,max_redemptions,max_redemptions_per_client,active
+      from coupons
+      where business_id=${input.businessId} and upper(btrim(code))=${input.couponCode}
+      for update
+    `;
+    if (!coupon) {
+      throw new FinancialRequestError(409, "COUPON_NOT_FOUND", "That coupon code was not recognised.");
+    }
+    if (!coupon.active) {
+      throw new FinancialRequestError(409, "COUPON_INACTIVE", "That coupon is no longer available.");
+    }
+
+    // The civil date the visit happened on, in the timezone the appointment was booked in.
+    const localDate = localDateForInstant(input.appointmentStartAt, input.schedulingTimezone);
+    if (coupon.startsOn && localDate < coupon.startsOn) {
+      throw new FinancialRequestError(409, "COUPON_NOT_STARTED",
+        `That coupon is not valid until ${coupon.startsOn}.`);
+    }
+    if (coupon.endsOn && localDate > coupon.endsOn) {
+      throw new FinancialRequestError(409, "COUPON_EXPIRED", `That coupon expired on ${coupon.endsOn}.`);
+    }
+    if (coupon.weekdays?.length) {
+      // Derived from the civil date rather than from the instant, so it cannot be dragged across a
+      // day boundary by a DST transition or by the server's own clock.
+      const weekday = new Date(`${localDate}T00:00:00Z`).getUTCDay();
+      if (!coupon.weekdays.includes(weekday)) {
+        throw new FinancialRequestError(409, "COUPON_WRONG_WEEKDAY",
+          "That coupon is not valid on the day of this appointment.");
+      }
+    }
+    if (coupon.newClientsOnly) {
+      // "New" means NO PRIOR NON-VOID INVOICE, evaluated now and excluding the invoice this
+      // checkout is creating. Reuses the `status <> 'void'` idiom the client history panel uses,
+      // so one customer cannot be new on one screen and returning on another.
+      const [prior] = await tx<{ present: number }[]>`
+        select 1 as present from invoices
+        where business_id=${input.businessId} and customer_id=${input.customerId}
+          and status<>'void' and (${input.excludeInvoiceId}::uuid is null or id<>${input.excludeInvoiceId}::uuid)
+        limit 1
+      `;
+      if (prior) {
+        throw new FinancialRequestError(409, "COUPON_NEW_CLIENTS_ONLY",
+          "That coupon is for new clients only, and this client has been invoiced before.");
+      }
+    }
+    if (coupon.maxRedemptions !== null || coupon.maxRedemptionsPerClient !== null) {
+      // Counted inside this transaction, under the row lock taken above. Two concurrent checkouts
+      // against a coupon with one redemption left therefore serialize: the second one reads the
+      // first one's row and is refused, rather than both reading the same pre-redemption count.
+      const [counts] = await tx<{ total: number; perClient: number }[]>`
+        select
+          count(*)::int as total,
+          count(*) filter (where customer_id=${input.customerId})::int as per_client
+        from coupon_redemptions
+        where business_id=${input.businessId} and coupon_id=${coupon.id}
+          and (${input.excludeInvoiceId}::uuid is null or invoice_id<>${input.excludeInvoiceId}::uuid)
+      `;
+      if (coupon.maxRedemptions !== null && (counts?.total ?? 0) >= coupon.maxRedemptions) {
+        throw new FinancialRequestError(409, "COUPON_FULLY_REDEEMED",
+          "That coupon has been fully redeemed.");
+      }
+      if (coupon.maxRedemptionsPerClient !== null
+        && (counts?.perClient ?? 0) >= coupon.maxRedemptionsPerClient) {
+        throw new FinancialRequestError(409, "COUPON_CLIENT_LIMIT_REACHED",
+          "This client has already redeemed that coupon as many times as it allows.");
+      }
+    }
+    resolved.push({
+      source: "coupon", discountId: null, couponId: coupon.id,
+      nameSnapshot: coupon.name ?? coupon.code, kind: coupon.kind,
+      amountMinor: coupon.amountMinor, rateBasisPoints: coupon.rateBasisPoints,
+      applyScope: coupon.applyScope, units: unitsFor(coupon.applyScope)
+    });
+  }
+
+  // A HARD SERVER CONSTRAINT, not a client convention. `one_per_appointment` is the default and it
+  // is the truthful description of what checkout did before 0046 - one `discount_minor` column is
+  // one discount - so a client that offered a second row would be offering something the salon
+  // never enabled. A manual amount counts as one of them: it is money off the same bill.
+  if (input.stackingMode === "one_per_appointment" && resolved.length > 1) {
+    throw new FinancialRequestError(409, "MULTIPLE_DISCOUNTS_NOT_ALLOWED",
+      "This business allows one discount per appointment.");
+  }
+  return resolved;
+}
+
 export async function record(
   tx: Transaction,
   input: {
@@ -1618,7 +1891,12 @@ async function taxPaymentSettings(db: Database, businessId: string) {
     cardProcessing: cardProcessingConnectivity,
     // The two closed sets the screen has to offer, named by the server so the client never keeps
     // its own copy of a database check constraint.
-    settlementTypes: paymentMethods.map((value) => ({ value, label: paymentMethodLabels[value] })),
+    // `configurableSettlementTypes`, NOT every payment method. `client_credit` is a real
+    // settlement type and deliberately not an offerable one: a salon that could name a method
+    // after it would be able to settle an invoice from a credit balance that never moved. See
+    // the note on the tuple in `packages/domain/src/enums.ts`.
+    settlementTypes: configurableSettlementTypes.map(
+      (value) => ({ value, label: paymentMethodLabels[value] })),
     cardProcessorProviders: cardProcessorProviders.map((value) => ({
       value, label: cardProcessorProviderLabels[value]
     }))
@@ -1683,6 +1961,97 @@ async function mirrorBusinessTaxRate(
   `;
 }
 
+interface DiscountRow {
+  id: string; name: string; kind: DiscountKind;
+  amountMinor: number | null; rateBasisPoints: number | null;
+  applyScope: DiscountApplyScope; active: boolean;
+  createdAt: Date; updatedAt: Date;
+}
+interface CouponRow {
+  id: string; code: string; name: string | null; kind: DiscountKind;
+  amountMinor: number | null; rateBasisPoints: number | null;
+  applyScope: DiscountApplyScope;
+  startsOn: string | null; endsOn: string | null; weekdays: number[] | null;
+  newClientsOnly: boolean; maxRedemptions: number | null;
+  maxRedemptionsPerClient: number | null; redeemedCount: number; active: boolean;
+  createdAt: Date; updatedAt: Date;
+}
+
+/**
+ * Everything the Coupon & Discount screen renders, in one read.
+ *
+ * The same shape the Tax & Payment screen uses, for the same reason: a write here can move more
+ * than the row the caller named - switching the stacking rule changes what every discount on the
+ * screen is allowed to do - so every write answers with this whole read rather than a fragment
+ * the client has to reconcile.
+ *
+ * `redeemedCount` IS `count(*)`, NOT A STORED COUNTER. A denormalized column would be a second
+ * source of truth for a number this query already answers, and keeping it honest would need the
+ * same row lock the cap check takes at checkout anyway - so it would buy nothing and could drift.
+ *
+ * Retired rows are omitted. `active = false` is what a delete means here (see the DELETE routes),
+ * and a screen that listed them would be offering the operator something they cannot apply.
+ */
+async function discountSettings(db: Database, businessId: string) {
+  const [business] = await db<{ currency: string; discountStackingMode: DiscountStackingMode }[]>`
+    select currency, discount_stacking_mode from businesses where id=${businessId}
+  `;
+  const [discounts, coupons] = await Promise.all([
+    db<DiscountRow[]>`
+      select id,name,kind,amount_minor,rate_basis_points,apply_scope,active,created_at,updated_at
+      from discounts where business_id=${businessId} and active
+      order by lower(name),id
+    `,
+    // The dates come back as TEXT, deliberately. `starts_on` and `ends_on` are civil dates and the
+    // rule that reads them compares civil dates; letting the driver hand back a Date would invite
+    // exactly the timezone shift this feature spent a decision avoiding.
+    db<CouponRow[]>`
+      select c.id, c.code, c.name, c.kind, c.amount_minor, c.rate_basis_points, c.apply_scope,
+        to_char(c.starts_on,'YYYY-MM-DD') as starts_on, to_char(c.ends_on,'YYYY-MM-DD') as ends_on,
+        c.weekdays, c.new_clients_only, c.max_redemptions, c.max_redemptions_per_client,
+        c.active, c.created_at, c.updated_at,
+        (select count(*)::int from coupon_redemptions r
+         where r.business_id=c.business_id and r.coupon_id=c.id) as redeemed_count
+      from coupons c where c.business_id=${businessId} and c.active
+      order by upper(btrim(c.code)),c.id
+    `
+  ]);
+  return {
+    currency: business?.currency ?? "USD",
+    stackingMode: business?.discountStackingMode ?? "one_per_appointment",
+    discounts: discounts.map((discount) => ({
+      id: discount.id, name: discount.name, kind: discount.kind,
+      amountMinor: discount.amountMinor, rateBasisPoints: discount.rateBasisPoints,
+      applyScope: discount.applyScope, active: discount.active,
+      createdAt: discount.createdAt, updatedAt: discount.updatedAt
+    })),
+    coupons: coupons.map((coupon) => ({
+      id: coupon.id, code: coupon.code, name: coupon.name, kind: coupon.kind,
+      amountMinor: coupon.amountMinor, rateBasisPoints: coupon.rateBasisPoints,
+      applyScope: coupon.applyScope, startsOn: coupon.startsOn, endsOn: coupon.endsOn,
+      weekdays: coupon.weekdays, newClientsOnly: coupon.newClientsOnly,
+      maxRedemptions: coupon.maxRedemptions,
+      maxRedemptionsPerClient: coupon.maxRedemptionsPerClient,
+      redeemedCount: coupon.redeemedCount, active: coupon.active,
+      createdAt: coupon.createdAt, updatedAt: coupon.updatedAt
+    })),
+    // The three closed sets the screen has to offer, named by the server so the client never keeps
+    // its own copy of a database check constraint. Same contract as `settlementTypes` above.
+    stackingModes: discountStackingModes.map((value) => ({
+      value, label: discountStackingModeLabels[value]
+    })),
+    discountKinds: discountKinds.map((value) => ({ value, label: discountKindLabels[value] })),
+    applyScopes: discountApplyScopes.map((value) => ({
+      value, label: discountApplyScopeLabels[value]
+    })),
+    // What the Per Pet control is actually worth today, said by the server rather than assumed by
+    // the client. `appointments.pet_id` is singular, so the multiplier is 1 and the two scopes
+    // produce identical money; the screen can say so instead of implying a maths it does not do.
+    perPetMultiplier: { supported: false, petCountPerAppointment: 1,
+      reason: "An appointment covers one pet, so a per-pet amount comes off once." }
+  };
+}
+
 /**
  * What a tax/payment write decided, before it becomes a reply.
  *
@@ -1715,9 +2084,26 @@ function refuseTaxPayment(code: string, message: string, httpStatus = 409): TaxP
  * manage settings must not be able to read the salon's payment configuration through a side
  * door, and checkout does not need any of it - tax is applied by the server from the business
  * row, never by the client.
+ *
+ * THE CONFIGURED DISCOUNTS RIDE THE SAME NARROW DOOR. `GET /api/settings/discounts` is gated on
+ * `settings.discounts`, which a receptionist working the till does not hold and should not need,
+ * so a picker built against the settings read would have worked for owners and answered every
+ * cashier with a 403 on every checkout. They are carried here instead, active rows only, in the
+ * order the settings screen shows them so the two screens are looking at one list - and only for
+ * an operator who could actually apply one. See `discounts` and `stackingMode` below for what
+ * null means and why it is not an empty array. Coupons are NOT here: a coupon is typed in as a
+ * code, never picked from a list, and listing them would hand every cashier the salon's whole
+ * promotion book.
  */
-async function checkoutPaymentOptions(db: Database, businessId: string) {
-  const [methods, processors] = await Promise.all([
+interface CheckoutDiscountOption {
+  id: string; name: string; kind: DiscountKind;
+  amountMinor: number | null; rateBasisPoints: number | null; applyScope: DiscountApplyScope;
+}
+
+async function checkoutPaymentOptions(
+  db: Database, businessId: string, canApplyDiscounts: boolean, customerId: string | null
+) {
+  const [methods, processors, businesses, discounts, creditAvailableMinor] = await Promise.all([
     db<{ id: string; name: string; settlementType: string }[]>`
       select id,name,settlement_type from payment_methods
       where business_id=${businessId} and enabled
@@ -1727,7 +2113,39 @@ async function checkoutPaymentOptions(db: Database, businessId: string) {
       select tip_percent_1,tip_percent_2,tip_percent_3 from card_processors
       where business_id=${businessId} and is_default
       limit 1
-    `
+    `,
+    db<{ discountStackingMode: DiscountStackingMode }[]>`
+      select discount_stacking_mode from businesses where id=${businessId}
+    `,
+    // NOT READ AT ALL for an operator who cannot apply one. Skipping the query rather than
+    // filtering its result afterwards is deliberate: rows that were never fetched cannot leak
+    // through a later serialisation mistake, and it is one less round trip on the common path of
+    // a salon that configures no discounts.
+    canApplyDiscounts
+      ? db<CheckoutDiscountOption[]>`
+          select id,name,kind,amount_minor,rate_basis_points,apply_scope from discounts
+          where business_id=${businessId} and active
+          order by lower(name),id
+        `
+      : Promise.resolve([] as CheckoutDiscountOption[]),
+    /**
+     * WHAT THIS CLIENT HAS ON ACCOUNT, FOR ANYONE HOLDING `checkout.perform`.
+     *
+     * A DELIBERATE NARROW EXPOSURE OF ONE MONEY FIGURE TO A ROLE THAT MAY NOT HOLD
+     * `payments.view`, flagged here so it reads as a decision rather than as something that
+     * happened. It follows necessarily from the rule above it: applying existing credit needs only
+     * `checkout.perform`, and an operator who may spend a balance has to be told what the balance
+     * is or they cannot spend it. Everything else about the ledger - who granted it, when, why,
+     * what it has been spent on - stays behind `payments.view` on the customer routes. This is one
+     * number, about the client standing at the till, for the person serving them.
+     *
+     * Scoped by `business_id` inside `creditBalanceMinor`, so a customer id from another tenant
+     * reads as zero rather than as anything. Zero is also what an existing client with no credit
+     * returns, so the answer distinguishes nothing a caller could not already guess.
+     */
+    customerId
+      ? creditBalanceMinor(db, { businessId, customerId })
+      : Promise.resolve(null)
   ]);
   const processor = processors[0];
   return {
@@ -1739,7 +2157,35 @@ async function checkoutPaymentOptions(db: Database, businessId: string) {
     // and a client branching on length could not tell them apart.
     tipPercents: processor
       ? [processor.tipPercent1, processor.tipPercent2, processor.tipPercent3]
-      : null
+      : null,
+    // Unconditional, and unlike `discounts` it is never null. It is a policy enum rather than
+    // configuration worth withholding, and the picker needs it BEFORE the operator has chosen
+    // anything: `one_per_appointment` means stop them at one selection here, rather than letting
+    // them build a bill the server will refuse with MULTIPLE_DISCOUNTS_NOT_ALLOWED at submit. It
+    // remains the server's rule - `resolveCheckoutDiscounts` enforces it over the manual amount,
+    // the configured rows and the coupon together, whatever the client believed.
+    stackingMode: businesses[0]?.discountStackingMode ?? "one_per_appointment",
+    // NULL MEANS "THIS OPERATOR CANNOT APPLY DISCOUNTS", `[]` MEANS "THIS SALON HAS CONFIGURED
+    // NONE", and the two are different sentences for the modal to say. The same distinction
+    // `tipPercents` draws above, for the same reason: a client branching on length could not tell
+    // them apart, and would tell a cashier the salon had no discounts when in fact they had no
+    // permission - or render a picker whose every option the checkout write answers with 403.
+    //
+    // Withholding rather than showing-and-refusing is the honest side of a real trade: a cashier
+    // without `discounts.apply` has no use for a list of amounts the salon hands out, and this
+    // endpoint's whole premise is that checkout reads narrowly (see the note above it). It is not
+    // a secret worth much, but there is no reason to send it to somebody who cannot act on it.
+    discounts: canApplyDiscounts
+      ? discounts.map((discount) => ({
+          id: discount.id, name: discount.name, kind: discount.kind,
+          amountMinor: discount.amountMinor, rateBasisPoints: discount.rateBasisPoints,
+          applyScope: discount.applyScope
+        }))
+      : null,
+    // NULL MEANS "NO CLIENT WAS NAMED", not "this client has nothing". The modal asks for a
+    // customer only when it is about to offer credit, and a caller that could not tell the two
+    // apart would render a "$0.00 available" line for a request that never asked about anybody.
+    creditAvailableMinor
   };
 }
 
@@ -3124,18 +3570,346 @@ export function registerRoutes(
   });
 
   /**
+   * Settings -> Coupon & Discount.
+   *
+   * GATED ON `settings.discounts` ALONE, and this is the first of the 55 taxonomy keys to gate a
+   * real route. Not `settings.discounts` AND `settings.manage`: the taxonomy makes
+   * `settings.manage` a group MASTER WITH INDEPENDENT CHILDREN, and this key's hint already
+   * promises exactly this split ("Applying a discount at checkout is a separate switch"). 0045
+   * granted it to every role that could already do everything, so a Manager keeps access and a
+   * Receptionist does not gain it.
+   *
+   * THE READ IS GATED THE SAME WAY. A person who may look at the screen but not change it holds
+   * `settings.discounts` and nothing else, and gating the GET on `settings.manage` would have made
+   * a viewer impossible to express.
+   *
+   * These are ORDINARY `requirePermission` preHandlers with no `isOwner` check. The explicit owner
+   * guards on the role and membership routes exist because granting permissions is a privilege
+   * surface - a manager could grant themselves `settings.manage` by editing the role they stand
+   * in. A discount is money off a bill, not authority, so it takes the ordinary gate.
+   */
+  async function discountReply(
+    reply: FastifyReply, businessId: string, outcome: TaxPaymentOutcome, successStatus = 200
+  ) {
+    if (outcome.status === "notFound") return reply.code(404).send({ error: outcome.message });
+    if (outcome.status === "refused") {
+      return reply.code(outcome.httpStatus).send({ code: outcome.code, error: outcome.message });
+    }
+    const settings = await discountSettings(db, businessId);
+    return reply.code(successStatus).send(
+      outcome.createdId ? { createdId: outcome.createdId, ...settings } : settings
+    );
+  }
+
+  /** The weekday set, sorted and deduplicated. A CHECK cannot express distinctness; this can. */
+  function normalizeWeekdays(weekdays: number[] | null | undefined): number[] | null {
+    if (weekdays === undefined || weekdays === null) return null;
+    return [...new Set(weekdays)].sort((a, b) => a - b);
+  }
+
+  app.get("/api/settings/discounts", {
+    preHandler: [authenticate, requirePermission("settings.discounts")]
+  }, async (request) => {
+    const context = auth(request);
+    return discountSettings(db, context.businessId);
+  });
+
+  app.put("/api/settings/discount-stacking", {
+    preHandler: [authenticate, requirePermission("settings.discounts")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const input = body(discountStackingSchema, request.body);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [before] = await tx<{ discountStackingMode: string }[]>`
+        select discount_stacking_mode from businesses where id=${context.businessId} for update
+      `;
+      if (!before) return { status: "notFound", message: "Business not found" };
+      await tx`
+        update businesses set discount_stacking_mode=${input.stackingMode},updated_at=now()
+        where id=${context.businessId}
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "discount_stacking.update", resourceType: "business",
+        resourceId: context.businessId,
+        before: { stackingMode: before.discountStackingMode },
+        after: { stackingMode: input.stackingMode }
+      });
+      return { status: "ok" };
+    });
+    return discountReply(reply, context.businessId, outcome);
+  });
+
+  app.post("/api/settings/discounts", {
+    preHandler: [authenticate, requirePermission("settings.discounts")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const input = body(discountWriteSchema, request.body);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      // The unique index is partial on `active`, so only a live discount can take a name. Checked
+      // here so the reply is a sentence a form can render; the index is what holds under a race,
+      // and `uniqueViolations` maps it to this same code.
+      const [taken] = await tx<{ id: string }[]>`
+        select id from discounts
+        where business_id=${context.businessId} and active
+          and lower(btrim(name))=lower(btrim(${input.name}))
+      `;
+      if (taken) return refuseTaxPayment("DISCOUNT_NAME_TAKEN", "A discount with that name already exists.");
+      const [created] = await tx<{ id: string }[]>`
+        insert into discounts
+          (business_id,name,kind,amount_minor,rate_basis_points,apply_scope,active,created_by)
+        values (${context.businessId},${input.name},${input.kind},${input.amountMinor ?? null},
+          ${input.rateBasisPoints ?? null},${input.applyScope},${input.active},${context.userId})
+        returning id
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "discount.create",
+        resourceType: "discount", resourceId: created!.id,
+        after: { name: input.name, kind: input.kind, amountMinor: input.amountMinor ?? null,
+          rateBasisPoints: input.rateBasisPoints ?? null, applyScope: input.applyScope }
+      });
+      return { status: "ok", createdId: created!.id };
+    });
+    return discountReply(reply, context.businessId, outcome, 201);
+  });
+
+  app.put("/api/settings/discounts/:id", {
+    preHandler: [authenticate, requirePermission("settings.discounts")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(discountWriteSchema, request.body);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [existing] = await tx<{
+        id: string; name: string; kind: string; amountMinor: number | null;
+        rateBasisPoints: number | null; applyScope: string; active: boolean;
+      }[]>`
+        select id,name,kind,amount_minor,rate_basis_points,apply_scope,active from discounts
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!existing) return { status: "notFound", message: "Discount not found" };
+      const [taken] = await tx<{ id: string }[]>`
+        select id from discounts
+        where business_id=${context.businessId} and id<>${id} and active
+          and lower(btrim(name))=lower(btrim(${input.name}))
+      `;
+      if (taken) return refuseTaxPayment("DISCOUNT_NAME_TAKEN", "A discount with that name already exists.");
+      // A full replacement, not a patch. The kind and its value are one decision - see
+      // `discountWriteSchema` - and editing a live discount changes NOTHING about the invoices
+      // that already applied it, because `invoice_discounts` snapshots what it said at the time.
+      await tx`
+        update discounts set
+          name=${input.name}, kind=${input.kind}, amount_minor=${input.amountMinor ?? null},
+          rate_basis_points=${input.rateBasisPoints ?? null}, apply_scope=${input.applyScope},
+          active=${input.active}, updated_at=now()
+        where business_id=${context.businessId} and id=${id}
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "discount.update",
+        resourceType: "discount", resourceId: id,
+        before: { name: existing.name, kind: existing.kind, amountMinor: existing.amountMinor,
+          rateBasisPoints: existing.rateBasisPoints, applyScope: existing.applyScope,
+          active: existing.active },
+        after: { name: input.name, kind: input.kind, amountMinor: input.amountMinor ?? null,
+          rateBasisPoints: input.rateBasisPoints ?? null, applyScope: input.applyScope,
+          active: input.active }
+      });
+      return { status: "ok" };
+    });
+    return discountReply(reply, context.businessId, outcome);
+  });
+
+  /**
+   * SOFT DELETE, and 204 - the same thing `DELETE /api/services/:id` already means.
+   *
+   * `invoice_discounts` points at this row from every invoice that applied it, and a receipt has
+   * to keep resolving. `tax_rates` hard-deletes only because an invoice snapshots the rate and
+   * keeps no pointer back; a catalog row referenced by snapshots retires instead.
+   *
+   * The name is released on the way out - the unique index is partial on `active` - so a salon
+   * that retires "Senior discount" can create it again.
+   */
+  app.delete("/api/settings/discounts/:id", {
+    preHandler: [authenticate, requirePermission("settings.discounts")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const removed = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [discount] = await tx<{ id: string; name: string }[]>`
+        update discounts set active=false,updated_at=now()
+        where business_id=${context.businessId} and id=${id} and active
+        returning id,name
+      `;
+      if (!discount) return null;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "discount.delete",
+        resourceType: "discount", resourceId: id,
+        before: { name: discount.name, active: true }, after: { active: false }
+      });
+      return discount;
+    });
+    if (!removed) return reply.code(404).send({ error: "Active discount not found" });
+    return reply.code(204).send();
+  });
+
+  app.post("/api/settings/coupons", {
+    preHandler: [authenticate, requirePermission("settings.discounts")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const input = body(couponWriteSchema, request.body);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      // The code index is NOT partial on `active`, so a retired code is still claimed. That is
+      // deliberate - a redeemed code must never be re-issued meaning something else - and the
+      // refusal says which of the two it is, because "already exists" over a coupon the operator
+      // cannot see on the screen is a dead end.
+      const [taken] = await tx<{ id: string; active: boolean }[]>`
+        select id,active from coupons
+        where business_id=${context.businessId} and upper(btrim(code))=upper(btrim(${input.code}))
+      `;
+      if (taken) {
+        return taken.active
+          ? refuseTaxPayment("COUPON_CODE_TAKEN", "A coupon with that code already exists.")
+          : refuseTaxPayment("COUPON_CODE_RETIRED",
+            "That code belonged to a retired coupon. A code that was handed out can never mean something else, so choose a different one.");
+      }
+      const [created] = await tx<{ id: string }[]>`
+        insert into coupons
+          (business_id,code,name,kind,amount_minor,rate_basis_points,apply_scope,starts_on,ends_on,
+           weekdays,new_clients_only,max_redemptions,max_redemptions_per_client,active,created_by)
+        values (${context.businessId},${input.code},${input.name ?? null},${input.kind},
+          ${input.amountMinor ?? null},${input.rateBasisPoints ?? null},${input.applyScope},
+          ${input.startsOn ?? null},${input.endsOn ?? null},
+          ${normalizeWeekdays(input.weekdays) as number[] | null},${input.newClientsOnly},
+          ${input.maxRedemptions ?? null},${input.maxRedemptionsPerClient ?? null},
+          ${input.active},${context.userId})
+        returning id
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "coupon.create",
+        resourceType: "coupon", resourceId: created!.id,
+        after: { code: input.code, kind: input.kind, amountMinor: input.amountMinor ?? null,
+          rateBasisPoints: input.rateBasisPoints ?? null, startsOn: input.startsOn ?? null,
+          endsOn: input.endsOn ?? null, weekdays: normalizeWeekdays(input.weekdays),
+          newClientsOnly: input.newClientsOnly, maxRedemptions: input.maxRedemptions ?? null,
+          maxRedemptionsPerClient: input.maxRedemptionsPerClient ?? null }
+      });
+      return { status: "ok", createdId: created!.id };
+    });
+    return discountReply(reply, context.businessId, outcome, 201);
+  });
+
+  app.put("/api/settings/coupons/:id", {
+    preHandler: [authenticate, requirePermission("settings.discounts")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(couponWriteSchema, request.body);
+    const outcome = await db.begin<TaxPaymentOutcome>(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [existing] = await tx<{
+        id: string; code: string; kind: string; amountMinor: number | null;
+        rateBasisPoints: number | null; active: boolean;
+      }[]>`
+        select id,code,kind,amount_minor,rate_basis_points,active from coupons
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!existing) return { status: "notFound", message: "Coupon not found" };
+      const [taken] = await tx<{ id: string; active: boolean }[]>`
+        select id,active from coupons
+        where business_id=${context.businessId} and id<>${id}
+          and upper(btrim(code))=upper(btrim(${input.code}))
+      `;
+      if (taken) {
+        return taken.active
+          ? refuseTaxPayment("COUPON_CODE_TAKEN", "A coupon with that code already exists.")
+          : refuseTaxPayment("COUPON_CODE_RETIRED",
+            "That code belonged to a retired coupon. A code that was handed out can never mean something else, so choose a different one.");
+      }
+      // Redemptions already recorded are untouched: `coupon_redemptions.amount_minor` and the
+      // `invoice_discounts` snapshot both say what the customer was actually given, so retuning a
+      // live coupon cannot rewrite a receipt.
+      await tx`
+        update coupons set
+          code=${input.code}, name=${input.name ?? null}, kind=${input.kind},
+          amount_minor=${input.amountMinor ?? null},
+          rate_basis_points=${input.rateBasisPoints ?? null}, apply_scope=${input.applyScope},
+          starts_on=${input.startsOn ?? null}, ends_on=${input.endsOn ?? null},
+          weekdays=${normalizeWeekdays(input.weekdays) as number[] | null},
+          new_clients_only=${input.newClientsOnly},
+          max_redemptions=${input.maxRedemptions ?? null},
+          max_redemptions_per_client=${input.maxRedemptionsPerClient ?? null},
+          active=${input.active}, updated_at=now()
+        where business_id=${context.businessId} and id=${id}
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "coupon.update",
+        resourceType: "coupon", resourceId: id,
+        before: { code: existing.code, kind: existing.kind, amountMinor: existing.amountMinor,
+          rateBasisPoints: existing.rateBasisPoints, active: existing.active },
+        after: { code: input.code, kind: input.kind, amountMinor: input.amountMinor ?? null,
+          rateBasisPoints: input.rateBasisPoints ?? null, active: input.active }
+      });
+      return { status: "ok" };
+    });
+    return discountReply(reply, context.businessId, outcome);
+  });
+
+  /** Soft delete, as above. The CODE STAYS CLAIMED - see `coupon_code_per_business` in 0046. */
+  app.delete("/api/settings/coupons/:id", {
+    preHandler: [authenticate, requirePermission("settings.discounts")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const removed = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [coupon] = await tx<{ id: string; code: string }[]>`
+        update coupons set active=false,updated_at=now()
+        where business_id=${context.businessId} and id=${id} and active
+        returning id,code
+      `;
+      if (!coupon) return null;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId, action: "coupon.delete",
+        resourceType: "coupon", resourceId: id,
+        before: { code: coupon.code, active: true }, after: { active: false }
+      });
+      return coupon;
+    });
+    if (!removed) return reply.code(404).send({ error: "Active coupon not found" });
+    return reply.code(204).send();
+  });
+
+  /**
    * The checkout modal's view of the payment configuration.
    *
    * Gated on `checkout.perform` rather than `settings.manage`, because the audience is the
    * groomer taking the money, not the owner configuring it. Narrow by construction: see
    * `checkoutPaymentOptions`. An empty list is a legitimate answer - a salon may disable every
    * method - so it is an empty array and not a refusal.
+   *
+   * `discounts.apply` is read here and PASSED AS DATA rather than added to the preHandler. It
+   * decides what comes back, not whether anything does: a cashier who cannot grant money off
+   * still has to be able to take a payment, so refusing the whole endpoint would break checkout
+   * for exactly the people it was widened for. Same shape as the projection children elsewhere in
+   * this file - the permission omits a field, it does not close a door. It is the identical test
+   * the checkout write makes before honouring `appliedDiscountIds`, so the picker and the write
+   * cannot disagree about who may use it.
    */
   app.get("/api/checkout/payment-options", {
     preHandler: [authenticate, requirePermission("checkout.perform")]
   }, async (request) => {
     const context = auth(request);
-    return checkoutPaymentOptions(db, context.businessId);
+    // Optional: the screen names the client it is checking out so the modal can offer their
+    // credit. Omitting it is the ordinary case for anything that only needs the salon's methods.
+    const query = z.object({ customerId: z.string().uuid().optional() }).parse(request.query);
+    return checkoutPaymentOptions(db, context.businessId,
+      context.isOwner || context.permissions.includes("discounts.apply"),
+      query.customerId ?? null);
   });
 
   /**
@@ -5437,6 +6211,217 @@ export function registerRoutes(
       ...(query.direction ? { direction: query.direction } : {})
     });
     return { items, total, page: query.page, pageSize: query.pageSize };
+  });
+
+  /**
+   * ------------------------------------------------------------------------------------------
+   * CLIENT CREDIT.
+   *
+   * An APPEND-ONLY LEDGER. The balance is `sum(amount_minor)` over `customer_credit_entries` and
+   * there is no `customers.credit_minor` beside it, for the reason migration 0046 refused a stored
+   * `coupons.redeemed_count`: a second source of truth for a number an aggregate already answers
+   * buys nothing and can drift. Rows are immutable in the database, so a mistake is corrected by a
+   * compensating entry rather than by an edit.
+   *
+   * THE PERMISSION SPLIT MIRRORS THE COUPON PRECEDENT. GRANTING credit needs
+   * `customers.credit_edit` - it creates money the salon now owes. APPLYING existing credit at
+   * checkout needs only `checkout.perform`, exactly as redeeming a coupon does, because the
+   * operator is honouring something the client was already given rather than deciding anything. A
+   * receptionist can hand back what the salon owes without being able to invent it.
+   *
+   * READING IT NEEDS `payments.view`, AND `customers.credit_edit` DOES NOT OVERRIDE THAT. The
+   * order is enforced below rather than left to role configuration: granting credit against a
+   * balance you are not allowed to see is worse than not granting it at all, because the grant
+   * lands on a number the granter could not check.
+   * ------------------------------------------------------------------------------------------
+   */
+
+  /**
+   * One client's credit position and the most recent slice of their ledger.
+   *
+   * Gated on `customers.view` at the door and on `payments.view` inside, matching the client
+   * profile read: the two questions are "may you look at this client" and "may you see money",
+   * and they are answered by different permissions.
+   */
+  app.get("/api/customers/:id/credit", {
+    preHandler: [authenticate, requirePermission("customers.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    if (!context.isOwner && !context.permissions.includes("payments.view")) {
+      return reply.code(403).send({ error: "Missing permission: payments.view" });
+    }
+    const [customer] = await db<{ id: string }[]>`
+      select id from customers where business_id=${context.businessId} and id=${id}
+    `;
+    if (!customer) return reply.code(404).send({ error: "Customer not found" });
+    const [summary, entries] = await Promise.all([
+      creditLedgerSummary(db, { businessId: context.businessId, customerId: id }),
+      creditLedgerPage(db, {
+        businessId: context.businessId, customerId: id,
+        limit: profileCreditPreviewLimit, offset: 0
+      })
+    ]);
+    return {
+      balanceMinor: summary.balanceMinor,
+      grantedMinor: summary.grantedMinor,
+      usedMinor: summary.usedMinor,
+      entryCount: entries.length,
+      entryTotal: summary.entryTotal,
+      entries,
+      // The closed set the ledger renders, named by the server so no client keeps its own copy of
+      // a database check constraint. Same contract as `settlementTypes` and `stackingModes`.
+      entryKinds: creditEntryKinds.map((value) => ({ value, label: creditEntryKindLabels[value] })),
+      // Whether THIS operator may add to or deduct from the balance they are looking at, so the
+      // interface offers the action rather than discovering the 403 after the operator has typed
+      // a reason. It remains the server's rule; this only saves them the wasted keystrokes.
+      canEdit: context.isOwner || context.permissions.includes("customers.credit_edit")
+    };
+  });
+
+  /**
+   * The full ledger, paged, for the dialog behind the profile tile.
+   *
+   * A separate endpoint rather than a page parameter on the read above, because the two answer
+   * different questions: the profile wants a summary with a slice attached, and this wants rows.
+   * `balanceAfterMinor` is computed by the SERVER over the whole ledger, so page three shows the
+   * same figures page one would have - see `creditLedgerPage`.
+   */
+  app.get("/api/customers/:id/credit/entries", {
+    preHandler: [authenticate, requirePermission("customers.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    if (!context.isOwner && !context.permissions.includes("payments.view")) {
+      return reply.code(403).send({ error: "Missing permission: payments.view" });
+    }
+    const query = body(creditLedgerQuerySchema, request.query);
+    const [customer] = await db<{ id: string }[]>`
+      select id from customers where business_id=${context.businessId} and id=${id}
+    `;
+    if (!customer) return reply.code(404).send({ error: "Customer not found" });
+    const [summary, items] = await Promise.all([
+      creditLedgerSummary(db, { businessId: context.businessId, customerId: id }),
+      creditLedgerPage(db, {
+        businessId: context.businessId, customerId: id,
+        limit: query.pageSize, offset: (query.page - 1) * query.pageSize
+      })
+    ]);
+    return {
+      items, total: summary.entryTotal, page: query.page, pageSize: query.pageSize,
+      balanceMinor: summary.balanceMinor
+    };
+  });
+
+  /**
+   * Granting credit, or adjusting a balance.
+   *
+   * `customers.credit_edit` at the door AND `payments.view` inside, in that order and both
+   * required. The second is not implied by the first and must not be: an operator who can create
+   * money the salon owes but cannot read the balance they are moving is being asked to act blind.
+   *
+   * A REASON IS REQUIRED FOR BOTH DIRECTIONS, and the deduction is the case that earns it. Taking
+   * $20 off a client account is more contestable than giving it, and this row is where a dispute
+   * lands.
+   *
+   * A DEDUCTION MAY NOT TAKE THE BALANCE BELOW ZERO. A negative balance is a debt, and Pawsh
+   * already represents debt - it is an invoice with an `Outstanding` status and a live
+   * `balance_minor` that somebody chases. Two representations of the same money is the bug: the
+   * outstanding list would not know about the negative credit, and the credit tile would not know
+   * about the invoice. The check runs under the customer row lock, so it is a rule and not a race.
+   *
+   * REPLAY-PROTECTED like every other financial write, under the `credit.adjust` operation that
+   * 0048 added to `financial_idempotency_requests`. A double-tapped Add Credit button must add
+   * credit once.
+   */
+  app.post("/api/customers/:id/credit", {
+    preHandler: [authenticate, requirePermission("customers.credit_edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    if (!context.isOwner && !context.permissions.includes("payments.view")) {
+      return reply.code(403).send({ error: "Missing permission: payments.view" });
+    }
+    const input = body(creditEntrySchema, request.body);
+    const requestKey = idempotencyKey(request);
+    const requestHash = canonicalHash({
+      version: 1, customerId: id, kind: input.kind, amountMinor: input.amountMinor,
+      reason: input.reason, correctsEntryId: input.correctsEntryId ?? null
+    });
+    const outcome = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      /**
+       * THE ONLY LOCK THIS ROUTE TAKES, which is what keeps it out of the lock-ordering problem
+       * the payment route has. It never touches an invoice, so it cannot be the transaction that
+       * holds a customer and waits for an invoice while the payment route holds an invoice and
+       * waits for that customer.
+       */
+      const found = await lockCustomerForCredit(tx, {
+        businessId: context.businessId, customerId: id
+      });
+      if (!found) return null;
+      const claim = await claimFinancialRequest(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        operation: "credit.adjust", key: requestKey, hash: requestHash
+      });
+      if (claim.existingResult) return { result: claim.existingResult, created: false };
+      const balanceMinor = await creditBalanceMinor(tx, {
+        businessId: context.businessId, customerId: id
+      });
+      if (balanceMinor + input.amountMinor < 0) {
+        throw new FinancialRequestError(409, "CREDIT_BALANCE_INSUFFICIENT",
+          "That deduction is larger than this client's credit balance.", { balanceMinor });
+      }
+      /**
+       * The corrected entry must be this client's, and it is checked rather than trusted. The
+       * composite foreign key on `(business_id, corrects_entry_id)` already stops a cross-TENANT
+       * reference, but nothing in the schema stops one client's adjustment pointing at another
+       * client's entry within the same salon, and that would render as a correction on a ledger
+       * it does not belong to.
+       */
+      if (input.correctsEntryId) {
+        const [corrected] = await tx<{ id: string }[]>`
+          select id from customer_credit_entries
+          where business_id=${context.businessId} and id=${input.correctsEntryId}
+            and customer_id=${id}
+        `;
+        if (!corrected) {
+          throw new FinancialRequestError(404, "CREDIT_ENTRY_NOT_FOUND",
+            "The entry being corrected was not found on this client.");
+        }
+      }
+      const [created] = await tx<{ id: string; createdAt: Date }[]>`
+        insert into customer_credit_entries
+          (business_id, customer_id, kind, amount_minor, reason, corrects_entry_id, created_by)
+        values (${context.businessId}, ${id}, ${input.kind}, ${input.amountMinor},
+          ${input.reason}, ${input.correctsEntryId ?? null}, ${context.userId})
+        returning id, created_at
+      `;
+      if (!created) throw new Error("Credit entry creation failed");
+      await financialHooks.beforeFinancialAudit?.("credit.adjust");
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: input.kind === "grant" ? "credit.grant" : "credit.adjust",
+        resourceType: "customer", resourceId: id, reason: input.reason,
+        before: { balanceMinor },
+        after: {
+          entryId: created.id, kind: input.kind, amountMinor: input.amountMinor,
+          balanceMinor: balanceMinor + input.amountMinor,
+          correctsEntryId: input.correctsEntryId ?? null
+        }
+      });
+      const result = {
+        id: created.id, kind: input.kind, amountMinor: input.amountMinor,
+        balanceMinor: balanceMinor + input.amountMinor, createdAt: created.createdAt
+      };
+      await completeFinancialRequest(tx, {
+        id: claim.id, resultType: "credit_entry", resourceId: created.id, result
+      });
+      return { result, created: true };
+    });
+    if (!outcome) return reply.code(404).send({ error: "Customer not found" });
+    await financialHooks.afterFinancialCommit?.("credit.adjust");
+    return reply.code(outcome.created ? 201 : 200).send(outcome.result);
   });
 
   app.get("/api/reminders", {
@@ -8000,8 +8985,31 @@ export function registerRoutes(
       if (!canTransition(current.status, input.status)) {
         throw new Error(`Invalid appointment transition: ${current.status} -> ${input.status}`);
       }
+      /**
+       * WHAT ACTUALLY HAPPENED, written in the same statement as the status it follows from.
+       *
+       * Same transaction, same `update`, under the row lock this route already took, so an
+       * appointment can never be `checked_in` without a check-in time or carry one without the
+       * status. `now()` is transaction time, which is the same instant `record()` stamps the
+       * audit event with below - the stored column and the audit trail cannot disagree by so
+       * much as a millisecond, which is what makes the 0047 backfill and the live writes one
+       * consistent series rather than two.
+       *
+       * Every branch assigns, and the branch that has nothing to say assigns the column to
+       * itself. A conditional fragment would leave the SET list reading differently depending on
+       * a value, and this way what the statement writes is legible without following the
+       * ternary.
+       *
+       * `completed` ONLY. `cancelled` and `no_show` are not check-outs: a visit that was called
+       * off did not end, it never began, and stamping a check-out time on it would put a
+       * duration on the record of an appointment nobody worked. Those stay null and the detail
+       * view keeps saying "not recorded".
+       */
+      const checkedInAt = input.status === "checked_in" ? tx`now()` : tx`checked_in_at`;
+      const checkedOutAt = input.status === "completed" ? tx`now()` : tx`checked_out_at`;
       const [updated] = await tx`
         update appointments set status=${input.status}, version=version+1,
+          checked_in_at=${checkedInAt}, checked_out_at=${checkedOutAt},
           updated_by=${context.userId}, updated_at=now()
         where business_id=${context.businessId} and id=${id} returning *
       `;
@@ -8027,6 +9035,99 @@ export function registerRoutes(
     if (!result) return reply.code(404).send({ error: "Appointment not found" });
     if ("stale" in result) return reply.code(409).send({ error: "Appointment changed; refresh before continuing" });
     return result;
+  });
+
+  /**
+   * Correcting what the record says about when a visit began and ended.
+   *
+   * GATED ON `appointments.edit`, NOT ON `operations.*`. The operations permissions authorize
+   * PERFORMING something - a receptionist with `operations.check_in` may check a dog in. Editing
+   * the recorded time afterwards is not performing anything; it is amending a record, and the
+   * permission for amending an appointment record is the one that already exists for it. The
+   * practical consequence is the intended one: the person who ran the front desk this morning
+   * cannot silently rewrite this morning's timesheet.
+   *
+   * The audit trail is why this is safe to expose at all. The original `appointment.checked_in`
+   * event stays exactly where it is - `record()` only ever appends - and this route writes a
+   * SECOND event saying what the time was changed from and to. So the column answers "what is
+   * true now" and the log still answers "and here is every hand that has been on it".
+   *
+   * Returns the full calendar row rather than the bare update, so a detail screen that PATCHes
+   * re-renders from the same projection it opened with instead of merging two shapes.
+   */
+  app.patch("/api/appointments/:id/times", {
+    preHandler: [authenticate, requirePermission("appointments.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(appointmentTimesSchema, request.body);
+    const checkedInAt = input.checkedInAt ? new Date(input.checkedInAt) : null;
+    const checkedOutAt = input.checkedOutAt ? new Date(input.checkedOutAt) : null;
+    // The ordering rule is enforced by `appointment_times_ordered` in 0047 and re-stated here,
+    // because a constraint violation surfaces as a 500 and this is an operator typing two times
+    // into a form. The database keeps the invariant; this keeps the sentence readable. Equality
+    // passes in both places.
+    if (checkedInAt && checkedOutAt && checkedOutAt < checkedInAt) {
+      return reply.code(400).send({
+        code: "APPOINTMENT_TIMES_OUT_OF_ORDER",
+        error: "Check-out cannot be earlier than check-in"
+      });
+    }
+    const result = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [current] = await tx<{
+        status: AppointmentStatus; version: number;
+        checkedInAt: Date | null; checkedOutAt: Date | null;
+      }[]>`
+        select status,version,checked_in_at,checked_out_at from appointments
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!current) return null;
+      if (input.version && current.version !== input.version) return { stale: true } as const;
+      /**
+       * NOTHING MAY BE RECORDED AS HAVING HAPPENED IN THE FUTURE, measured against the database's
+       * own clock rather than the caller's, because that is the clock the transition route
+       * stamps from. Without this the two writers could disagree: a check-in corrected forward
+       * past the moment of check-out would make the very next `completed` transition violate
+       * `appointment_times_ordered` and fail the Check Out button with a 500, for a value this
+       * route accepted.
+       *
+       * The grace absorbs ordinary client clock skew - a form submitting the current minute from
+       * a machine running slightly fast - and is deliberately far too small to admit a time
+       * anyone meant as future.
+       */
+      const [clock] = await tx<{ ceiling: Date }[]>`select now() + interval '2 minutes' as ceiling`;
+      const ceiling = clock!.ceiling;
+      if ((checkedInAt && checkedInAt > ceiling) || (checkedOutAt && checkedOutAt > ceiling)) {
+        return { future: true } as const;
+      }
+      const [updated] = await tx`
+        update appointments set checked_in_at=${checkedInAt}, checked_out_at=${checkedOutAt},
+          version=version+1, updated_by=${context.userId}, updated_at=now()
+        where business_id=${context.businessId} and id=${id} returning id
+      `;
+      if (!updated) return null;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "appointment.times_edit", resourceType: "appointment", resourceId: id,
+        before: { checkedInAt: current.checkedInAt, checkedOutAt: current.checkedOutAt },
+        after: { checkedInAt, checkedOutAt }, reason: input.reason
+      });
+      return { edited: true } as const;
+    });
+    if (!result) return reply.code(404).send({ error: "Appointment not found" });
+    if ("stale" in result) return reply.code(409).send({ error: "Appointment changed; refresh before continuing" });
+    if ("future" in result) {
+      return reply.code(400).send({
+        code: "APPOINTMENT_TIME_IN_FUTURE",
+        error: "A recorded time cannot be in the future"
+      });
+    }
+    const [appointment] = await appointmentCalendarRows(db, db`
+      a.business_id=${context.businessId} and a.id=${id}
+    `);
+    if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
+    return mayViewPetCare(context) ? appointment : redactPetCare(appointment);
   });
 
   app.patch("/api/appointments/:id/schedule", {
@@ -8273,15 +9374,36 @@ export function registerRoutes(
     const { id } = idParams.parse(request.params);
     const input = body(checkoutSchema, request.body);
     const requestKey = idempotencyKey(request);
-    if (input.discountMinor > 0 && !context.isOwner && !context.permissions.includes("discounts.apply")) {
+    /**
+     * A COUPON NEEDS `checkout.perform` ONLY. `discounts.apply` gates GRANTING money off - a
+     * manual amount somebody typed, or a configured discount they chose to hand over. A coupon is
+     * customer-presented and was already earned somewhere else; the operator is keying in a code,
+     * not deciding anything, and requiring the grant permission would mean a receptionist could
+     * take a customer's coupon and be unable to honour it.
+     */
+    const grantsDiscount = input.discountMinor > 0 || input.appliedDiscountIds.length > 0;
+    if (grantsDiscount && !context.isOwner && !context.permissions.includes("discounts.apply")) {
       return reply.code(403).send({ error: "Missing permission: discounts.apply" });
     }
+    // Normalised the same way `coupon_code_per_business` indexes it, so CODE and code are one
+    // request and not two.
+    const couponCode = input.couponCode?.trim().toUpperCase() || null;
+    /**
+     * BOTH NEW FIELDS ARE IN THE CLIENT HASH. Without them a replay carrying the same idempotency
+     * key but different discounts would be answered with the FIRST request's invoice, silently,
+     * as though the second had been honoured.
+     */
     const clientHash = canonicalHash({ version: 1, appointmentId: id, discountMinor: input.discountMinor,
-      discountType: input.discountType?.trim() || null, tipMinor: input.tipMinor });
+      discountType: input.discountType?.trim() || null, tipMinor: input.tipMinor,
+      appliedDiscountIds: [...input.appliedDiscountIds], couponCode });
     const outcome = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [appointment] = await tx<{ customerId: string; status: string; taxRateBasisPoints: number }[]>`
-        select a.customer_id, a.status, b.tax_rate_basis_points
+      const [appointment] = await tx<{
+        customerId: string; status: string; taxRateBasisPoints: number;
+        startAt: Date; schedulingTimezone: string; discountStackingMode: DiscountStackingMode;
+      }[]>`
+        select a.customer_id, a.status, b.tax_rate_basis_points,
+          a.start_at, a.scheduling_timezone, b.discount_stacking_mode
         from appointments a join businesses b on b.id=a.business_id
         where a.business_id=${context.businessId} and a.id=${id} for update
       `;
@@ -8300,23 +9422,74 @@ export function registerRoutes(
         order by id
       `;
       if (!services.length) throw new FinancialRequestError(409, "CHECKOUT_REQUIRES_SERVICE", "Checkout requires at least one service");
+      // READ BEFORE THE DISCOUNTS ARE RESOLVED, not after, so a REPLAY can exclude its own first
+      // attempt from the coupon caps and from the new-client test. Without that, replaying a
+      // checkout that consumed a coupon's last redemption would be refused by the cap its own
+      // first attempt filled, instead of being handed back the invoice it already created.
+      const [existing] = await tx<{ id: string; intentFingerprint: string | null }[]>`
+        select id,intent_fingerprint from invoices
+        where business_id=${context.businessId} and appointment_id=${id} and status<>'void'
+      `;
+      const resolved = await resolveCheckoutDiscounts(tx, {
+        businessId: context.businessId, customerId: appointment.customerId,
+        appointmentStartAt: appointment.startAt,
+        schedulingTimezone: appointment.schedulingTimezone,
+        stackingMode: appointment.discountStackingMode,
+        discountMinor: input.discountMinor, discountType: input.discountType?.trim() || null,
+        appliedDiscountIds: input.appliedDiscountIds, couponCode,
+        excludeInvoiceId: existing?.id ?? null
+      });
+      const subtotal = services.reduce((sum, service) => sum + service.priceMinorSnapshot, 0);
+      /**
+       * THE SERVER'S OWN ARITHMETIC. Every figure here came from the catalog or from the
+       * appointment's own snapshots; nothing a client sent decides an amount except the manual
+       * `discountMinor`, which is what it has always been.
+       *
+       * Discounts COMPOUND off the reduced amount, and the fold clamps rather than throwing, which
+       * is what makes `calculateInvoice`'s "Discount cannot exceed subtotal" unreachable from here.
+       * That throw is kept as a defensive invariant on a function anything may call.
+       */
+      const application = applyDiscounts({
+        subtotal,
+        lines: resolved.map((entry): DiscountLine => ({
+          kind: entry.kind, amountMinor: entry.amountMinor,
+          rateBasisPoints: entry.rateBasisPoints, units: entry.units
+        })),
+        stackingMode: appointment.discountStackingMode
+      });
       const totals = calculateInvoice({
         lineAmounts: services.map((service) => service.priceMinorSnapshot),
-        discount: input.discountMinor, taxRateBasisPoints: appointment.taxRateBasisPoints,
+        discount: application.discountMinor, taxRateBasisPoints: appointment.taxRateBasisPoints,
         tip: input.tipMinor
       });
+      /**
+       * BOTH NEW FIELDS ARE IN THE INTENT FINGERPRINT TOO, alongside the breakdown they resolved
+       * to. The fingerprint is what `INVOICE_ALREADY_EXISTS` compares, so an omission here would
+       * let a second checkout carrying different discounts be judged compatible with the invoice
+       * already on the appointment and slip through as a 200.
+       *
+       * The resolved breakdown is included as well as the raw request, because a discount that was
+       * edited between two otherwise identical checkouts is a different bill.
+       */
       const intentFingerprint = canonicalHash({
         version: 1, appointmentId: id, customerId: appointment.customerId,
         services: services.map((service) => ({ id: service.id, name: service.serviceNameSnapshot, amountMinor: service.priceMinorSnapshot })),
         subtotalMinor: totals.subtotal, discountMinor: totals.discount,
         discountType: input.discountType?.trim() || null,
+        appliedDiscountIds: [...input.appliedDiscountIds], couponCode,
+        stackingMode: appointment.discountStackingMode,
+        discountBreakdown: application.applied.map((step) => {
+          const entry = resolved[step.index]!;
+          return {
+            source: entry.source, discountId: entry.discountId, couponId: entry.couponId,
+            name: entry.nameSnapshot, kind: entry.kind, amountMinor: entry.amountMinor,
+            rateBasisPoints: entry.rateBasisPoints, units: entry.units,
+            appliedMinor: step.appliedMinor
+          };
+        }),
         taxRateBasisPoints: appointment.taxRateBasisPoints, taxMinor: totals.tax,
         tipMinor: totals.tip, totalMinor: totals.total
       });
-      const [existing] = await tx<{ id: string; intentFingerprint: string | null }[]>`
-        select id,intent_fingerprint from invoices
-        where business_id=${context.businessId} and appointment_id=${id} and status<>'void'
-      `;
       if (existing) {
         if (existing.intentFingerprint !== intentFingerprint) {
           const [authoritativeInvoice] = await tx`
@@ -8338,7 +9511,7 @@ export function registerRoutes(
           (${context.businessId}, ${id}, ${appointment.customerId}, ${totals.total === 0 ? "paid" : "open"},
            ${totals.subtotal}, ${totals.discount}, ${totals.tax}, ${totals.tip},
            ${totals.total}, ${totals.total}, ${input.discountType ?? null},
-           ${input.discountMinor > 0 ? context.userId : null},${intentFingerprint},1,${appointment.taxRateBasisPoints})
+           ${totals.discount > 0 ? context.userId : null},${intentFingerprint},1,${appointment.taxRateBasisPoints})
         returning *
       `;
       if (!created) throw new Error("Invoice creation failed");
@@ -8351,6 +9524,51 @@ export function registerRoutes(
             (${context.businessId}, ${created.id}, ${service.serviceNameSnapshot}, 1,
              ${service.priceMinorSnapshot}, ${service.priceMinorSnapshot}, ${service.id},${index + 1})
         `;
+      }
+      /**
+       * The receipt breakdown, IN APPLIED ORDER, snapshotting what each row said at the time. The
+       * aggregate written to `invoices.discount_minor` above is the difference the fold made, and
+       * these rows are the steps that made it, so they sum to it exactly with no rounding drift
+       * possible. The 0046 backfill gave every historical invoice the same guarantee.
+       */
+      for (const [position, step] of application.applied.entries()) {
+        const entry = resolved[step.index]!;
+        await tx`
+          insert into invoice_discounts
+            (business_id,invoice_id,line_position,source,discount_id,coupon_id,name_snapshot,
+             kind_snapshot,amount_minor_snapshot,rate_basis_points_snapshot,apply_scope_snapshot,
+             units_snapshot,applied_minor)
+          values
+            (${context.businessId},${created.id},${position + 1},${entry.source},
+             ${entry.discountId},${entry.couponId},${entry.nameSnapshot},${entry.kind},
+             ${entry.amountMinor},${entry.rateBasisPoints},${entry.applyScope},
+             ${entry.units},${step.appliedMinor})
+        `;
+      }
+      /**
+       * CONSUMING THE COUPON. The row was locked at the top of `resolveCheckoutDiscounts` and the
+       * caps were counted under that lock, so this insert cannot exceed one; the
+       * `unique (business_id, coupon_id, invoice_id)` constraint is the structural backstop if the
+       * lock is ever lost.
+       *
+       * KNOWN LIMITATION: there is no route that voids an invoice, so a redemption is consumed
+       * permanently and cannot be given back. See the header of migration 0046.
+       */
+      for (const step of application.applied) {
+        const entry = resolved[step.index]!;
+        if (entry.source !== "coupon" || !entry.couponId) continue;
+        await tx`
+          insert into coupon_redemptions
+            (business_id,coupon_id,invoice_id,customer_id,amount_minor,redeemed_by)
+          values (${context.businessId},${entry.couponId},${created.id},${appointment.customerId},
+            ${step.appliedMinor},${context.userId})
+        `;
+        await record(tx, {
+          businessId: context.businessId, actorId: context.userId, action: "coupon.redeem",
+          resourceType: "coupon", resourceId: entry.couponId,
+          after: { invoiceId: created.id, customerId: appointment.customerId,
+            amountMinor: step.appliedMinor }
+        });
       }
       await financialHooks.beforeFinancialAudit?.("checkout.create-invoice");
       await record(tx, {
@@ -8377,8 +9595,8 @@ export function registerRoutes(
       externalReference: input.externalReference?.trim() || null });
     const outcome = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [invoice] = await tx<{ balanceMinor: number; status: string }[]>`
-        select balance_minor, status from invoices
+      const [invoice] = await tx<{ balanceMinor: number; status: string; customerId: string }[]>`
+        select balance_minor, status, customer_id from invoices
         where business_id=${context.businessId} and id=${id} for update
       `;
       if (!invoice) return null;
@@ -8393,6 +9611,43 @@ export function registerRoutes(
         throw new FinancialRequestError(stale?409:400,stale?"STALE_FINANCIAL_STATE":"PAYMENT_EXCEEDS_CURRENT_BALANCE",
           stale?"The invoice balance changed; review the current balance":"Payment exceeds invoice balance");
       }
+      /**
+       * SPENDING CLIENT CREDIT.
+       *
+       * `checkout.perform` AND NOTHING MORE, which is the decided split and the right one: a
+       * receptionist must be able to honour a balance the salon already owes a client without
+       * being able to invent one. Granting credit is the privileged half and it lives behind
+       * `customers.credit_edit` on `POST /api/customers/:id/credit`.
+       *
+       * THIS IS NOW A TWO-LOCK TRANSACTION AND THE ORDER IS INVOICE, THEN CUSTOMER. The invoice
+       * lock was taken at the top of this handler before the credit branch existed, so the credit
+       * lock has to come second everywhere, or two transactions each holding one of the pair would
+       * deadlock. The coupon path had the same problem and fixed it the same way, appointment then
+       * coupon. `POST /api/customers/:id/credit` takes ONLY the customer lock and never an invoice
+       * lock, so it has no pair to invert; `POST /api/payments/:id/void` takes payment, invoice,
+       * then customer, which preserves this order on the two locks it shares.
+       *
+       * THE BALANCE IS RE-READ HERE, UNDER THAT LOCK, and never trusted from the request. There is
+       * deliberately no `expectedCreditMinor` mirroring `expectedBalanceMinor`: the invoice balance
+       * is a figure the operator was shown and may legitimately be arguing about, so telling
+       * "you asked for too much" apart from "somebody else paid this while your dialog was open"
+       * changes what they should do. A credit balance is simply what the ledger says at this
+       * instant, and both readings lead to the same next action - offer what is actually there.
+       */
+      let creditAvailableMinor: number | null = null;
+      if (input.method === "client_credit") {
+        await lockCustomerForCredit(tx, {
+          businessId: context.businessId, customerId: invoice.customerId
+        });
+        creditAvailableMinor = await creditBalanceMinor(tx, {
+          businessId: context.businessId, customerId: invoice.customerId
+        });
+        if (input.amountMinor > creditAvailableMinor) {
+          throw new FinancialRequestError(409, "CREDIT_BALANCE_INSUFFICIENT",
+            "This client does not have that much credit available.",
+            { creditAvailableMinor });
+        }
+      }
       const [created] = await tx<{ id: string }[]>`
         insert into payments
           (business_id, invoice_id, amount_minor, method, external_reference, recorded_by)
@@ -8401,6 +9656,29 @@ export function registerRoutes(
            ${input.externalReference ?? null}, ${context.userId})
         returning *
       `;
+      if (!created) throw new Error("Payment creation failed");
+      /**
+       * The ledger debit, in the SAME transaction as the payment it settles.
+       *
+       * Stored NEGATIVE, because `sum(amount_minor)` IS the balance and a redemption reduces it -
+       * see the header of migration 0048. It names both the payment and the invoice: the payment
+       * is the identity of the event and what `customer_credit_redemption_per_payment` keys on,
+       * the invoice is what the ledger line needs in order to read as a sentence without a join.
+       */
+      if (input.method === "client_credit") {
+        await tx`
+          insert into customer_credit_entries
+            (business_id, customer_id, kind, amount_minor, invoice_id, payment_id, created_by)
+          values (${context.businessId}, ${invoice.customerId}, 'redemption',
+            ${-input.amountMinor}, ${id}, ${created.id}, ${context.userId})
+        `;
+        await record(tx, {
+          businessId: context.businessId, actorId: context.userId, action: "credit.redeem",
+          resourceType: "customer", resourceId: invoice.customerId,
+          after: { invoiceId: id, paymentId: created.id, amountMinor: input.amountMinor,
+            balanceMinor: (creditAvailableMinor ?? 0) - input.amountMinor }
+        });
+      }
       // The same resolver the void route and the refund transaction use, so no write path can
       // rename an invoice differently from the others. It matters here in one narrow case that is
       // nonetheless real: an invoice whose card payment was refunded and whose cash payment was
@@ -8413,12 +9691,17 @@ export function registerRoutes(
       await financialHooks.beforeFinancialAudit?.("payment.record");
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "payment.record",
-        resourceType: "payment", resourceId: created?.id,
+        resourceType: "payment", resourceId: created.id,
         after: { invoiceId: id, amountMinor: input.amountMinor, method: input.method },
         eventType: "PaymentRecorded"
       });
-      if (!created) throw new Error("Payment creation failed");
-      const result = { ...created, balance };
+      // What is LEFT on the account, so the screen that just spent credit neither guesses nor
+      // re-fetches. Null for every other method, because nothing was spent from a balance - and
+      // null rather than zero for the same reason it is null on the checkout payload.
+      const creditRemainingMinor = creditAvailableMinor === null
+        ? null
+        : creditAvailableMinor - input.amountMinor;
+      const result = { ...created, balance, creditRemainingMinor };
       await completeFinancialRequest(tx, { id: claim.id, resultType: "payment", resourceId: created.id, result });
       return { result, created: true };
     });
@@ -8439,9 +9722,12 @@ export function registerRoutes(
       await setTenant(tx, context.businessId);
       const [payment] = await tx<{
         invoiceId: string; amountMinor: number; status: string; provider: string | null;
+        method: string; customerId: string;
       }[]>`
-        select invoice_id, amount_minor, status, provider from payments
-        where business_id=${context.businessId} and id=${id} for update
+        select p.invoice_id, p.amount_minor, p.status, p.provider, p.method, i.customer_id
+        from payments p
+        join invoices i on i.business_id=p.business_id and i.id=p.invoice_id
+        where p.business_id=${context.businessId} and p.id=${id} for update of p
       `;
       if (!payment) return null;
       const claim = await claimFinancialRequest(tx, { businessId: context.businessId, actorId: context.userId,
@@ -8477,6 +9763,42 @@ export function registerRoutes(
         select total_minor from invoices where business_id=${context.businessId}
           and id=${payment.invoiceId} for update
       `;
+      /**
+       * VOIDING A CREDIT PAYMENT PUTS THE MONEY BACK ON THE ACCOUNT, and there is nowhere else it
+       * could go. A card refund has a real destination - the card - and that is why a provider
+       * payment is refused above and refunded instead. Credit never touched a card. It came off a
+       * balance Pawsh keeps, so the only truthful reversal is to return it to that balance;
+       * dropping it would be Pawsh quietly keeping money it had already agreed it owed.
+       *
+       * THE SAME TRANSACTION AS THE VOID, so there is no state in which the payment is voided and
+       * the balance has not been restored. THE THIRD LOCK, taken after the payment and the invoice
+       * so that the shared pair keeps the invoice-then-customer order the payment route
+       * establishes.
+       *
+       * DOUBLE-VOID IS REFUSED TWICE OVER, independently. `payment.status !== 'recorded'` above
+       * answers a second void with `PAYMENT_ALREADY_VOIDED` before this is reached, and
+       * `customer_credit_reversal_per_payment` in the database refuses a second reversal of one
+       * payment even if that check were ever lost. The second is not redundant with the first: the
+       * status check is application logic in one handler, the index is a fact about the table.
+       */
+      if (payment.method === "client_credit") {
+        await lockCustomerForCredit(tx, {
+          businessId: context.businessId, customerId: payment.customerId
+        });
+        await tx`
+          insert into customer_credit_entries
+            (business_id, customer_id, kind, amount_minor, invoice_id, payment_id, reason,
+             created_by)
+          values (${context.businessId}, ${payment.customerId}, 'redemption_reversal',
+            ${payment.amountMinor}, ${payment.invoiceId}, ${id}, ${input.reason},
+            ${context.userId})
+        `;
+        await record(tx, {
+          businessId: context.businessId, actorId: context.userId, action: "credit.reverse",
+          resourceType: "customer", resourceId: payment.customerId, reason: input.reason,
+          after: { invoiceId: payment.invoiceId, paymentId: id, amountMinor: payment.amountMinor }
+        });
+      }
       // One resolver for both callers, so a void and a refund cannot disagree about what an
       // invoice carrying both is called. Voiding a cash payment on an invoice whose card payment
       // was already refunded puts money back on the table, and this returns an outstanding status
@@ -8505,8 +9827,28 @@ export function registerRoutes(
   }, async (request, reply) => {
     const context = auth(request);
     const { id } = idParams.parse(request.params);
+    /**
+     * The salon's own identity, for the top of a receipt.
+     *
+     * `business_phone` and `business_email` come from the two columns Settings -> Business
+     * actually writes, which is what makes them safe to render: a salon that has filled the
+     * settings form in has them, and one that has not gets null and the header simply omits the
+     * line. `reportCardView` above already surfaces the same two fields for the same reason.
+     *
+     * `locations.address` IS DELIBERATELY NOT HERE. The column exists and `GET /api/locations`
+     * selects it, but NOTHING IN THE PRODUCT WRITES IT: the create path inserts
+     * `(business_id, name, timezone)`, `businessSettingsSchema` has no address field, and the
+     * settings route's `update locations set` touches only name and timezone. The only writer in
+     * the repository is `scripts/seed-qa.ts`. So the address is null for every business that has
+     * ever existed outside QA - and populated in QA, which is the trap: a receipt header built
+     * against this field would look correct in every test and be blank for every real salon.
+     * Adding it needs the settings form first (a field on `businessSettingsSchema`, a column in
+     * that route's `update locations set`, and an input on the form); it is one more line here
+     * afterwards.
+     */
     const [invoice] = await db`
-      select i.*, b.name as business_name, b.currency, c.first_name, c.last_name
+      select i.*, b.name as business_name, b.phone as business_phone, b.email as business_email,
+        b.currency, c.first_name, c.last_name
       from invoices i join businesses b on b.id=i.business_id join customers c on c.id=i.customer_id
       where i.business_id=${context.businessId} and i.id=${id}
     `;
@@ -8516,7 +9858,7 @@ export function registerRoutes(
     // refund is a second line that says what went back. `tipRefundedMinor` is reported because the
     // split is a Pawsh decision the operator was shown before confirming, so it has to still be
     // there afterwards.
-    const [items, payments, refundRows] = await Promise.all([
+    const [items, payments, refundRows, discountRows] = await Promise.all([
       db`select * from invoice_items where business_id=${context.businessId} and invoice_id=${id} order by line_position,id`,
       db`select * from payments where business_id=${context.businessId} and invoice_id=${id} order by recorded_at,id`,
       db<{
@@ -8527,7 +9869,24 @@ export function registerRoutes(
       }[]>`select id,payment_id,amount_minor,tip_refunded_minor,currency,status,reason,
            provider_refund_id,failure_reason,created_at,settled_at
          from payment_refunds where business_id=${context.businessId} and invoice_id=${id}
-         order by created_at,id`
+         order by created_at,id`,
+      // WHAT CAME OFF THIS BILL, AND WHY, in the order it was applied - which is what makes the
+      // compounding legible: the second line took its percentage off what the first line left.
+      //
+      // `nameSnapshot` IS NULLABLE AND THAT IS DELIBERATE. Every invoice that predates 0046 got a
+      // backfilled row carrying its `discount_type` verbatim, nulls included, because most of them
+      // never had one and the client has always rendered a plain "Discount" for those. A name
+      // invented here would have changed what those receipts say.
+      db<{
+        linePosition: number; source: string; discountId: string | null; couponId: string | null;
+        nameSnapshot: string | null; kindSnapshot: DiscountKind;
+        amountMinorSnapshot: number | null; rateBasisPointsSnapshot: number | null;
+        applyScopeSnapshot: DiscountApplyScope | null; unitsSnapshot: number; appliedMinor: number;
+      }[]>`select line_position,source,discount_id,coupon_id,name_snapshot,kind_snapshot,
+           amount_minor_snapshot,rate_basis_points_snapshot,apply_scope_snapshot,units_snapshot,
+           applied_minor
+         from invoice_discounts where business_id=${context.businessId} and invoice_id=${id}
+         order by line_position,id`
     ]);
     // The presented shape, not the row. `settled` is the only thing a client may render as
     // "refunded" and it comes from one function shared with the Square routes, so a receipt and a
@@ -8542,7 +9901,7 @@ export function registerRoutes(
     const refundedMinor = refunds
       .filter((refund) => refund.status === "completed")
       .reduce((sum, refund) => sum + Number(refund.amountMinor ?? 0), 0);
-    return { invoice, items, payments, refunds, refundedMinor };
+    return { invoice, items, payments, refunds, refundedMinor, discounts: discountRows };
   });
 
   /**

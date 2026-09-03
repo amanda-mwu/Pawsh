@@ -9,12 +9,19 @@ test("@regression-calendar-time keeps Los Angeles scheduling intent in a New Yor
   }});
   expect(created.status()).toBe(201);
   expect((await created.json()).scheduledLocalStart).toContain(localStart);
+  // The only test that opens a SECOND browser context on top of the per-test fixtures, because a
+  // timezone can only be set when a context is created. `finally` matters more here than it looks:
+  // without it a failed assertion leaks the context - and its renderer and its sockets - for the
+  // rest of the run, so one failure quietly degrades every test after it.
   const context=await browser.newContext({baseURL:process.env.PAWSH_E2E_BASE_URL??"http://127.0.0.1:3000",timezoneId:"America/New_York"});
-  const page=await context.newPage();
-  await login(page,tenant.ownerEmail);
-  await page.getByTestId("nav-calendar").click();
-  await expect(page.getByTestId("calendar-list").locator(".week-time",{hasText:"9:00 AM"})).toBeVisible();
-  await context.close();
+  try {
+    const page=await context.newPage();
+    await login(page,tenant.ownerEmail);
+    await page.getByTestId("nav-calendar").click();
+    await expect(page.getByTestId("calendar-list").locator(".week-time",{hasText:"9:00 AM"})).toBeVisible();
+  } finally {
+    await context.close();
+  }
 });
 
 test("@regression-calendar-time rejects nonexistent time and preserves both repeated occurrences", async ({request,tenant}) => {
@@ -95,7 +102,10 @@ test("@cross-browser @regression-calendar-time exposes on-demand appointment act
   await page.locator("#calendar-range").click();await expect(trigger).toHaveAttribute("aria-expanded","false");
   const open=card.locator(".calendar-open");await open.click();const detail=page.getByTestId("appointment-detail");await expect(detail).toBeVisible();await expect(page.getByRole("button",{name:"Close appointment details"})).toBeVisible();await expect(detail).toContainText("Emma Johnson");await expect(detail).toContainText("Charlie");await expect(detail).toContainText("Grace Groomer");await expect(detail).toContainText("Full Groom");await expect(detail).toContainText("90 min");await expect(detail.getByText("Grace Groomer",{exact:true})).toHaveCount(1);await page.getByRole("button",{name:"Close appointment details"}).click();await expect(detail).toBeHidden();await expect(page.getByTestId("calendar")).toBeVisible();await expect(page.locator("#calendar-view-select")).toHaveValue("week");await expect(open).toBeFocused();
   await open.click();await page.keyboard.press("Escape");await expect(detail).toBeHidden();await expect(open).toBeFocused();
-  await open.click();await detail.getByRole("button",{name:"View client"}).click();await expect(page.getByTestId("client-profile-view")).toBeVisible();await page.locator(".client-profile-back").click();await expect(page.getByTestId("calendar")).toBeVisible();await expect(page.locator("#calendar-view-select")).toHaveValue("week");
+  // The surface carries the client's own summary column in its rail, so leaving for the full
+  // profile is that column's button rather than a second "View client" beside it. The stack is
+  // dismissed on the way out, and Back from the profile still lands on the calendar.
+  await open.click();await detail.locator(".context-actions").getByRole("button",{name:"Open full profile"}).click();await expect(page.getByTestId("client-profile-view")).toBeVisible();await expect(detail).toBeHidden();await page.locator(".client-profile-back").click();await expect(page.getByTestId("calendar")).toBeVisible();await expect(page.locator("#calendar-view-select")).toHaveValue("week");
 });
 
 test("@cross-browser @regression-calendar-time month view and applied groomer filter share calendar state",async({page,request,tenant})=>{

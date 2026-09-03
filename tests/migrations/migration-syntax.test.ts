@@ -341,5 +341,247 @@ describe("database migrations", () => {
       .toBeLessThan(retire.indexOf("drop column permissions"));
     expect(retire).toContain("alter table business_memberships drop column permissions");
     expect(retire).toContain("alter table membership_invitations drop column permissions");
+
+    // 0046 is the Coupon & Discount schema. What it must NOT do is as load-bearing as what it
+    // does, and each absence below is a decision a later migration could quietly reverse.
+    const discounts = await readMigration("0046_discounts_and_coupons.sql");
+    expect(discounts).toContain("create table discounts");
+    expect(discounts).toContain("create table coupons");
+    expect(discounts).toContain("create table coupon_redemptions");
+    expect(discounts).toContain("create table invoice_discounts");
+
+    // THE DEFAULT DESCRIBES TODAY. One `discount_minor` column is one discount, so any other
+    // default would be this migration silently widening what checkout permits for every existing
+    // salon. The stacking rule sits on `businesses` beside `currency` and `tax_rate_basis_points`,
+    // NOT on `locations`, because that is where money-shaped configuration already lives and
+    // because checkout already joins `businesses` for the tax rate.
+    expect(discounts).toContain("alter table businesses");
+    expect(discounts).toContain("add column discount_stacking_mode text not null default 'one_per_appointment'");
+    expect(discounts).toContain("check (discount_stacking_mode in ('one_per_appointment', 'amount_first', 'percentage_first'))");
+    expect(discounts).not.toContain("alter table locations");
+
+    // The composite foreign keys, which are the defence that actually holds: the `tenant_isolation`
+    // policies do not enforce anything while Pawsh connects as the table owner with no FORCE ROW
+    // LEVEL SECURITY (see 0033 and 0041), but a constraint applies to the owner too. Without these
+    // a redemption in one business could point at another business's coupon.
+    expect(discounts).toContain("foreign key (business_id, coupon_id) references coupons (business_id, id)");
+    expect(discounts).toContain("foreign key (business_id, invoice_id) references invoices (business_id, id)");
+    expect(discounts).toContain("foreign key (business_id, customer_id) references customers (business_id, id)");
+    expect(discounts).toContain("foreign key (business_id, discount_id) references discounts (business_id, id)");
+    expect((discounts.match(/unique \(business_id, id\)/g) ?? []).length).toBe(4);
+
+    // ONE INVOICE CONSUMES ONE COUPON ONCE. The checkout locks the coupon row before counting, so
+    // this is the structural backstop for the day that lock is lost or bypassed.
+    expect(discounts).toContain("unique (business_id, coupon_id, invoice_id)");
+
+    // THE TWO INDEX RULES, AND THEY ARE OPPOSITES. A discount name is released when the discount
+    // retires - only staff ever saw it - so its unique index is PARTIAL on `active`. A coupon code
+    // was printed and handed to a customer, so it stays claimed for the life of the business and
+    // its index is NOT partial: a redeemed code must never be re-issued meaning something else.
+    expect(discounts).toContain("create unique index discount_name_per_business on discounts (business_id, lower(btrim(name)))\n  where active");
+    expect(discounts).toContain("create unique index coupon_code_per_business on coupons (business_id, upper(btrim(code)));");
+    expect(discounts).not.toContain("create unique index coupon_code_per_business on coupons (business_id, upper(btrim(code)))\n  where active");
+
+    // Case-insensitive and business-scoped, both of them.
+    expect(discounts).toContain("upper(btrim(code))");
+    expect(discounts).toContain("lower(btrim(name))");
+
+    // The value pairing: exactly one of the two columns is set, and `kind` decides which. Without
+    // it a row could carry both and the fold would silently pick one.
+    expect(discounts).toContain("discount_value_matches_kind");
+    expect(discounts).toContain("coupon_value_matches_kind");
+
+    // `apply_scope` IS RECORDED FOR PERCENTAGES TOO. It changes no arithmetic there - 10% of a
+    // bill is 10% of that bill however many pets it covers - and there is deliberately no CHECK
+    // forbidding the combination, because that constraint would exist only to police a form.
+    expect(discounts).toContain("apply_scope text not null default 'per_appointment'");
+    expect(discounts).not.toContain("kind = 'percentage' and apply_scope");
+
+    // NO DENORMALIZED COUNTER. `redeemed_count` would be a second source of truth for a number
+    // `count(*)` over `coupon_redemptions` already answers, and keeping it honest would need the
+    // same row lock the cap check takes anyway.
+    // Matched as a COLUMN DECLARATION, not as the word: the header comment above says why the
+    // counter is absent, and an assertion that banned the word would ban explaining the decision.
+    expect(discounts).not.toMatch(/^\s*redeemed_count /m);
+    // NO HARD DELETE. `active = false` is what a delete means here, because `invoice_discounts`
+    // and `coupon_redemptions` reference these rows from historical invoices.
+    expect(discounts).not.toContain("on delete cascade");
+    expect(discounts).not.toContain("drop table");
+
+    // THE BACKFILL IS WHAT MAKES "the breakdown sums to discount_minor" A TOTAL INVARIANT rather
+    // than "total since 0046". It copies `discount_type` VERBATIM INCLUDING ITS NULLS - the client
+    // renders a plain "Discount" for a null snapshot, which is what it renders today - and it
+    // carries no status filter, because an invariant with an exception is not an invariant.
+    expect(discounts).toContain("insert into invoice_discounts");
+    expect(discounts).toContain("select business_id, id, 1, 'manual', discount_type, 'amount'");
+    expect(discounts).toContain("where discount_minor > 0");
+    expect(discounts).not.toContain("coalesce(discount_type,");
+    expect(discounts).not.toContain("and status <> 'void'");
+    // And it VERIFIES itself rather than trusting the insert: any invoice whose breakdown fails to
+    // sum to its `discount_minor` aborts the migration.
+    expect(discounts).toContain("raise exception");
+    expect(discounts).toContain("does not sum to discount_minor");
+
+    // RLS IS DECLARED IN 0046 ITSELF. 0034 shipped five tables without it and 0035 existed solely
+    // to repair that; the bulk loop in 0001 cannot cover a table that did not exist yet.
+    expect(discounts).toContain("create policy tenant_isolation on %I");
+    expect(discounts).toContain("enable row level security");
+    expect(discounts).toContain("'discounts', 'coupons', 'coupon_redemptions', 'invoice_discounts'");
+    expect(discounts).toContain("0046_discounts_and_coupons");
+
+    // 0047 promotes check-in and check-out from a client-side derivation over `audit_events` to
+    // stored columns. Every assertion below is a decision that a later migration could reverse
+    // without noticing what it was for.
+    const lifecycle = await readMigration("0047_appointment_lifecycle_times.sql");
+    expect(lifecycle).toContain("add column checked_in_at timestamptz");
+    expect(lifecycle).toContain("add column checked_out_at timestamptz");
+    // NULLABLE, NO DEFAULT. "Not checked in" is null, exactly as 0023 established for partial
+    // client records - not an invented instant, and not `now()`.
+    expect(lifecycle).toContain(
+      "add column checked_in_at timestamptz,\n  add column checked_out_at timestamptz;"
+    );
+
+    // THE CONSTRAINT ONLY HAS AN OPINION WHEN BOTH ARE PRESENT, because a visit in progress has
+    // a check-in and no check-out, and equality is admitted because a same-minute correction is
+    // a real entry.
+    expect(lifecycle).toContain("appointment_times_ordered");
+    expect(lifecycle).toContain(
+      "check (checked_out_at is null or checked_in_at is null or checked_out_at >= checked_in_at)"
+    );
+
+    // THE BACKFILL IS WHAT KEEPS THIS FROM BEING A VISIBLE REGRESSION. Without it every
+    // appointment that shows a duration today would go blank, with nothing to distinguish that
+    // from the data never having been recorded.
+    expect(lifecycle).toContain("update appointments a");
+    expect(lifecycle).toContain("select distinct on (resource_id) resource_id, business_id, created_at");
+    expect(lifecycle).toContain("where action = 'appointment.checked_in'");
+    expect(lifecycle).toContain("where action = 'appointment.completed'");
+    // SCOPED BY BUSINESS as well as by id. `audit_events.resource_id` is an untyped uuid with no
+    // foreign key, so this equality is the only thing keeping one salon's event off another
+    // salon's appointment.
+    expect((lifecycle.match(/event\.business_id = a\.business_id/g) ?? []).length).toBe(2);
+    // And it VERIFIES itself before the constraint is asked to, so a failure names the problem.
+    expect(lifecycle).toContain("raise exception");
+    expect(lifecycle).toContain("check-out before its check-in");
+
+    // A CANCELLATION IS NOT A CHECK-OUT. The client derivation treats `appointment.cancelled` and
+    // `appointment.no_show` as ends of a visit; a cancelled visit did not end, it never began, so
+    // neither action is read by the backfill and those rows stay "not recorded".
+    expect(lifecycle).not.toContain("'appointment.cancelled'");
+    expect(lifecycle).not.toContain("'appointment.no_show'");
+
+    // NO SECOND TRANSITION LOG. `audit_events` already is Pawsh's transition log and `record()`
+    // its only writer; a table here would be the two-sources-of-truth failure this schema keeps
+    // warning about. And `end_at` is the SCHEDULE - deriving it from these would retroactively
+    // widen the interval `employee_appointment_no_overlap` excludes on.
+    expect(lifecycle).not.toMatch(/create table/);
+    expect(lifecycle).not.toMatch(/set +end_at/);
+    // NO INDEX. Nothing filters or sorts on either column; the calendar projection reads them
+    // through `a.*` on rows already selected by `(business_id, start_at)`.
+    expect(lifecycle).not.toContain("create index");
+    expect(lifecycle).toContain("0047_appointment_lifecycle_times");
+
+    // 0048 is the client credit ledger. Every assertion below is a decision whose reversal would
+    // be silent: the schema would still apply, the routes would still compile, and money would be
+    // wrong.
+    const credit = await readMigration("0048_client_credit.sql");
+
+    // THE BALANCE IS A SUM AND NOTHING ELSE. A stored counter on `customers` is the second source
+    // of truth 0046 already refused for `coupons.redeemed_count`, and it is refused again here.
+    expect(credit).not.toMatch(/alter table customers/);
+    // The name appears in the header only, as the thing being refused - never as a column.
+    expect(credit).not.toMatch(/credit_minor\s+(integer|bigint|numeric)/);
+
+    // SIGNED, WHICH DIVERGES FROM THE NON-NEGATIVE CONVENTION EVERY OTHER MONEY COLUMN FOLLOWS.
+    // The divergence is what buys the property: `sum(amount_minor)` IS the balance. Two
+    // non-negative columns would make the balance a subtraction of two sums that no constraint
+    // could relate to each other. A later migration "correcting" this to `>= 0` would silently
+    // make every redemption add to the balance it was meant to spend.
+    expect(credit).toContain("amount_minor integer not null check (amount_minor <> 0)");
+    expect(credit).not.toContain("amount_minor integer not null check (amount_minor >= 0)");
+
+    // The sign is tied to the kind, in the shape of 0046's `discount_value_matches_kind`, so a
+    // redemption that ADDS credit is not representable at all.
+    expect(credit).toContain("credit_entry_sign_matches_kind");
+    expect(credit).toContain("(kind = 'grant' and amount_minor > 0)");
+    expect(credit).toContain("or (kind = 'redemption' and amount_minor < 0)");
+    expect(credit).toContain("or (kind = 'redemption_reversal' and amount_minor > 0)");
+    // `adjustment` is the ONE kind admitting both signs, which is the whole reason it is a kind
+    // separate from `grant`.
+    expect(credit).toContain("or (kind = 'adjustment' and amount_minor <> 0)");
+
+    // Which reference is set is decided by the kind, the `invoice_discount_source_reference` shape.
+    expect(credit).toContain("credit_entry_source_reference");
+    expect(credit).toContain("foreign key (business_id, payment_id) references payments (business_id, id)");
+    expect(credit).toContain("foreign key (business_id, customer_id) references customers (business_id, id)");
+    expect(credit).toContain("unique (business_id, id)");
+
+    // A REASON IS REQUIRED FOR BOTH STAFF KINDS. The deduction is the case that earns it: taking
+    // credit off an account is more contestable than giving it, and this row is where a dispute
+    // lands. A later migration relaxing this to grants only would remove the record from exactly
+    // the entry that needs one.
+    expect(credit).toContain("credit_entry_reason_required");
+    expect(credit).toContain("(kind in ('grant', 'adjustment')");
+
+    // IMMUTABLE, following `pet_document_scan_attempts_immutable` in 0009. Update AND delete: a
+    // ledger whose rows can be edited is a table with extra steps, and the balance is the sum of
+    // what happened.
+    expect(credit).toContain("before update or delete on customer_credit_entries");
+    expect(credit).toContain("customer credit entries are immutable");
+
+    // The two structural backstops, both keyed on `payment_id`. One payment produces at most one
+    // redemption and at most one reversal, which is what stops a retried void crediting a balance
+    // twice.
+    expect(credit).toContain(
+      "create unique index customer_credit_redemption_per_payment\n"
+      + "  on customer_credit_entries (business_id, payment_id) where kind = 'redemption';"
+    );
+    expect(credit).toContain(
+      "create unique index customer_credit_reversal_per_payment\n"
+      + "  on customer_credit_entries (business_id, payment_id) where kind = 'redemption_reversal';"
+    );
+
+    // AND THE HEADER SAYS SO HONESTLY. Neither index prevents overdraft, because no index can
+    // enforce an aggregate - so 0046's "this is what holds if that lock is ever lost" sentence is
+    // NOT repeated here. The lock is the only guarantee, and the migration says that rather than
+    // implying a backstop that does not exist. This assertion exists so nobody later pastes the
+    // reassuring sentence in.
+    expect(credit).toContain("NEITHER INDEX PREVENTS OVERDRAFT, AND NO INDEX CAN");
+    expect(credit).not.toContain("This is what holds if that lock is ever lost");
+
+    // `client_credit` IS ITS OWN SETTLEMENT TYPE AND NOT A KIND OF `other`, so it gets its own row
+    // in the payment-method report and its own reversal rule.
+    expect(credit).toContain(
+      "check (method in ('cash', 'external_card', 'check', 'other', 'client_credit'))"
+    );
+    // ...and `payment_methods.settlement_type` from 0034 is deliberately NOT widened, so a salon
+    // cannot configure a method that settles from a balance without debiting the ledger.
+    expect(credit).not.toMatch(/alter table payment_methods/);
+
+    // EASY TO MISS AND IT FAILS AT RUNTIME, NOT AT BUILD. `claimFinancialRequest` inserts the
+    // operation as text, so an un-widened check surfaces as a 500 on the first grant.
+    expect(credit).toContain("financial_idempotency_requests_operation_check");
+    expect(credit).toContain("'credit.adjust'");
+    // The four that already existed are still admitted; the widening is additive.
+    for (const operation of [
+      "'checkout.create-invoice'", "'payment.record'", "'payment.void'", "'payment.refund'"
+    ]) {
+      expect(credit, operation).toContain(operation);
+    }
+
+    // RLS declared here, for the reason 0046 restated: the bulk loop in 0001 cannot cover a table
+    // that did not exist yet.
+    expect(credit).toContain("alter table customer_credit_entries enable row level security");
+    expect(credit).toContain("create policy tenant_isolation on customer_credit_entries");
+
+    // NO GIFT CARDS. They need `invoices.appointment_id` to become nullable, which is a change to
+    // the core financial model and an explicit non-goal. Nothing here touches it.
+    // Both names appear in the header, as the things being deferred. Neither appears as DDL.
+    expect(credit).not.toMatch(/alter table invoices/);
+    expect(credit).not.toMatch(/create table gift/i);
+    // NO EXPIRY. Expiring credit is taking money back on a timer, and nobody decided that.
+    expect(credit).not.toMatch(/expires_at\s+(timestamptz|date)/);
+
+    expect(credit).toContain("0048_client_credit");
   });
 });

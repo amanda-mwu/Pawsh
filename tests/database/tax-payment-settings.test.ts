@@ -720,8 +720,32 @@ describeDatabase("tax and payment settings", () => {
     // configured" from "these are the presets".
     expect(options.tipPercents).toBeNull();
 
-    // Nothing about tax, fees, terminals, providers or disabled methods rides along.
-    expect(Object.keys(options).sort()).toEqual(["paymentMethods", "tipPercents"]);
+    // This cashier holds `checkout.perform` and `payments.view` and NOT `discounts.apply`, so the
+    // configured discounts are withheld - as null, which is not the empty array a salon with none
+    // would get. The stacking rule is not withheld: it is a policy enum, not configuration.
+    expect(options.discounts).toBeNull();
+    expect(options.stackingMode).toBe("one_per_appointment");
+
+    // NULL, because this request named no client. `creditAvailableMinor` answers "what has THIS
+    // customer got on account", so a request that mentions nobody has no answer to give - and
+    // null rather than zero, because a client with an empty balance is a different thing from a
+    // question that was never asked.
+    expect(options.creditAvailableMinor).toBeNull();
+
+    // Nothing about tax, fees, terminals, providers or disabled methods rides along. Exhaustive
+    // on purpose: a field added to this endpoint has to be argued for here before it ships.
+    //
+    // `creditAvailableMinor` IS THE ARGUMENT FOR ONE ADDITION, and it is a deliberate narrow
+    // exposure rather than an oversight. Applying existing credit at checkout needs only
+    // `checkout.perform` - the same rule that lets this cashier redeem a coupon they cannot
+    // create - so an operator who may spend a balance has to be told what the balance is or they
+    // cannot spend it. It is ONE figure, about the client at the till. Everything else in the
+    // ledger - who granted it, when, why, what it was spent on - stays behind `payments.view` on
+    // the customer routes, and this cashier reaches none of it here.
+    expect(Object.keys(options).sort())
+      .toEqual([
+        "creditAvailableMinor", "discounts", "paymentMethods", "stackingMode", "tipPercents"
+      ]);
     const serialized = response.body;
     for (const leaked of ["taxRate", "currency", "fees", "terminals", "provider", "locationLabel",
       "builtIn", "enabled", "sortOrder", "cardProcessing", "processorLabel"]) {

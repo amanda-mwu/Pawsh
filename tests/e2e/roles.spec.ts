@@ -15,6 +15,18 @@ import type { APIRequestContext, Page } from "@playwright/test";
  * The owner still holds no role: ownership is `is_owner`, not a permission set. Specs that need a
  * role of their own create one under a name the three do not already take.
  *
+ * IF A PERMISSION-COUNT ASSERTION IN THIS FILE PASSES WHEN YOU EXPECTED IT TO FAIL, RESTART THE
+ * SERVER BEFORE BELIEVING IT. The catalog these counts come from is built from `@pawsh/domain`,
+ * which resolves to `packages/domain/dist` — a build artifact. `npm run db:migrate` does not
+ * rebuild it and neither does starting the server; only `pretypecheck` and `pretest` do. So a
+ * server left running across a change to `packages/domain/src` goes on serving the OLD catalog
+ * indefinitely, and an e2e run against it validates a build nobody is shipping.
+ *
+ * This is not hypothetical: `customers.credit_edit` graduating out of `unenforcedPermissions`
+ * should have moved the two figures below from 24/54 to 25/53, and against a stale server the
+ * outdated assertion passed. A passing count is only evidence once the server has been restarted
+ * since the last change to `packages/domain`.
+ *
  * A built-in role is a Pawsh system template. Its identity is fixed — rename and delete are
  * refused, with codes — but it is NOT permanently on: switching it off is the supported way to
  * retire one, and re-enabling restores the same canonical role.
@@ -414,8 +426,16 @@ test("hiding what Pawsh has not built names the groups that went, and keeps thei
   await expect(hide).not.toBeChecked();   // off on arrival, always
   await hide.check();
 
-  await expect(page.getByTestId("role-filter-count")).toContainText("23 of 78 permissions");
-  await expect(page.getByTestId("role-filter-count")).toContainText("55 not built yet, hidden");
+  // 53, not 55. Two keys have graduated out of `unenforcedPermissions` since the taxonomy landed,
+  // and each one moves BOTH figures by one in opposite directions: `settings.discounts` the day
+  // Settings -> Coupons & discounts became a real route family, and `customers.credit_edit` the
+  // day client credit became a real ledger and that key alone started gating the creation of money
+  // the salon owes. The total of 78 never moves - nothing was added, a switch changed sides.
+  //
+  // These two figures are read from a BUILD of `packages/domain`. If they pass when you expected
+  // them to fail, restart the server first - see the note at the top of this file.
+  await expect(page.getByTestId("role-filter-count")).toContainText("25 of 78 permissions");
+  await expect(page.getByTestId("role-filter-count")).toContainText("53 not built yet, hidden");
   // The wholly unbuilt groups are gone from the sheet - and named underneath it.
   await expect(group(page,"cash-drawer")).toHaveCount(0);
   const note=page.getByTestId("role-hidden-note");

@@ -67,6 +67,12 @@ function settleUnauthenticated() {
   // through the capture dialog's own guard: this is teardown, and there is nobody to ask.
   stopTerminalCapturePoll();
   $$("dialog").forEach((dialog) => { if (dialog.open) dialog.close(); });
+  // The appointment stack's bookkeeping goes with its dialogs. Closing them directly leaves the
+  // levels behind, and the next sign-in would find a stack claiming to be open over an empty
+  // screen - and the first Escape would try to pop a level whose dialog is already shut.
+  appointmentStack.levels.length=0;
+  clientSummaryRail=null;
+  receiptHost=null;
   if (sessionEnded) resetAuthForm();
 }
 
@@ -698,8 +704,6 @@ async function loadCalendarWeek(start=state.calendar.weekStart){
 async function openCalendarView(){await loadCalendarWeek();if(!state.calendar.opened&&!state.appointments.length&&state.calendar.selectedGroomerIds===null){const upcoming=await api(`/api/appointments?localDate=${businessDate()}&days=31`);if(upcoming.length){const date=appointmentLocalValue(upcoming[0]).slice(0,10);state.calendar.opened=true;return selectCalendarDate(date);}}state.calendar.opened=true;}
 async function loadCalendarMonth(month=state.calendar.month){const start=weekStart(`${month}-01`),appointments=await loadAppointmentRange(start,42);state.calendar.monthAppointments=appointments;return appointments;}
 async function selectCalendarDate(date){const changedMonth=state.calendar.month!==date.slice(0,7);state.calendar.selectedDate=date;state.calendar.weekStart=weekStart(date);state.calendar.month=date.slice(0,7);if(changedMonth)await loadCalendarMonth(state.calendar.month,false);await loadCalendarWeek();}
-async function openCalendarAppointmentLegacy(id){const item=state.appointments.find(appointment=>appointment.id===id);if(!item)return;try{const data=await api(`/api/customers/${item.customerId}/history`),pet=data.pets.find(candidate=>candidate.id===item.petId),groomers=(item.groomers||[]).map(groomer=>groomer.displayName).join(", ")||item.employeeName,services=item.services.map(service=>service.name).join(", ");openModal(`${clientName(data.customer)}`,`<div class="wide calendar-customer-context"><section><p class="eyebrow">Customer</p><h3>${escape(clientName(data.customer))}</h3><p>${escape(data.customer.phone||"No phone")} · ${escape(data.customer.email||"No email")}</p></section><section><p class="eyebrow">Pet</p><h4>${escape(petName({petName:item.petName}))}</h4><p>${escape(pet?.breed||"Breed not provided")}${pet?.weightOunces?` · ${Number(pet.weightOunces)/16} lb`:""}</p>${pet?.safetyAlerts?`<p><strong>Safety:</strong> ${escape(pet.safetyAlerts)}</p>`:""}</section><section><p class="eyebrow">Appointment</p><h4>${new Intl.DateTimeFormat([],{dateStyle:"full",timeStyle:"short",timeZone:item.schedulingTimezone||schedulingZone()}).format(new Date(item.startAt))}</h4><p>${escape(groomers)}</p><p>${escape(services)}</p>${safetyContext(item)}<span class="appointment-status">${escape(item.status.replace("_"," "))}</span></section><div class="customer-context-actions"><button type="button" class="secondary compact context-full-profile">View full customer profile</button>${item.status==="scheduled"&&allowed("appointments.edit")?`<button type="button" class="secondary compact calendar-move-detail">Move</button><button type="button" class="primary compact context-edit-appointment">Edit appointment</button>`:""}</div></div>`,null,{cancelLabel:"Close"});const next=callback=>{$("#modal").close();setTimeout(callback,50);};$(".context-full-profile")?.addEventListener("click",()=>next(()=>showCustomerDetail(item.customerId)));$(".calendar-move-detail")?.addEventListener("click",()=>next(()=>moveAppointment(id)));$(".context-edit-appointment")?.addEventListener("click",()=>next(()=>adjustServices(id)));}catch(error){toast(error.message);}}
-void openCalendarAppointmentLegacy;
 function adjustServices(id) {
   const appointment=state.appointments.find(item=>item.id===id);
   openModal("Adjust appointment services",safetyContext(appointment)+bookingServiceCheckboxes(appointment.services.map(service=>service.serviceId)),form=>api(`/api/appointments/${id}/services`,{method:"PUT",body:JSON.stringify({serviceIds:form.getAll("serviceIds"),version:appointment.version})}));
@@ -754,168 +758,717 @@ async function advanceAppointment(id, status, actionButton) {
   });
 }
 /**
- * The payment method list is the salon's, not a fixed four.
+ * Check Out - level 2 of the appointment stack.
  *
- * `payments.method` is still the closed set of settlement types the ledger can tell apart, so the
- * select offers the methods staff actually configured and the chosen one is mapped back to its
- * settlement type on the way out. The tip presets write a dollar amount into the tip field rather
- * than replacing it: a preset is a shortcut, and staff must still be able to type any amount.
+ * A RE-LAY-OUT, NOT A REWRITE. The picker, the one-per-appointment rule, the running total, the
+ * tip presets, the terminal withdrawal, the idempotency keys and the INVOICE_ALREADY_EXISTS
+ * sentence are the same code the shared dialog ran; they take a host now instead of assuming
+ * `#modal-fields`.
+ *
+ * THE MODAL IS GONE RATHER THAN KEPT ALONGSIDE. Two entry points creating one invoice would be
+ * two validation surfaces and two ways past `runOnce("checkout:<id>")`, and the note on
+ * advanceAppointment() already explains what a second concurrent render of this screen costs.
+ *
+ * Reached from the calendar it is the only level open, so closing returns to the calendar; reached
+ * from the appointment detail it is level 2 and closing returns to the detail. The stack handles
+ * both without a branch here.
+ *
+ * The payment method list is the salon's, not a fixed four. `payments.method` is still the closed
+ * set of settlement types the ledger can tell apart, so the radios offer the methods staff
+ * actually configured and the chosen one is mapped back to its settlement type on the way out.
  */
+
+// What this screen is for right now. `build` has no invoice yet, so discounts and the tip are
+// live; `collect` has one, so they are frozen and only the payment moves; `settled` owes nothing.
+function checkoutMode(co){
+  if(!co.receipt)return "build";
+  return Number(co.receipt.invoice.balanceMinor)>0?"collect":"settled";
+}
+
+/**
+ * What the bill will come to, as the browser can compute it before the invoice exists.
+ *
+ * MIRRORS calculateInvoice() AND NOTHING ELSE: taxable subtotal, then one rounding step at
+ * `round(taxable * rate / 10000)`, then plus the tip. The same deliberate mirror `foldDiscounts`
+ * already is, and for the same reason - the operator has to see what they are about to charge
+ * before they charge it. It is an ESTIMATE: the server recomputes every figure from the
+ * appointment's own snapshots and its answer is the one the invoice carries.
+ *
+ * A COUPON IS NOT IN IT. What a coupon takes off is resolved against the coupon row at checkout
+ * and may be refused outright, so the browser does not know the figure and does not invent one.
+ */
+function checkoutEstimate(host,base,tipMinor){
+  if(base===null)return null;
+  const fold=foldDiscounts(base,checkoutDiscountLines(host),checkoutStackingMode());
+  const rate=Number(state.me?.business?.taxRateBasisPoints)||0;
+  const taxMinor=Math.round(fold.total*rate/10000);
+  return {subtotalMinor:fold.subtotal,discountMinor:fold.discountMinor,taxableMinor:fold.total,
+    taxMinor,tipMinor,totalMinor:fold.total+taxMinor+tipMinor};
+}
+
+// Checked in, checked out and duration. The stored columns are the record; the audit trail is the
+// fallback for a visit that predates them, which is why the derivation note is only said when a
+// shown value actually came from the feed.
+function appointmentLifecycleValues(item,activity){
+  const derived=appointmentLifecycleTimes(activity?.items||[]);
+  const checkedIn=item?.checkedInAt||derived.checkedIn;
+  const finished=item?.checkedOutAt||derived.finished;
+  const minutes=checkedIn&&finished
+    ? Math.max(0,Math.round((new Date(finished)-new Date(checkedIn))/60000))
+    : null;
+  const stored=Boolean(item?.checkedInAt&&item?.checkedOutAt);
+  return {checkedIn,finished,minutes,stored};
+}
+
+// A .print-root appended to <body>, which the print stylesheet is the only thing that shows -
+// the one printing mechanism the product has.
+function printReceipt(receipt){
+  const root=document.createElement("section");
+  root.className="print-root";
+  root.innerHTML=`<h1>Receipt #${escape(receipt.invoice.invoiceNumber)}</h1>${receiptBodyMarkup(receipt)}`;
+  document.body.append(root);
+  globalThis.print();
+  setTimeout(()=>root.remove(),1000);
+}
+
+function checkoutDisclosureMarkup(id,label,body,open){
+  return `<details class="checkout-disclosure" data-checkout-disclosure="${id}"${open?" open":""}>`
+    +`<summary><span>${escape(label)}</span><strong data-disclosure-value=""></strong></summary>`
+    +`<div class="checkout-disclosure-body">${body}</div></details>`;
+}
+
+function checkoutBillMarkup(co){
+  const {appointment:item,receipt}=co;
+  const model=appointmentPresentation(item);
+  const {checkedIn,finished,minutes,stored}=appointmentLifecycleValues(item,null);
+  const invoice=receipt?.invoice||null;
+  const frozen=Boolean(invoice);
+
+  const services=model.serviceSnapshots.map(service=>
+    `<div class="appointment-service-row" data-testid="checkout-service-row">`
+      +`<span><strong>${escape(service.name)}</strong><small>${Number(service.durationMinutes)} min</small></span>`
+      +`<strong>${service.priceMinor===null||service.priceMinor===undefined?"Price unavailable":money(service.priceMinor)}</strong>`
+    +`</div>`).join("");
+
+  // Absent, not disabled. `PUT /api/appointments/:id/services` refuses any status past in-service
+  // and refuses outright once an invoice exists, so an edit affordance here could never do
+  // anything but produce a refusal.
+  const grants=checkoutGrantsDiscount();
+  const options=checkoutDiscountOptions();
+  const picker=options===null?""
+    :options.length
+      ?`<fieldset class="checkout-discounts" data-testid="checkout-discounts"><legend>Discounts</legend>`
+        +options.map(option=>`<label class="checkout-discount">`
+          +`<input type="checkbox" name="appliedDiscountId" value="${escapeAttr(option.id)}"`
+          +` data-checkout-discount="${escapeAttr(option.id)}" data-testid="checkout-discount">`
+          +`<span><strong>${escape(option.name)}</strong><small>${escape(discountValueText(option))}`
+          // A percentage's apply scope changes no arithmetic, so it is not read back here either.
+          +(option.kind==="percentage"?"":` · ${escape(discountApplyScopeLabel(option.applyScope))}`)
+          +`</small></span></label>`).join("")
+        +`</fieldset>`
+      // `[]` IS AN EMPTY STATE, not an absent one: this operator may apply a discount and the
+      // salon has configured none, which is worth saying to somebody who expected one.
+      : `<p class="wide fine" data-testid="checkout-discount-empty">No discount is set up in Settings &rarr; Coupons &amp; discounts.</p>`;
+  const oneOnly=picker&&checkoutStackingMode()==="one_per_appointment"
+    ? `<p class="wide fine" data-testid="checkout-one-only">This salon applies one coupon or discount per appointment.</p>`
+    : "";
+
+  const money_=frozen
+    // Every figure the server actually charged, from the invoice it wrote. Nothing is re-derived
+    // once there is an authoritative answer.
+    ? `<div class="checkout-line"><span>Subtotal</span><strong data-testid="checkout-subtotal">${money(invoice.subtotalMinor)}</strong></div>`
+      +(invoice.discountMinor?`<div class="checkout-line"><span>Discount</span><strong>-${money(invoice.discountMinor)}</strong></div>`:"")
+      +`<div class="checkout-line"><span>Tax</span><strong data-testid="checkout-tax">${money(invoice.taxMinor)}</strong></div>`
+      +(invoice.tipMinor?`<div class="checkout-line"><span>Tip</span><strong>${money(invoice.tipMinor)}</strong></div>`:"")
+      +`<div class="checkout-line is-total"><span>Total</span><strong>${money(invoice.totalMinor)}</strong></div>`
+    : `<div class="checkout-line"><span>Subtotal</span><strong data-testid="checkout-subtotal">…</strong></div>`
+      +`<div class="checkout-line" data-checkout-discount-line hidden><span>Discount</span><strong data-testid="checkout-discount-line">…</strong></div>`
+      +`<div class="checkout-line"><span>Tax</span><strong data-testid="checkout-tax">…</strong></div>`
+      +`<div class="checkout-line is-total"><span>Total</span><strong data-testid="checkout-total">…</strong></div>`;
+
+  const disclosures=frozen
+    // The invoice fixed all of this. Showing live editors over frozen figures would invite an
+    // edit whose only possible outcome is a fingerprint mismatch on a second checkout write.
+    ? `<p class="fine" data-testid="checkout-frozen">Invoice ${escape(invoice.invoiceNumber)} is already raised, so the services, discounts and tip are fixed. Only the payment is still open.</p>`
+    : (grants?checkoutDisclosureMarkup("discount","+ Set discount",
+        field("discount","Amount ($)","number",'min="0" step=".01" value="0"'),false):"")
+      +checkoutDisclosureMarkup("coupon","+ Apply coupon or discount",
+        picker+oneOnly
+        +field("couponCode","Coupon code","text",
+          'maxlength="40" autocomplete="off" spellcheck="false" autocapitalize="characters" class="coupon-code-input" placeholder="Optional"')
+        // Filled as selections are made: with compounding the arithmetic is not obvious, and this
+        // is where the operator can see what the customer will be charged before committing.
+        +`<p class="wide checkout-running-total" role="status" aria-live="polite" data-testid="checkout-discount-total"></p>`,
+        false)
+      +checkoutDisclosureMarkup("tip","+ Add tip",checkoutTipFieldsMarkup(co),false);
+
+  const lifecycle=`<div class="appointment-lifecycle" data-testid="checkout-lifecycle">`
+    +`<span data-testid="lifecycle-in">Checked in: <strong${checkedIn?"":` class="is-unrecorded"`}>${escape(checkedIn?activityStamp(checkedIn):"not recorded")}</strong></span>`
+    +`<span data-testid="lifecycle-out">Checked out: <strong${finished?"":` class="is-unrecorded"`}>${escape(finished?activityStamp(finished):"not recorded")}</strong></span>`
+    +`<span data-testid="lifecycle-duration">Duration: <strong${minutes===null?` class="is-unrecorded"`:""}>${escape(lifecycleDurationLabel(minutes))}</strong></span>`
+    +(stored?"":`<span class="fine lifecycle-note" data-testid="lifecycle-note">Times are read from the appointment's recorded activity.</span>`)
+    +`</div>`;
+
+  // The note the groomer left, beside the money it is being charged for. READ-ONLY: the only
+  // endpoint that writes it, PATCH /api/appointments/:id/operations, accepts `checked_in` and
+  // `in_service` only, and checkout is always entered at `completed` - so an editor here would be
+  // a textarea whose save the server answers with 404.
+  const note=item.operationalNotes
+    ? `<div class="checkout-block"><h3>Service note</h3><p data-testid="checkout-service-note">${escape(item.operationalNotes)}</p></div>`
+    : "";
+
+  return `<div class="checkout-bill">`
+    +`<div class="checkout-block"><h3>Client</h3>`
+      +`<p><strong>${escape(model.customerName)}</strong></p>`
+      +`<p>${escape(petName({petName:model.petName}))}${model.breed?` · ${escape(model.breed)}`:""}</p>`
+      +`<p class="fine">${escape(model.dateLabel)} · ${escape(model.timeRange)} · ${escape(model.groomer)}</p></div>`
+    +lifecycle
+    +`<div class="checkout-block"><h3>Services</h3>${services}${money_}</div>`
+    +(disclosures?`<div class="checkout-adjustments">${disclosures}</div>`:"")
+    +note
+  +`</div>`;
+}
+
+function checkoutTipFieldsMarkup(co){
+  const presets=checkoutTipPercents();
+  const row=presets.length
+    ? `<div class="wide taxpay-tips" role="group" aria-label="Tip presets">`
+      +presets.map(percent=>`<button type="button" class="secondary compact taxpay-tip-preset" data-taxpay-tip="${percent}" aria-pressed="false"${co.base===null?` disabled aria-disabled="true" title="${escapeAttr(TAXPAY_TIP_BASE_MISSING)}"`:""}>${percent}%</button>`).join("")
+      +`<button type="button" class="secondary compact taxpay-tip-preset" data-taxpay-tip="none" aria-pressed="true">None</button></div>`
+    : "";
+  return row+field("tip","Tip ($)","number",'min="0" step=".01" value="0"');
+}
+
+function checkoutMethodMarkup(co){
+  const methodOptions=co.choices.map(choice=>[choice.value,choice.label]);
+  // A card terminal is a capture route rather than a settlement type: it is offered beside the
+  // salon's methods because that is the one decision the operator is making, and choosing it hands
+  // the tip to hardware that asks the customer directly.
+  if(co.terminals.length)methodOptions.push([CHECKOUT_TERMINAL_METHOD,"Card terminal"]);
+  if(!methodOptions.length){
+    return `<label class="wide">Method<select data-testid="field-method" name="method"><option value="" disabled selected>No payment method is enabled</option></select></label>`;
+  }
+  // Two to six read faster as chips at a counter than as a menu that has to be opened to be read.
+  // Past that the chips stop being scannable and the select is the better control.
+  if(methodOptions.length>6){
+    return select("method","Method",methodOptions,true,methodOptions[0][0]);
+  }
+  const single=co.terminals.length===1?co.terminals[0]:null;
+  return `<fieldset class="checkout-methods" data-testid="field-method"><legend>Method</legend>`
+    +methodOptions.map(([value,label],index)=>`<label class="checkout-method">`
+      +`<input type="radio" name="method" value="${escapeAttr(value)}" data-testid="checkout-method"${index===0?" checked":""}>`
+      +`<span>${escape(label)}`
+      // One paired terminal is not a decision, so it is named rather than offered as a choice.
+      +(single&&value===CHECKOUT_TERMINAL_METHOD?`<small data-testid="checkout-terminal-name">${escape(single.label)}</small>`:"")
+      +`</span></label>`).join("")
+    +`</fieldset>`;
+}
+
+function checkoutMoneyMarkup(co){
+  if(checkoutMode(co)==="settled"){
+    return `<div class="checkout-money checkout-settled">${receiptBodyMarkup(co.receipt)}</div>`;
+  }
+  // Only when there is a choice to make.
+  const device=co.terminals.length>1
+    ? `<label class="wide" data-checkout-device>Terminal<select data-testid="field-device" name="deviceId">`
+      +co.terminals.map(entry=>`<option value="${escapeAttr(entry.id)}">${escape(entry.label)}</option>`).join("")
+      +`</select></label>`
+    : "";
+  return `<div class="checkout-money">`
+    +`<label class="checkout-pay" data-checkout-pay>Pay`
+      +`<input data-testid="field-pay" name="pay" type="number" inputmode="decimal" step="0.01" min="0" required>`
+    +`</label>`
+    // Hidden until the amount actually exceeds the balance, and then labelled with the figure.
+    // A permanently visible checkbox that is inert almost every time is furniture.
+    +`<label class="checkout-remainder" data-testid="checkout-remainder" hidden>`
+      +`<input type="checkbox" name="remainderToTip" data-testid="checkout-remainder-toggle">`
+      +`<span data-remainder-label>Apply the remainder to tip</span>`
+    +`</label>`
+    +`<p class="fine" data-testid="checkout-coupon-pay-note" hidden>A coupon is priced when you check out, so this takes the full balance.</p>`
+    +checkoutMethodMarkup(co)
+    +device
+  +`</div>`;
+}
+
+function checkoutSurfaceMarkup(co){
+  const mode=checkoutMode(co);
+  const reference=String(co.appointment.id).slice(0,8);
+  const receipt=co.receipt;
+  const foot=`<footer class="surface-foot">`
+    +`<p class="checkout-balance" role="status" aria-live="polite" data-testid="checkout-balance"></p>`
+    +`<div class="surface-foot-actions">`
+      +(receipt?`<button type="button" class="secondary compact" data-testid="checkout-print-receipt">Print Receipt</button>`:"")
+      +(mode==="settled"
+        // Never "Take payment" on a zero balance. Returning to a screen still offering it is a
+        // route to a double charge, whatever the reference does.
+        ? `<button type="button" class="primary compact" data-testid="checkout-done">Done</button>`
+        : `<button type="button" class="primary compact" data-testid="checkout-submit">Take payment</button>`)
+    +`</div></footer>`;
+  return `<div class="surface-shell" data-testid="checkout">`
+    +`<header class="surface-head"><div class="surface-head-text">`
+      +`<p class="appointment-reference" data-testid="checkout-reference">Check Out · #${escape(reference)}</p>`
+      +`<h2 id="appointment-checkout-title">${escape(clientName(co.appointment))}</h2>`
+      +`<p class="surface-subhead">${escape(appointmentPresentation(co.appointment).dateLabel)}</p>`
+    +`</div>`
+    +`<button type="button" class="surface-close" data-surface-close aria-label="Close check out">&#215;</button></header>`
+    +`<div class="surface-body checkout-body">${checkoutBillMarkup(co)}${checkoutMoneyMarkup(co)}</div>`
+    +`<p class="error" id="checkout-error" role="alert" data-testid="checkout-error"></p>`
+    +foot
+  +`</div>`;
+}
+
 async function checkout(id) {
   await ensureCheckoutPaymentOptions();
   await ensureCheckoutTerminal();
-  const appointment=calendarAppointmentById(id);
-  const choices=checkoutMethodChoices();
-  const terminals=checkoutTerminal.data?.available?checkoutTerminal.data.devices:[];
-  const subtotal=Number(appointment?.servicesSubtotalMinor);
-  // Never guessed. Without the server's figure a percentage would be an invented one, so the
-  // presets stand down and say why instead.
-  const base=Number.isFinite(subtotal)&&subtotal>=0?subtotal:null;
-  const presets=checkoutTipPercents();
-  // A card terminal is a capture route rather than a settlement type: it is offered beside the
-  // salon's methods because that is the one decision the operator is making, and choosing it
-  // hands the tip to hardware that asks the customer directly.
-  const methodOptions=choices.map(choice=>[choice.value,choice.label]);
-  if(terminals.length)methodOptions.push([CHECKOUT_TERMINAL_METHOD,"Card terminal"]);
-  const methodField=methodOptions.length
-    ?select("method","Payment method",methodOptions,true)
-    :`<label class="wide">Payment method<select data-testid="field-method" name="method"><option value="" disabled selected>No payment method is enabled</option></select></label>`;
-  // Only when there is a choice to make. One paired terminal is not a decision.
-  const deviceField=terminals.length>1
-    ?`<label class="wide" data-checkout-device>Terminal<select data-testid="field-device" name="deviceId">`
-      +terminals.map(device=>`<option value="${device.id}">${escape(device.label)}</option>`).join("")
-      +`</select></label>`
-    :"";
-  const tipPresets=presets.length
-    ?`<div class="wide taxpay-tips" role="group" aria-label="Tip presets">`
-      +presets.map(percent=>`<button type="button" class="secondary compact taxpay-tip-preset" data-taxpay-tip="${percent}" aria-pressed="false"${base===null?` disabled aria-disabled="true" title="${escape(TAXPAY_TIP_BASE_MISSING)}"`:""}>${percent}%</button>`).join("")
-      +`<button type="button" class="secondary compact taxpay-tip-preset" data-taxpay-tip="none" aria-pressed="true">None</button></div>`
-    :"";
-  openModal("Complete checkout",
-    field("discount","Discount ($)","number",'min="0" step=".01" value="0"')+
-    tipPresets+
-    field("tip","Tip ($)","number",'min="0" step=".01" value="0"')+
-    methodField+deviceField,
-    async (form) => {
-      const values=Object.fromEntries(form);
-      const onTerminal=String(values.method)===CHECKOUT_TERMINAL_METHOD;
-      const choice=onTerminal?null:choices.find(item=>String(item.value)===String(values.method));
-      if(!onTerminal&&!choice)throw new Error(methodOptions.length
+  let appointment=calendarAppointmentById(id);
+  if(!appointment){try{appointment=await api(`/api/appointments/${id}`);}catch(error){toast(error.message);return;}}
+  if(!appointment)return;
+
+  const dialog=$("#appointment-checkout");
+  const source=document.activeElement;
+  const co={
+    appointment,receipt:null,awaitingReceipt:null,
+    choices:checkoutMethodChoices(),
+    terminals:checkoutTerminal.data?.available?checkoutTerminal.data.devices:[],
+    // Never guessed. Without the server's figure a percentage would be an invented one, so the
+    // presets stand down and say why instead.
+    base:null
+  };
+  const readBase=()=>{
+    const subtotal=Number(co.appointment.servicesSubtotalMinor);
+    co.base=Number.isFinite(subtotal)&&subtotal>=0?subtotal:null;
+  };
+  readBase();
+
+  // True when the receipt on screen is the current one. A read that FAILED leaves whatever was
+  // last known in place rather than reverting the screen to "no invoice", which would offer to
+  // raise a second one.
+  const loadReceipt=async()=>{
+    const invoiceId=co.appointment.invoiceId;
+    if(!invoiceId){co.receipt=null;return true;}
+    try{co.receipt=await api(`/api/invoices/${invoiceId}/receipt`);return true;}
+    catch{return false;}
+  };
+  if(!await loadReceipt()){toast("The invoice for this appointment could not be read.");return;}
+
+  const level={
+    id:"appointment-checkout",dialog,restoreFocus:source,
+    // A checkout that never happened must not leave the screen underneath claiming otherwise, and
+    // the level beneath - the appointment detail, when there is one - redraws itself.
+    onClose(){
+      receiptHost=null;
+      runDetached(async()=>{
+        if(state.me)await refresh();
+        await appointmentStack.levels.at(-1)?.reload?.();
+      });
+    }
+  };
+
+  let baseline="";
+  let host=null,submit=null,payField=null,tipField=null,couponField=null,manualField=null,remainder=null;
+
+  const signature=()=>JSON.stringify({
+    pay:payField?.value??"",tip:tipField?.value??"",coupon:couponField?.value??"",
+    discount:manualField?.value??"",
+    picked:host?[...host.querySelectorAll("[data-checkout-discount]:checked")].map(input=>input.value):[],
+    remainder:Boolean(remainder?.checked)
+  });
+  // CHANGED, not "has been focused". Opening a disclosure, tabbing through the form or reading the
+  // bill costs nothing to abandon, and a confirm on the way out of those would train the operator
+  // to dismiss it without reading.
+  level.guard=async()=>{
+    if(checkoutMode(co)==="settled"||signature()===baseline)return true;
+    return confirm("Leave this checkout? Nothing has been charged and the amounts you entered will be lost.");
+  };
+
+  const readMethod=()=>{
+    const radios=[...(host?.querySelectorAll('input[name="method"]')||[])];
+    if(radios.length)return radios.find(radio=>radio.checked)?.value||"";
+    return String(host?.querySelector('[data-testid="field-method"]')?.value||"");
+  };
+  const couponValue=()=>String(couponField?.value||"").trim().toUpperCase();
+  const tipMinor=()=>Math.round(Number(tipField?.value||0)*100);
+  const payMinor=()=>{
+    const raw=payField?.value;
+    if(raw===undefined||raw==="")return null;
+    const value=Math.round(Number(raw)*100);
+    return Number.isFinite(value)&&value>=0?value:null;
+  };
+  const dueMinor=()=>checkoutMode(co)==="collect"
+    ? Number(co.receipt.invoice.balanceMinor)
+    : (checkoutEstimate(host,co.base,tipMinor())?.totalMinor??null);
+
+  const setError=message=>{const target=dialog.querySelector("#checkout-error");if(target)target.textContent=message||"";};
+
+  // Every figure on the screen that moves when a control moves.
+  const syncMoney=()=>{
+    if(!host)return;
+    const mode=checkoutMode(co);
+    if(mode==="settled"){
+      const balance=dialog.querySelector('[data-testid="checkout-balance"]');
+      if(balance)balance.textContent=`Balance ${money(co.receipt.invoice.balanceMinor)}`;
+      return;
+    }
+    const coupon=couponValue();
+    const estimate=mode==="build"?checkoutEstimate(host,co.base,tipMinor()):null;
+    const due=dueMinor();
+
+    if(mode==="build"){
+      const cell=(testid,value)=>{const node=dialog.querySelector(`[data-testid="${testid}"]`);if(node)node.textContent=value;};
+      cell("checkout-subtotal",estimate?money(estimate.subtotalMinor):"—");
+      cell("checkout-tax",estimate?money(estimate.taxMinor):"—");
+      cell("checkout-total",estimate?money(estimate.totalMinor):"—");
+      const discountRow=dialog.querySelector("[data-checkout-discount-line]");
+      if(discountRow){
+        discountRow.hidden=!estimate?.discountMinor;
+        const value=discountRow.querySelector("strong");
+        if(value&&estimate)value.textContent=`-${money(estimate.discountMinor)}`;
+      }
+    }
+
+    // A coupon lowers the balance by an amount only the server knows, so a part payment measured
+    // against this screen's figure could exceed the real one. The amount field is withdrawn and
+    // the full balance is taken - which is what this screen has always done.
+    const payRow=dialog.querySelector("[data-checkout-pay]");
+    const couponNote=dialog.querySelector('[data-testid="checkout-coupon-pay-note"]');
+    const couponBlocks=Boolean(coupon)&&mode==="build";
+    if(payRow)payRow.hidden=couponBlocks;
+    if(couponNote)couponNote.hidden=!couponBlocks;
+    if(payField)payField.required=!couponBlocks;
+
+    // Pre-filled with what is owed, and only once there is a figure to pre-fill it with. `base`
+    // null means the server sent no subtotal, and a guess in this field would be a guess about
+    // money: it stays empty and required instead.
+    if(payField&&due!==null&&!payField.dataset.touched)payField.value=(due/100).toFixed(2);
+
+    const pay=payMinor();
+    const over=due!==null&&pay!==null?pay-due:0;
+    if(remainder){
+      // Pre-invoice only. `claimTerminalCheckout` refuses to start against an invoice whose tip is
+      // non-zero and `postReconciledPayment` raises the tip under `tip_minor = 0`, so a
+      // post-invoice tip raise either blocks the terminal for that invoice or collides with that
+      // fence. The remainder folds into `tipMinor` at invoice creation or not at all.
+      const offer=mode==="build"&&!couponBlocks&&over>0;
+      const row=remainder.closest("[data-testid='checkout-remainder']");
+      if(row)row.hidden=!offer;
+      if(!offer)remainder.checked=false;
+      const label=row?.querySelector("[data-remainder-label]");
+      if(label&&offer)label.textContent=`Apply ${money(over)} remainder to tip`;
+    }
+
+    const balance=dialog.querySelector('[data-testid="checkout-balance"]');
+    if(balance){
+      const parts=[];
+      if(due===null)parts.push("Balance is not available");
+      else parts.push(`Balance ${money(due)}`);
+      if(couponBlocks)parts.push("the coupon comes off when you check out");
+      else if(due!==null&&pay!==null&&pay<due)parts.push(`${money(due-pay)} will remain`);
+      balance.textContent=parts.join(" · ");
+    }
+  };
+
+  const draw=()=>{
+    dialog.innerHTML=checkoutSurfaceMarkup(co);
+    host=dialog.querySelector(".surface-shell");
+    submit=dialog.querySelector('[data-testid="checkout-submit"]');
+    payField=dialog.querySelector('[data-testid="field-pay"]');
+    tipField=dialog.querySelector('[data-testid="field-tip"]');
+    couponField=dialog.querySelector('[data-testid="field-couponCode"]');
+    manualField=dialog.querySelector('[data-testid="field-discount"]');
+    remainder=dialog.querySelector('[data-testid="checkout-remainder-toggle"]');
+    bind();
+    syncMoney();
+    baseline=signature();
+  };
+
+  const redrawSettled=async()=>{
+    await loadReceipt();
+    draw();
+  };
+
+  // The one thing the button does while a payment is recorded but its receipt has not been read.
+  const retryReceipt=async()=>{
+    if(!await loadReceipt()){
+      setError("Payment recorded successfully. Receipt is temporarily unavailable.");
+      return;
+    }
+    co.awaitingReceipt=null;
+    draw();
+  };
+
+  const bind=()=>{
+    dialog.querySelector("[data-surface-close]")?.addEventListener("click",()=>runDetached(()=>popStackLevel()));
+    dialog.querySelector('[data-testid="checkout-done"]')?.addEventListener("click",()=>runDetached(()=>popStackLevel()));
+    dialog.querySelector('[data-testid="checkout-print-receipt"]')?.addEventListener("click",()=>{
+      if(co.receipt)printReceipt(co.receipt);
+    });
+    if(checkoutMode(co)==="settled"){
+      bindReceiptActions(dialog,co.receipt);
+      return;
+    }
+    // Open a disclosure that already carries a value, and name the value in its own summary, so a
+    // collapsed adjustment is never a hidden one.
+    const syncDisclosures=()=>{
+      const set=(id,text)=>{
+        const details=dialog.querySelector(`[data-checkout-disclosure="${id}"]`);
+        if(!details)return;
+        const value=details.querySelector("[data-disclosure-value]");
+        if(value)value.textContent=text||"";
+        if(text&&!details.open)details.open=true;
+      };
+      const manual=Math.round(Number(manualField?.value||0)*100);
+      set("discount",manual>0?`−${money(manual)}`:"");
+      const picked=[...(host?.querySelectorAll("[data-checkout-discount]:checked")||[])].length;
+      const coupon=couponValue();
+      set("coupon",[picked?`${picked} selected`:"",coupon].filter(Boolean).join(" · "));
+      set("tip",tipMinor()>0?money(tipMinor()):"");
+    };
+    const changed=()=>{syncDisclosures();syncMoney();};
+
+    bindCheckoutDiscounts(co.base,host,changed);
+    bindCheckoutTips(co.base,host);
+    tipField?.addEventListener("input",changed);
+    payField?.addEventListener("input",()=>{payField.dataset.touched="1";syncMoney();});
+    remainder?.addEventListener("change",syncMoney);
+    // The tip presets write into the field without dispatching, so the summary and the balance are
+    // brought along by the same click rather than waiting for the next keystroke.
+    dialog.querySelectorAll("[data-taxpay-tip]").forEach(button=>button.addEventListener("click",changed));
+    bindCheckoutCapture({
+      host,submit,submitLabel:"Take payment",
+      // Where the amount was, not where the tip was: the tip controls live inside a collapsed
+      // disclosure on this screen, and a note put in there would never be seen.
+      noteAnchor:dialog.querySelector('[data-testid="field-method"]'),
+      // The amount leaves with the tip: the terminal derives both from the invoice and asks the
+      // customer directly, so two places to enter the same number would be one too many.
+      extra:[dialog.querySelector("[data-checkout-pay]"),dialog.querySelector('[data-testid="checkout-remainder"]')],
+      note:"Amount and tip are taken on the terminal.",
+      onChange:syncMoney
+    });
+    syncDisclosures();
+    submit?.addEventListener("click",()=>runDetached(submitCheckout));
+  };
+
+  const submitCheckout=async()=>{
+    if(!submit||submit.disabled)return;
+    setError("");
+    if(co.awaitingReceipt){
+      submit.disabled=true;
+      try{await retryReceipt();}finally{if(submit.isConnected)submit.disabled=false;}
+      return;
+    }
+    const mode=checkoutMode(co);
+    const onTerminal=readMethod()===CHECKOUT_TERMINAL_METHOD;
+    const choice=onTerminal?null:co.choices.find(item=>String(item.value)===String(readMethod()));
+    if(!onTerminal&&!choice){
+      setError(co.choices.length
         ?"Choose a payment method."
         :"No payment method is enabled. Enable one in Settings → Tax & payments.");
-      const invoicePayload={
-        discountMinor:Math.round(Number(values.discount||0)*100),
-        discountType:Number(values.discount||0)>0?"manual":null,
-        // Zero, always, for a terminal capture: the tip is raised onto the invoice afterwards by
-        // exactly what the customer chose on the device, and a guess here would have to be undone.
-        tipMinor:onTerminal?0:Math.round(Number(values.tip||0)*100)
-      };
-      let invoice;
-      try{invoice=await financialMutation(`/api/appointments/${id}/checkout`,`checkout.create-invoice`,invoicePayload);}
-      catch(error){
-        if(error.data?.code==="INVOICE_ALREADY_EXISTS"&&error.data.invoice){
-          error.message=`${error.message}. Authoritative total: ${money(error.data.invoice.totalMinor)}.`;
-        }
-        throw error;
+      return;
+    }
+    const coupon=couponValue();
+    const due=dueMinor();
+    const pay=payMinor();
+    const usesAmount=!onTerminal&&!(mode==="build"&&coupon);
+    if(usesAmount){
+      if(pay===null||pay<=0){setError("Enter the amount to take.");return;}
+      if(due!==null&&pay>due&&!(mode==="build"&&remainder?.checked)){
+        setError(mode==="build"
+          ? `That is ${money(pay-due)} more than the balance. Tick the remainder box to put it in the tip, or lower the amount.`
+          : `Payment exceeds invoice balance by ${money(pay-due)}.`);
+        return;
       }
-      if(onTerminal&&Number(invoice.balanceMinor)>0){
-        const device=terminals.find(entry=>entry.id===String(values.deviceId))||terminals[0];
+    }
+    const original=submit.textContent;
+    submit.disabled=true;submit.textContent="Working…";
+    let raised=false;
+    try{
+      let invoice=co.receipt?.invoice||null;
+      if(mode==="build"){
+        const manualMinor=checkoutGrantsDiscount()?Math.round(Number(manualField?.value||0)*100):0;
+        const remainderMinor=usesAmount&&remainder?.checked&&due!==null&&pay!==null?Math.max(0,pay-due):0;
+        const invoicePayload={
+          discountMinor:manualMinor,
+          discountType:manualMinor>0?"manual":null,
+          couponCode:coupon||null,
+          // IDS ONLY, NEVER AN AMOUNT. The server looks every one of these up and recomputes what
+          // it takes off, in the order the picker offers them - the salon's own order, which the
+          // server uses to break ties within a stacking rank.
+          appliedDiscountIds:[...host.querySelectorAll("[data-checkout-discount]:checked")].map(input=>input.value),
+          // Zero, always, for a terminal capture: the tip is raised onto the invoice afterwards by
+          // exactly what the customer chose on the device, and a guess here would have to be undone.
+          tipMinor:onTerminal?0:tipMinor()+remainderMinor
+        };
+        try{invoice=await financialMutation(`/api/appointments/${id}/checkout`,`checkout.create-invoice`,invoicePayload);}
+        catch(error){
+          if(error.data?.code==="INVOICE_ALREADY_EXISTS"&&error.data.invoice){
+            error.message=`${error.message}. Authoritative total: ${money(error.data.invoice.totalMinor)}.`;
+          }
+          throw error;
+        }
+        raised=true;
+      }
+      if(onTerminal){
+        if(Number(invoice.balanceMinor)<=0){await redrawSettled();return;}
+        const deviceId=String(dialog.querySelector('[data-testid="field-device"]')?.value||"");
+        const device=co.terminals.find(entry=>entry.id===deviceId)||co.terminals[0];
         if(!device)throw new Error("No terminal is paired. Pair one in Settings → Tax & payments.");
         let started;
         try{
-          // No amount and no tip in this body: the server derives both, and the idempotency key
-          // that makes a retry safe is derived from the row it writes before Square is called.
-          //
-          // Keyed on the invoice, which is what stays stable across the retry this failure invites:
-          // the error below tells the operator the invoice exists and the terminal did not start,
-          // so the obvious response is to press the button again, and two of those must never be in
-          // flight at once. A client-generated Idempotency-Key would be inert here - this route
-          // dedupes on the checkout row it claims before calling Square, not on a header.
+          // Keyed on the invoice, which is what stays stable across the retry this failure invites.
+          // A client-generated Idempotency-Key would be inert: the route dedupes on the checkout
+          // row it claims before calling Square, not on a header.
           started=await runOnce(`terminal-start:${invoice.id}`,()=>api(`/api/invoices/${invoice.id}/terminal-checkouts`,
             {method:"POST",body:JSON.stringify({deviceId:device.id})}));
           // `runOnce` resolves to nothing when an identical start is already in flight. That is a
-          // double-press rather than an outcome, and it must not open a capture modal watching a
-          // checkout this call never received.
-          if(!started)return {message:"Already sending to the terminal"};
+          // double-press rather than an outcome.
+          if(!started){toast("Already sending to the terminal");return;}
         }catch(error){
           error.message=`Invoice created; the terminal did not start. ${error.message}`;
           throw error;
         }
-        // Deliberately not a receipt and not a success: nothing has been paid yet, and the modal
-        // that opens next says exactly what the terminal is doing.
-        return {message:"Sent to the terminal",afterClose:()=>openTerminalCapture(started,device.label)};
+        co.appointment.invoiceId=invoice.id;
+        await loadReceipt();draw();
+        toast("Sent to the terminal");
+        // A status dialog over Check Out, not a level of the stack: it is watching one request,
+        // and Escape on it must answer to its own guard rather than dismissing the bill beneath.
+        $("#terminal-capture").addEventListener("close",()=>runDetached(async()=>{
+          if(!appointmentStack.levels.includes(level))return;
+          co.appointment=calendarAppointmentById(id)||co.appointment;
+          readBase();await loadReceipt();draw();
+        }),{once:true});
+        openTerminalCapture(started,device.label);
+        return;
       }
       if(Number(invoice.balanceMinor)>0){
+        // A coupon, or a "pay it all" that the server priced slightly differently, both mean the
+        // authoritative balance rather than this screen's figure. A part payment is the operator's
+        // own number and is sent as typed.
+        const full=!usesAmount||pay===null||due===null||pay>=due;
+        const amountMinor=full?Number(invoice.balanceMinor):pay;
         try{
           await financialMutation(`/api/invoices/${invoice.id}/payments`,`payment.record`,{
-            amountMinor:Number(invoice.balanceMinor),expectedBalanceMinor:Number(invoice.balanceMinor),method:choice.settlementType
+            amountMinor,expectedBalanceMinor:Number(invoice.balanceMinor),method:choice.settlementType
           });
         }catch(error){
-          error.message=`Invoice created; payment remains pending. ${error.message}`;
-          if(error.status===409)error.reconcileFinancial=true;
+          // Only when this submit is what raised the invoice. Against one that was already there
+          // the sentence would be inventing an event, and the server's own words are the whole
+          // story: the balance moved under this screen.
+          if(mode==="build")error.message=`Invoice created; payment remains pending. ${error.message}`;
           throw error;
         }
       }
-      let receipt;
-      try{receipt=await api(`/api/invoices/${invoice.id}/receipt`);}
-      catch(error){error.message="Payment recorded successfully. Receipt is temporarily unavailable.";throw error;}
-      return ()=>showReceipt(receipt);
-    });
-  bindCheckoutTips(base);
-  bindCheckoutCapture();
+      co.appointment.invoiceId=invoice.id;
+      if(state.me)await refresh();
+      co.appointment=calendarAppointmentById(id)||co.appointment;
+      readBase();
+      if(!await loadReceipt()){
+        // The money is recorded; only the read of it failed. The surface keeps the invoice it just
+        // paid and the button becomes a retry of that read - it can never take a second payment.
+        co.awaitingReceipt=invoice.id;
+        setError("Payment recorded successfully. Receipt is temporarily unavailable.");
+        return;
+      }
+      co.awaitingReceipt=null;
+      draw();
+      toast(checkoutMode(co)==="settled"?"Payment recorded":"Part payment recorded");
+    }catch(error){
+      setError(error.message);
+      // A REFUSAL IS NOT A REASON TO REDRAW. An expired coupon, a method nobody chose, an amount
+      // over the balance - none of them moved the bill, and redrawing would collapse the
+      // disclosures and throw away what the operator typed, which is exactly what the shared
+      // dialog was careful not to do. Only a failure that happened after the invoice existed can
+      // have left this screen describing something that is no longer true.
+      if(raised||mode!=="build"){
+        const message=error.message;
+        await loadReceipt();
+        draw();setError(message);
+      }
+    }finally{
+      const live=dialog.querySelector('[data-testid="checkout-submit"]');
+      if(live===submit&&submit.isConnected){submit.disabled=false;submit.textContent=original;}
+    }
+  };
+
+  draw();
+  // A void or a refund taken from a settled Check Out redraws it in place rather than closing the
+  // surface and stacking a modal copy of the same receipt on top of it.
+  receiptHost=receipt=>{
+    if(!appointmentStack.levels.includes(level))return false;
+    co.receipt=receipt;draw();return true;
+  };
+  pushStackLevel(level);
 }
-/**
- * Choosing a card terminal takes the tip controls out of the DOM.
- *
- * Removed, not disabled. A greyed-out tip field still asserts that a tip belongs on this screen,
- * and the terminal is about to ask the customer for one - so the operator would be looking at two
- * places to enter the same number, one of which does nothing. The nodes are kept and put back if
- * the operator changes their mind, because rebuilding them would lose whatever they had typed.
- */
-function bindCheckoutCapture(){
-  const host=$("#modal-fields");if(!host)return;
-  const method=host.querySelector('[data-testid="field-method"]');if(!method)return;
+
+function bindCheckoutCapture({host=$("#modal-fields"),submit=$('[data-testid="modal-submit"]'),
+  extra=[],note:noteText="Tip is taken on the terminal",noteAnchor=null,submitLabel="Save",onChange=null}={}){
+  if(!host)return;
+  // The method control is a <select> in the shared dialog and a radio group on the Check Out
+  // surface. Both carry `field-method`; only the read and the listener differ.
+  const methodHost=host.querySelector('[data-testid="field-method"]');if(!methodHost)return;
+  const radios=[...host.querySelectorAll('input[name="method"]')];
+  const readMethod=()=>radios.length?(radios.find(radio=>radio.checked)?.value||""):String(methodHost.value);
   const presets=host.querySelector(".taxpay-tips");
   const tipField=host.querySelector('[data-testid="field-tip"]')?.closest("label");
   const device=host.querySelector("[data-checkout-device]");
-  const anchor=document.createComment("checkout-tip");
-  (presets||tipField)?.before(anchor);
+  // Each withdrawn element keeps its own place through its own comment anchor, so restoring puts
+  // every one of them back where it was rather than all of them in one pile.
+  const parked=[presets,tipField,...extra].filter(Boolean).map(element=>{
+    const anchor=document.createComment("checkout-withdrawn");
+    element.before(anchor);
+    return {element,anchor};
+  });
   const note=document.createElement("p");
   note.className="wide fine checkout-terminal-note";
   note.setAttribute("data-testid","checkout-terminal-note");
-  note.textContent="Tip is taken on the terminal";
+  note.textContent=noteText;
+  // Where the note lands when the controls it replaces are gone. The shared dialog puts it where
+  // the tip controls were; Check Out cannot, because its tip controls live inside a collapsed
+  // disclosure and a note injected in there would be invisible - so the caller names a place.
+  const notePlace=noteAnchor||parked[0]?.anchor||null;
+  // A named anchor is an element the note goes BEFORE; the fallback is the comment left where the
+  // first withdrawn control stood, which it goes after.
+  const placeNote=()=>{
+    if(!notePlace||note.isConnected)return;
+    if(noteAnchor)notePlace.before(note);else notePlace.after(note);
+  };
   const deviceAnchor=document.createComment("checkout-device");
   device?.before(deviceAnchor);
   device?.remove();
-  const submit=$("[data-testid=\"modal-submit\"]");
   const apply=()=>{
-    const onTerminal=String(method.value)===CHECKOUT_TERMINAL_METHOD;
+    const onTerminal=readMethod()===CHECKOUT_TERMINAL_METHOD;
     if(onTerminal){
-      presets?.remove();tipField?.remove();
-      if(!note.isConnected)anchor.after(note);
+      parked.forEach(({element})=>element.remove());
+      placeNote();
       if(device&&!device.isConnected)deviceAnchor.after(device);
     }else{
       note.remove();device?.remove();
-      if(tipField&&!tipField.isConnected)anchor.after(tipField);
-      if(presets&&!presets.isConnected)anchor.after(presets);
+      // Restored in reverse, because each one is put back immediately after its own anchor and
+      // the anchors sit in source order.
+      [...parked].reverse().forEach(({element,anchor})=>{if(!element.isConnected)anchor.after(element);});
     }
     // "Save" is what every other dialog does. This one hands a request to a card reader that is
     // about to ask a customer for money, and the button should say so before it is pressed.
-    if(submit)submit.textContent=onTerminal?"Send to terminal":"Save";
+    if(submit)submit.textContent=onTerminal?"Send to terminal":submitLabel;
+    onChange?.(onTerminal);
   };
-  method.addEventListener("change",apply);
+  if(radios.length)radios.forEach(radio=>radio.addEventListener("change",apply));
+  else methodHost.addEventListener("change",apply);
   apply();
 }
-function bindCheckoutTips(base){
-  const host=$("#modal-fields");if(!host)return;
+function bindCheckoutTips(base,host=$("#modal-fields")){
+  if(!host)return;
   const tipInput=host.querySelector('[data-testid="field-tip"]');
+  // Absent for anybody without `discounts.apply`, and the presets still have to work for them.
+  // Requiring it here is what used to make the tip buttons inert on exactly the sessions that
+  // most need them.
   const discountInput=host.querySelector('[data-testid="field-discount"]');
   const buttons=[...host.querySelectorAll("[data-taxpay-tip]")];
-  if(!tipInput||!discountInput||!buttons.length)return;
-  // What the visit charges for the work, less the operator's discount — the taxable subtotal the
-  // invoice is built from. The service prices are never re-summed here: the server already owns
-  // that total and sends it with the appointment, and a second opinion about it is a bug waiting.
-  const baseMinor=()=>Math.max(0,Number(base||0)-Math.round(Number(discountInput.value||0)*100));
+  if(!tipInput||!buttons.length)return;
+  // What the visit charges for the work, less every discount the browser can see — the taxable
+  // subtotal the invoice is built from. The service prices are never re-summed here: the server
+  // already owns that total and sends it with the appointment, and a second opinion about it is a
+  // bug waiting.
+  const baseMinor=()=>checkoutDiscountedBase(host,base);
   const amountFor=percent=>Math.round(baseMinor()*Number(percent)/100);
   let active="none";
   const sync=()=>buttons.forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.taxpayTip===active)));
@@ -929,12 +1482,100 @@ function bindCheckoutTips(base){
   tipInput.addEventListener("input",()=>{
     active=Math.round(Number(tipInput.value||0)*100)===0?"none":null;sync();
   });
-  // A discount moves the base a percentage is taken of, so a chosen preset follows it.
-  discountInput.addEventListener("input",()=>{
+  // A discount moves the base a percentage is taken of, so a chosen preset follows it — whether
+  // it was typed into the manual field or picked out of the catalogue.
+  const followBase=()=>{
     if(active&&active!=="none"&&base!==null)tipInput.value=(amountFor(active)/100).toFixed(2);
     sync();
-  });
+  };
+  discountInput?.addEventListener("input",followBase);
+  host.querySelectorAll("[data-checkout-discount]").forEach(input=>
+    input.addEventListener("change",followBase));
+  // Uppercased as focus leaves, so what is on screen is the code that will be sent.
+  const couponInput=host.querySelector('[data-testid="field-couponCode"]');
+  couponInput?.addEventListener("change",()=>{couponInput.value=couponInput.value.trim().toUpperCase();});
   sync();
+}
+/**
+ * Every discount the browser can see on this bill, as `foldDiscounts` lines.
+ *
+ * THE COUPON IS NOT AMONG THEM. What it takes off is resolved by the server against the coupon
+ * row - it may be a percentage of a number that is not final yet, and it may be refused outright -
+ * so the browser does not know the figure, and inventing one would put a total on screen that the
+ * invoice then contradicts.
+ */
+function checkoutDiscountLines(host){
+  const lines=[];
+  const manual=host.querySelector('[data-testid="field-discount"]');
+  const manualMinor=manual&&!manual.disabled?Math.round(Number(manual.value||0)*100):0;
+  // First, matching the order the server folds them in: the manual amount, then the configured
+  // rows. Within a stacking rank that order is the tie-break, so the two have to agree.
+  if(manualMinor>0)lines.push({kind:"amount",amountMinor:manualMinor});
+  const options=checkoutDiscountOptions()||[];
+  host.querySelectorAll("[data-checkout-discount]:checked").forEach(input=>{
+    const option=options.find(item=>item.id===input.dataset.checkoutDiscount);
+    if(option)lines.push({kind:option.kind,amountMinor:option.amountMinor,rateBasisPoints:option.rateBasisPoints});
+  });
+  return lines;
+}
+/** The taxable subtotal as the browser can compute it. Zero when the server sent no subtotal. */
+function checkoutDiscountedBase(host,base){
+  if(base===null)return 0;
+  return foldDiscounts(base,checkoutDiscountLines(host),checkoutStackingMode()).total;
+}
+/**
+ * Stops the operator at one when the salon allows one.
+ *
+ * The manual amount, each picked row AND a typed coupon code all count as one of them - that is
+ * what `resolveCheckoutDiscounts` counts, so anything looser here leaves a
+ * MULTIPLE_DISCOUNTS_NOT_ALLOWED refusal reachable at the end of a checkout.
+ *
+ * DISABLED, NOT HIDDEN, and only what is empty: whatever carries the selection stays live, so
+ * clearing it is the obvious way back and no control the operator has already filled in goes grey
+ * underneath them.
+ */
+function applyCheckoutDiscountLimit(host){
+  if(checkoutStackingMode()!=="one_per_appointment")return;
+  const options=[...host.querySelectorAll("[data-checkout-discount]")];
+  const manual=host.querySelector('[data-testid="field-discount"]');
+  const coupon=host.querySelector('[data-testid="field-couponCode"]');
+  const manualSet=Boolean(manual&&Math.round(Number(manual.value||0)*100)>0);
+  const couponSet=Boolean(coupon&&coupon.value.trim());
+  const taken=options.filter(input=>input.checked).length+(manualSet?1:0)+(couponSet?1:0);
+  options.forEach(input=>{input.disabled=taken>0&&!input.checked;});
+  if(manual)manual.disabled=taken>0&&!manualSet;
+  if(coupon)coupon.disabled=taken>0&&!couponSet;
+}
+/**
+ * The picker, the one-per rule and the running total.
+ *
+ * The total is only ever about what the BROWSER can price: the manual amount and the picked rows.
+ * A coupon in the box is named beside it rather than folded into it, because saying nothing at all
+ * would let the figure read as the final one.
+ */
+function bindCheckoutDiscounts(base,host=$("#modal-fields"),onChange=null){
+  if(!host)return;
+  const total=host.querySelector('[data-testid="checkout-discount-total"]');
+  const coupon=host.querySelector('[data-testid="field-couponCode"]');
+  const manual=host.querySelector('[data-testid="field-discount"]');
+  const options=[...host.querySelectorAll("[data-checkout-discount]")];
+  const refresh=()=>{
+    applyCheckoutDiscountLimit(host);
+    if(!total)return;
+    const fold=base===null?null:foldDiscounts(base,checkoutDiscountLines(host),checkoutStackingMode());
+    // Nothing taken off, nothing to say. A permanent "$85.00 = $85.00" would be a line about the
+    // product rather than about this visit.
+    if(!fold||!fold.discountMinor){total.textContent="";return;}
+    const sentence=`${money(fold.subtotal)} − ${money(fold.discountMinor)} = ${money(fold.total)} before tax`;
+    total.textContent=coupon?.value.trim()
+      ? `${sentence}. The coupon comes off on top when you check out.`
+      : sentence;
+  };
+  const changed=()=>{refresh();onChange?.();};
+  options.forEach(input=>input.addEventListener("change",changed));
+  manual?.addEventListener("input",changed);
+  coupon?.addEventListener("input",changed);
+  refresh();
 }
 // The refunds already asked for against one payment, newest last.
 //
@@ -986,7 +1627,15 @@ function receiptRefundRow(refund){
     +`</div>`;
 }
 
-function showReceipt(receipt) {
+/**
+ * The receipt itself: items, the discount breakdown, the totals, and every payment record with
+ * whatever correction it still allows.
+ *
+ * ONE BODY, TWO HOSTS. The modal shows it, and so does a settled Check Out - because a settled
+ * checkout IS the receipt, and rendering a second, thinner version of it beside the real one is
+ * how the two drift. `bindReceiptActions` binds whichever copy is on screen.
+ */
+function receiptBodyMarkup(receipt) {
   const invoice=receipt.invoice;
   // A payment taken on a terminal is named as one. "External card" is the settlement type the
   // ledger records, and it is what a manually keyed card payment says too; on a receipt somebody
@@ -1016,17 +1665,71 @@ function showReceipt(receipt) {
     return `<div><span>${escape(payment.provider==="square"?"card terminal":payment.method.replace("_"," "))} · ${escape(payment.status)}</span><strong>${money(payment.amountMinor)}</strong>${action}</div>`
       +receiptRefundsFor(receipt,payment.id).map(receiptRefundRow).join("");
   }).join("");
+/**
+ * What one line of the receipt's discount breakdown is called.
+ *
+ * `nameSnapshot` IS NULLABLE, and it can also be the literal `"manual"` - the token the checkout
+ * dialog has always sent as `discountType` - so neither of those reaches the reader. Both render
+ * as "Discount", which is exactly what every receipt said before there was a breakdown to show.
+ * A legacy invoice whose `discount_type` was a real label keeps it, because the 0046 backfill
+ * carried that column through verbatim and inventing a name here would rewrite what those
+ * receipts say.
+ */
+function receiptDiscountName(row){
+  const name=String(row.nameSnapshot||"").trim();
+  return name&&name!=="manual"?name:"Discount";
+}
+/**
+ * What came off this bill, and why, IN APPLIED ORDER.
+ *
+ * The order is what makes the compounding legible - the second line took its percentage off what
+ * the first line left - so it is rendered as the server sent it and never re-sorted.
+ *
+ * An invoice with no rows at all is one from before the breakdown existed, or one that took
+ * nothing off, and it renders the single line this receipt has always rendered.
+ */
+function receiptDiscountLines(receipt,invoice){
+  const rows=Array.isArray(receipt.discounts)?receipt.discounts:[];
+  if(!rows.length){
+    return `<div data-testid="receipt-discount"><span>Discount</span><strong>-${money(invoice.discountMinor)}</strong></div>`;
+  }
+  // Indented, and only when a sum follows them: two lines both reading "Discount" - one a step,
+  // one the total - is the one way this breakdown can be misread.
+  const step=rows.length>1?` class="receipt-discount-step"`:"";
+  const lines=rows.map(row=>`<div${step} data-testid="receipt-discount"><span>${escape(receiptDiscountName(row))}`
+    // The rate is worth repeating on a percentage line: "-$8.00" alone does not say that it was
+    // 10% of what was left, which is the whole reason two lines can produce two different totals.
+    +(row.kindSnapshot==="percentage"?` <small class="receipt-discount-rate">${escape(taxPayPercent(row.rateBasisPointsSnapshot))}%</small>`:"")
+    +`</span><strong>-${money(row.appliedMinor)}</strong></div>`).join("");
+  // The sum, only when there is more than one thing to add up. `invoice_discounts` sums to
+  // `discount_minor` exactly, so this is the same number the tax underneath was taken after.
+  return lines+(rows.length>1
+    ?`<div data-testid="receipt-discount-total"><span>Total discount</span><strong>-${money(invoice.discountMinor)}</strong></div>`
+    :"");
+}
   // Shown only when there is one. A permanent "Refunded $0.00" row would read as a fact about the
   // visit rather than about the product, on every receipt a salon ever prints.
   const refundedLine=receipt.refundedMinor
     ? `<div class="receipt-refunded" data-testid="receipt-refunded"><span>Refunded</span><strong>-${money(receipt.refundedMinor)}</strong></div>`
     :"";
-  openModal(`Receipt #${invoice.invoiceNumber}`,`<div class="wide receipt" data-testid="receipt"><p><strong>${escape(invoice.businessName)}</strong></p><p>${escape(clientName(invoice))}</p>${receipt.items.map(item=>`<div><span>${escape(item.description)}</span><strong>${money(item.amountMinor)}</strong></div>`).join("")}<div><span>Subtotal</span><strong>${money(invoice.subtotalMinor)}</strong></div><div><span>Discount</span><strong>-${money(invoice.discountMinor)}</strong></div><div><span>Tax</span><strong>${money(invoice.taxMinor)}</strong></div><div><span>Tip</span><strong>${money(invoice.tipMinor)}</strong></div><div class="receipt-total"><span>Total</span><strong>${money(invoice.totalMinor)}</strong></div><div><span>Balance</span><strong>${money(invoice.balanceMinor)}</strong></div>${refundedLine}<h4>Payment records</h4>${payments||"<p>No payment recorded.</p>"}</div>`,async()=>{});
-  $$(".void-payment").forEach(button=>button.addEventListener("click",()=>voidPayment(button.dataset.paymentId,invoice.id,button.dataset.paymentProvider)));
-  $$(".refund-payment").forEach(button=>button.addEventListener("click",()=>runDetached(()=>openRefundDialog(
+  return `<div class="wide receipt" data-testid="receipt"><p><strong>${escape(invoice.businessName)}</strong></p><p>${escape(clientName(invoice))}</p>${receipt.items.map(item=>`<div><span>${escape(item.description)}</span><strong>${money(item.amountMinor)}</strong></div>`).join("")}<div><span>Subtotal</span><strong>${money(invoice.subtotalMinor)}</strong></div>${receiptDiscountLines(receipt,invoice)}<div><span>Tax</span><strong>${money(invoice.taxMinor)}</strong></div><div><span>Tip</span><strong>${money(invoice.tipMinor)}</strong></div><div class="receipt-total"><span>Total</span><strong>${money(invoice.totalMinor)}</strong></div><div><span>Balance</span><strong>${money(invoice.balanceMinor)}</strong></div>${refundedLine}<h4>Payment records</h4>${payments||"<p>No payment recorded.</p>"}</div>`;
+}
+
+// Scoped to the copy of the receipt that was just rendered, for the same reason the client summary
+// column's bindings are: the modal's copy and a settled Check Out's copy can both be in the DOM.
+function bindReceiptActions(root,receipt){
+  const invoice=receipt.invoice;
+  root.querySelectorAll(".void-payment").forEach(button=>button.addEventListener("click",()=>
+    voidPayment(button.dataset.paymentId,invoice.id,button.dataset.paymentProvider)));
+  root.querySelectorAll(".refund-payment").forEach(button=>button.addEventListener("click",()=>runDetached(()=>openRefundDialog(
     invoice.id,receipt.payments.find(payment=>payment.id===button.dataset.paymentId)))));
-  $$(".refund-refresh").forEach(button=>button.addEventListener("click",()=>runDetached(()=>
+  root.querySelectorAll(".refund-refresh").forEach(button=>button.addEventListener("click",()=>runDetached(()=>
     refreshRefund(button.dataset.refundId,invoice.id))));
+}
+
+function showReceipt(receipt){
+  openModal(`Receipt #${receipt.invoice.invoiceNumber}`,receiptBodyMarkup(receipt),async()=>{});
+  bindReceiptActions($("#modal-fields"),receipt);
 }
 
 // Re-reads the receipt and shows it again, which is how every refund outcome comes back to the
@@ -1035,8 +1738,14 @@ function showReceipt(receipt) {
 // The 50ms hand-off is the same one the rest of this file uses when one dialog replaces another;
 // closing and reopening `#modal` in the same tick leaves the browser without a frame to run the
 // close transition in.
+let receiptHost=null;
 async function reopenReceipt(invoiceId,message){
   const receipt=await api(`/api/invoices/${invoiceId}/receipt`);
+  if(receiptHost?.(receipt)){
+    if(message)toast(message);
+    if(state.me)runDetached(()=>refresh());
+    return;
+  }
   $("#modal").close();
   if(message)toast(message);
   setTimeout(()=>showReceipt(receipt),50);
@@ -1201,8 +1910,7 @@ async function voidPayment(paymentId,invoiceId,provider) {
   await runOnce(`void:${paymentId}`,async()=>{
     try{
       await financialMutation(`/api/payments/${paymentId}/void`,`payment.void`,{reason});
-      const receipt=await api(`/api/invoices/${invoiceId}/receipt`);
-      $("#modal").close();toast("Payment record voided; no external refund was issued");setTimeout(()=>showReceipt(receipt),50);
+      await reopenReceipt(invoiceId,"Payment record voided; no external refund was issued");
     }catch(error){toast(error.message);}
   });
 }
@@ -1286,6 +1994,30 @@ function pagerWindow(page,pages){
   for(const number of numbers){if(previous&&number-previous>1)cells.push(null);cells.push(number);previous=number;}
   return cells;
 }
+/**
+ * The pager shell: two arrows around a span the page numbers go in, as a real `<nav>`.
+ *
+ * Written once and used by everything that pages. The client directory carried this markup inline
+ * in `index.html`, and the settings tables that page would have had to fork it - two copies of the
+ * same arrows, free to drift in their labels, their icons and their landmark.
+ */
+function pagerNavMarkup({idPrefix,label,inner=""}){
+  return `<nav class="pager" aria-label="${escapeAttr(label)}">`
+    +`<button type="button" class="pager-arrow" id="${idPrefix}-prev" aria-label="Previous page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg></button>`
+    +`<span class="pager-pages" id="${idPrefix}-pages">${inner}</span>`
+    +`<button type="button" class="pager-arrow" id="${idPrefix}-next" aria-label="Next page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button></nav>`;
+}
+// The numbers themselves, given the attribute whose value the caller's click handler reads.
+function pagerPageButtons(page,pages,attribute){
+  return pagerWindow(page,pages).map(number=>number===null
+    ?`<span class="pager-gap" aria-hidden="true">…</span>`
+    :`<button type="button" class="pager-page${number===page?" current":""}" ${attribute}="${number}"${number===page?` aria-current="page"`:""} aria-label="Page ${number}">${number}</button>`).join("");
+}
+// Filled in place, at module load, before anything binds to the buttons inside. A slot rather than
+// literal markup is what keeps `index.html` from holding a second copy of the shell above.
+$$("[data-pager-slot]").forEach(slot=>{
+  slot.outerHTML=pagerNavMarkup({idPrefix:slot.dataset.pagerSlot,label:slot.dataset.pagerLabel});
+});
 function renderCustomerPager(){
   const directory=state.customerDirectory;
   const pages=Math.max(1,Math.ceil(directory.total/directory.pageSize));
@@ -1297,15 +2029,12 @@ function renderCustomerPager(){
   $("#customer-page-status").textContent=directory.total
     ?`${first}–${last} of ${directory.total} client${directory.total===1?"":"s"}`
     :"No clients";
-  $("#customer-pages").innerHTML=pagerWindow(page,pages).map(number=>number===null
-    ?`<span class="pager-gap" aria-hidden="true">…</span>`
-    :`<button type="button" class="pager-page${number===page?" current":""}" data-customer-page="${number}"${number===page?` aria-current="page"`:""} aria-label="Page ${number}">${number}</button>`).join("");
+  $("#customer-pages").innerHTML=pagerPageButtons(page,pages,"data-customer-page");
   $$("[data-customer-page]").forEach(button=>button.addEventListener("click",()=>
     runDetached(()=>loadCustomerDirectory(Number(button.dataset.customerPage)))));
   $("#customer-prev").disabled=page<=1;$("#customer-next").disabled=page>=pages;
 }
 async function loadCustomerDirectory(page=1){const result=await api(`/api/customers?${customerDirectoryParams(page)}`);state.customerDirectory=result;state.customers=result.items;renderCustomersEnhanced();}
-async function showCustomerDetail(id){try{const data=await api(`/api/customers/${id}/history`);state.pets=[...state.pets.filter(pet=>pet.customerId!==id),...data.pets];if(!state.customers.some(customer=>customer.id===id))state.customers.push(data.customer);const pets=data.pets.map(pet=>`<div class="customer-pet-row"><span><strong>${escape(petName(pet))}</strong><small>${escape(pet.breed||"Breed not provided")} · ${pet.weightOunces?`${Number(pet.weightOunces)/16} lb`:"Weight not provided"}</small><small>${pet.vaccinationExpiresOn?`Rabies expires ${String(pet.vaccinationExpiresOn).slice(0,10)}`:"Rabies expiration not provided"}${pet.safetyAlerts?` · Safety: ${escape(pet.safetyAlerts)}`:""}</small></span><span>${allowed("pets.edit")?`<button type="button" class="text-button detail-edit-pet" data-id="${pet.id}">Profile</button>`:""}${allowed("pets.care.view")?`<button type="button" class="text-button detail-care" data-id="${pet.id}">Care & history</button>`:""}</span></div>`).join("")||"<p>No pets yet.</p>";openModal(`${clientName(data.customer)}`,`<div class="wide customer-detail"><p><strong>${escape(data.customer.phone||"No phone")}</strong> · ${escape(data.customer.email||"No email")}</p><div class="customer-detail-actions">${allowed("customers.edit")?`<button type="button" class="text-button detail-edit-customer">Edit customer</button><button type="button" class="text-button detail-archive-customer">Archive</button>`:""}<button type="button" class="text-button detail-history">Full history</button></div><h4>Pets</h4>${pets}</div>`,async()=>{});const next=callback=>{$("#modal").close();setTimeout(callback,50);};$(".detail-edit-customer")?.addEventListener("click",()=>next(()=>editCustomer(id)));$(".detail-archive-customer")?.addEventListener("click",()=>next(()=>archiveCustomer(id)));$(".detail-history")?.addEventListener("click",()=>next(()=>showCustomerHistory(id)));$$(".detail-edit-pet").forEach(button=>button.addEventListener("click",()=>next(()=>editPet(button.dataset.id))));$$(".detail-care").forEach(button=>button.addEventListener("click",()=>next(()=>editPetCare(button.dataset.id))));}catch(error){toast(error.message);}}
 function pricingMatrix(service){
   if(service.pricingMode!=="TIERED")return "";
   const classes=["SMOOTH_SINGLE","STANDARD","EXTRA_FLOOF"];const tiers=[["TIER_1","1–20"],["TIER_2","21–40"],["TIER_3","41–60"],["TIER_4","61–80"],["TIER_5","81–100"],["TIER_6","100+"]];
@@ -1954,10 +2683,6 @@ async function downloadPetDocument(id){
   if(!response.ok){const result=await response.json().catch(()=>({}));toast(result.error||"Document unavailable");return;}
   const blob=await response.blob();const url=globalThis.URL.createObjectURL(blob);const link=document.createElement("a");
   link.href=url;link.download="rabies-vaccination.pdf";link.click();setTimeout(()=>globalThis.URL.revokeObjectURL(url),1000);
-}
-async function archiveCustomer(id) {
-  if(!confirm("Archive this customer? Their operational and financial history will remain."))return;
-  try{await api(`/api/customers/${id}/archive`,{method:"POST"});toast("Customer archived");await refresh();}catch(error){toast(error.message);}
 }
 function editPet(id) {
   let pet=state.pets.find(item=>item.id===id);
@@ -2993,9 +3718,9 @@ $("#profile-cancel").addEventListener("click",()=>{renderAccountIdentity();$("#p
 $("#profile-workspace-select").addEventListener("change",async event=>{try{await api("/api/workspaces/select",{method:"POST",body:JSON.stringify({businessId:event.target.value})});location.reload();}catch(error){toast(error.message);renderAccountIdentity();}});
 $("#password-form").addEventListener("submit",async event=>{event.preventDefault();const form=event.currentTarget,values=Object.fromEntries(new FormData(form)),error=$("#password-error"),button=form.querySelector("button[type=submit]");error.textContent="";if(values.newPassword!==values.confirmPassword){error.textContent="New passwords do not match";form.elements.confirmPassword.focus();return;}button.disabled=true;try{await api("/api/me/password",{method:"POST",body:JSON.stringify({currentPassword:values.currentPassword,newPassword:values.newPassword})});form.reset();toast("Password changed; other sessions signed out");}catch(problem){error.textContent=problem.message;}finally{button.disabled=false;}});
 const settingsCategories=[
-  ["account","Account","canonical"],["staff","Staff","canonical"],["business","Business","functional"],["availability","Availability","canonical"],["appointment-schedule","Appointment schedule","placeholder"],["locations","Locations","placeholder"],["permissions","Roles & permissions","functional"],["services","Services","canonical"],["payroll","Payroll","placeholder"],["pet-options","Pet options","canonical"],["tax-payments","Tax & payments","functional"],["discounts","Coupons & discounts","placeholder"],["automated-messages","Automated messages","functional"],["sms-auto-reply","SMS auto-reply","placeholder"],["agreements","Agreements","placeholder"],["online-booking","Online booking","placeholder"],["intake-form","Intake form","placeholder"],["client-portal","Client portal","placeholder"],["loyalty","Loyalty program","placeholder"],["reviews","Review booster","placeholder"],["report-cards","Report card","placeholder"],["integrations","Integrations","placeholder"]
+  ["account","Account","canonical"],["staff","Staff","canonical"],["business","Business","functional"],["availability","Availability","canonical"],["appointment-schedule","Appointment schedule","placeholder"],["locations","Locations","placeholder"],["permissions","Roles & permissions","functional"],["services","Services","canonical"],["payroll","Payroll","placeholder"],["pet-options","Pet options","canonical"],["tax-payments","Tax & payments","functional"],["discounts","Coupons & discounts","functional"],["automated-messages","Automated messages","functional"],["sms-auto-reply","SMS auto-reply","placeholder"],["agreements","Agreements","placeholder"],["online-booking","Online booking","placeholder"],["intake-form","Intake form","placeholder"],["client-portal","Client portal","placeholder"],["loyalty","Loyalty program","placeholder"],["reviews","Review booster","placeholder"],["report-cards","Report card","placeholder"],["integrations","Integrations","placeholder"]
 ];
-const settingsDescriptions={"appointment-schedule":"Configurable appointment policy is not yet available. Calendar display preferences remain under the Calendar gear.",locations:"Pawsh currently supports one active scheduling location per workspace. Multi-location management requires the approved location architecture.",payroll:"Payroll, commissions, and pay runs are not yet available in Pawsh.",discounts:"Manual checkout discounts are supported, but a coupon or discount-program management system is not yet available.","sms-auto-reply":"Pawsh does not currently provide an SMS auto-reply integration.",agreements:"Agreement and waiver template management is not yet available.","online-booking":"Public online-booking configuration is not yet available.","intake-form":"A configurable intake-form builder is not yet available.","client-portal":"Pawsh does not currently provide a client portal.",loyalty:"A points or rewards program is not yet available.",reviews:"Automated external review requests are not yet available.","report-cards":"Configurable grooming report cards are not yet available.",integrations:"No external integrations are currently configured."};
+const settingsDescriptions={"appointment-schedule":"Configurable appointment policy is not yet available. Calendar display preferences remain under the Calendar gear.",locations:"Pawsh currently supports one active scheduling location per workspace. Multi-location management requires the approved location architecture.",payroll:"Payroll, commissions, and pay runs are not yet available in Pawsh.","sms-auto-reply":"Pawsh does not currently provide an SMS auto-reply integration.",agreements:"Agreement and waiver template management is not yet available.","online-booking":"Public online-booking configuration is not yet available.","intake-form":"A configurable intake-form builder is not yet available.","client-portal":"Pawsh does not currently provide a client portal.",loyalty:"A points or rewards program is not yet available.",reviews:"Automated external review requests are not yet available.","report-cards":"Configurable grooming report cards are not yet available.",integrations:"No external integrations are currently configured."};
 function settingsPathCategory(){if(legacyBreedPaths.has(location.pathname))return "pet-options";const match=location.pathname.match(/^\/settings\/([^/]+)$/);return settingsCategories.some(([id])=>id===match?.[1])?match[1]:"account";}
 // Pet Options is the pet-configuration workspace. Pet Type is its first section and the parent
 // of the breed catalog; the remaining sections are recorded on the pet record today and are not
@@ -5426,6 +6151,39 @@ function checkoutMethodChoices(){
   if(!Array.isArray(methods))return CHECKOUT_FALLBACK_METHODS.map(([value,label])=>({value,label,settlementType:value}));
   return methods.map(method=>({value:method.id,label:method.name,settlementType:method.settlementType}));
 }
+/**
+ * The configured discounts this operator may apply, or null.
+ *
+ * THREE STATES, AND THE NULL IS THE PERMISSION. `null` means the server withheld the rows because
+ * this operator cannot apply one; `[]` means they can and the salon has configured none. The same
+ * idiom `tipPercents` uses, and collapsing them would tell a cashier the salon had no discounts
+ * when in fact they had no permission.
+ */
+function checkoutDiscountOptions(){
+  const discounts=checkoutOptions.data?.discounts;
+  return Array.isArray(discounts)?discounts:null;
+}
+/**
+ * Whether this operator may grant money off at all.
+ *
+ * Read off `discounts === null` rather than off the session's own permission list, so the picker,
+ * the manual field and the write the server will accept cannot disagree. There is no
+ * `canApplyDiscounts` flag to read: it would be a pure function of this and two representations of
+ * one fact drift.
+ *
+ * A read that FAILED tells us nothing either way, so that one case falls back to the session's own
+ * copy - the same fallback `checkoutMethodChoices` makes, for the same reason: a broken read should
+ * cost the operator the salon's configuration, not the ability to do their job.
+ */
+function checkoutGrantsDiscount(){
+  if(!checkoutOptions.data)return allowed("discounts.apply");
+  return checkoutDiscountOptions()!==null;
+}
+// Never null, because it is a policy enum rather than configuration worth withholding, and the
+// picker needs it before the operator has chosen anything.
+function checkoutStackingMode(){
+  return checkoutOptions.data?.stackingMode||"one_per_appointment";
+}
 function checkoutTipPercents(){
   // null is the server saying this salon has recorded no card processor, which is not three
   // zeroes and not "ask again": there are no configured presets, so none are offered and the
@@ -5433,6 +6191,1017 @@ function checkoutTipPercents(){
   const tips=checkoutOptions.data?.tipPercents;
   return Array.isArray(tips)?tips.map(Number):[];
 }
+// ---------------------------------------------------------------------------
+// Settings → Coupons & discounts
+//
+// Three tabs over ONE read. `GET /api/settings/discounts` returns the whole screen — the
+// discounts, the coupons, the stacking rule and the three closed sets — and every write answers
+// with the same shape, so a write is never reconciled into a fragment of state. That is the Tax
+// & payments contract, for the same reason: changing the stacking rule changes what every row on
+// the screen is allowed to do, so a reply that named only the row the caller touched would be
+// telling half the truth.
+//
+// THE READ AND EVERY WRITE ARE GATED ON `settings.discounts` ALONE. There is no separate view
+// key, so the ensure below does not pre-check the permission the way Tax & payments does: the
+// server's 403 is what the screen renders, which keeps "you cannot see this" a fact the server
+// stated rather than one the client guessed from its own copy of a role.
+//
+// PER PET IS STRUCTURALLY INERT and the screen says so in the server's words. `appointments.pet_id`
+// is a single column, so per-pet and per-appointment produce identical money; the choice is stored
+// because it is a statement of intent, and `perPetMultiplier.reason` is how the operator is told
+// what it is worth today. Nothing here says "coming soon" — that would promise a roadmap item.
+// ---------------------------------------------------------------------------
+
+// Plural, because each tab is a collection. The reference's singular "Discount"/"Coupon" reads as
+// a form label — the name of the thing being edited — and these are lists of them.
+const DISCOUNT_TABS=[["discount","Discounts"],["coupon","Coupons"],["stacking","Multiple coupons & discounts"]];
+// One page of rows. The pager renders only above this, because a pager over a single page is a
+// control that answers a question nobody asked.
+const DISCOUNTS_PAGE_SIZE=25;
+// No I, L, O, 0 or 1. A client reads this off a printed card or hears it over the phone, and the
+// ambiguous glyphs are the entire failure mode — a code that cannot be transcribed is a coupon
+// that cannot be redeemed.
+const COUPON_CODE_ALPHABET="ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+const COUPON_CODE_LENGTH=8;
+// The worked example on the stacking tab. $20 and 10% are chosen deliberately: $10 and 10% give
+// $90 whichever order they fold in, which demonstrates nothing about a setting whose whole point
+// is that the order changes the total.
+const STACKING_EXAMPLE={subtotalMinor:10000,amountMinor:2000,rateBasisPoints:1000};
+const STACKING_CASE_NAMES={
+  one_per_appointment:"One per appointment",
+  amount_first:"Amounts first",
+  percentage_first:"Percentages first"
+};
+// The screen's own words for the three modes. The server names the closed SET — a mode it grows
+// later appears here labelled by the server rather than being silently dropped — but "Stack, fixed
+// amounts first" does not tell an operator what it will do to a bill, and this control is one a
+// salon owner sets once and has to understand from the sentence alone.
+const STACKING_OPTION_LABELS={
+  one_per_appointment:"One coupon or discount per appointment",
+  amount_first:"Apply amounts first, then percentages",
+  percentage_first:"Apply percentages first, then amounts"
+};
+const DISCOUNT_HINT_ORDINARY="Comes off the appointment's subtotal, before tax.";
+const DISCOUNT_HINT_FREE="This makes the appointment free.";
+
+const discountsState={
+  tab:"discount",data:null,error:null,loading:false,restoreFocus:null,
+  discountPage:1,couponPage:1,editor:null
+};
+
+async function loadDiscounts(){
+  discountsState.loading=true;discountsState.error=null;
+  try{discountsState.data=await api("/api/settings/discounts");}
+  catch(error){discountsState.error=error;}
+  finally{discountsState.loading=false;}
+}
+function ensureDiscountsData(){
+  if(discountsState.data||discountsState.loading||discountsState.error)return;
+  runDetached(async()=>{await loadDiscounts();renderDiscounts();});
+}
+function applyDiscountsPayload(payload){
+  if(!payload||!Array.isArray(payload.discounts))return payload;
+  discountsState.data=payload;discountsState.error=null;
+  // Adding, retiring or retuning a discount - and changing the stacking rule - all change what the
+  // checkout picker should offer and how many of them it may accept, so the cashier-facing copy is
+  // dropped rather than left to go stale. Same reason `applyTaxPayments` drops it.
+  checkoutOptions.data=null;checkoutOptions.unavailable=false;
+  return payload;
+}
+async function discountsWrite(path,options){return applyDiscountsPayload(await api(path,options));}
+// A write made straight from a control rather than from a dialog. A refusal is the server's answer
+// to something the operator can see, so it is announced and the screen re-read: the switch or
+// dropdown that moved has to go back to what the server actually holds.
+function discountsControlWrite(key,path,options,message){
+  return runOnce(key,async()=>{
+    try{await discountsWrite(path,options);renderDiscounts();if(message)toast(message);}
+    catch(error){toast(error.message);await loadDiscounts();renderDiscounts();}
+  });
+}
+
+// Everything the screen can change is gated on `settings.discounts`, exactly as the routes are,
+// so this is the same test the server will make. It is a named function rather than the call
+// inlined at a dozen sites because the read-only rendering below is a real branch the day a
+// view-without-edit key exists, and only this line would move.
+function discountsEditable(){return allowed("settings.discounts");}
+function discountList(){return discountsState.data?.discounts||[];}
+function couponList(){return discountsState.data?.coupons||[];}
+// The server names the closed set on the settings read. Checkout does not make that read, so the
+// fallback has to be presentable rather than a raw enum: sentence-cased, it renders the same
+// "Per appointment" the server's own label says, and the two cannot look like different things.
+function discountApplyScopeLabel(value){
+  const named=(discountsState.data?.applyScopes||[]).find(scope=>scope.value===value)?.label;
+  if(named)return named;
+  const words=String(value||"").replaceAll("_"," ");
+  return words?words[0].toUpperCase()+words.slice(1):"";
+}
+function discountStackingMode(){return discountsState.data?.stackingMode||"one_per_appointment";}
+function discountPerPetReason(){
+  const block=discountsState.data?.perPetMultiplier;
+  return block&&block.supported===false?String(block.reason||""):"";
+}
+/**
+ * The currency's own symbol, taken from the formatter rather than assumed.
+ *
+ * The value field's suffix has to move with the mode — currency for an amount, `%` for a
+ * percentage — and a hard-coded `$` would be wrong for every salon that is not billing in dollars
+ * while `money()` beside it was right.
+ */
+function currencySymbol(){
+  return new Intl.NumberFormat("en-US",{style:"currency",currency:state.me?.business?.currency||"USD"})
+    .formatToParts(0).find(part=>part.type==="currency")?.value||"$";
+}
+function discountValueText(row){
+  return row.kind==="percentage"?`${taxPayPercent(row.rateBasisPoints)}%`:money(row.amountMinor);
+}
+// The value as the editor's own field wants it: dollars for an amount, percent for a percentage.
+function discountValueInput(row){
+  if(!row)return "";
+  return row.kind==="percentage"?taxPayPercent(row.rateBasisPoints)
+    :(Number(row.amountMinor||0)/100).toFixed(2);
+}
+
+// --- Shell ---------------------------------------------------------------
+function discountsTabsMarkup(){
+  return `<div class="settings-tabs" role="tablist" aria-label="Coupons and discounts" data-testid="discounts-tabs">`
+    +DISCOUNT_TABS.map(([id,label])=>{
+      const active=discountsState.tab===id;
+      return `<button type="button" role="tab" id="discounts-tab-${id}" class="settings-tab${active?" active":""}" data-discounts-tab="${id}" data-testid="discounts-tab-${id}" aria-selected="${active}" aria-controls="discounts-panel" tabindex="${active?0:-1}">${escape(label)}</button>`;
+    }).join("")
+    +`</div>`;
+}
+function discountsErrorMarkup(){
+  const error=discountsState.error;
+  const message=error?.status===403?"You do not have permission to view this."
+    :error?.status?error.message
+    :"Could not load coupons and discounts. Check your connection and try again.";
+  return `<div class="availability-error" data-testid="discounts-error"><h4>This could not load</h4><p>${escape(message)}</p>`
+    +`<button type="button" class="secondary compact" data-discounts-retry data-testid="discounts-retry">Try again</button></div>`;
+}
+// Said once, at the top, rather than as a tooltip on each of the controls that are missing. A
+// screen that has quietly dropped its Add button and its row menus owes the reader one sentence
+// saying why.
+function discountsReadOnlyNote(){
+  return discountsEditable()?""
+    :`<p class="fine settings-note" data-testid="discounts-read-only">You can see what this salon offers. Changing it needs the Settings permission.</p>`;
+}
+function discountsPanelHead(kind,heading,blurb){
+  // Above the table, never in a `.taxpay-foot`. These tables paginate, and a foot button lands
+  // under the pager where nobody looks for the thing that adds a row.
+  const add=discountsEditable()
+    ?`<button type="button" class="primary compact" data-${kind}-add data-testid="${kind}-add">+ Add ${kind}</button>`:"";
+  return `<div class="panel-head"><div><h4>${escape(heading)}</h4><p class="fine">${escape(blurb)}</p></div>${add}</div>`;
+}
+function discountsPageSlice(rows,kind){
+  const pages=Math.max(1,Math.ceil(rows.length/DISCOUNTS_PAGE_SIZE));
+  const page=Math.min(Math.max(1,kind==="coupon"?discountsState.couponPage:discountsState.discountPage),pages);
+  return {page,pages,visible:rows.slice((page-1)*DISCOUNTS_PAGE_SIZE,page*DISCOUNTS_PAGE_SIZE)};
+}
+function discountsPagerMarkup(kind,total,page,pages){
+  if(total<=DISCOUNTS_PAGE_SIZE)return "";
+  const first=(page-1)*DISCOUNTS_PAGE_SIZE+1,last=Math.min(page*DISCOUNTS_PAGE_SIZE,total);
+  const noun=kind==="coupon"?"coupon":"discount";
+  return `<div class="directory-pagination">`
+    +`<span role="status">${first}–${last} of ${total} ${noun}${total===1?"":"s"}</span>`
+    +pagerNavMarkup({idPrefix:`${kind}-pager`,label:`${kind==="coupon"?"Coupon":"Discount"} pages`,
+      inner:pagerPageButtons(page,pages,`data-${kind}-page`)})
+    +`</div>`;
+}
+// The switch is rendered for a reader who cannot throw it, disabled and titled, rather than
+// omitted: whether a discount is live is a fact about the salon, and a row that simply did not say
+// would be hiding it. The row MENUS are omitted instead, because every item in one mutates.
+function discountsActiveCell(kind,row,name){
+  const locked=discountsEditable()?"":"Changing this needs the Settings permission.";
+  return `<td><label class="taxpay-switch"><span class="visually-hidden">Active: ${escape(name)}</span>`
+    +`<input type="checkbox" role="switch" class="pref-toggle" data-${kind}-enabled="${escapeAttr(row.id)}" data-testid="${kind}-enabled"`
+    +`${row.active!==false?" checked":""}${locked?` disabled aria-disabled="true" title="${escapeAttr(locked)}"`:""}></label></td>`;
+}
+function discountsRowMenuMarkup(kind,id,name){
+  if(!discountsEditable())return "";
+  const nameAttr=escapeAttr(name);
+  const item=(action,label)=>`<button type="button" class="row-menu-item" data-${kind}-${action}="${escapeAttr(id)}" data-testid="${kind}-${action}">${label}</button>`;
+  return `<details class="row-menu roles-menu"><summary class="row-menu-trigger" aria-expanded="false" data-testid="${kind}-row-actions" aria-label="Actions for ${nameAttr}"><span aria-hidden="true">⋯</span></summary>`
+    +`<div class="row-menu-list" role="group" aria-label="Actions for ${nameAttr}">`
+    +item("edit","Edit")+item("duplicate","Duplicate")+item("delete","Delete")
+    +`</div></details>`;
+}
+
+// --- Tab 1: Discounts ----------------------------------------------------
+const DISCOUNT_EMPTY_COPY="No discount is set up. A discount is a standing reduction staff can apply at checkout: a percentage or a fixed amount, off the appointment or off each pet.";
+function discountTableRow(row){
+  const value=discountValueText(row);
+  // A PERCENTAGE SHOWS NO SECOND LINE. "Per appointment" under "10%" is a fact that changes no
+  // arithmetic — 10% of the bill is 10% of the bill however many pets it covers — so reading it
+  // back would be telling the operator something that is not true of the money.
+  const scope=row.kind==="percentage"?"":`<small>${escape(discountApplyScopeLabel(row.applyScope))}</small>`;
+  return `<tr data-testid="discount-row" data-discount-row="${escapeAttr(row.id)}" data-discount-name="${escapeAttr(row.name)}">`
+    +`<td><span class="taxpay-name"><strong>${escape(row.name)}</strong>`
+    +`<small class="taxpay-inline-type">${escape(value)}</small></span></td>`
+    +`<td><span class="taxpay-name"><strong>${escape(value)}</strong>${scope}</span></td>`
+    +discountsActiveCell("discount",row,row.name)
+    +`<td class="roles-actions">${discountsRowMenuMarkup("discount",row.id,row.name)}</td></tr>`;
+}
+function discountTabMarkup(){
+  if(discountsState.error)return discountsErrorMarkup();
+  const head=discountsPanelHead("discount","Discounts","A standing reduction staff can apply at checkout.");
+  const rows=discountList();
+  // The distinction between a discount and a coupon is stated nowhere else in the product, so the
+  // empty state is where a salon owner finds out which of the two they came here to make.
+  if(discountsState.data&&!rows.length){
+    return head+`<div class="taxpay-empty" data-testid="discount-empty"><p>${escape(DISCOUNT_EMPTY_COPY)}</p></div>`;
+  }
+  const columns=`<thead><tr><th scope="col">Name</th><th scope="col">Discount</th>`
+    +`<th scope="col">Active</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>`;
+  const {page,pages,visible}=discountsPageSlice(rows,"discount");
+  // Loading is a row INSIDE the rendered table, so the headers are on screen from the first frame
+  // and the panel does not change height when the rows arrive.
+  const body=discountsState.data?visible.map(discountTableRow).join(""):taxPayLoadingRow(4);
+  return head+taxPayTableMarkup("discount-table",columns,body)
+    +discountsPagerMarkup("discount",rows.length,page,pages);
+}
+
+// --- Tab 2: Coupons ------------------------------------------------------
+const COUPON_EMPTY_COPY="No coupon is set up. A coupon is a code a client gives you at checkout. Unlike a discount it can expire, run out, or be restricted to new clients.";
+/**
+ * A civil date in the column's own shorthand: `1 Jan`, and `1 Jan 2027` when the year is not this
+ * one. Parsed as UTC and formatted as UTC, because `starts_on` and `ends_on` are civil dates the
+ * server compares as civil dates — letting the browser's zone touch them is how a coupon starts a
+ * day early in California.
+ */
+function couponShortDate(value){
+  const text=String(value||"").slice(0,10);
+  const parts=text.split("-").map(Number);
+  if(parts.length!==3||parts.some(part=>!Number.isFinite(part)))return text;
+  const sameYear=parts[0]===new Date().getFullYear();
+  return new Intl.DateTimeFormat("en-GB",{timeZone:"UTC",day:"numeric",month:"short",
+    ...(sameYear?{}:{year:"numeric"})}).format(new Date(Date.UTC(parts[0],parts[1]-1,parts[2])));
+}
+/**
+ * The day set as one token, or nothing at all.
+ *
+ * Seven days is not a restriction, so it produces no token rather than a token saying every day.
+ * A run of FOUR or more contracts to a range; three stays spelled out, because `Mon–Wed` saves one
+ * character over `Mon, Tue, Wed` and costs the reader a rule to apply.
+ */
+function couponWeekdayToken(weekdays){
+  if(!Array.isArray(weekdays)||!weekdays.length||weekdays.length>=7)return "";
+  const days=[...new Set(weekdays.map(Number))].filter(day=>day>=0&&day<=6).sort((first,second)=>first-second);
+  if(!days.length)return "";
+  const key=days.join(",");
+  if(key==="1,2,3,4,5")return "Weekdays";
+  if(key==="0,6")return "Weekends";
+  const contiguous=days.every((day,index)=>index===0||day===days[index-1]+1);
+  if(contiguous&&days.length>=4)return `${AVAILABILITY_WEEKDAYS_SHORT[days[0]]}–${AVAILABILITY_WEEKDAYS_SHORT[days[days.length-1]]}`;
+  return days.map(day=>AVAILABILITY_WEEKDAYS_SHORT[day]).join(", ");
+}
+/**
+ * Every limitation on a coupon, as short tokens in one fixed order.
+ *
+ * Tokens rather than prose, and no `+2` overflow count: an overflow would put part of a row's
+ * truth inside a `title` attribute to buy vertical space this table is not short of.
+ */
+function couponLimitTokens(coupon){
+  const tokens=[];
+  const start=coupon.startsOn,end=coupon.endsOn;
+  if(start&&end)tokens.push(`${couponShortDate(start)} – ${couponShortDate(end)}`);
+  else if(start)tokens.push(`From ${couponShortDate(start)}`);
+  else if(end)tokens.push(`Until ${couponShortDate(end)}`);
+  if(coupon.maxRedemptionsPerClient)tokens.push(`${coupon.maxRedemptionsPerClient} per client`);
+  if(coupon.maxRedemptions)tokens.push(`${coupon.maxRedemptions} total`);
+  if(coupon.newClientsOnly)tokens.push("New clients");
+  const days=couponWeekdayToken(coupon.weekdays);
+  if(days)tokens.push(days);
+  return tokens;
+}
+function couponLimitsCell(coupon){
+  const tokens=couponLimitTokens(coupon);
+  if(!tokens.length){
+    return `<td data-testid="coupon-limits-cell"><span aria-hidden="true">—</span>`
+      +`<span class="visually-hidden">No limitations</span></td>`;
+  }
+  return `<td data-testid="coupon-limits-cell"><span class="coupon-limits-cell">`
+    +tokens.map(token=>`<span class="staff-chip">${escape(token)}</span>`).join("")+`</span></td>`;
+}
+// The name the receipt will use. `nameSnapshot` is `coupon.name ?? coupon.code` on the server, so
+// an unnamed coupon is called by its code here too rather than by a placeholder the invoice will
+// then contradict.
+function couponDisplayName(coupon){return coupon.name||coupon.code;}
+function couponTableRow(coupon){
+  const name=couponDisplayName(coupon);
+  const value=discountValueText(coupon);
+  const code=escape(coupon.code);
+  const redeemed=Number(coupon.redeemedCount)||0;
+  return `<tr data-testid="coupon-row" data-coupon-row="${escapeAttr(coupon.id)}" data-coupon-code="${escapeAttr(coupon.code)}">`
+    +`<td><span class="taxpay-name"><strong>${escape(name)}</strong>`
+    +`<small class="taxpay-inline-type">${code} · ${escape(value)}${redeemed?` · ${redeemed} redeemed`:""}</small></span></td>`
+    +`<td class="coupon-col-code"><span class="coupon-code">${code}</span></td>`
+    +`<td class="coupon-col-discount"><span class="taxpay-name"><strong>${escape(value)}</strong>`
+    +(coupon.kind==="percentage"?"":`<small>${escape(discountApplyScopeLabel(coupon.applyScope))}</small>`)
+    +`</span></td>`
+    +`<td class="coupon-col-redeemed">${redeemed}</td>`
+    +couponLimitsCell(coupon)
+    +discountsActiveCell("coupon",coupon,name)
+    +`<td class="roles-actions">${discountsRowMenuMarkup("coupon",coupon.id,name)}</td></tr>`;
+}
+function couponTabMarkup(){
+  if(discountsState.error)return discountsErrorMarkup();
+  const head=discountsPanelHead("coupon","Coupons","A code a client gives you at checkout.");
+  const rows=couponList();
+  if(discountsState.data&&!rows.length){
+    return head+`<div class="taxpay-empty" data-testid="coupon-empty"><p>${escape(COUPON_EMPTY_COPY)}</p></div>`;
+  }
+  // "Redeemed", not "Redeemed count": the column IS a count, and saying so twice is a header that
+  // describes its own datatype.
+  const columns=`<thead><tr><th scope="col">Name</th><th scope="col" class="coupon-col-code">Code</th>`
+    +`<th scope="col" class="coupon-col-discount">Discount</th>`
+    +`<th scope="col" class="coupon-col-redeemed">Redeemed</th>`
+    +`<th scope="col">Limitations</th>`
+    +`<th scope="col">Active</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>`;
+  const {page,pages,visible}=discountsPageSlice(rows,"coupon");
+  const body=discountsState.data?visible.map(couponTableRow).join(""):taxPayLoadingRow(7);
+  return head+taxPayTableMarkup("coupon-table",columns,body)
+    +discountsPagerMarkup("coupon",rows.length,page,pages);
+}
+
+// --- Tab 3: Multiple coupons & discounts ---------------------------------
+/**
+ * The example fold, compounding off the running base exactly as `applyDiscounts` does on the
+ * server. Derived rather than written down, so the illustration cannot drift away from the
+ * arithmetic it is illustrating.
+ */
+/**
+ * Where a line sits in the fold, given the salon's stacking rule.
+ *
+ * `one_per_appointment` gives everything one rank, so the sort is a no-op and the operator's own
+ * order stands - which is all that is needed, because at most one line can be there.
+ */
+function stackingRank(kind,mode){
+  if(mode==="amount_first")return kind==="amount"?0:1;
+  if(mode==="percentage_first")return kind==="percentage"?0:1;
+  return 0;
+}
+/**
+ * Applies discount lines to a subtotal, compounding each off what the previous ones left.
+ *
+ * MIRRORS `applyDiscounts` in packages/domain/src/money.ts, which is the authority - the server
+ * recomputes every amount and this never sends one. It exists so the browser can SHOW the
+ * arithmetic before the operator commits to it: $100 with $20 and 10% is $72 or $70 depending on
+ * a setting, and a running total that disagreed with the invoice would be worse than none.
+ *
+ * The two callers are the stacking tab's worked example and the checkout picker, and they share
+ * this rather than each carrying their own copy of a rule that can change.
+ *
+ * `Array.prototype.sort` is stable, so lines of equal rank keep the order they were given - the
+ * same tie-break the server takes from `appliedDiscountIds`.
+ */
+function foldDiscounts(subtotalMinor,lines,stackingMode){
+  const subtotal=Math.max(0,Number(subtotalMinor)||0);
+  const ranked=lines.map((line,index)=>({line,index}))
+    .sort((first,second)=>stackingRank(first.line.kind,stackingMode)-stackingRank(second.line.kind,stackingMode));
+  let base=subtotal;
+  const applied=[];
+  for(const {line,index} of ranked){
+    // A fixed amount larger than what is left CLAMPS; it is not an error. A percentage is a share
+    // of what remains and so can never pass it. Both are why `discountMinor <= subtotal` holds by
+    // construction here exactly as it does on the server.
+    const taken=line.kind==="amount"
+      ?Math.min(base,Math.max(0,Number(line.amountMinor)||0)*(Number(line.units)||1))
+      :Math.round(base*(Number(line.rateBasisPoints)||0)/10000);
+    base-=taken;
+    applied.push({index,kind:line.kind,appliedMinor:taken,remainingMinor:base});
+  }
+  // The DIFFERENCE the fold made, never a separate sum of rounded steps, so no drift between the
+  // steps shown and the total shown is representable.
+  return {subtotal,discountMinor:subtotal-base,total:base,applied};
+}
+// The worked example's two lines, as the fold wants them.
+function stackingExampleLines(){
+  return [{kind:"amount",amountMinor:STACKING_EXAMPLE.amountMinor},
+    {kind:"percentage",rateBasisPoints:STACKING_EXAMPLE.rateBasisPoints}];
+}
+function stackingCaseDetail(mode){
+  const amount=money(STACKING_EXAMPLE.amountMinor);
+  const percent=`${taxPayPercent(STACKING_EXAMPLE.rateBasisPoints)}%`;
+  const subtotal=STACKING_EXAMPLE.subtotalMinor;
+  const [amountLine,percentLine]=stackingExampleLines();
+  if(mode==="one_per_appointment"){
+    return {steps:"Staff apply one only",
+      result:`${money(foldDiscounts(subtotal,[amountLine],mode).total)} or `
+        +`${money(foldDiscounts(subtotal,[percentLine],mode).total)}`};
+  }
+  // The ORDER is the fold's, not this function's: passing both lines and letting `stackingRank`
+  // sort them is what makes the example a demonstration of the rule rather than a restatement of
+  // it that could disagree.
+  const fold=foldDiscounts(subtotal,stackingExampleLines(),mode);
+  const [first,second]=fold.applied;
+  const opening=first.kind==="amount"
+    ?`${money(subtotal)} − ${amount} = ${money(first.remainingMinor)}`
+    :`${percent} off = ${money(first.remainingMinor)}`;
+  return {steps:`${opening}, then ${second.kind==="amount"?`− ${amount}`:`${percent} off`}`,
+    result:money(fold.total)};
+}
+/**
+ * All three outcomes at once, with the chosen one marked.
+ *
+ * One naked dropdown cannot answer "what will my customer be charged", and showing only the
+ * selected case would confirm a choice rather than help somebody make one — the operator is
+ * deciding between three, so all three are on screen with their totals.
+ */
+function stackingExampleMarkup(current){
+  const modes=(discountsState.data?.stackingModes||[]).map(mode=>mode.value)
+    .filter(value=>STACKING_CASE_NAMES[value]);
+  return `<div class="stacking-example" data-testid="stacking-example">`
+    +`<p class="stacking-example-head"><strong>On a ${escape(money(STACKING_EXAMPLE.subtotalMinor))} appointment `
+    +`with a ${escape(money(STACKING_EXAMPLE.amountMinor))} discount and a `
+    +`${escape(taxPayPercent(STACKING_EXAMPLE.rateBasisPoints))}% discount</strong></p>`
+    +modes.map(mode=>{
+      const selected=mode===current,detail=stackingCaseDetail(mode);
+      // Marked in words as well as in treatment: "Selected" survives a screen where the tint and
+      // the rule are not distinguishable.
+      return `<div class="stacking-case${selected?" is-selected":""}"${selected?` aria-current="true"`:""} data-stacking-case="${mode}">`
+        +`<span class="stacking-case-name">${escape(STACKING_CASE_NAMES[mode])}`
+        +(selected?`<span class="stacking-case-mark">Selected</span>`:"")+`</span>`
+        +`<span class="stacking-case-steps">${escape(detail.steps)}</span>`
+        +`<strong class="stacking-case-total">${escape(detail.result)}</strong></div>`;
+    }).join("")
+    +`</div>`;
+}
+function stackingTabMarkup(){
+  if(discountsState.error)return discountsErrorMarkup();
+  if(!discountsState.data)return `<p class="availability-note is-quiet" aria-busy="true">Loading…</p>`;
+  const current=discountStackingMode();
+  const options=(discountsState.data.stackingModes||[]).map(mode=>
+    `<option value="${escapeAttr(mode.value)}"${mode.value===current?" selected":""}>`
+    +`${escape(STACKING_OPTION_LABELS[mode.value]||mode.label)}</option>`).join("");
+  return `<p>When more than one coupon or discount lands on the same appointment, this decides the order they come off in. `
+    +`The order changes the total, because a percentage taken after an amount is a percentage of a smaller number.</p>`
+    +`<label class="stacking-mode">Multiple coupons &amp; discounts`
+    +`<select data-stacking-select data-testid="stacking-select"${discountsEditable()?"":` disabled aria-disabled="true" title="${escapeAttr("Changing this needs the Settings permission.")}"`}>${options}</select></label>`
+    +stackingExampleMarkup(current)
+    +`<p class="fine settings-note">This applies to appointments checked out from now on. Invoices already created keep the total they were charged.</p>`;
+}
+
+// --- Render --------------------------------------------------------------
+function discountsMarkup(){
+  const body=discountsState.tab==="coupon"?couponTabMarkup()
+    :discountsState.tab==="stacking"?stackingTabMarkup()
+    :discountTabMarkup();
+  return discountsTabsMarkup()
+    +`<article class="settings-panel discounts-panel" id="discounts-panel" role="tabpanel" aria-labelledby="discounts-tab-${discountsState.tab}">`
+    +discountsReadOnlyNote()+body+`</article>`;
+}
+// renderSettingsCategory replaces the whole settings pane on every nav click, so this re-reads
+// module state rather than assuming anything about what is currently on screen. A write re-renders
+// too, which is also how a refused switch goes back to what the server holds; `restoreFocus` is
+// what stops that from dropping focus to the document.
+function renderDiscounts(){
+  const root=$("#discounts-root");if(!root)return;
+  root.innerHTML=discountsMarkup();
+  bindDiscounts(root);
+  const wanted=discountsState.restoreFocus;discountsState.restoreFocus=null;
+  if(wanted)root.querySelector(wanted)?.focus();
+}
+function selectDiscountsTab(tab,{focus=true}={}){
+  if(discountsState.tab===tab)return;
+  discountsState.tab=tab;renderDiscounts();
+  if(focus)$(`#discounts-tab-${tab}`)?.focus();
+}
+function selectDiscountsPage(kind,page){
+  const rows=kind==="coupon"?couponList():discountList();
+  const pages=Math.max(1,Math.ceil(rows.length/DISCOUNTS_PAGE_SIZE));
+  const wanted=Math.min(Math.max(1,page),pages);
+  if(kind==="coupon")discountsState.couponPage=wanted;else discountsState.discountPage=wanted;
+  // The arrow that was pressed may become the disabled end-of-list one, so focus goes to the page
+  // button that is now current rather than back to the document.
+  discountsState.restoreFocus=`[data-${kind}-page="${wanted}"]`;
+  renderDiscounts();
+}
+
+// --- The shared value controls -------------------------------------------
+/**
+ * Mode, value and apply scope — one implementation, used by the discount dialog and the coupon
+ * drawer alike, because they are the same three decisions about the same three columns.
+ *
+ * The SUFFIX AND THE CONSTRAINTS MOVE WITH THE MODE, and the value field's own label moves with
+ * them: `Amount` with a currency symbol, `Percentage` with a `%` and a ceiling of 100. The suffix
+ * is `aria-hidden` and the label is not, so the swap is announced rather than silently repainted.
+ *
+ * A typed value SURVIVES the switch and 150 becomes INVALID rather than being clamped to 100.
+ * Clamping edits a number the operator typed without telling them; a validation message asks them
+ * to decide what they meant.
+ */
+function discountValueControls(prefix,row){
+  const kind=row?.kind==="percentage"?"percentage":"amount";
+  const scope=row?.applyScope==="per_pet"?"per_pet":"per_appointment";
+  const percentage=kind==="percentage";
+  const chip=(name,value,checked,label,testid)=>`<label class="availability-chip">`
+    +`<input type="radio" name="${name}" value="${value}"${checked?" checked":""} data-testid="${testid}">`
+    +`<span>${escape(label)}</span></label>`;
+  const reason=discountPerPetReason();
+  return `<div class="wide discount-controls" data-discount-controls="${prefix}">`
+    +`<fieldset class="discount-choice"><legend>Discount type</legend>`
+    +chip("kind","amount",!percentage,"Fixed amount",`${prefix}-mode-amount`)
+    +chip("kind","percentage",percentage,"Percentage",`${prefix}-mode-percentage`)
+    +`</fieldset>`
+    +`<label class="discount-value"><span data-discount-value-label>${percentage?"Percentage":"Amount"}</span>`
+    +`<span class="field-affix">`
+    +`<input type="number" name="value" data-testid="field-value" required min="0.01" step="0.01"`
+    +`${percentage?' max="100"':""} value="${escapeAttr(discountValueInput(row))}">`
+    +`<span class="field-affix-unit" aria-hidden="true" data-discount-value-unit>${escape(percentage?"%":currencySymbol())}</span>`
+    +`</span></label>`
+    +`<p class="field-hint" data-discount-hint>${escape(DISCOUNT_HINT_ORDINARY)}</p>`
+    +`<fieldset class="discount-choice"><legend>Comes off</legend>`
+    +chip("applyScope","per_appointment",scope!=="per_pet","Per appointment",`${prefix}-apply-appointment`)
+    +chip("applyScope","per_pet",scope==="per_pet","Per pet",`${prefix}-apply-pet`)
+    +`</fieldset>`
+    // The control ships and the screen states what it is worth today, in the server's own words.
+    // Not "coming soon": that would name a roadmap item nobody has committed to.
+    +(reason?`<p class="fine" data-testid="${prefix}-per-pet-note">${escape(reason)}</p>`:"")
+    +`</div>`;
+}
+function bindDiscountValueControls(host){
+  const container=host?.querySelector("[data-discount-controls]");if(!container)return;
+  const modes=[...container.querySelectorAll('[name="kind"]')];
+  const input=container.querySelector('[data-testid="field-value"]');
+  const label=container.querySelector("[data-discount-value-label]");
+  const unit=container.querySelector("[data-discount-value-unit]");
+  const hint=container.querySelector("[data-discount-hint]");
+  if(!modes.length||!input)return;
+  const apply=()=>{
+    const percentage=modes.find(mode=>mode.checked)?.value==="percentage";
+    if(label)label.textContent=percentage?"Percentage":"Amount";
+    if(unit)unit.textContent=percentage?"%":currencySymbol();
+    if(percentage)input.setAttribute("max","100");else input.removeAttribute("max");
+    if(hint)hint.textContent=percentage&&Number(input.value||0)>=100?DISCOUNT_HINT_FREE:DISCOUNT_HINT_ORDINARY;
+  };
+  modes.forEach(mode=>mode.addEventListener("change",apply));
+  input.addEventListener("input",apply);
+  apply();
+}
+/**
+ * The kind and its value, as the write schema wants them.
+ *
+ * Exactly one of `amountMinor` and `rateBasisPoints` is sent. The schema refuses both rather than
+ * silently ignoring one — an operator who sent both does not know which they would get — so the
+ * unused half is omitted rather than nulled.
+ */
+function discountValuePayload(values){
+  const kind=String(values.get("kind")||"amount")==="percentage"?"percentage":"amount";
+  const value=Number(values.get("value")||0);
+  const applyScope=String(values.get("applyScope")||"per_appointment");
+  return kind==="percentage"
+    ?{kind,rateBasisPoints:Math.round(value*100),applyScope}
+    :{kind,amountMinor:Math.round(value*100),applyScope};
+}
+
+// --- Discount editor -----------------------------------------------------
+/**
+ * Add and Edit are one dialog, and Edit exists deliberately.
+ *
+ * The reference offers Delete only. Without Edit a typo in a live discount is unfixable here —
+ * the same reason `openTaxPayRateEditor` offers it on the rate in force — and delete-and-recreate
+ * severs the link every invoice that applied it holds back to the row that produced it.
+ */
+function openDiscountEditor(discountId,{duplicate=false}={}){
+  const row=discountId?discountList().find(item=>item.id===discountId):null;
+  const editing=Boolean(row)&&!duplicate;
+  const name=duplicate&&row?`${row.name} copy`:editing?row.name:"";
+  openModal(editing?"Edit discount":"Add discount",
+    // The placeholder is the reference's own, spelled correctly.
+    field("name","Name","text",
+      `required maxlength="80" placeholder="Old Friend Discount" value="${escapeAttr(name)}"`,true)
+    +discountValueControls("discount",duplicate||editing?row:null),
+    async form=>{
+      const payload={name:String(form.get("name")||"").trim(),...discountValuePayload(form),
+        // A full replacement, not a patch: the kind and its value are one decision. Editing keeps
+        // whatever the row's switch says; a new or duplicated discount starts live.
+        active:editing?row.active!==false:true};
+      await discountsWrite(editing?`/api/settings/discounts/${row.id}`:"/api/settings/discounts",
+        {method:editing?"PUT":"POST",body:JSON.stringify(payload)});
+      return {afterClose:()=>renderDiscounts(),
+        message:editing?`${payload.name} saved`:`${payload.name} added`};
+    },{submitLabel:editing?"Save":"Add discount"});
+  // No dirty guard. `#modal` has none today and this form is a name and a number; adding one here
+  // would make this dialog behave unlike every other one in the product.
+  bindDiscountValueControls($("#modal-fields"));
+}
+function confirmDeleteDiscount(row){
+  openStackedDialog({
+    title:`Delete ${row.name}?`,
+    body:`<p>It stops being offered at checkout. Invoices that already applied it keep the amount they took off, and go on naming it.</p>`
+      +`<p class="error" role="alert"></p>`,
+    confirmLabel:"Delete",dismissLabel:"Cancel",
+    onConfirm:async host=>{
+      const error=host.querySelector(".error");error.textContent="";
+      try{await api(`/api/settings/discounts/${encodeURIComponent(row.id)}`,{method:"DELETE"});}
+      catch(problem){error.textContent=problem.message;return false;}
+      // 204 and no body, so the screen is re-read rather than patched.
+      await loadDiscounts();renderDiscounts();toast(`${row.name} deleted`);return true;
+    }
+  });
+}
+function confirmDeleteCoupon(coupon){
+  const name=couponDisplayName(coupon);
+  const redeemed=Number(coupon.redeemedCount)||0;
+  openStackedDialog({
+    title:`Delete ${name}?`,
+    body:`<p>The code stops working at checkout.${redeemed?` ${redeemed===1?"One redemption":`${redeemed} redemptions`} already recorded stay exactly as they were charged.`:""}</p>`
+      // The code is claimed forever, redeemed or not. A code that was handed out must never come
+      // back meaning something else, and somebody who deletes expecting to re-use it should find
+      // that out here rather than from a refusal on the way back in.
+      +`<p class="fine">${escape(coupon.code)} cannot be issued again, even under a new coupon.</p>`
+      +`<p class="error" role="alert"></p>`,
+    confirmLabel:"Delete",dismissLabel:"Cancel",
+    onConfirm:async host=>{
+      const error=host.querySelector(".error");error.textContent="";
+      try{await api(`/api/settings/coupons/${encodeURIComponent(coupon.id)}`,{method:"DELETE"});}
+      catch(problem){error.textContent=problem.message;return false;}
+      await loadDiscounts();renderDiscounts();toast(`${name} deleted`);return true;
+    }
+  });
+}
+
+// --- Coupon editor drawer ------------------------------------------------
+/**
+ * Eight characters a person can read aloud.
+ *
+ * Five attempts against the codes already loaded, and then the fifth is used anyway: the server
+ * owns real uniqueness — the index is not partial on `active`, so even a retired code is still
+ * claimed — and a client that kept trying would only be guessing at a set it cannot see.
+ */
+function generateCouponCode(){
+  const taken=new Set(couponList().map(coupon=>String(coupon.code||"").toUpperCase()));
+  let code="";
+  for(let attempt=0;attempt<5;attempt++){
+    const values=new Uint32Array(COUPON_CODE_LENGTH);
+    globalThis.crypto.getRandomValues(values);
+    code=[...values].map(value=>COUPON_CODE_ALPHABET[value%COUPON_CODE_ALPHABET.length]).join("");
+    if(!taken.has(code))return code;
+  }
+  return code;
+}
+/**
+ * One limitation row: the switch that turns it on, and the fields it turns on.
+ *
+ * The fields go in a `<fieldset disabled>` rather than being tracked input by input. `disabled`
+ * propagates natively — every descendant is announced unavailable, leaves the tab order, and is
+ * excluded from `FormData` — which is four correct behaviours from one attribute, and it is what
+ * makes "unchecked means unset" true of the payload without a line of code saying so.
+ *
+ * DISABLED, NEVER HIDDEN. Hiding makes the drawer jump under the pointer and leaves nothing on
+ * screen saying what checking the box is going to ask for.
+ */
+function couponLimitRow({key,label,hint,on,legend,inputs}){
+  return `<div class="coupon-limit-row" data-coupon-limit-row="${key}">`
+    +`<label class="coupon-limit-switch"><input type="checkbox" class="pref-toggle" role="switch"`
+    +` data-coupon-limit="${key}" data-testid="coupon-limit-${key}"${on?" checked":""}>`
+    +`<span class="coupon-limit-label">${escape(label)}${hint?`<small>${escape(hint)}</small>`:""}</span></label>`
+    +(inputs?`<fieldset class="coupon-limit-inputs" id="coupon-limit-${key}-fields"${on?"":" disabled"}>`
+      +`<legend class="visually-hidden">${escape(legend)}</legend>${inputs}</fieldset>`
+      +`<p class="error coupon-limit-error" data-coupon-limit-error="${key}" role="alert"></p>`:"")
+    +`</div>`;
+}
+function couponEditorBodyMarkup(coupon){
+  const dateInput=(name,label,value)=>`<label class="coupon-limit-field">${escape(label)}`
+    +`<input type="date" name="${name}" data-testid="field-${name}" value="${escapeAttr(value||"")}"></label>`;
+  const countInput=(name,label,value)=>`<label class="coupon-limit-field">${escape(label)}`
+    +`<input type="number" name="${name}" data-testid="field-${name}" required min="1" step="1"`
+    +` value="${escapeAttr(value?String(value):"1")}"></label>`;
+  const days=Array.isArray(coupon?.weekdays)?coupon.weekdays.map(Number):[];
+  // Seven pill checkboxes, not a multi-select. `.availability-chip` is already keyboard-native,
+  // already the product's vocabulary for choosing days, and already tested.
+  const dayChips=`<div class="coupon-limit-days" role="group" aria-label="Days this coupon can be redeemed">`
+    +AVAILABILITY_WEEKDAYS.map((label,weekday)=>`<label class="availability-chip">`
+      +`<input type="checkbox" name="weekday" value="${weekday}" data-testid="coupon-day-${weekday}"`
+      +`${days.includes(weekday)?" checked":""}>`
+      +`<span aria-hidden="true">${AVAILABILITY_WEEKDAYS_SHORT[weekday]}</span>`
+      +`<span class="visually-hidden">${escape(label)}</span></label>`).join("")
+    +`</div>`;
+  return `<label>Name`
+    +`<input type="text" name="name" data-testid="field-name" maxlength="80" placeholder="Spring cleaning"`
+    +` value="${escapeAttr(coupon?.name||"")}">`
+    +`<small class="field-hint">Optional. Without one the code is what the receipt calls it.</small></label>`
+    // Fully editable, because a salon may have printed SPRING26 before Pawsh ever saw it. Uppercase
+    // on display and on submit, so the code stored is the code on the card.
+    +`<label>Code`
+    +`<span class="field-affix">`
+    +`<input type="text" name="code" data-testid="field-code" required maxlength="40"`
+    +` pattern="[A-Za-z0-9]{4,20}" autocomplete="off" spellcheck="false" autocapitalize="characters"`
+    +` class="coupon-code-input" value="${escapeAttr(coupon?.code||"")}">`
+    // The verb IS the warning: `Regenerate` says a code is already there, which is cheaper and
+    // clearer than a confirm for something one more press undoes.
+    +`<button type="button" class="secondary compact field-affix-action" data-coupon-generate data-testid="coupon-generate">`
+    +`${coupon?.code?"Regenerate":"Generate"}</button></span>`
+    +`<small class="field-hint">4–20 letters and numbers. Generated codes leave out I, L, O, 0 and 1, which are the characters a client misreads.</small></label>`
+    +discountValueControls("coupon",coupon)
+    +`<fieldset class="coupon-limit-group"><legend>When it can be redeemed</legend>`
+    +couponLimitRow({key:"dates",label:"Only between two dates",
+      on:Boolean(coupon?.startsOn||coupon?.endsOn),legend:"Redemption dates",
+      inputs:dateInput("startsOn","From",coupon?.startsOn)+dateInput("endsOn","Until",coupon?.endsOn)})
+    +couponLimitRow({key:"days",label:"Only on certain days",
+      on:Array.isArray(coupon?.weekdays)&&coupon.weekdays.length>0,legend:"Days of the week",
+      inputs:dayChips})
+    +`</fieldset>`
+    +`<fieldset class="coupon-limit-group"><legend>How many times</legend>`
+    +couponLimitRow({key:"per-client",label:"Limit per client",
+      on:Boolean(coupon?.maxRedemptionsPerClient),legend:"Redemptions per client",
+      inputs:countInput("maxRedemptionsPerClient","Times each client may redeem it",coupon?.maxRedemptionsPerClient)})
+    +couponLimitRow({key:"total",label:"Limit in total",
+      on:Boolean(coupon?.maxRedemptions),legend:"Redemptions in total",
+      inputs:countInput("maxRedemptions","Times it may be redeemed at all",coupon?.maxRedemptions)})
+    // No gated inputs: the switch IS the setting, so it carries the name the payload uses.
+    +couponLimitRow({key:"new-clients",label:"New clients only",
+      hint:"Refused for anybody this salon has invoiced before.",on:Boolean(coupon?.newClientsOnly)})
+    +`</fieldset>`
+    +`<p class="coupon-limit-summary" data-testid="coupon-limit-summary" role="status" aria-live="polite"></p>`;
+}
+// The new-clients switch is the only limit whose checkbox is itself the value, so it is the only
+// one that has to reach the payload by name.
+function couponNewClientsInput(form){return form?.querySelector('[data-coupon-limit="new-clients"]');}
+function couponLimitFieldset(form,key){return form?.querySelector(`#coupon-limit-${key}-fields`);}
+/**
+ * The limits as they stand in the form right now, in the same shape a row has, so the summary and
+ * the table's tokens are built by one function and can never word the same coupon differently.
+ */
+function couponEditorLimits(form){
+  const enabled=key=>!couponLimitFieldset(form,key)?.disabled;
+  const value=name=>{
+    const input=form.querySelector(`[name="${name}"]`);
+    return input&&!input.disabled?input.value:"";
+  };
+  const days=enabled("days")
+    ?[...form.querySelectorAll('[name="weekday"]:checked')].map(input=>Number(input.value))
+    :[];
+  return {
+    startsOn:enabled("dates")?value("startsOn")||null:null,
+    endsOn:enabled("dates")?value("endsOn")||null:null,
+    weekdays:days.length?days:null,
+    maxRedemptionsPerClient:enabled("per-client")?Number(value("maxRedemptionsPerClient"))||null:null,
+    maxRedemptions:enabled("total")?Number(value("maxRedemptions"))||null:null,
+    newClientsOnly:Boolean(couponNewClientsInput(form)?.checked)
+  };
+}
+function renderCouponLimitSummary(form){
+  const target=form?.querySelector("[data-testid=\"coupon-limit-summary\"]");if(!target)return;
+  const tokens=couponLimitTokens(couponEditorLimits(form));
+  if(tokens.length){target.textContent=`Limits: ${tokens.join(" · ")}`;return;}
+  // A switch thrown but not yet filled in is not an unlimited coupon. Saying it was, while the
+  // switch above is visibly on, would be the summary contradicting the screen it summarises - and
+  // that combination is refused on save, so it is a state the operator is passing through.
+  const pending=[...form.querySelectorAll("[data-coupon-limit]")].some(toggle=>toggle.checked);
+  // An unlimited coupon SAYS SO. A blank line where the limits would be reads as a summary that
+  // has not loaded rather than as a coupon anyone can redeem.
+  target.textContent=pending?"Limits: not set yet."
+    :"No limitations. Anyone can redeem this, any number of times.";
+}
+// The form as one string, so "has anything changed" is a comparison rather than a field-by-field
+// audit. A disabled fieldset contributes nothing, which is exactly right: turning a limit on and
+// off again leaves the drawer clean.
+function couponEditorSnapshot(form){
+  if(!form)return "";
+  const entries=[...new FormData(form).entries()].map(([key,value])=>`${key}=${value}`);
+  entries.push(`newClientsOnly=${Boolean(couponNewClientsInput(form)?.checked)}`);
+  return entries.join("&");
+}
+function couponEditorDirty(){
+  const form=$("#coupon-editor-form");
+  if(!form||!discountsState.editor)return false;
+  return couponEditorSnapshot(form)!==discountsState.editor.snapshot;
+}
+function couponEditorError(message){
+  const target=$("#coupon-editor-error");if(target)target.textContent=message||"";
+}
+function couponLimitError(key,message){
+  const target=$(`[data-coupon-limit-error="${key}"]`);
+  if(target)target.textContent=message||"";
+}
+function clearCouponLimitErrors(){
+  $$("#coupon-editor .coupon-limit-error").forEach(node=>{node.textContent="";});
+}
+function openCouponEditor(couponId,{duplicate=false}={}){
+  const existing=couponId?couponList().find(item=>item.id===couponId):null;
+  const editing=Boolean(existing)&&!duplicate;
+  const drawer=$("#coupon-editor");if(!drawer)return;
+  // A duplicate copies everything the coupon says EXCEPT the code, which can never be reused —
+  // so the one field it cannot carry over is the one that opens empty and ready to generate.
+  const seed=existing?{...existing,...(duplicate?{code:"",id:null}:{})}:null;
+  discountsState.editor={couponId:editing?existing.id:null,active:existing?existing.active!==false:true,snapshot:""};
+  $("#coupon-editor-title").textContent=editing?couponDisplayName(existing):"New coupon";
+  couponEditorError("");
+  const form=$("#coupon-editor-form");
+  form.innerHTML=couponEditorBodyMarkup(seed);
+  $('[data-testid="coupon-editor-save"]').textContent=editing?"Save":"Add coupon";
+  bindCouponEditor(form);
+  drawer.showModal();
+  discountsState.editor.snapshot=couponEditorSnapshot(form);
+  renderCouponLimitSummary(form);
+  // The NAME input, not the drawer. This body is a form to fill, which is a different thing from
+  // the role editor's body — a list to read — so the focus lands where typing starts.
+  form.querySelector('[data-testid="field-name"]')?.focus();
+}
+function bindCouponEditor(form){
+  bindDiscountValueControls(form);
+  const summary=()=>renderCouponLimitSummary(form);
+  form.querySelectorAll("[data-coupon-limit]").forEach(toggle=>toggle.addEventListener("change",()=>{
+    const key=toggle.dataset.couponLimit;
+    const fields=couponLimitFieldset(form,key);
+    if(fields){
+      fields.disabled=!toggle.checked;
+      // On check the values are left exactly as they were and focus moves inside, so the switch
+      // hands over to the thing it just turned on. On uncheck NOTHING IS CLEARED: an operator who
+      // unchecks to look at the total is not asking to lose the dates they typed.
+      if(toggle.checked)fields.querySelector("input,select,textarea")?.focus();
+      else couponLimitError(key,"");
+    }
+    summary();
+  }));
+  // `input` as well as `change`: the summary is live, so it has to follow a number as it is typed
+  // rather than waiting for focus to leave the field it describes.
+  form.querySelectorAll('[name="weekday"],[name="startsOn"],[name="endsOn"],[name="maxRedemptions"],[name="maxRedemptionsPerClient"]')
+    .forEach(input=>{input.addEventListener("change",summary);input.addEventListener("input",summary);});
+  const code=form.querySelector('[data-testid="field-code"]');
+  const generate=form.querySelector("[data-coupon-generate]");
+  const label=()=>{if(generate)generate.textContent=code?.value?"Regenerate":"Generate";};
+  code?.addEventListener("input",label);
+  generate?.addEventListener("click",()=>{
+    if(!code)return;
+    code.value=generateCouponCode();
+    label();code.focus();
+  });
+  // Uppercase on the way out of the field as well as on submit, so what is on screen is what the
+  // customer will be handed.
+  code?.addEventListener("change",()=>{code.value=code.value.trim().toUpperCase();});
+  form.addEventListener("submit",event=>{event.preventDefault();runDetached(saveCouponEditor);});
+}
+async function saveCouponEditor(){
+  const form=$("#coupon-editor-form");if(!form||!discountsState.editor)return;
+  const editor=discountsState.editor;
+  couponEditorError("");clearCouponLimitErrors();
+  const values=new FormData(form);
+  const limits=couponEditorLimits(form);
+  // Cross-field refusals go in the row's OWN error node, beside the fields they are about, rather
+  // than in the footer where the reader has to work out which of five rows is meant.
+  const datesOn=!couponLimitFieldset(form,"dates")?.disabled;
+  if(datesOn&&!limits.startsOn&&!limits.endsOn){
+    couponLimitError("dates","Give a start date, an end date, or both.");return;
+  }
+  if(limits.startsOn&&limits.endsOn&&limits.startsOn>limits.endsOn){
+    couponLimitError("dates","The end date cannot be before the start date.");return;
+  }
+  if(!couponLimitFieldset(form,"days")?.disabled&&!limits.weekdays){
+    couponLimitError("days","Choose at least one day, or turn this off.");return;
+  }
+  const payload={
+    code:String(values.get("code")||"").trim().toUpperCase(),
+    name:String(values.get("name")||"").trim()||null,
+    ...discountValuePayload(values),
+    ...limits,
+    active:editor.active
+  };
+  const save=$('[data-testid="coupon-editor-save"]');
+  const original=save.textContent;
+  save.disabled=true;save.textContent="Saving…";
+  try{
+    await discountsWrite(editor.couponId?`/api/settings/coupons/${encodeURIComponent(editor.couponId)}`:"/api/settings/coupons",
+      {method:editor.couponId?"PUT":"POST",body:JSON.stringify(payload)});
+  }catch(error){
+    couponEditorError(error.message);
+    // Both code refusals land on the field that has to change, with the text selected so the next
+    // keystroke replaces it. COUPON_CODE_RETIRED is the one that would otherwise be a dead end: it
+    // collides with a soft-deleted coupon that is not on this screen, so "already exists" would
+    // send the operator hunting a row that is not there.
+    if(error.data?.code==="COUPON_CODE_TAKEN"||error.data?.code==="COUPON_CODE_RETIRED"){
+      const code=form.querySelector('[data-testid="field-code"]');
+      code?.focus();code?.select();
+    }
+    return;
+  }finally{save.disabled=false;save.textContent=original;}
+  editor.snapshot=couponEditorSnapshot(form);
+  $("#coupon-editor").close();
+  renderDiscounts();
+  toast(`${payload.name||payload.code} ${editor.couponId?"saved":"added"}`);
+}
+function setupCouponEditorDrawer(){
+  const drawer=$("#coupon-editor");if(!drawer)return;
+  const close=()=>{
+    if(!couponEditorDirty()){drawer.close();return;}
+    openStackedDialog({
+      title:"Discard unsaved changes?",
+      body:`<p>Nothing has been sent to the server yet, so closing now leaves this coupon exactly as it was.</p>`,
+      confirmLabel:"Discard",dismissLabel:"Keep editing",
+      onConfirm:()=>{drawer.close();}
+    });
+  };
+  drawer.querySelector('[data-testid="coupon-editor-close"]')?.addEventListener("click",close);
+  drawer.querySelector('[data-testid="coupon-editor-cancel"]')?.addEventListener("click",close);
+  // Escape reaches the dialog as a cancelable `cancel`, which is the only place unsaved work can
+  // still be defended. The backdrop click is the dialog itself and never its panel.
+  drawer.addEventListener("cancel",event=>{
+    if(!couponEditorDirty())return;
+    event.preventDefault();close();
+  });
+  drawer.addEventListener("click",event=>{if(event.target===drawer)close();});
+  drawer.addEventListener("close",()=>{discountsState.editor=null;});
+}
+
+// --- Writes made straight from a row -------------------------------------
+// Every write is a FULL REPLACEMENT, so flipping one switch sends the row back as it stands with
+// that one field moved. A partial patch cannot express the kind/value pairing the schema enforces.
+function discountWriteBody(row,overrides){
+  return {name:row.name,kind:row.kind,
+    ...(row.kind==="percentage"?{rateBasisPoints:row.rateBasisPoints}:{amountMinor:row.amountMinor}),
+    applyScope:row.applyScope,active:row.active!==false,...overrides};
+}
+function couponWriteBody(coupon,overrides){
+  return {code:coupon.code,name:coupon.name||null,kind:coupon.kind,
+    ...(coupon.kind==="percentage"?{rateBasisPoints:coupon.rateBasisPoints}:{amountMinor:coupon.amountMinor}),
+    applyScope:coupon.applyScope,startsOn:coupon.startsOn||null,endsOn:coupon.endsOn||null,
+    weekdays:Array.isArray(coupon.weekdays)&&coupon.weekdays.length?coupon.weekdays:null,
+    newClientsOnly:Boolean(coupon.newClientsOnly),
+    maxRedemptions:coupon.maxRedemptions??null,
+    maxRedemptionsPerClient:coupon.maxRedemptionsPerClient??null,
+    active:coupon.active!==false,...overrides};
+}
+
+// --- Binding -------------------------------------------------------------
+function bindDiscounts(root){
+  bindRolesMenuDismissal();
+  // Arrows move focus, Enter and Space commit, matching Tax & payments and Roles. Activating on
+  // focus would swap the panel out from under somebody simply passing along the bar.
+  root.querySelector('[role="tablist"]')?.addEventListener("keydown",event=>{
+    const buttons=[...root.querySelectorAll("[data-discounts-tab]")],index=buttons.indexOf(document.activeElement);
+    if(index<0)return;
+    if(event.key==="Enter"||event.key===" "||event.key==="Spacebar"){event.preventDefault();selectDiscountsTab(buttons[index].dataset.discountsTab);return;}
+    if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;
+    event.preventDefault();
+    const next=event.key==="Home"?0:event.key==="End"?buttons.length-1:(index+(event.key==="ArrowRight"?1:-1)+buttons.length)%buttons.length;
+    buttons[next]?.focus();
+  });
+  root.querySelectorAll("[data-discounts-tab]").forEach(button=>button.addEventListener("click",()=>
+    selectDiscountsTab(button.dataset.discountsTab,{focus:false})));
+  root.querySelector("[data-discounts-retry]")?.addEventListener("click",()=>{
+    discountsState.error=null;discountsState.data=null;renderDiscounts();ensureDiscountsData();
+  });
+  ["discount","coupon"].forEach(kind=>{
+    root.querySelectorAll(`[data-${kind}-page]`).forEach(button=>button.addEventListener("click",()=>
+      selectDiscountsPage(kind,Number(button.dataset[`${kind}Page`]))));
+    const rows=kind==="coupon"?couponList():discountList();
+    const {page,pages}=discountsPageSlice(rows,kind);
+    const previous=root.querySelector(`#${kind}-pager-prev`),next=root.querySelector(`#${kind}-pager-next`);
+    if(previous){previous.disabled=page<=1;previous.addEventListener("click",()=>selectDiscountsPage(kind,page-1));}
+    if(next){next.disabled=page>=pages;next.addEventListener("click",()=>selectDiscountsPage(kind,page+1));}
+  });
+  const discount=id=>discountList().find(item=>item.id===id);
+  const coupon=id=>couponList().find(item=>item.id===id);
+  root.querySelector("[data-discount-add]")?.addEventListener("click",()=>openDiscountEditor(null));
+  root.querySelector("[data-coupon-add]")?.addEventListener("click",()=>openCouponEditor(null));
+  root.querySelectorAll("[data-discount-edit]").forEach(button=>button.addEventListener("click",()=>
+    openDiscountEditor(button.dataset.discountEdit)));
+  root.querySelectorAll("[data-discount-duplicate]").forEach(button=>button.addEventListener("click",()=>
+    openDiscountEditor(button.dataset.discountDuplicate,{duplicate:true})));
+  root.querySelectorAll("[data-discount-delete]").forEach(button=>button.addEventListener("click",()=>{
+    const row=discount(button.dataset.discountDelete);if(row)confirmDeleteDiscount(row);
+  }));
+  root.querySelectorAll("[data-coupon-edit]").forEach(button=>button.addEventListener("click",()=>
+    openCouponEditor(button.dataset.couponEdit)));
+  root.querySelectorAll("[data-coupon-duplicate]").forEach(button=>button.addEventListener("click",()=>
+    openCouponEditor(button.dataset.couponDuplicate,{duplicate:true})));
+  root.querySelectorAll("[data-coupon-delete]").forEach(button=>button.addEventListener("click",()=>{
+    const row=coupon(button.dataset.couponDelete);if(row)confirmDeleteCoupon(row);
+  }));
+  root.querySelectorAll("[data-discount-enabled]").forEach(input=>input.addEventListener("change",()=>{
+    const id=input.dataset.discountEnabled,row=discount(id);if(!row)return;
+    const active=input.checked;
+    discountsState.restoreFocus=`[data-discount-enabled="${id}"]`;
+    runDetached(()=>discountsControlWrite(`discount:${id}`,`/api/settings/discounts/${encodeURIComponent(id)}`,
+      {method:"PUT",body:JSON.stringify(discountWriteBody(row,{active}))},
+      active?`${row.name} can be applied at checkout`:`${row.name} hidden from checkout`));
+  }));
+  root.querySelectorAll("[data-coupon-enabled]").forEach(input=>input.addEventListener("change",()=>{
+    const id=input.dataset.couponEnabled,row=coupon(id);if(!row)return;
+    const active=input.checked,name=couponDisplayName(row);
+    discountsState.restoreFocus=`[data-coupon-enabled="${id}"]`;
+    runDetached(()=>discountsControlWrite(`coupon:${id}`,`/api/settings/coupons/${encodeURIComponent(id)}`,
+      {method:"PUT",body:JSON.stringify(couponWriteBody(row,{active}))},
+      active?`${name} can be redeemed` :`${name} can no longer be redeemed`));
+  }));
+  root.querySelector("[data-stacking-select]")?.addEventListener("change",event=>{
+    const stackingMode=event.target.value;
+    discountsState.restoreFocus="[data-stacking-select]";
+    runDetached(()=>discountsControlWrite("discounts:stacking","/api/settings/discount-stacking",
+      {method:"PUT",body:JSON.stringify({stackingMode})},"Stacking rule updated"));
+  });
+  // The row menus reuse the client directory's `.row-menu` exactly as Roles does, so they need
+  // only the usual close-the-others.
+  root.querySelectorAll(".roles-menu").forEach(menu=>menu.addEventListener("toggle",()=>{
+    menu.querySelector("summary")?.setAttribute("aria-expanded",String(menu.open));
+    if(!menu.open)return;
+    root.querySelectorAll(".roles-menu[open]").forEach(other=>{if(other!==menu)closeRolesMenu(other);});
+  }));
+  root.querySelectorAll(".roles-menu .row-menu-item").forEach(button=>
+    button.addEventListener("click",closeRolesMenus));
+}
+
 // ---------------------------------------------------------------------------
 // Settings → Roles & permissions
 //
@@ -6504,7 +8273,11 @@ function confirmRejectAccessRequest(request){
 }
 
 function closeRolesMenu(menu){menu.open=false;menu.querySelector("summary")?.setAttribute("aria-expanded","false");}
-function closeRolesMenus(){$$("#roles-root .roles-menu[open]").forEach(closeRolesMenu);}
+// `.roles-menu` is the settings workspaces' shared row menu - Roles opened it, Coupons & discounts
+// reuses it - so the dismissal is scoped to the class rather than to one root. Scoping it to
+// `#roles-root` would have left the discounts menus with no way to close but a second click on
+// their own trigger.
+function closeRolesMenus(){$$(".roles-menu[open]").forEach(closeRolesMenu);}
 // Bound once on the document, not on the root: the workspace is rebuilt on every write, and a
 // listener per render would stack up. Escape has to reach these too - a menu that only closes by
 // clicking elsewhere is a keyboard trap in everything but name.
@@ -6514,7 +8287,7 @@ function bindRolesMenuDismissal(){
   document.addEventListener("click",event=>{if(!event.target.closest?.(".roles-menu"))closeRolesMenus();});
   document.addEventListener("keydown",event=>{
     if(event.key!=="Escape")return;
-    const open=$("#roles-root .roles-menu[open]");
+    const open=$(".roles-menu[open]");
     if(!open)return;
     event.preventDefault();
     const trigger=open.querySelector("summary");
@@ -6586,7 +8359,7 @@ function bindRoles(root){
   root.querySelectorAll(".roles-menu .row-menu-item").forEach(button=>button.addEventListener("click",closeRolesMenus));
 }
 
-function renderSettingsCategory(category=settingsPathCategory(),{history="replace"}={}){const definition=settingsCategories.find(([id])=>id===category)||settingsCategories[0],[id,title]=definition,nav=$("#settings-navigation"),content=$("#settings-content");if(!nav||!content)return;nav.innerHTML=settingsCategories.map(([key,label])=>`<button type="button" data-settings-category="${key}" class="${key===id?"active":""}" ${key===id?'aria-current="page"':""}>${escape(label)}</button>`).join("");let html="";if(id==="account")html=settingsLink("Account","Personal identity and password security remain in your canonical account workspace.","Manage profile & security","profile-account");else if(id==="staff")html=`<div id="staff-root" class="staff-root"></div>`;else if(id==="business")html=`<article class="settings-panel"><h3>Business</h3><p>Manage the workspace name and authoritative timezone, currency, tax rate, and reminder lead time.</p><button type="button" class="primary compact settings-business-action">Edit business settings</button></article>`;else if(id==="availability")html=`<div id="availability-root" class="availability-root"></div>`;else if(id==="permissions")html=allowed("team.manage")?`<div id="roles-root" class="roles-root"></div>`:settingsPlaceholder(id,title);else if(id==="services")html=settingsLink("Services","Service names, pricing, durations, and availability have one canonical workspace.","Open Services","services");else if(id==="pet-options")html=`<div id="pet-options-workspace" class="pet-options-workspace"></div>`;else if(id==="tax-payments")html=`<div id="taxpay-root" class="taxpay-root"></div>`;else if(id==="automated-messages")html=`<article class="settings-panel"><h3>Automated messages</h3><p>Pawsh’s durable reminder/outbox flow uses the configured reminder lead time. Template and channel management are deferred.</p><button type="button" class="primary compact settings-business-action">Manage reminder timing</button></article>`;else html=settingsPlaceholder(id,title);content.innerHTML=`<div class="settings-content-head"><p class="eyebrow">Settings</p><h2>${escape(title)}</h2></div>${html}`;nav.querySelectorAll("[data-settings-category]").forEach(button=>button.addEventListener("click",()=>renderSettingsCategory(button.dataset.settingsCategory,{history:"push"})));content.querySelectorAll(".settings-canonical-link").forEach(button=>button.addEventListener("click",()=>showView(button.dataset.target)));content.querySelectorAll(".settings-business-action").forEach(button=>button.addEventListener("click",actions["business-settings"]));if(id==="permissions"){renderRoles();ensureRolesData();}if(id==="staff")renderStaff();if(id==="pet-options")renderPetOptions();if(id==="availability"){renderAvailability();ensureAvailabilityData();}if(id==="tax-payments"){renderTaxPayments();ensureTaxPaymentsData();}if(history!=="none")globalThis.history[history==="push"?"pushState":"replaceState"]({view:"admin-settings",settingsCategory:id},"",`/settings/${id}`);content.focus({preventScroll:true});}
+function renderSettingsCategory(category=settingsPathCategory(),{history="replace"}={}){const definition=settingsCategories.find(([id])=>id===category)||settingsCategories[0],[id,title]=definition,nav=$("#settings-navigation"),content=$("#settings-content");if(!nav||!content)return;nav.innerHTML=settingsCategories.map(([key,label])=>`<button type="button" data-settings-category="${key}" class="${key===id?"active":""}" ${key===id?'aria-current="page"':""}>${escape(label)}</button>`).join("");let html="";if(id==="account")html=settingsLink("Account","Personal identity and password security remain in your canonical account workspace.","Manage profile & security","profile-account");else if(id==="staff")html=`<div id="staff-root" class="staff-root"></div>`;else if(id==="business")html=`<article class="settings-panel"><h3>Business</h3><p>Manage the workspace name and authoritative timezone, currency, tax rate, and reminder lead time.</p><button type="button" class="primary compact settings-business-action">Edit business settings</button></article>`;else if(id==="availability")html=`<div id="availability-root" class="availability-root"></div>`;else if(id==="permissions")html=allowed("team.manage")?`<div id="roles-root" class="roles-root"></div>`:settingsPlaceholder(id,title);else if(id==="services")html=settingsLink("Services","Service names, pricing, durations, and availability have one canonical workspace.","Open Services","services");else if(id==="pet-options")html=`<div id="pet-options-workspace" class="pet-options-workspace"></div>`;else if(id==="tax-payments")html=`<div id="taxpay-root" class="taxpay-root"></div>`;else if(id==="discounts")html=`<div id="discounts-root" class="discounts-root"></div>`;else if(id==="automated-messages")html=`<article class="settings-panel"><h3>Automated messages</h3><p>Pawsh’s durable reminder/outbox flow uses the configured reminder lead time. Template and channel management are deferred.</p><button type="button" class="primary compact settings-business-action">Manage reminder timing</button></article>`;else html=settingsPlaceholder(id,title);content.innerHTML=`<div class="settings-content-head"><p class="eyebrow">Settings</p><h2>${escape(title)}</h2></div>${html}`;nav.querySelectorAll("[data-settings-category]").forEach(button=>button.addEventListener("click",()=>renderSettingsCategory(button.dataset.settingsCategory,{history:"push"})));content.querySelectorAll(".settings-canonical-link").forEach(button=>button.addEventListener("click",()=>showView(button.dataset.target)));content.querySelectorAll(".settings-business-action").forEach(button=>button.addEventListener("click",actions["business-settings"]));if(id==="permissions"){renderRoles();ensureRolesData();}if(id==="staff")renderStaff();if(id==="pet-options")renderPetOptions();if(id==="availability"){renderAvailability();ensureAvailabilityData();}if(id==="tax-payments"){renderTaxPayments();ensureTaxPaymentsData();}if(id==="discounts"){renderDiscounts();ensureDiscountsData();}if(history!=="none")globalThis.history[history==="push"?"pushState":"replaceState"]({view:"admin-settings",settingsCategory:id},"",`/settings/${id}`);content.focus({preventScroll:true});}
 
 async function openClientProfile(customerId,{petId=null,appointmentId=null,returnView=null}={}){
   if(returnView)state.clientProfileReturnView=returnView;
@@ -7636,15 +9409,19 @@ function openAgreementCorrection(customerId,templateId){
   },{cancelLabel:"Cancel",submitLabel:"Remove signature"});
 }
 
-function bindClientAgreements(customerId){
+// Scoped to the host the banner and panel were rendered into, for the same reason
+// bindClientSummary() is: more than one copy of the client column can be in the DOM at once.
+function bindClientAgreements(customerId,root=document){
   const agreements=state.clientProfile?.agreements;
-  $(".agreements-retry")?.addEventListener("click",()=>runDetached(()=>refreshClientAgreements(customerId)));
-  $(".agreements-send")?.addEventListener("click",()=>openAgreementSend(customerId));
-  $(".agreement-banner-open")?.addEventListener("click",()=>openAgreementSend(customerId,{preselect:agreements?.summary?.unsignedRequiredTemplateIds||[]}));
-  $(".agreement-banner-dismiss")?.addEventListener("click",()=>{dismissedAgreementBanners.add(customerId);renderClientProfile();});
-  $$(".agreement-name-open").forEach(button=>button.addEventListener("click",()=>openAgreementDetail(customerId,button.dataset.agreementTemplate)));
-  $$(".agreement-sign").forEach(button=>button.addEventListener("click",()=>openAgreementSignature(customerId,button.dataset.agreementTemplate)));
-  $$(".agreement-correct").forEach(button=>button.addEventListener("click",()=>openAgreementCorrection(customerId,button.dataset.agreementTemplate)));
+  const one=selector=>root.querySelector(selector);
+  const every=selector=>[...root.querySelectorAll(selector)];
+  one(".agreements-retry")?.addEventListener("click",()=>runDetached(()=>refreshClientAgreements(customerId)));
+  one(".agreements-send")?.addEventListener("click",()=>openAgreementSend(customerId));
+  one(".agreement-banner-open")?.addEventListener("click",()=>openAgreementSend(customerId,{preselect:agreements?.summary?.unsignedRequiredTemplateIds||[]}));
+  one(".agreement-banner-dismiss")?.addEventListener("click",()=>{dismissedAgreementBanners.add(customerId);renderClientProfile();});
+  every(".agreement-name-open").forEach(button=>button.addEventListener("click",()=>openAgreementDetail(customerId,button.dataset.agreementTemplate)));
+  every(".agreement-sign").forEach(button=>button.addEventListener("click",()=>openAgreementSignature(customerId,button.dataset.agreementTemplate)));
+  every(".agreement-correct").forEach(button=>button.addEventListener("click",()=>openAgreementCorrection(customerId,button.dataset.agreementTemplate)));
 }
 
 /**
@@ -7684,14 +9461,110 @@ function clientSalesSummaryMarkup(data){
     +`</div>`;
 }
 
+function clientPetsPanelMarkup(profile){
+  const {data}=profile,customer=data.customer;
+  return (allowed("pets.edit")&&!customer.archivedAt?`<div class="panel-actions"><button type="button" class="secondary compact profile-add-pet">+ Pet</button></div>`:"")
+    +`${data.pets.map(petCardMarkup).join("")||`<p class="note-empty">No pets yet.</p>`}`;
+}
+
 /**
- * The client summary column: identity, contact, notes and the pets/preference tabs. It is the
+ * One appointment as a row in the Messages rail, reviving the narrow-column `.profile-appointment-row`
+ * grid the profile stopped using when its history became a table.
+ *
+ * Price and the payment chip are deliberately absent. The chip comes from appointmentPaymentIndex(),
+ * which only knows appointments the loaded calendar window covers, and in Messages `state.appointments`
+ * is usually empty — a chip that never appears reads as "unpaid, unknown" rather than "not asked".
+ */
+function clientContextAppointmentRow(item,{upcoming}){
+  const zone=item.schedulingTimezone||schedulingZone(),start=new Date(item.startAt);
+  const services=(item.services||[]).map(service=>service.name).filter(Boolean);
+  const groomers=(item.groomers||[]).map(groomer=>groomer.displayName).filter(Boolean);
+  const when=`${new Intl.DateTimeFormat([],{weekday:"short",month:"short",day:"numeric",timeZone:zone}).format(start)} · ${new Intl.DateTimeFormat([],{hour:"numeric",minute:"2-digit",timeZone:zone}).format(start)}`;
+  const meta=[item.petName,groomers.join(", ")||item.employeeName].filter(Boolean).join(" · ");
+  // Every upcoming appointment is scheduled, so a "scheduled" chip on every upcoming row is
+  // decoration. An upcoming row that has already moved on is the fact worth showing, and history
+  // always carries its outcome.
+  const chip=upcoming&&item.status==="scheduled"?"":`<span class="history-chip chip-${clientAttr(item.status)}">${escape(item.status.replace("_"," "))}</span>`;
+  return `<button type="button" class="profile-appointment-row" data-testid="client-appointment-row" data-profile-appointment="${clientAttr(item.id)}" aria-haspopup="dialog" aria-label="Open appointment #${escape(String(item.id).slice(0,8))}">`
+    +`<span class="history-when">${escape(when)}</span>`
+    +(meta?`<span class="history-meta">${escape(meta)}</span>`:"")
+    +(services.length?`<span class="history-services">${escape(services.join(", "))}</span>`:"")
+    +`<span class="appt-state">${chip}</span></button>`;
+}
+
+function clientContextAppointmentSection({id,title,items,total,upcoming,emptyText}){
+  const shown=items.length;
+  return `<div class="profile-section-head"><h3>${escape(title)} (${escape(String(total))})</h3></div>`
+    +(shown
+      ? `<div class="profile-appointment-list" data-testid="client-${id}-list">${items.map(item=>clientContextAppointmentRow(item,{upcoming})).join("")}</div>`
+      : `<p class="note-empty" data-testid="client-${id}-empty">${escape(emptyText)}</p>`)
+    // Truncation is computed per half from this payload's own totals. `appointmentsTruncated` is a
+    // single boolean OR-ing both halves, so it cannot say which one is short — and with a 25-row
+    // upcoming cap against a 5-row history preview it is nearly always the history. The rail does
+    // not page: that would be a second copy of the profile's paging on a surface whose job is
+    // context, so the honest count hands off to the profile that can page.
+    +(total>shown
+      ? `<div class="history-more" data-testid="client-${id}-more"><span>Showing ${escape(String(shown))} of ${escape(String(total))} ${escape(upcoming?"upcoming":"past")}</span>`
+        +`<button type="button" class="secondary compact open-context-profile">Open full profile</button></div>`
+      : "");
+}
+
+/**
+ * Upcoming and history stacked, with no sub-toggle. Both halves are already in the payload,
+ * upcoming is typically 0–2 and the history preview caps at 5, so this is about seven rows in a
+ * scrolling rail. A toggle would hide loaded data behind a click and put a third level of chrome
+ * inside a 298px column; stacking also shows both empty states at once, which is the more useful
+ * fact. Counts come from the payload `total`, never from `items.length`.
+ */
+function clientAppointmentsPanelMarkup(profile){
+  const {data}=profile;
+  const upcoming=data.upcoming?.items||[],history=data.history?.items||[];
+  return clientContextAppointmentSection({id:"upcoming",title:"Upcoming",items:upcoming,
+      total:Number(data.upcoming?.total??upcoming.length),upcoming:true,
+      emptyText:"No upcoming appointments for this client."})
+    +clientContextAppointmentSection({id:"past",title:"History",items:history,
+      total:Number(data.history?.total??history.length),upcoming:false,
+      emptyText:"No past appointments recorded for this client."});
+}
+
+/**
+ * Card on file. Pawsh stores no card token, no saved card and no Square customer link, so the tab
+ * answers the operator's mid-thread question — "can I charge this client's card on file?" — rather
+ * than only declining it. Nothing here may imply a card could be stored: no "Add card" button,
+ * disabled or otherwise, and no empty card slot. It states a product fact rather than a financial
+ * fact about this client, so it is not permission-gated.
+ */
+function clientCardsPanelMarkup(){
+  return `<div class="context-placeholder" data-testid="client-cards-placeholder">`
+    +`<p class="eyebrow">Not available yet</p><h4>Card on file</h4>`
+    +`<p>Pawsh does not store card details for a client. There is no saved card, no card token and nowhere to add one, so nothing here can be charged.</p>`
+    +`<p>Payments are taken at checkout on a Square Terminal with the card present. Square holds the card data; Pawsh records only the completed payment.</p></div>`;
+}
+
+// One registry, two callers, no fork: the profile and the Messages rail select from the same tab
+// definitions rather than each carrying its own strip.
+const CLIENT_TABS={
+  pets:["Pets",profile=>clientPetsPanelMarkup(profile)],
+  preference:["Preference",profile=>clientPreferenceMarkup(profile.data.customer)],
+  appointments:["Appointments",profile=>clientAppointmentsPanelMarkup(profile)],
+  cards:["Cards",()=>clientCardsPanelMarkup()]
+};
+const PROFILE_CLIENT_TABS=["pets","preference"];
+const CONTEXT_CLIENT_TABS=["pets","appointments","cards"];
+
+/**
+ * The client summary column: identity, contact, notes and a tab strip drawn from `tabs`. It is the
  * left column of the client profile and the right column of Messages, because an operator
  * reading a conversation needs the same card as one reading the profile — one markup, one set
- * of bindings, no second version of the client to keep in step.
+ * of bindings, no second version of the client to keep in step. The two surfaces show different
+ * tabs: Preferences belong to the full profile, Appointments and Cards to the rail beside a thread.
  */
-function clientSummaryMarkup(profile,{back=true}={}){
-  const {data}=profile,customer=data.customer,tab=profile.tab==="preference"?"preference":"pets";
+function clientSummaryMarkup(profile,{back=true,tabs=PROFILE_CLIENT_TABS}={}){
+  const {data}=profile,customer=data.customer;
+  // Resolved for this render only and never written back to `profile.tab`. One field spans both
+  // surfaces, so persisting the fallback would strip the rail of its tab the instant the profile —
+  // which has no Appointments or Cards — drew the same record.
+  const tab=tabs.includes(profile.tab)?profile.tab:tabs[0];
   return `<section class="client-profile-left">`
     +(back?`<button type="button" class="text-button client-profile-back">← Back</button>`:"")
     +(customer.archivedAt?`<p class="profile-banner">This client is marked inactive. History is kept and new bookings are blocked.</p>`:"")
@@ -7700,41 +9573,63 @@ function clientSummaryMarkup(profile,{back=true}={}){
     +`<dl class="profile-facts"><div><dt>Phone</dt><dd>${escape(customer.phone||"Not provided")}</dd></div><div><dt>Email</dt><dd>${escape(customer.email||"Not provided")}</dd></div><div><dt>Preferred groomer</dt><dd><button type="button" class="text-button preferred-groomer"${allowed("customers.edit")?"":" disabled"}>${escape(customer.preferredEmployeeName||"Not set")}</button></dd></div><div><dt>Client since</dt><dd>${escape(new Date(customer.createdAt).toLocaleDateString())}</dd></div></dl>`
     +`<div class="profile-section-head"><h3>Notes</h3>${allowed("customers.edit")&&!customer.archivedAt?`<button type="button" class="text-button note-add">Add</button>`:""}</div>`
     +`<div class="client-notes">${clientNotesMarkup(profile)}</div>`
-    +`<div class="profile-tabs" role="tablist" aria-label="Client detail">`
-    +`<button type="button" role="tab" id="client-tab-pets" aria-controls="client-panel-pets" aria-selected="${tab==="pets"}" tabindex="${tab==="pets"?0:-1}" data-client-tab="pets">Pets</button>`
-    +`<button type="button" role="tab" id="client-tab-preference" aria-controls="client-panel-preference" aria-selected="${tab==="preference"}" tabindex="${tab==="preference"?0:-1}" data-client-tab="preference">Preference</button></div>`
-    +`<div class="profile-panel" role="tabpanel" id="client-panel-pets" aria-labelledby="client-tab-pets" tabindex="0"${tab==="pets"?"":" hidden"}>`
-    +(allowed("pets.edit")&&!customer.archivedAt?`<div class="panel-actions"><button type="button" class="secondary compact profile-add-pet">+ Pet</button></div>`:"")
-    +`${data.pets.map(petCardMarkup).join("")||`<p class="note-empty">No pets yet.</p>`}</div>`
-    +`<div class="profile-panel" role="tabpanel" id="client-panel-preference" aria-labelledby="client-tab-preference" tabindex="0"${tab==="preference"?"":" hidden"}>${clientPreferenceMarkup(customer)}</div>`
+    +`<div class="profile-tabs" role="tablist" aria-label="Client detail" data-testid="client-tabs">`
+    +tabs.map(id=>`<button type="button" role="tab" id="client-tab-${id}" data-testid="client-tab-${id}" aria-controls="client-panel-${id}" aria-selected="${tab===id}" tabindex="${tab===id?0:-1}" data-client-tab="${id}">${escape(CLIENT_TABS[id][0])}</button>`).join("")
+    +`</div>`
+    // Every panel in `tabs` is emitted with the inactive ones hidden, so each tab's `aria-controls`
+    // resolves to an element that is genuinely in the document.
+    +tabs.map(id=>`<div class="profile-panel" role="tabpanel" id="client-panel-${id}" data-testid="client-panel-${id}" aria-labelledby="client-tab-${id}" tabindex="0"${tab===id?"":" hidden"}>${CLIENT_TABS[id][1](profile)}</div>`).join("")
     +`</section>`;
 }
 
 // Bindings for the summary column, wherever it is rendered. Every handler re-renders through
 // renderClientProfile(), which redraws whichever surface is currently showing the column.
-function bindClientSummary(profile){
+//
+// SCOPED TO THE HOST IT WAS JUST RENDERED INTO, not to the document. There are now three
+// possible hosts and more than one of them can hold markup at the same time — the profile keeps
+// its last render while Messages is on screen, and the appointment surface adds a third copy
+// above both — so a document-wide `$(".note-add")` binds whichever host happens to sit earliest
+// in the DOM rather than the one the operator is looking at.
+function bindClientSummary(profile,root=document){
   const customer=profile.data.customer;
+  const one=selector=>root.querySelector(selector);
+  const every=selector=>[...root.querySelectorAll(selector)];
   bindNoteMenus();
-  bindClientAgreements(customer.id);
+  bindClientAgreements(customer.id,root);
 
-  $(".client-profile-back")?.addEventListener("click",()=>showView(state.clientProfileReturnView||"customers"));
-  $(".client-edit")?.addEventListener("click",()=>editCustomer(customer.id));
-  $(".preferred-groomer")?.addEventListener("click",openPreferredGroomer);
-  $(".note-add")?.addEventListener("click",addClientNote);
-  $(".notes-retry")?.addEventListener("click",()=>runDetached(reloadClientProfile));
-  $(".note-toggle")?.addEventListener("click",()=>{profile.notesExpanded=!profile.notesExpanded;renderClientProfile();});
-  $$(".note-edit").forEach(button=>button.addEventListener("click",()=>{closeNoteMenus();editClientNote(button.dataset.noteId);}));
-  $$(".note-pin").forEach(button=>button.addEventListener("click",()=>{closeNoteMenus();runDetached(()=>toggleClientNotePin(button.dataset.noteId));}));
-  $$(".note-delete").forEach(button=>button.addEventListener("click",()=>{closeNoteMenus();runDetached(()=>deleteClientNote(button.dataset.noteId));}));
-  $$(".note-menu").forEach(menu=>menu.addEventListener("toggle",()=>{
+  one(".client-profile-back")?.addEventListener("click",()=>showView(state.clientProfileReturnView||"customers"));
+  one(".client-edit")?.addEventListener("click",()=>editCustomer(customer.id));
+  one(".preferred-groomer")?.addEventListener("click",openPreferredGroomer);
+  one(".note-add")?.addEventListener("click",addClientNote);
+  one(".notes-retry")?.addEventListener("click",()=>runDetached(reloadClientProfile));
+  one(".note-toggle")?.addEventListener("click",()=>{profile.notesExpanded=!profile.notesExpanded;renderClientProfile();});
+  every(".note-edit").forEach(button=>button.addEventListener("click",()=>{closeNoteMenus();editClientNote(button.dataset.noteId);}));
+  every(".note-pin").forEach(button=>button.addEventListener("click",()=>{closeNoteMenus();runDetached(()=>toggleClientNotePin(button.dataset.noteId));}));
+  every(".note-delete").forEach(button=>button.addEventListener("click",()=>{closeNoteMenus();runDetached(()=>deleteClientNote(button.dataset.noteId));}));
+  every(".note-menu").forEach(menu=>menu.addEventListener("toggle",()=>{
     menu.querySelector("summary")?.setAttribute("aria-expanded",String(menu.open));
-    if(menu.open)$$(".note-menu[open]").forEach(other=>{if(other!==menu){other.open=false;other.querySelector("summary")?.setAttribute("aria-expanded","false");}});
+    if(menu.open)every(".note-menu[open]").forEach(other=>{if(other!==menu){other.open=false;other.querySelector("summary")?.setAttribute("aria-expanded","false");}});
   }));
 
-  const tabs=$$("[data-client-tab]");
-  const selectTab=(next,{focus=false}={})=>{profile.tab=next;renderClientProfile();if(focus)$(`[data-client-tab="${next}"]`)?.focus();};
+  // The appointment id opens the same detail surface the calendar opens, so one visit reads the
+  // same way from either side. Bound here rather than in renderClientProfile(), which returns
+  // early in Messages: the profile's history table and the rail's rows are never both in the DOM,
+  // so one binding covers both. The return view falls back to the current view because
+  // `state.clientProfileReturnView` is never set when the rail is the entry point.
+  //
+  // Clicked from the rail INSIDE an open detail surface, this replaces that surface rather than
+  // stacking a second appointment on top of itself; openCalendarAppointment() decides that from
+  // what is already open, so the rail does not have to know which host it is in.
+  every('[data-profile-appointment]').forEach(button=>button.addEventListener("click",event=>
+    runDetached(()=>openCalendarAppointment(button.dataset.profileAppointment,event.currentTarget,
+      {returnView:state.clientProfileReturnView||document.body.dataset.view||"customers"}))));
+
+  const tabs=every("[data-client-tab]");
+  const selectTab=(next,{focus=false}={})=>{profile.tab=next;renderClientProfile();if(focus)root.querySelector(`[data-client-tab="${next}"]`)?.focus();};
   tabs.forEach(button=>{
-    button.addEventListener("click",()=>selectTab(button.dataset.clientTab));
+    // Selecting re-renders the column and destroys the clicked button, so focus must be restored
+    // explicitly or it falls to <body>.
+    button.addEventListener("click",()=>selectTab(button.dataset.clientTab,{focus:true}));
     button.addEventListener("keydown",event=>{
       if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;
       event.preventDefault();
@@ -7744,21 +9639,21 @@ function bindClientSummary(profile){
     });
   });
 
-  $(".profile-add-pet")?.addEventListener("click",()=>{
+  one(".profile-add-pet")?.addEventListener("click",()=>{
     actions["new-pet"]();
     const select=$('#modal select[name="customerId"]');
     if(select)select.value=customer.id;
     $("#modal").addEventListener("close",()=>runDetached(reloadClientProfile),{once:true});
   });
-  $(".pref-archive")?.addEventListener("click",()=>runDetached(archiveClientFromProfile));
-  $$("[data-pref-switch]").forEach(input=>input.addEventListener("change",()=>{
+  one(".pref-archive")?.addEventListener("click",()=>runDetached(archiveClientFromProfile));
+  every("[data-pref-switch]").forEach(input=>input.addEventListener("change",()=>{
     const key=input.dataset.prefSwitch;
     const definition=CLIENT_PREFERENCE_SWITCHES.find(([id])=>id===key);
     if(!definition)return;
     const [,label,inverted]=definition;
     runDetached(()=>saveClientPreference({[key]:inverted?!input.checked:input.checked},label));
   }));
-  const frequency=$("#pref-booking-frequency");
+  const frequency=one("#pref-booking-frequency");
   frequency?.addEventListener("change",()=>{
     const raw=frequency.value.trim();
     if(!raw)return runDetached(()=>saveClientPreference({bookingFrequencyWeeks:null},"Booking frequency"));
@@ -7768,10 +9663,61 @@ function bindClientSummary(profile){
   });
 }
 
+/**
+ * Where the client summary column currently lives, when it is living somewhere other than the
+ * full profile.
+ *
+ * A REGISTRY RATHER THAN A THIRD BRANCH. renderClientProfile() used to test
+ * `body.dataset.view==="messages"` and otherwise write to `#client-profile-content`; the
+ * appointment surface is a third host, and a third branch is how a fourth gets written. Whoever
+ * opens a surface that owns the column registers it, and every handler in bindClientSummary()
+ * redraws through the one lookup. Messages needs no registration: it is the implicit host
+ * whenever it is the visible view.
+ *
+ * `returnView` travels with the host because "where the column is" and "where leaving it goes
+ * back to" are two halves of the same fact.
+ */
+let clientSummaryRail=null;
+function clientSummaryHost(){
+  const explicit=clientSummaryRail?.host();
+  if(explicit?.isConnected)return explicit;
+  if(document.body.dataset.view==="messages")return $("#message-client-context");
+  return null;
+}
+function clientSummaryReturnView(){
+  if(clientSummaryRail?.host()?.isConnected)return clientSummaryRail.returnView;
+  return "messages";
+}
+
+/**
+ * The column on its own, in whichever host holds it. Selecting a conversation loads the client
+ * the same way the profile does, because the pane beside the thread — and the rail beside an
+ * appointment — is the profile's own summary column rather than a second, thinner copy of the
+ * client. `state.clientProfile` is the one record all three surfaces read.
+ */
+function renderClientSummaryPane(){
+  const profile=state.clientProfile,host=clientSummaryHost();
+  if(!profile||!host)return;
+  host.innerHTML=clientSummaryMarkup(profile,{back:false,tabs:CONTEXT_CLIENT_TABS})
+    +`<div class="context-actions"><button type="button" class="secondary compact open-context-profile">Open full profile</button></div>`;
+  bindClientSummary(profile,host);
+  // The Appointments panel's truncation strips carry this button too, so every one is bound.
+  // Opening the profile is navigation AWAY, so any appointment surface standing above it is
+  // dismissed first rather than being left holding a client the operator has moved on from.
+  host.querySelectorAll(".open-context-profile").forEach(button=>button.addEventListener("click",()=>{
+    const returnView=clientSummaryReturnView();
+    runDetached(async()=>{
+      if(await closeAppointmentStack()===false)return;
+      return openClientProfile(profile.data.customer.id,{returnView});
+    });
+  }));
+}
+
 function renderClientProfile(){
-  // The summary column is shared with Messages, so a note, tab or pet change made there must
-  // redraw that pane rather than the profile view standing hidden behind it.
-  if(document.body.dataset.view==="messages")return renderMessageClientPane();
+  // The summary column is shared with Messages and with the appointment surface, so a note, tab
+  // or pet change made in either must redraw that host rather than the profile view standing
+  // hidden behind it.
+  if(clientSummaryHost())return renderClientSummaryPane();
   const profile=state.clientProfile;if(!profile)return;
   const {data}=profile,customer=data.customer;
   const pet=data.pets.find(item=>item.id===profile.petId)||data.pets[0];
@@ -7819,19 +9765,14 @@ function renderClientProfile(){
     +clientAgreementsPanelMarkup(profile.agreements)
     +`</section>`;
 
-  $("#client-profile-content").innerHTML=left+right;
-  $(".profile-book-new").addEventListener("click",()=>{state.calendar.bookingCustomerId=customer.id;state.calendar.bookingPetId=pet?.id||null;actions["new-appointment"]();});
-  $(".history-view-all")?.addEventListener("click",()=>runDetached(loadMoreClientHistory));
-  $$(".history-step").forEach(button=>button.addEventListener("click",()=>
+  const content=$("#client-profile-content");
+  content.innerHTML=left+right;
+  content.querySelector(".profile-book-new").addEventListener("click",()=>{state.calendar.bookingCustomerId=customer.id;state.calendar.bookingPetId=pet?.id||null;actions["new-appointment"]();});
+  content.querySelector(".history-view-all")?.addEventListener("click",()=>runDetached(loadMoreClientHistory));
+  content.querySelectorAll(".history-step").forEach(button=>button.addEventListener("click",()=>
     runDetached(()=>stepClientHistory(Number(button.dataset.historyStep)))));
-  // The appointment id opens the same detail dialog the calendar opens, so one visit reads the
-  // same way from either side. The profile's own return view is carried into the dialog so
-  // "View client" comes back the way the operator arrived rather than to the calendar.
-  $$('[data-profile-appointment]').forEach(button=>button.addEventListener("click",event=>
-    runDetached(()=>openCalendarAppointment(button.dataset.profileAppointment,event.currentTarget,
-      {returnView:state.clientProfileReturnView||"customers"}))));
-
-  bindClientSummary(profile);
+  // `[data-profile-appointment]` rows are bound in bindClientSummary(), which every host reaches.
+  bindClientSummary(profile,content);
 }
 // ---------------------------------------------------------------------------
 // Appointment photos
@@ -8086,127 +10027,554 @@ function appointmentActivityMarkup(state){
     `<li>${escape(appointmentActivityLine(entry))}</li>`).join("")}</ol>`;
 }
 
+// ---------------------------------------------------------------------------
+// The appointment surface stack
+//
+// Three dedicated full-screen <dialog> elements - detail, checkout, ticket - opened with
+// showModal(). The top layer, the backdrop, inertness of everything beneath, Escape-to-topmost
+// and focus containment are the browser's; none of it is re-implemented here.
+//
+// NOT ROUTED VIEWS. Dismissing a route re-renders the calendar, which loses the horizontal
+// scroll offset revealCalendarDate() exists to restore and the groomer filter the operator
+// applied. A front desk opens and closes this surface dozens of times a day, and routing would
+// also make a half-finished checkout deep-linkable.
+//
+// NOT THE SHARED #modal, which already hosts this surface's own children (Move, Adjust services)
+// and throws on showModal() while open. NOT openStackedDialog either: that is a single fixed
+// element, so it cannot be level 2 and level 3 at the same time.
+//
+// ONE HISTORY ENTRY PER LEVEL. `popstate` reconciles the open stack DOWN to the entry's depth -
+// it closes levels and never opens them - so Back and the Android back gesture dismiss exactly
+// one level, and a reload at any depth lands on the view beneath with the stack closed.
+// ---------------------------------------------------------------------------
+const APPOINTMENT_STACK_IDS=["appointment-detail","appointment-checkout","appointment-ticket"];
+const appointmentStack={levels:[]};
+// history.back() calls this module made itself. The resulting popstate is already accounted for,
+// and without this the last level's own dismissal would fall through to the view router and
+// re-render the calendar the operator is about to be handed back.
+let appointmentStackBacks=0;
+
+function appointmentStackState(){return {apptStack:appointmentStack.levels.map(level=>level.id)};}
+
+/**
+ * `path` is accepted and ignored today. Level 1 is expected to gain a real URL once an
+ * appointment is addressable; taking the parameter now means that lands as a call-site change
+ * rather than a rework of this primitive.
+ */
+function pushStackLevel(level,{path=null}={}){
+  appointmentStack.levels.push(level);
+  level.dialog.showModal();
+  level.dialog.querySelector("[data-surface-close]")?.focus();
+  globalThis.history.pushState(appointmentStackState(),"",path||location.pathname);
+}
+
+async function popStackLevel({viaHistory=false}={}){
+  const level=appointmentStack.levels.at(-1);
+  if(!level)return;
+  // A level may refuse to close - an unsaved capture in a later stage. Nothing registers a guard
+  // in stage 1; the seam is here so adding one later does not mean reopening this.
+  if(await level.guard?.()===false)return false;
+  appointmentStack.levels.pop();
+  level.dialog.close();
+  level.onClose?.();
+  (appointmentStack.levels.at(-1)?.dialog.querySelector("[data-surface-close]")||level.restoreFocus)?.focus?.();
+  if(!viaHistory){appointmentStackBacks++;globalThis.history.back();}
+  return true;
+}
+
+// Every level, in order, refusals respected. Leaving the surface entirely - opening the client
+// profile, booking again - goes through this rather than closing one level and navigating out
+// from under the rest.
+async function closeAppointmentStack(){
+  while(appointmentStack.levels.length)if(await popStackLevel()===false)return false;
+  return true;
+}
+
+// True when the popstate belonged to the stack and the view router must stand down.
+function reconcileAppointmentStack(entry){
+  if(appointmentStackBacks>0){appointmentStackBacks--;return true;}
+  if(!appointmentStack.levels.length)return false;
+  const target=Array.isArray(entry?.apptStack)?entry.apptStack.length:0;
+  if(appointmentStack.levels.length<=target)return true;
+  runDetached(async()=>{
+    while(appointmentStack.levels.length>target){
+      if(await popStackLevel({viaHistory:true})===false){
+        // A level refused. The entry it owns is put back rather than leaving the URL a step ahead
+        // of what is on screen.
+        globalThis.history.pushState(appointmentStackState(),"",location.pathname);
+        return;
+      }
+    }
+  });
+  return true;
+}
+
+for(const id of APPOINTMENT_STACK_IDS){
+  // Escape closes the topmost dialog natively, which would leave the stack and the history depth
+  // disagreeing with the screen. It is routed through the one dismissal every other close uses.
+  $(`#${id}`)?.addEventListener("cancel",event=>{event.preventDefault();runDetached(()=>popStackLevel());});
+}
+
+// The rail is a <details> so a phone can collapse it below the main column. A wide viewport
+// forces it open and hides its summary in CSS, and only script can set `open`, so the breakpoint
+// is mirrored here rather than being decided in two places that could drift.
+// The exact complement of the stylesheet's `@media(max-width:900px)`, written as a negation so
+// the two cannot disagree at the boundary itself - `(min-width:900px)` and `(max-width:900px)`
+// are both true at exactly 900, which left the rail forced open inside a collapsed disclosure.
+const APPOINTMENT_RAIL_QUERY=globalThis.matchMedia("not all and (max-width:900px)");
+// The operator's own toggle, for as long as the width it was made at holds. Null means "take the
+// breakpoint's default": open as a column, closed as a disclosure under the work, because a phone
+// at a counter was opened for times, service and money rather than to reread a client record.
+let appointmentRailOpen=null;
+function syncAppointmentRail(){
+  const rail=$("#appointment-detail .surface-rail");
+  if(rail)rail.open=appointmentRailOpen??APPOINTMENT_RAIL_QUERY.matches;
+}
+// Crossing the breakpoint changes what the rail IS, so the choice made on the other side of it
+// is not carried over.
+APPOINTMENT_RAIL_QUERY.addEventListener("change",()=>{appointmentRailOpen=null;syncAppointmentRail();});
+
+// The invoice state is the honest paid badge: an appointment with no invoice is unbilled rather
+// than unpaid, and the two read very differently to whoever is looking at the row.
+function appointmentBillingChip(item){
+  if(!item.invoiceStatus)return {label:"Not invoiced",tone:"muted"};
+  if(item.invoiceStatus==="paid")return {label:"Paid",tone:"paid"};
+  // A refunded invoice owes nothing, so it never carries a "due" figure and never wears the
+  // owing colour. It reads as information, because that is what it is.
+  if(invoiceRefunded(item.invoiceStatus))return {label:invoiceStatusLabel(item.invoiceStatus),tone:"refunded"};
+  return {label:`${invoiceStatusLabel(item.invoiceStatus)}${item.invoiceBalanceMinor?` · ${money(item.invoiceBalanceMinor)} due`:""}`,tone:"owing"};
+}
+
+// Minutes as an operator says them. Under an hour is the raw count; an hour and over is split,
+// because "75 min" makes the reader do the division every single time.
+function lifecycleDurationLabel(minutes){
+  if(minutes===null)return "not recorded";
+  if(minutes<60)return `${minutes} min`;
+  const hours=Math.floor(minutes/60),rest=minutes%60;
+  return rest?`${hours} h ${rest} m`:`${hours} h`;
+}
+
+/**
+ * Checked in, checked out and duration, derived from the audit trail by
+ * appointmentLifecycleTimes().
+ *
+ * `editable` IS THE SEAM FOR STORED TIMES and is false everywhere today. While these values are
+ * derived there is nothing an edit could write to, so no pencil is drawn: an affordance opening a
+ * form that cannot save is worse than no affordance. When the stored checked_in_at/checked_out_at
+ * columns land the flag flips, an edit dialog joins it, and the derivation note below - which is
+ * only true while the values ARE derived - stops being emitted.
+ */
+function appointmentLifecycleMarkup(activity,{editable=false}={}){
+  // A value that is not there is set back in weight rather than wearing the ink of a recorded
+  // one, so the strip reads at a glance as two facts and a gap.
+  const cell=(testid,label,value,recorded=true)=>
+    `<span data-testid="${testid}">${escape(label)}: `
+      +`<strong${recorded?"":` class="is-unrecorded"`}>${escape(value)}</strong></span>`;
+  if(!activity.items){
+    return cell("lifecycle-in","Checked in","…",false)+cell("lifecycle-out","Checked out","…",false)
+      +cell("lifecycle-duration","Duration","…",false);
+  }
+  const {checkedIn,finished,minutes}=appointmentLifecycleTimes(activity.items);
+  const missing=!checkedIn||!finished||minutes===null;
+  return cell("lifecycle-in","Checked in",checkedIn?activityStamp(checkedIn):"not recorded",Boolean(checkedIn))
+    +cell("lifecycle-out","Checked out",finished?activityStamp(finished):"not recorded",Boolean(finished))
+    +cell("lifecycle-duration","Duration",lifecycleDurationLabel(minutes),minutes!==null)
+    // Said once, and only when something is actually absent: two blanks beside a filled value
+    // otherwise read as an editable field nobody got round to rather than as derived and absent.
+    +(missing&&!editable
+      ? `<span class="fine lifecycle-note" data-testid="lifecycle-note">Times are read from the appointment's recorded activity.</span>`
+      : "");
+}
+
+// Printing is the one mechanism the product has: a .print-root appended to <body>, which the
+// print stylesheet is the only thing that shows. No second window and no separate page.
+function printAppointment(item){
+  const root=document.createElement("section");
+  root.className="print-root";
+  root.innerHTML=`<h1>Pawsh appointment</h1>${printableAgenda([item])}`;
+  document.body.append(root);
+  globalThis.print();
+  setTimeout(()=>root.remove(),1000);
+}
+
+/**
+ * Two notes, two different write rules, so they are not presented as one field.
+ *
+ * `notes` is the booking note taken when the appointment was made, and Pawsh exposes NO endpoint
+ * that updates it, so it is read-only wherever it appears. `operationalNotes` is the service note,
+ * and PATCH /api/appointments/:id/operations accepts it only while the appointment is checked in
+ * or in service, under `operations.perform_service`. Outside that window a textarea would be a
+ * control whose save the server refuses, so it is not drawn.
+ */
+function appointmentNotesBlockMarkup(surface){
+  const {item,permissions:can}=surface;
+  const booking=item.notes
+    ? `<p data-testid="appointment-booking-note">${escape(item.notes)}</p>`
+    : `<p class="note-empty">No booking note.</p>`;
+  const service=can.editNote
+    ? `<label class="surface-note-field"><span class="visually-hidden">Service notes</span>`
+      +`<textarea data-testid="appointment-note-input" name="operationalNotes" rows="4" maxlength="10000"`
+      +` placeholder="What happened during this visit.">${escape(item.operationalNotes||"")}</textarea></label>`
+    : item.operationalNotes
+      ? `<p data-testid="appointment-service-note">${escape(item.operationalNotes)}</p>`
+      : `<p class="note-empty">No service note.</p>`;
+  return `<div class="work-block appointment-note" data-testid="appointment-note">`
+    +`<div class="work-block-head"><h3>Booking note</h3></div>${booking}`
+    +`<div class="work-block-head"><h3>Service notes</h3></div>${service}</div>`;
+}
+
+function appointmentSurfaceMarkup(surface){
+  const {item,model,activity,photos,cards,permissions:can}=surface;
+  const billing=appointmentBillingChip(item);
+  // A UUID is not a counter, so this is presented as a reference rather than an invented number.
+  const reference=String(item.id).slice(0,8);
+  const serviceRows=model.serviceSnapshots.map(service=>
+    `<div class="appointment-service-row" data-testid="appointment-service-row">`
+      +`<span><strong>${escape(service.name)}</strong><small>${Number(service.durationMinutes)} min</small></span>`
+      +`<strong>${service.priceMinor===null||service.priceMinor===undefined?"Price unavailable":money(service.priceMinor)}</strong>`
+    +`</div>`).join("");
+
+  const head=`<header class="surface-head">`
+    +`<div class="surface-head-text">`
+      +`<p class="appointment-reference" data-testid="appointment-reference">Appointment #${escape(reference)}`
+        +` <span class="appointment-billing ${billing.tone}" data-testid="appointment-billing">${escape(billing.label)}</span>`
+        +` <span class="appointment-status" data-testid="appointment-status">${escape(model.status)}</span></p>`
+      +`<h2 id="appointment-detail-title">${escape(model.dateLabel)}</h2>`
+      +`<p class="surface-subhead">${escape(model.timeRange)} · scheduled ${model.durationMinutes} min</p>`
+    +`</div>`
+    +`<button type="button" class="surface-close" data-surface-close aria-label="Close appointment details">&#215;</button>`
+  +`</header>`;
+
+  // The rail is clientSummaryMarkup() verbatim, written in after open by
+  // renderClientSummaryPane(). It is a <details> so the phone layout can collapse it.
+  const rail=`<details class="surface-rail" data-testid="appointment-client-rail" open>`
+    +`<summary class="surface-rail-toggle">`
+      +`<span class="service-section-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></span>`
+      +`<span>Client</span></summary>`
+    +`<div class="surface-rail-body"><p class="note-empty">Loading client…</p></div>`
+  +`</details>`;
+
+  const work=`<section class="appointment-work">`
+    +`<div class="work-block"><div class="work-block-head"><h3>Groomer</h3>`
+      +(can.move
+        ? `<button type="button" class="icon-action" data-testid="appointment-groomer-edit" aria-label="Change groomer or time">&#9998;</button>`
+        : "")
+      +`</div><p data-testid="appointment-groomer">${escape(model.groomer)}</p></div>`
+    +`<div class="work-block"><div class="work-block-head"><h3>Pet</h3></div>`
+      +`<p><strong>${escape(petName({petName:model.petName}))}</strong>${model.breed?` · ${escape(model.breed)}`:""}</p>`
+      +(model.rabiesNeeded?`<p class="rabies-needed">Rabies needed</p>`:"")
+      +(model.warning?`<p class="detail-warning">${escape(model.warning)}</p>`:"")
+    +`</div>`
+    +`<div class="work-block appointment-services-block"><div class="work-block-head"><h3>Services</h3>`
+      +(can.adjustServices
+        ? `<button type="button" class="secondary compact" data-testid="appointment-adjust-services">Adjust services</button>`
+        : "")
+      +`</div>${serviceRows}`
+      +`<div class="appointment-service-total"><span>Total</span><strong>${model.durationMinutes} min${
+        model.totalPriceMinor!==null?` · ${money(model.totalPriceMinor)}`:""}</strong></div>`
+    +`</div>`
+    // Discounts and coupons are decided at checkout and recorded on the invoice - Pawsh has
+    // nowhere else to apply one - so the row says where they live rather than offering a second
+    // button into the same dialog Take Payment already opens.
+    +`<div class="work-block appointment-discount-row" data-testid="appointment-discount-row">`
+      +`<div class="work-block-head"><h3>Coupons &amp; discounts</h3></div>`
+      +`<p>${item.invoiceStatus
+        ? "Recorded on this appointment's invoice."
+        : "Applied at checkout, on the invoice this appointment is billed with."}</p>`
+    +`</div>`
+    +appointmentNotesBlockMarkup(surface)
+    +`<details class="appointment-activity" data-testid="appointment-activity"><summary>`
+      +`<span class="service-section-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></span>`
+      +`<span>Appointment Activities</span><small data-activity-count>${
+        activity.failed?"unavailable":activity.items?`(${activity.items.length})`:"…"}</small></summary>`
+      +`<div class="appointment-activity-body">${appointmentActivityMarkup(activity)}</div></details>`
+    +`<section class="appointment-photos"><h4>Photos</h4>`
+      +`<div data-testid="appointment-photos">${appointmentPhotosMarkup(photos)}</div></section>`
+    +`<section class="appointment-report-cards"><div class="report-card-head"><h4>Report Card</h4>`
+      +`<span data-testid="report-card-add-slot"></span></div>`
+      +`<div data-testid="appointment-report-cards">${appointmentReportCardsMarkup(cards)}</div></section>`
+  +`</section>`;
+
+  const body=`<div class="surface-body">${rail}<div class="surface-main">`
+    +`<div class="appointment-lifecycle" data-testid="appointment-lifecycle">${appointmentLifecycleMarkup(activity)}</div>`
+    +work
+  +`</div></div>`;
+
+  const print=`<button type="button" class="secondary compact" data-testid="appointment-print">Print</button>`;
+  const foot=can.readOnly
+    // Nothing on this appointment can move any more, so the footer offers the two things that
+    // still mean something rather than a row of controls the server would refuse.
+    ? `<footer class="surface-foot"><div class="surface-foot-actions"></div>`
+      +`<div class="surface-foot-actions">${print}`
+      +`<button type="button" class="primary compact" data-testid="appointment-close">Close</button></div></footer>`
+    : `<footer class="surface-foot"><div class="surface-foot-actions">`
+        +(can.cancel?`<button type="button" class="secondary compact destructive" data-testid="appointment-cancel">Cancel</button>`:"")
+        +(can.cancel?`<button type="button" class="secondary compact" data-testid="appointment-no-show">No-show</button>`:"")
+        +(can.bookAgain?`<button type="button" class="secondary compact" data-testid="appointment-book-again">Book Again</button>`:"")
+      +`</div><div class="surface-foot-actions">${print}`
+        +(can.checkout?`<button type="button" class="primary compact" data-testid="appointment-take-payment">Take Payment</button>`:"")
+        +(can.editNote?`<button type="button" class="primary compact" data-testid="appointment-save">Save</button>`:"")
+      +`</div></footer>`;
+
+  return `<div class="surface-shell" data-testid="appointment-detail">${head}${body}${foot}</div>`;
+}
+
+/**
+ * The appointment detail surface: level 1 of the stack.
+ *
+ * There is no `replace` argument. Opening an appointment while a detail surface is already open -
+ * which is what clicking a row in the surface's own client rail does - REDRAWS the open surface
+ * rather than stacking a second one on itself, so the history depth stays at one and the operator
+ * never sees the calendar flash between two appointments.
+ */
 async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}){
-  // Client history reaches back past any calendar window the operator has loaded, so a visit
-  // the calendar has never held is refetched in the same projection rather than being
-  // unopenable from a profile.
+  // Client history reaches back past any calendar window the operator has loaded, so a visit the
+  // calendar has never held is refetched in the same projection rather than being unopenable from
+  // a profile.
   const source=origin||document.activeElement;
   let item=calendarAppointmentById(id);
   if(!item){try{item=await api(`/api/appointments/${id}`);}catch(error){toast(error.message);return;}}
   if(!item)return;
-  calendarDetailOrigin=source;hideCalendarHover();
-  const model=appointmentPresentation(item);
-  const serviceRows=model.serviceSnapshots.map(service=>`<div><span><strong>${escape(service.name)}</strong><small>${Number(service.durationMinutes)} min</small></span><strong>${service.priceMinor===null||service.priceMinor===undefined?"Price unavailable":money(service.priceMinor)}</strong></div>`).join("");
-  // The invoice state is the honest paid badge: an appointment with no invoice is unbilled
-  // rather than unpaid, and the two read very differently to whoever is looking at the row.
-  const billing=!item.invoiceStatus?{label:"Not invoiced",tone:"muted"}
-    :item.invoiceStatus==="paid"?{label:"Paid",tone:"paid"}
-    // A refunded invoice owes nothing, so it never carries a "due" figure and never wears the
-    // owing colour. It reads as information, because that is what it is.
-    :invoiceRefunded(item.invoiceStatus)?{label:invoiceStatusLabel(item.invoiceStatus),tone:"refunded"}
-    :{label:`${invoiceStatusLabel(item.invoiceStatus)}${item.invoiceBalanceMinor?` · ${money(item.invoiceBalanceMinor)} due`:""}`,tone:"owing"};
-  // A UUID is not a counter, so this is presented as a reference rather than an invented number.
-  const reference=String(item.id).slice(0,8);
-  const activity={items:null,failed:false};
-  const photos={data:null,failed:false};
-  const cards={data:null,failed:false};
-  const lifecycleMarkup=()=>{
-    const {checkedIn,finished,minutes}=appointmentLifecycleTimes(activity.items||[]);
-    if(!activity.items)return `<span>Checked in: …</span><span>Checked out: …</span><span>Actual: …</span>`;
-    return `<span>Checked in: <strong>${checkedIn?escape(activityStamp(checkedIn)):"not recorded"}</strong></span>`
-      +`<span>Checked out: <strong>${finished?escape(activityStamp(finished)):"not recorded"}</strong></span>`
-      +`<span>Actual: <strong>${minutes===null?"not recorded":`${minutes} min`}</strong></span>`;
+  hideCalendarHover();closeCalendarMenus();
+
+  const dialog=$("#appointment-detail");
+  const open=appointmentStack.levels.at(-1);
+  const replacing=open?.id==="appointment-detail";
+  const surface={
+    item,model:appointmentPresentation(item),
+    activity:{items:null,failed:false},photos:{data:null,failed:false},cards:{data:null,failed:false},
+    client:{loaded:false,failed:false},permissions:null
+  };
+  const level=replacing?open:{
+    id:"appointment-detail",dialog,restoreFocus:source,
+    onClose(){
+      clientSummaryRail=null;
+      // The host this rail stood in for gets its own redraw back, so a note added in the dialog
+      // is already on the screen underneath when the dialog goes.
+      if(["messages","client-profile"].includes(document.body.dataset.view))renderClientProfile();
+    }
+  };
+  level.surface=surface;
+  // How a level above asks this one to redraw when it has changed something - a checkout that
+  // raised an invoice, most obviously. The stack calls it without knowing what it is.
+  level.reload=()=>reload();
+  // A later level of the stack does not make this one stale; being replaced by another
+  // appointment, or closed altogether, does.
+  const stale=()=>level.surface!==surface||!appointmentStack.levels.includes(level);
+
+  // Recomputed on every draw, because a transition, a reschedule or a checkout changes all of it.
+  const derive=()=>{
+    const status=surface.item.status,invoiced=Boolean(surface.item.invoiceStatus);
+    return {
+      readOnly:["cancelled","no_show"].includes(status)||(status==="completed"&&invoiced),
+      move:status==="scheduled"&&allowed("appointments.edit"),
+      adjustServices:["checked_in","in_service"].includes(status)&&allowed("appointments.edit"),
+      // Only a completed appointment can be checked out, and only once: the server says so, so
+      // the button is absent rather than offered and refused. Absent, never disabled - the
+      // precedent is calendarAction(), which withholds a transition the operator cannot make.
+      checkout:status==="completed"&&!invoiced&&allowed("checkout.perform"),
+      cancel:status==="scheduled"&&allowed("appointments.cancel"),
+      bookAgain:allowed("appointments.create"),
+      editNote:["checked_in","in_service"].includes(status)&&allowed("operations.perform_service")
+    };
   };
 
-  openModal("Appointment",
-    `<article class="wide appointment-detail" data-testid="appointment-detail">`
-    +`<header><div><p class="appointment-reference" data-testid="appointment-reference">Appointment #${escape(reference)} <span class="appointment-billing ${billing.tone}" data-testid="appointment-billing">${escape(billing.label)}</span></p>`
-      +`<span class="appointment-status">${escape(model.status)}</span><h3>${escape(model.dateLabel)}</h3><p>${escape(model.timeRange)} · scheduled ${model.durationMinutes} min</p></div></header>`
-    +`<div class="appointment-lifecycle" data-testid="appointment-lifecycle">${lifecycleMarkup()}</div>`
-    +`<section><h4>Client</h4><button type="button" class="text-button appointment-detail-client">${escape(model.customerName)}</button>`
-      +`${item.customerPhone?`<p>${escape(item.customerPhone)}</p>`:""}</section>`
-    +`<section><h4>Pet</h4><p><strong>${escape(petName({petName:model.petName}))}</strong>${model.breed?` · ${escape(model.breed)}`:""}</p>${model.rabiesNeeded?`<p class="rabies-needed">Rabies needed</p>`:""}${model.warning?`<p class="detail-warning">${escape(model.warning)}</p>`:""}</section>`
-    +`<section><h4>Groomer</h4><p>${escape(model.groomer)}</p></section>`
-    +`<section class="appointment-detail-services"><h4>Services</h4>${serviceRows}</section>`
-    +`<section class="appointment-detail-summary"><span>Total</span><strong>${model.durationMinutes} min${model.totalPriceMinor!==null?` · ${money(model.totalPriceMinor)}`:""}</strong></section>`
-    +(item.notes?`<section><h4>Notes</h4><p>${escape(item.notes)}</p></section>`:"")
-    +`<details class="appointment-activity" data-testid="appointment-activity"><summary><span class="service-section-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></span><span>Appointment Activities</span><small data-activity-count>…</small></summary>`
-      +`<div class="appointment-activity-body">${appointmentActivityMarkup(activity)}</div></details>`
-    +`<section class="appointment-photos"><h4>Photos</h4><div data-testid="appointment-photos">${appointmentPhotosMarkup(photos)}</div></section>`
-    +`<section class="appointment-report-cards"><div class="report-card-head"><h4>Report Card</h4><span data-testid="report-card-add-slot"></span></div>`
-      +`<div data-testid="appointment-report-cards">${appointmentReportCardsMarkup(cards)}</div></section>`
-    +`<footer><button type="button" class="secondary compact appointment-detail-client">View client</button>${item.status==="scheduled"&&allowed("appointments.edit")?`<button type="button" class="secondary compact appointment-detail-move">Move</button>`:""}${["checked_in","in_service"].includes(item.status)&&allowed("appointments.edit")?`<button type="button" class="secondary compact appointment-detail-services-action">Adjust services</button>`:""}</footer>`
-    +`</article>`,
-    null,{cancelLabel:"Close"});
+  const drawRail=()=>{
+    const host=dialog.querySelector(".surface-rail-body");
+    if(!host)return;
+    if(surface.client.failed){
+      // A failed rail must not take the main column with it: times, services and money are what
+      // this surface was opened for, and they are already on screen.
+      host.innerHTML=`<div class="rail-status"><p class="note-empty">The client record could not be loaded.</p>`
+        +`<button type="button" class="secondary compact" data-testid="appointment-client-retry">Retry</button></div>`;
+      host.querySelector('[data-testid="appointment-client-retry"]')
+        ?.addEventListener("click",()=>runDetached(loadClient));
+      return;
+    }
+    if(!surface.client.loaded){host.innerHTML=`<p class="note-empty">Loading client…</p>`;return;}
+    renderClientSummaryPane();
+  };
 
-  const dialog=$("#modal");
-  dialog.classList.add("appointment-detail-dialog");
-  dialog.querySelector(".modal-head .close").setAttribute("aria-label","Close appointment details");
-  dialog.querySelector(".modal-head .close").focus();
-  const next=callback=>{dialog.close();setTimeout(callback,50);};
-  dialog.querySelectorAll(".appointment-detail-client").forEach(button=>button.addEventListener("click",()=>next(()=>openClientProfile(item.customerId,{petId:item.petId,appointmentId:item.id,returnView}))));
-  dialog.querySelector(".appointment-detail-move")?.addEventListener("click",()=>next(()=>moveAppointment(id)));
-  dialog.querySelector(".appointment-detail-services-action")?.addEventListener("click",()=>next(()=>adjustServices(id)));
+  const drawActivity=()=>{
+    const body=dialog.querySelector(".appointment-activity-body");
+    if(body)body.innerHTML=appointmentActivityMarkup(surface.activity);
+    const count=dialog.querySelector("[data-activity-count]");
+    if(count)count.textContent=surface.activity.failed?"unavailable":`(${surface.activity.items.length})`;
+    const lifecycle=dialog.querySelector('[data-testid="appointment-lifecycle"]');
+    if(lifecycle)lifecycle.innerHTML=appointmentLifecycleMarkup(surface.activity);
+  };
 
-  // Photos re-render on their own after an upload or removal, without reopening the dialog or
-  // disturbing anything else in it.
-  const renderPhotos=()=>{
+  // Photos and report cards re-render on their own after an upload, a removal or an edit, without
+  // redrawing the surface around them or disturbing anything else in it.
+  const drawPhotos=()=>{
     const target=dialog.querySelector('[data-testid="appointment-photos"]');
     if(!target)return;
-    target.innerHTML=appointmentPhotosMarkup(photos);
-    bindAppointmentPhotos(dialog,id,photos,renderPhotos);
+    target.innerHTML=appointmentPhotosMarkup(surface.photos);
+    bindAppointmentPhotos(dialog,id,surface.photos,drawPhotos);
   };
 
-  // Both loads happen after the dialog is on screen and in parallel. They are supporting detail,
-  // and blocking the whole dialog on them would make opening an appointment slower for the
-  // common case where nobody looks at either.
-  // Add is rendered from the loaded data rather than the markup above, because whether a pet
+  // Add is rendered from the loaded data rather than from the markup above, because whether a pet
   // still needs a card is only known once the cards are back.
-  const renderCards=()=>{
+  const drawCards=()=>{
     const target=dialog.querySelector('[data-testid="appointment-report-cards"]');
     const slot=dialog.querySelector('[data-testid="report-card-add-slot"]');
     if(!target)return;
-    target.innerHTML=appointmentReportCardsMarkup(cards);
+    target.innerHTML=appointmentReportCardsMarkup(surface.cards);
     if(slot){
-      const pending=cards.data?.canEdit?(cards.data.availablePetIds||[]):[];
-      // The photo strips also offer an "+ Add", so this one carries an explicit label rather
-      // than relying on its visible text to tell the two apart.
+      const pending=surface.cards.data?.canEdit?(surface.cards.data.availablePetIds||[]):[];
+      // The photo strips also offer an "+ Add", so this one carries an explicit label rather than
+      // relying on its visible text to tell the two apart.
       slot.innerHTML=pending.length
         ? `<button type="button" class="secondary compact" data-testid="report-card-add" data-report-card-add="${escape(pending[0])}" aria-label="Add report card">+ Add</button>`
         : "";
     }
-    bindAppointmentReportCards(dialog,id,cards,renderCards);
+    bindAppointmentReportCards(dialog,id,surface.cards,drawCards);
   };
 
-  const [activityResult,photoResult,cardResult]=await Promise.allSettled([
-    api(`/api/appointments/${id}/activity`),
-    api(`/api/appointments/${id}/photos`),
-    api(`/api/appointments/${id}/report-cards`)
+  const loadActivity=async()=>{
+    try{surface.activity={items:(await api(`/api/appointments/${id}/activity`)).items||[],failed:false};}
+    catch{surface.activity={items:null,failed:true};}
+    if(!stale())drawActivity();
+  };
+
+  const loadClient=async()=>{
+    surface.client={loaded:false,failed:false};
+    clientSummaryRail=null;
+    drawRail();
+    try{
+      const [data,notes,agreements]=await Promise.all([
+        api(`/api/customers/${surface.item.customerId}/history`),
+        loadClientNotes(surface.item.customerId),loadClientAgreements(surface.item.customerId)]);
+      if(stale())return;
+      const customerId=surface.item.customerId;
+      const previous=state.clientProfile?.data.customer.id===customerId?state.clientProfile:null;
+      state.clientProfile={data,notes,agreements,notesExpanded:previous?.notesExpanded||false,
+        tab:previous?.tab||"pets",
+        // The appointment's own pet is preselected: this rail is context for THIS visit, so
+        // opening the pet profile or booking again starts from the pet that was groomed. The
+        // Pets panel lists every pet without marking one, so this is not a visible selection.
+        petId:surface.item.petId||data.pets[0]?.id||null,appointmentId:id,
+        historyView:{page:1,pageSize:HISTORY_INITIAL_ROWS},historyLoading:false};
+      state.pets=[...state.pets.filter(pet=>pet.customerId!==customerId),...data.pets];
+      surface.client.loaded=true;
+      // Registered only once there is a client to draw, so an unrelated renderClientProfile()
+      // while the fetch is in flight cannot write somebody else's record into this rail.
+      clientSummaryRail={host:()=>$("#appointment-detail .surface-rail-body"),returnView};
+    }catch{surface.client.failed=true;}
+    if(!stale())drawRail();
+  };
+
+  const reload=async()=>{
+    if(stale())return;
+    const next=calendarAppointmentById(id)||await api(`/api/appointments/${id}`).catch(()=>null);
+    if(stale())return;
+    if(next)surface.item=next;
+    surface.model=appointmentPresentation(surface.item);
+    draw();
+    await loadActivity();
+  };
+
+  // The shared #modal now opens ON TOP of this surface instead of replacing it, which is what
+  // removed the close-then-reopen dance the old detail needed and stopped the operator losing the
+  // appointment behind the dialog they opened from it. When it closes, the surface redraws from
+  // whatever the server did.
+  const throughModal=start=>{
+    start();
+    $("#modal").addEventListener("close",()=>runDetached(reload),{once:true});
+  };
+
+  const bind=()=>{
+    const on=(testid,handler)=>dialog.querySelector(`[data-testid="${testid}"]`)?.addEventListener("click",handler);
+    dialog.querySelector("[data-surface-close]")?.addEventListener("click",()=>runDetached(()=>popStackLevel()));
+    const rail=dialog.querySelector(".surface-rail");
+    rail?.addEventListener("toggle",()=>{appointmentRailOpen=rail.open;});
+    on("appointment-close",()=>runDetached(()=>popStackLevel()));
+    on("appointment-print",()=>printAppointment(surface.item));
+    on("appointment-groomer-edit",()=>throughModal(()=>moveAppointment(id)));
+    on("appointment-adjust-services",()=>throughModal(()=>adjustServices(id)));
+    // Check Out is level 2 of the stack now, not a modal over this one, so it is pushed rather
+    // than opened through #modal. Guarded by the same key the calendar's own Checkout uses: two
+    // concurrent renders of that screen is the failure advanceAppointment() documents.
+    on("appointment-take-payment",()=>runDetached(()=>runOnce(`checkout:${id}`,()=>checkout(id))));
+    // Booking is navigation away from this visit, so the stack comes down first rather than
+    // leaving a stale appointment standing behind the booking workspace.
+    on("appointment-book-again",()=>runDetached(async()=>{
+      if(await closeAppointmentStack()===false)return;
+      state.calendar.bookingCustomerId=surface.item.customerId;
+      state.calendar.bookingPetId=surface.item.petId;
+      actions["new-appointment"]();
+    }));
+    for(const [testid,status] of [["appointment-cancel","cancelled"],["appointment-no-show","no_show"]]){
+      // terminalAppointment() confirms, reports its own outcome and refreshes the calendar. The
+      // surface is redrawn from what came back rather than from what was asked for: a refusal
+      // leaves the appointment exactly as it was, and the redraw says so.
+      on(testid,()=>runDetached(async()=>{await terminalAppointment(id,status);await reload();}));
+    }
+    const save=dialog.querySelector('[data-testid="appointment-save"]');
+    save?.addEventListener("click",()=>runDetached(async()=>{
+      const field=dialog.querySelector('[data-testid="appointment-note-input"]');
+      if(!field)return;
+      save.disabled=true;
+      try{
+        const updated=await api(`/api/appointments/${id}/operations`,{method:"PATCH",
+          body:JSON.stringify({operationalNotes:field.value.trim()||null,version:surface.item.version})});
+        surface.item.version=updated.version;
+        toast("Service notes saved");
+        await refresh();
+        await reload();
+      }catch(error){toast(error.message);if(save.isConnected)save.disabled=false;}
+    }));
+  };
+
+  const draw=()=>{
+    surface.permissions=derive();
+    dialog.innerHTML=appointmentSurfaceMarkup(surface);
+    bind();
+    // After bind(), so a redraw restores the disclosure the operator left rather than snapping it
+    // back to the breakpoint default every time the surface refreshes.
+    syncAppointmentRail();
+    drawRail();
+    drawPhotos();
+    drawCards();
+  };
+
+  draw();
+  if(replacing){
+    // Same element, same level, redrawn in place. The history depth does not move, so Back still
+    // dismisses one surface, and `restoreFocus` stays the control that opened the first of them:
+    // the row that opened this replacement is inside the surface being replaced.
+    globalThis.history.replaceState(appointmentStackState(),"",location.pathname);
+  }else{
+    pushStackLevel(level);
+  }
+
+  // Everything below the header loads after the surface is on screen and in parallel. It is all
+  // supporting detail, and blocking the surface on it would make opening an appointment slower
+  // for the common case where nobody looks at any of it.
+  await Promise.all([
+    loadClient(),
+    (async()=>{
+      const [activityResult,photoResult,cardResult]=await Promise.allSettled([
+        api(`/api/appointments/${id}/activity`),
+        api(`/api/appointments/${id}/photos`),
+        api(`/api/appointments/${id}/report-cards`)
+      ]);
+      if(activityResult.status==="fulfilled")surface.activity.items=activityResult.value.items||[];
+      else surface.activity.failed=true;
+      if(photoResult.status==="fulfilled")surface.photos.data=photoResult.value;
+      else surface.photos.failed=true;
+      if(cardResult.status==="fulfilled")surface.cards.data=cardResult.value;
+      else surface.cards.failed=true;
+      // The surface may have been replaced by another appointment while these were in flight.
+      // Writing into it then would put one appointment's photos under another's header.
+      if(stale())return;
+      drawActivity();
+      drawPhotos();
+      drawCards();
+    })()
   ]);
-  if(activityResult.status==="fulfilled")activity.items=activityResult.value.items||[];
-  else activity.failed=true;
-  if(photoResult.status==="fulfilled")photos.data=photoResult.value;
-  else photos.failed=true;
-  if(cardResult.status==="fulfilled")cards.data=cardResult.value;
-  else cards.failed=true;
-  // The dialog is shared, so it may have been closed and reused for something else while these
-  // were in flight. Writing into it then would put an appointment's photos inside another dialog.
-  if(!dialog.open||!dialog.contains(dialog.querySelector('[data-testid="appointment-activity"]')))return;
-  const body=dialog.querySelector(".appointment-activity-body");
-  if(body)body.innerHTML=appointmentActivityMarkup(activity);
-  const count=dialog.querySelector("[data-activity-count]");
-  if(count)count.textContent=activity.failed?"unavailable":`(${activity.items.length})`;
-  const lifecycle=dialog.querySelector('[data-testid="appointment-lifecycle"]');
-  if(lifecycle)lifecycle.innerHTML=lifecycleMarkup();
-  renderPhotos();
-  renderCards();
 }
 function renderMessages(){const query=($("#message-search")?.value||"").trim().toLowerCase(),clients=state.customerDirectory.items.filter(item=>`${clientName(item)} ${item.phone||""} ${item.email||""}`.toLowerCase().includes(query));$("#message-client-list").innerHTML=clients.map(item=>`<button type="button" class="message-client ${item.id===state.messageClientId?"active":""}" data-message-client="${item.id}"><span><strong>${escape(clientName(item))}</strong><small>${escape(item.phone||item.email||"No contact details")}</small></span></button>`).join("")||`<p class="empty">No clients match.</p>`;$$('[data-message-client]').forEach(button=>button.addEventListener("click",()=>selectMessageClient(button.dataset.messageClient)));}
-/**
- * Selecting a conversation loads the client the same way the profile does, because the pane
- * beside the thread is the profile's own summary column rather than a second, thinner copy of
- * the client. `state.clientProfile` is the one record both surfaces read.
- */
 async function selectMessageClient(id){
   const [data,notes,agreements]=await Promise.all([
     api(`/api/customers/${id}/history`),loadClientNotes(id),loadClientAgreements(id)]);
@@ -8219,16 +10587,7 @@ async function selectMessageClient(id){
   renderMessages();
   const name=clientName(data.customer);
   $("#message-thread").innerHTML=`<header><a class="message-client-link" href="/clients/${id}" target="_blank" rel="noopener">${escape(name)}</a></header><div class="message-disabled-state"><h3>Messaging is not connected</h3><p>No conversation history, inbound webhook, SMS provider, delivery status, or scheduler is configured.</p></div><footer><textarea disabled aria-label="Message composer" placeholder="Messaging unavailable"></textarea><button type="button" class="primary" disabled>Send</button></footer>`;
-  renderMessageClientPane();
-}
-function renderMessageClientPane(){
-  const profile=state.clientProfile,pane=$("#message-client-context");
-  if(!profile||!pane)return;
-  pane.innerHTML=clientSummaryMarkup(profile,{back:false})
-    +`<div class="context-actions"><button type="button" class="secondary compact open-context-profile">Open full profile</button></div>`;
-  bindClientSummary(profile);
-  pane.querySelector(".open-context-profile").addEventListener("click",()=>
-    runDetached(()=>openClientProfile(profile.data.customer.id,{returnView:"messages"})));
+  renderClientSummaryPane();
 }
 const reminderTabs=[["appointment_reminder","Appointment Reminder","supported"],["secondary_reminder","Secondary Reminder","deferred"],["same_day_reminder","Same-Day Reminder","deferred"],["rebook_reminder","Rebook Reminder","deferred"],["vaccination_reminder","Vaccination Reminder","supported"],["birthday_reminder","Pet Birthday Reminder","deferred"]];
 async function loadReminders(type=state.reminders.type){state.reminders.type=type;const result=await api(`/api/reminders?type=${encodeURIComponent(type)}`);state.reminders={type,items:result.items,supported:result.supported};renderReminders();}
@@ -8256,7 +10615,12 @@ $$("[data-view-target]").forEach((button) => button.addEventListener("click", ()
 $$("[data-view-link]").forEach(link=>link.addEventListener("click",event=>{event.preventDefault();closeSetupMenus();showView(link.dataset.viewLink);}));
 $$(".setup-menu").forEach(menu=>{const summary=menu.querySelector("summary");menu.addEventListener("toggle",()=>summary.setAttribute("aria-expanded",String(menu.open)));menu.addEventListener("keydown",event=>{if(event.key==="Escape"&&menu.open){event.preventDefault();menu.open=false;summary.focus();}});});
 document.addEventListener("click",event=>$$(".setup-menu[open]").forEach(menu=>{if(!menu.contains(event.target))menu.open=false;}));
-globalThis.addEventListener("popstate",()=>showView(viewForPath(location.pathname),{history:"none"}));
+// The appointment stack owns its own history entries, so Back dismisses one surface rather than
+// navigating the view underneath it. Only a genuine view navigation reaches the router.
+globalThis.addEventListener("popstate",event=>{
+  if(reconcileAppointmentStack(event.state))return;
+  showView(viewForPath(location.pathname),{history:"none"});
+});
 async function showView(view,{history="push"}={}) {
   if(!activateView(view,{history}))return;
   try{
@@ -8285,7 +10649,10 @@ function activateView(view,{history="push"}={}) {
   return true;
 }
 $$(".close").forEach((button)=>button.addEventListener("click",()=>$("#modal").close()));
-$("#modal").addEventListener("close",()=>{const dialog=$("#modal");dialog.classList.remove("appointment-detail-dialog");dialog.querySelector(".modal-head .close").setAttribute("aria-label","Close");if(calendarDetailOrigin?.isConnected)calendarDetailOrigin.focus();calendarDetailOrigin=null;});
+// `calendarDetailOrigin` is the notes dialog's focus return. The appointment surface no longer
+// uses the shared dialog at all: it carries its own `restoreFocus` on its stack level, and a
+// #modal opened from inside it must not pull focus back out to the calendar behind.
+$("#modal").addEventListener("close",()=>{const dialog=$("#modal");dialog.querySelector(".modal-head .close").setAttribute("aria-label","Close");if(calendarDetailOrigin?.isConnected)calendarDetailOrigin.focus();calendarDetailOrigin=null;});
 $("#archived-care-records")?.addEventListener("click",showArchivedCareRecords);
 $("#customer-search").addEventListener("input", async ()=>{
   const sequence=++customerSearchSequence;
@@ -8338,6 +10705,7 @@ if (inviteToken || resetToken) {
 setupBreedDrawer();
 setupStaffServicesDrawer();
 setupRoleEditorDrawer();
+setupCouponEditorDrawer();
 setupTerminalDrawer();
 setupTerminalCapture();
 bootstrap();

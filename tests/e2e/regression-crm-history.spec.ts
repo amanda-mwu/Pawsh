@@ -243,17 +243,22 @@ test("@regression-crm-history shows current names and terminal history while per
     `history-only-${tenant.runId}@pawsh-test.example`,
     ["customers.view", "pets.view"]
   );
+  // Closed in `finally` so a failed assertion cannot leak the context, its renderer and its
+  // sockets into every test that follows.
   const restrictedContext = await browser.newContext();
-  const restrictedPage = await restrictedContext.newPage();
-  await login(restrictedPage, member.email);
-  await restrictedPage.getByTestId("nav-customers").click();
-  const restrictedCard = restrictedPage.getByTestId("customer-card")
-    .filter({ hasText: "Current Identity" });
-  await restrictedCard.getByTestId("client-row-actions").click();
-  await restrictedCard.getByTestId("client-appointment-history").click();
-  await expect(restrictedPage.getByTestId("modal")).toContainText("Financial history requires payment access");
-  await expect(restrictedPage.getByTestId("modal")).not.toContainText("Invoice ");
-  await restrictedContext.close();
+  try {
+    const restrictedPage = await restrictedContext.newPage();
+    await login(restrictedPage, member.email);
+    await restrictedPage.getByTestId("nav-customers").click();
+    const restrictedCard = restrictedPage.getByTestId("customer-card")
+      .filter({ hasText: "Current Identity" });
+    await restrictedCard.getByTestId("client-row-actions").click();
+    await restrictedCard.getByTestId("client-appointment-history").click();
+    await expect(restrictedPage.getByTestId("modal")).toContainText("Financial history requires payment access");
+    await expect(restrictedPage.getByTestId("modal")).not.toContainText("Invoice ");
+  } finally {
+    await restrictedContext.close();
+  }
 });
 
 // The profile leads with figures that reconcile, then splits appointments into what is ahead

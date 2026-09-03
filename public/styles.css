@@ -50,7 +50,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--coral);outline-offs
 .settings-list{border-top:1px solid var(--line)}.settings-row{width:100%;min-height:58px;border:0;background:transparent;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:10px 0;text-align:left;color:var(--ink)}.settings-row span:first-child{display:grid;gap:3px}.settings-row small{color:var(--muted);font-weight:400}.inline-check{display:flex;align-items:center;gap:8px;margin:0;white-space:nowrap}.inline-check input{width:auto}.row-menu{position:relative}.row-menu summary{list-style:none;display:grid;place-items:center;width:44px;height:44px;border-radius:8px;cursor:pointer;font-size:20px}.row-menu summary::-webkit-details-marker{display:none}.row-menu[open] summary{background:var(--mint)}.row-menu-items{position:absolute;right:0;top:40px;z-index:8;min-width:145px;padding:5px;background:#fff;border:1px solid var(--line);border-radius:9px;box-shadow:var(--shadow)}.row-menu-items button{display:block;width:100%;min-height:44px;border:0;background:#fff;text-align:left;padding:8px 10px}.row-menu-items button:hover,.row-menu-items button:focus-visible{background:var(--mint)}.breed-flag{display:inline-block;padding:1px 6px;border-radius:999px;background:var(--mint);font-size:11px;font-weight:700}
 
 @media(max-width:700px){.mobile-only{display:block}}
-.pet-summary>span{display:inline}.pet-row-actions{white-space:nowrap}.pet-row-actions .text-button{min-height:44px;padding:4px}.customer-detail-actions{display:flex;gap:12px;border-bottom:1px solid var(--line)}.customer-pet-row{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-top:1px solid var(--line)}.customer-pet-row small{display:block;color:var(--muted);margin-top:3px}
+.pet-summary>span{display:inline}.pet-row-actions{white-space:nowrap}.pet-row-actions .text-button{min-height:44px;padding:4px}
 .calendar-open{display:block;width:100%;border:0;background:transparent;color:inherit;text-align:left;padding:0;min-height:28px}.week-appointment{align-self:stretch}.week-appointment .safety-context{max-height:32px;overflow:hidden}.appointment-card-footer{display:flex;align-items:center;gap:5px;min-width:0;margin-top:3px}.appointment-card-footer .rabies-needed{flex:0 1 auto;min-width:0}.appointment-status{color:var(--muted);font-size:10px;text-transform:capitalize;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.appointment-card-footer .calendar-actions-menu{margin-left:auto}.week-appointment:has(.calendar-action-popover:not([hidden])){z-index:20;overflow:visible}
 .setup-menu{position:relative}.setup-menu summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:var(--paper);cursor:pointer;font-weight:700}.setup-menu summary::-webkit-details-marker{display:none}.setup-menu[open] summary{background:var(--mint)}.setup-menu-items{position:absolute;right:0;z-index:12;min-width:210px;margin-top:5px;padding:5px;border:1px solid var(--line);border-radius:9px;background:#fff;box-shadow:var(--shadow)}.setup-menu-items button,.setup-menu-items a{display:block;width:100%;min-height:44px;padding:10px;border:0;background:#fff;color:var(--ink);text-align:left;text-decoration:none}.setup-menu-items button:hover,.setup-menu-items button:focus-visible,.setup-menu-items a:hover,.setup-menu-items a:focus-visible,.setup-menu-items a[aria-current="page"]{background:var(--mint)}.breadcrumbs{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px;color:var(--muted);font-size:13px}.breadcrumbs a{color:var(--ink)}
 @media(max-width:700px){.setup-menu-items{left:0;right:0}.breadcrumbs{font-size:12px}}
@@ -62,7 +62,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--coral);outline-offs
 @media(max-width:580px){.calendar-view-toggle{width:100%}.calendar-view-toggle button{flex:1}.day-grid{--slot-height:44px;grid-template-columns:58px repeat(var(--groomer-count),minmax(180px,1fr))}.calendar-action{min-height:44px}}
 .calendar-view-toggle button{min-height:44px}
 .day-grid{--slot-height:44px}
-.settings-control{margin-bottom:10px}.settings-control>summary{background:rgba(255,255,255,.45)}.settings-control .setup-menu-items{bottom:48px;margin:0 0 5px;left:0;right:auto}.settings-row{text-decoration:none}.appointment-detail{display:grid;gap:8px}.appointment-detail p{margin:0}.appointment-detail .rabies-needed{justify-self:start}.appointment-detail .calendar-move-detail{justify-self:start;margin-top:3px}.modal-actions .close{font-size:14px;font-weight:700}.modal-actions [hidden]{display:none}
+.settings-control{margin-bottom:10px}.settings-control>summary{background:rgba(255,255,255,.45)}.settings-control .setup-menu-items{bottom:48px;margin:0 0 5px;left:0;right:auto}.settings-row{text-decoration:none}.modal-actions .close{font-size:14px;font-weight:700}.modal-actions [hidden]{display:none}
 @media(max-width:900px){.settings-control{margin:0 0 0 auto}.settings-control>summary{white-space:nowrap}.settings-control .setup-menu-items{top:48px;right:0;bottom:auto;left:auto;margin:5px 0 0}.aside-foot{display:flex;align-items:center;gap:8px;margin-left:0}}
 
 /* Compact navigation and shared calendar shell */
@@ -77,8 +77,8 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--coral);outline-offs
 @media(max-width:580px){aside{grid-template-columns:auto 1fr auto}.mobile-nav-toggle{display:block;grid-column:1;grid-row:1}.primary-nav{display:none;grid-column:1/-1}.primary-nav.mobile-open{display:flex}.aside-foot{grid-column:3}.primary-nav button>span:last-child{display:inline}.primary-nav button{padding:7px}.nav-icon{width:30px;height:30px}.calendar-toolbar{display:grid}.calendar-toolbar>div{width:100%}.groomer-filter{flex:1}.groomer-filter>summary{width:100%}.groomer-filter-popover{position:fixed;left:12px;right:12px;top:auto;width:auto}.calendar-month-view{grid-template-columns:repeat(7,minmax(82px,1fr));min-width:574px}.calendar-month-day{min-height:110px}}
 
 /* Global account ownership and calendar information architecture. */
-.header-actions{display:flex;align-items:center;gap:10px}.header-actions .account-control{position:relative;border:0;padding:0}.header-actions .account-control>button{width:44px;min-width:44px;min-height:44px;padding:4px;border:1px solid transparent;border-radius:50%;justify-content:center}.header-actions .account-control>button:hover,.header-actions .account-control>button:focus-visible,.header-actions .account-control>button[aria-expanded=true]{border-color:#e2e6e2;background:var(--mint)}.header-actions .account-menu{left:auto;right:0;top:52px;bottom:auto;width:240px}.account-menu button:disabled{color:#68706b;cursor:not-allowed;background:#f1f3f1}.account-menu button small{float:right;color:inherit;font-size:10px}.calendar-workspace{display:block}.calendar-toolbar-main{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.calendar-display-toggle{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}.calendar-display-toggle button{min-height:44px;padding:7px 13px;border:0;border-right:1px solid var(--line);background:var(--paper);font-weight:700}.calendar-display-toggle button:last-child{border:0}.calendar-display-toggle button[aria-pressed=true]{background:var(--brand);color:var(--on-brand)}.calendar-view-select{margin:0}.calendar-view-select select{min-height:44px;padding:7px 34px 7px 12px;border:1px solid var(--line);border-radius:9px;background:var(--paper);font-weight:700}.calendar-date-nav{display:flex;align-items:center;gap:8px}.calendar-date-nav strong{min-width:180px;text-align:center}.calendar-toolbar-actions{display:flex;align-items:center;gap:8px}.calendar-agenda{display:grid;background:var(--paper)}.agenda-entry{display:grid;grid-template-columns:minmax(150px,190px) minmax(260px,1fr) auto;align-items:center;gap:16px;padding:14px 16px;border-bottom:1px solid var(--line)}.agenda-entry>time{display:grid;gap:3px}.agenda-entry>time span{color:var(--muted)}.agenda-appointment{display:grid;gap:2px;min-height:58px;padding:8px 12px;border:1px solid transparent;border-radius:9px;background:transparent;text-align:left;color:var(--ink)}.agenda-appointment:hover,.agenda-appointment:focus-visible{border-color:#e2e6e2;background:var(--mint)}.agenda-appointment span,.agenda-appointment small{color:var(--muted)}.calendar-customer-context{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.calendar-customer-context section{padding:14px;border:1px solid var(--line);border-radius:10px;background:#ffffff}.calendar-customer-context section:last-of-type{grid-column:1/-1}.calendar-customer-context h3,.calendar-customer-context h4,.calendar-customer-context p{margin:0 0 5px}.customer-context-actions{grid-column:1/-1;display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
-@media(max-width:900px){.header-actions .account-menu{position:fixed;top:74px;right:18px}.calendar-toolbar{align-items:flex-start}.calendar-toolbar-main{width:100%}.agenda-entry{grid-template-columns:130px 1fr}.agenda-entry>.rabies-needed{grid-column:2}.calendar-customer-context{grid-template-columns:1fr}.calendar-customer-context section:last-of-type{grid-column:auto}.customer-context-actions{grid-column:auto}}
+.header-actions{display:flex;align-items:center;gap:10px}.header-actions .account-control{position:relative;border:0;padding:0}.header-actions .account-control>button{width:44px;min-width:44px;min-height:44px;padding:4px;border:1px solid transparent;border-radius:50%;justify-content:center}.header-actions .account-control>button:hover,.header-actions .account-control>button:focus-visible,.header-actions .account-control>button[aria-expanded=true]{border-color:#e2e6e2;background:var(--mint)}.header-actions .account-menu{left:auto;right:0;top:52px;bottom:auto;width:240px}.account-menu button:disabled{color:#68706b;cursor:not-allowed;background:#f1f3f1}.account-menu button small{float:right;color:inherit;font-size:10px}.calendar-workspace{display:block}.calendar-toolbar-main{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.calendar-display-toggle{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}.calendar-display-toggle button{min-height:44px;padding:7px 13px;border:0;border-right:1px solid var(--line);background:var(--paper);font-weight:700}.calendar-display-toggle button:last-child{border:0}.calendar-display-toggle button[aria-pressed=true]{background:var(--brand);color:var(--on-brand)}.calendar-view-select{margin:0}.calendar-view-select select{min-height:44px;padding:7px 34px 7px 12px;border:1px solid var(--line);border-radius:9px;background:var(--paper);font-weight:700}.calendar-date-nav{display:flex;align-items:center;gap:8px}.calendar-date-nav strong{min-width:180px;text-align:center}.calendar-toolbar-actions{display:flex;align-items:center;gap:8px}.calendar-agenda{display:grid;background:var(--paper)}.agenda-entry{display:grid;grid-template-columns:minmax(150px,190px) minmax(260px,1fr) auto;align-items:center;gap:16px;padding:14px 16px;border-bottom:1px solid var(--line)}.agenda-entry>time{display:grid;gap:3px}.agenda-entry>time span{color:var(--muted)}.agenda-appointment{display:grid;gap:2px;min-height:58px;padding:8px 12px;border:1px solid transparent;border-radius:9px;background:transparent;text-align:left;color:var(--ink)}.agenda-appointment:hover,.agenda-appointment:focus-visible{border-color:#e2e6e2;background:var(--mint)}.agenda-appointment span,.agenda-appointment small{color:var(--muted)}
+@media(max-width:900px){.header-actions .account-menu{position:fixed;top:74px;right:18px}.calendar-toolbar{align-items:flex-start}.calendar-toolbar-main{width:100%}.agenda-entry{grid-template-columns:130px 1fr}.agenda-entry>.rabies-needed{grid-column:2}}
 @media(max-width:580px){.header-actions #today,.header-actions>[data-testid=new-appointment]{display:none}.calendar-toolbar-main{display:grid;grid-template-columns:1fr 1fr}.calendar-display-toggle,.calendar-date-nav,.groomer-filter{grid-column:1/-1}.calendar-view-select select{width:100%}.calendar-date-nav{justify-content:space-between}.calendar-date-nav strong{min-width:0}.calendar-toolbar-actions{justify-content:flex-end}.agenda-entry{grid-template-columns:1fr;gap:8px}.agenda-entry>.rabies-needed{grid-column:auto}}
 
 /* Dense shared appointment presentation. */
@@ -113,7 +113,7 @@ header>.header-services{margin-left:auto;min-height:40px;padding:8px 14px;border
 .header-icon-button{display:grid;place-items:center;width:42px;height:42px;padding:0;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--ink)}.header-icon-button svg{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.header-icon-button:hover,.header-icon-button:focus-visible{border-color:var(--line);background:var(--mint)}
 .empty-workspace{display:grid;place-items:center;align-content:center;min-height:360px;padding:32px;text-align:center}.empty-workspace h3,.empty-workspace p{margin:4px}.empty-workspace p{max-width:560px;color:var(--muted)}.empty-icon{display:grid;place-items:center;width:48px;height:48px;margin-bottom:8px;border-radius:50%;background:var(--mint);font-size:24px}
 .messages-workspace{display:grid;grid-template-columns:270px minmax(320px,1fr) 280px;min-height:calc(100vh - 145px);border:1px solid var(--line);border-radius:14px;background:var(--paper);overflow:hidden}.message-list-pane,.message-context{position:static;width:auto;height:auto;padding:16px;border-right:1px solid var(--line);background:#f1f3f1;overflow:auto}.message-context{border-right:0;border-left:1px solid var(--line);background:var(--paper)}.message-list-pane h3{margin:2px 0 12px}.message-filters{display:flex;gap:4px;overflow:auto;margin:10px 0}.message-filters button,.report-mode button,.profile-tabs button{min-height:36px;padding:6px 9px;border:1px solid var(--line);background:var(--paper);font-size:11px;font-weight:700}.message-filters button[aria-pressed=true],.report-mode button[aria-pressed=true],.profile-tabs button[aria-selected=true]{background:var(--brand);color:var(--on-brand)}.message-client-list{display:grid}.message-client{display:flex;width:100%;min-height:58px;padding:9px;border:0;border-bottom:1px solid var(--line);background:transparent;text-align:left}.message-client:hover,.message-client:focus-visible,.message-client.active{background:var(--mint)}.message-client span{display:grid;gap:3px}.message-client small{color:var(--muted)}.message-thread{display:grid;grid-template-rows:auto 1fr auto;min-width:0}.message-thread>header,.message-thread>footer{padding:14px 18px;border-bottom:1px solid var(--line)}.message-thread>footer{display:grid;grid-template-columns:1fr auto;gap:8px;border-top:1px solid var(--line);border-bottom:0}.message-thread textarea{min-height:64px}.message-client-link{color:var(--ink);font-size:17px;font-weight:800}.message-disabled-state{display:grid;place-items:center;align-content:center;padding:28px;text-align:center;color:var(--muted)}.context-pet{display:grid;width:100%;min-height:50px;margin:6px 0;padding:8px;border:1px solid var(--line);border-radius:8px;background:#fff;text-align:left}.context-pet span{color:var(--muted);font-size:11px}
-.client-profile-workspace{display:grid;grid-template-columns:minmax(280px,36%) minmax(0,1fr);min-height:calc(100vh - 150px);border:1px solid var(--line);border-radius:14px;background:var(--paper);overflow:hidden}.client-profile-left,.client-profile-right{padding:24px;overflow:auto}.client-profile-left{border-right:1px solid var(--line);background:#f1f3f1}.profile-facts{display:grid;gap:8px}.profile-facts div{display:grid;gap:2px}.profile-facts dt{color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase}.profile-facts dd{margin:0}.profile-tabs{display:flex;margin:20px 0 10px}.profile-pets,.profile-appointment-list{display:grid;gap:6px}.pet-profile-card,.profile-appointment-row{display:grid;width:100%;min-height:58px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;text-align:left}.pet-profile-card.active,.profile-appointment-row.active{border-color:var(--ink);box-shadow:inset 3px 0 var(--ink)}.pet-profile-card span,.pet-profile-card small{color:var(--muted);font-size:11px}.pet-profile-card .warning-text{color:#b3261e}.profile-appointment-row{grid-template-columns:1fr auto;align-items:center;min-height:44px}.profile-appointment-row strong{text-transform:capitalize}
+.client-profile-workspace{display:grid;grid-template-columns:minmax(280px,36%) minmax(0,1fr);min-height:calc(100vh - 150px);border:1px solid var(--line);border-radius:14px;background:var(--paper);overflow:hidden}.client-profile-left,.client-profile-right{padding:24px;overflow:auto}.client-profile-left{border-right:1px solid var(--line);background:#f1f3f1}.profile-facts{display:grid;gap:8px}.profile-facts div{display:grid;gap:2px}.profile-facts dt{color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase}.profile-facts dd{margin:0}.profile-tabs{display:flex;margin:20px 0 10px}.profile-pets,.profile-appointment-list{display:grid;gap:6px}.profile-appointment-row{display:grid;width:100%;min-height:58px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;text-align:left}.profile-appointment-row.active{border-color:var(--ink);box-shadow:inset 3px 0 var(--ink)}.profile-appointment-row{grid-template-columns:1fr auto;align-items:center;min-height:44px}.profile-appointment-row strong{text-transform:capitalize}
 .report-mode{display:flex}.report-mode button:first-child{border-radius:8px 0 0 8px}.report-mode button:last-child{border-radius:0 8px 8px 0}.report-filters{display:flex;align-items:end;gap:10px;margin-bottom:14px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--paper)}.report-filters label{display:grid;gap:4px;font-size:11px;font-weight:700}.report-table-wrap{overflow:auto;border:1px solid var(--line);border-radius:10px}
 @media(max-width:1000px){.messages-workspace{grid-template-columns:240px 1fr}.message-context{grid-column:1/-1;border-top:1px solid var(--line);border-left:0}.client-profile-workspace{grid-template-columns:1fr 1.4fr}}
 /* Messages shows the client profile's own summary column, so the shared section drops the framing
@@ -154,8 +154,7 @@ header>.header-services{margin-left:auto;min-height:40px;padding:8px 14px;border
 
 /* One shared calendar preview and one shared appointment detail dialog. */
 #calendar-hover-preview.appointment-hover:not([hidden]){display:block;max-width:280px;pointer-events:none}#calendar-hover-preview .hover-summary{margin-bottom:0;padding-top:8px;border-top:1px solid var(--line)}
-.appointment-detail-dialog{width:min(680px,calc(100vw - 28px))}.appointment-detail-dialog #modal-form{--detail-pad-y:20px;--detail-pad-x:22px;padding:0 var(--detail-pad-x) var(--detail-pad-y);max-height:min(86vh,760px);overflow:auto}.appointment-detail{display:grid;grid-template-columns:1fr 1fr;gap:12px}.appointment-detail>header,.appointment-detail>.appointment-detail-services,.appointment-detail>.appointment-detail-summary,.appointment-detail>footer{grid-column:1/-1}.appointment-detail>header h3,.appointment-detail>header p,.appointment-detail section h4,.appointment-detail section p{margin:0}.appointment-detail>section{display:grid;gap:5px;padding:11px;border:1px solid var(--line);border-radius:9px;background:#ffffff}.appointment-detail-services>div{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-top:1px solid var(--line)}.appointment-detail-services>div span{display:grid}.appointment-detail-services small{color:var(--muted)}.appointment-detail-summary{display:flex!important;grid-template-columns:none!important;justify-content:space-between;align-items:center;background:var(--mint)!important}.appointment-detail>footer{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}.detail-warning{color:#b3261e}.appointment-detail-dialog .modal-head{position:sticky;top:0;z-index:2;background:var(--paper);margin:0 0 var(--space-3);padding:var(--detail-pad-y) 0 var(--space-3)}
-@media(max-width:580px){.appointment-detail{grid-template-columns:1fr}.appointment-detail>header,.appointment-detail>.appointment-detail-services,.appointment-detail>.appointment-detail-summary,.appointment-detail>footer{grid-column:auto}}
+.detail-warning{color:#b3261e}
 
 /* ── Pawsh operational density pass ───────────────────────────────────────────
    Shared tokens + normalization of the control, surface and spacing language.
@@ -228,15 +227,6 @@ label{gap:5px;margin-bottom:12px}
 .modal-actions{margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
 dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 
-/* The appointment detail is a working view rather than a form, so it takes the whole screen:
-   the operator reads a visit alongside nothing else, and the sections spread across the width
-   instead of being squeezed into a 680px column. */
-.appointment-detail-dialog{width:100vw;max-width:none;height:100dvh;max-height:none;margin:0;border-radius:0}
-.appointment-detail-dialog #modal-form{--detail-pad-x:clamp(22px,4vw,56px);height:100dvh;max-height:none;box-sizing:border-box}
-.appointment-detail{align-content:start;min-width:0;width:100%;max-width:1600px;margin-inline:auto}
-/* Only a viewport with room for them gets more than one column: a phone keeps the single
-   stacked column it already had, which the full-screen width must not widen back out. */
-@media(min-width:581px){.appointment-detail{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}}
 
 /* Client profile + pet profile density. */
 .client-profile-left,.client-profile-right{padding:18px}
@@ -246,8 +236,6 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 .profile-summary>div{padding:9px 11px;border-radius:var(--radius-sm)}
 .profile-summary strong{font-size:17px}
 .profile-tabs{margin:14px 0 8px}
-.pet-profile-card{min-height:0;padding:9px 11px;border-radius:var(--radius-sm)}
-.pet-profile-card:hover{border-color:#e2e6e2;background:#ffffff}
 .profile-appointment-row{border-radius:var(--radius-sm)}
 .pet-profile-facts div{padding:8px 9px;border-radius:6px}
 .pet-profile-facts dd{font-size:13px}
@@ -799,6 +787,26 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 .profile-panel:focus-visible{outline:3px solid var(--brand);outline-offset:2px}
 .panel-actions{display:flex;justify-content:flex-end;margin-bottom:var(--space-3)}
 
+/* The Messages rail runs the same tab strip with three tabs in a 298px content width. Three tabs
+   measure well inside that, so the strip keeps this treatment rather than growing a second tab
+   dialect; the scroll and no-shrink rules are the safety net for a narrower viewport. */
+.profile-tabs{overflow-x:auto}
+.profile-tabs button{flex:0 0 auto}
+/* A panel that opens on a section heading must not inherit the heading's top margin. */
+.profile-panel>.profile-section-head:first-child{margin-top:0}
+/* Revives the narrow-column appointment row for the rail, with the price column dropped: the
+   rail cannot show a trustworthy price or payment chip, so it shows none. */
+.profile-appointment-row{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"when status" "meta status" "services status"}
+/* A fresh class, not .history-status: that name is redeclared later for the profile history
+   table's <td> (display:flex;min-width:104px) and the later rule wins here too. */
+.profile-appointment-row .appt-state{grid-area:status;justify-self:end;align-self:start}
+/* Deferred-capability panel sized for the rail. Not .settings-panel, whose max-width:760px and
+   22px padding read as a dialog at 298px. */
+.context-placeholder{padding:var(--space-3);border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--surface-2)}
+.context-placeholder h4{margin:0 0 var(--space-2);font:600 14px/1.35 var(--font-sans)}
+.context-placeholder p{margin:0 0 var(--space-2);color:var(--muted);font-size:12px;line-height:1.5}
+.context-placeholder p:last-child{margin-bottom:0}
+
 /* Pets */
 .pet-card{margin-bottom:var(--space-3);padding:var(--space-3);border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--paper)}
 .pet-card-head{display:flex;align-items:center;gap:10px}
@@ -1133,10 +1141,8 @@ label:has(> input[type="checkbox"]),label:has(> input[type="radio"]){
 .appointment-billing.muted{background:var(--surface-2);color:var(--muted)}
 .appointment-billing.refunded{background:var(--info-tint);color:var(--info)}
 
-.appointment-detail>.appointment-lifecycle{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px 22px;padding:9px 11px;border:1px solid var(--line);border-radius:9px;background:var(--cream);color:var(--muted);font-size:12px}
-.appointment-lifecycle strong{color:var(--ink);font-weight:600}
 
-.appointment-detail>.appointment-activity{grid-column:1/-1;border:1px solid var(--line);border-radius:9px;background:var(--paper);overflow:hidden}
+.surface-main .appointment-activity{grid-column:1/-1;border:1px solid var(--line);border-radius:9px;background:var(--paper);overflow:hidden}
 .appointment-activity>summary{display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:10px;min-height:44px;padding:9px 12px;background:var(--cream);cursor:pointer;font-size:13px;font-weight:700;list-style:none}
 .appointment-activity>summary::-webkit-details-marker{display:none}
 .appointment-activity>summary:hover{box-shadow:inset 3px 0 0 var(--brand)}
@@ -1156,7 +1162,7 @@ label:has(> input[type="checkbox"]),label:has(> input[type="radio"]){
    before the bytes arrive — a set of five photos otherwise reflows the dialog five
    times as each one decodes.
    --------------------------------------------------------------------------- */
-.appointment-detail>.appointment-photos{grid-column:1/-1;display:grid;gap:8px}
+.surface-main .appointment-photos{grid-column:1/-1;display:grid;gap:8px}
 .appointment-photos>h4{margin:0}
 .photo-pet{border:1px solid var(--line);border-radius:9px;background:var(--paper);overflow:hidden}
 .photo-pet>summary{display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:10px;min-height:40px;padding:8px 12px;background:var(--cream);cursor:pointer;font-size:13px;font-weight:700;list-style:none}
@@ -1191,7 +1197,7 @@ label:has(> input[type="checkbox"]),label:has(> input[type="radio"]){
    aria-label: the tooltip is for the mouse, the label is the only name a screen
    reader gets, and an icon-only control with neither is unusable.
    --------------------------------------------------------------------------- */
-.appointment-detail>.appointment-report-cards{grid-column:1/-1;display:grid;gap:8px}
+.surface-main .appointment-report-cards{grid-column:1/-1;display:grid;gap:8px}
 .report-card-head{display:flex;justify-content:space-between;align-items:center;gap:var(--space-3)}
 .report-card-head h4{margin:0}
 .report-card-empty{margin:0;color:var(--muted);font-size:12px}
@@ -1818,3 +1824,410 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
   .role-group-note{margin-right:0}
 }
 @media(prefers-reduced-motion:reduce){.role-group-summary::before{transition:none}}
+
+/* Settings → Coupons & discounts.
+
+   Appended after the Roles block for the reason that one was appended after Tax & payments: the
+   `.drawer` rules further up have to keep outranking the bare `dialog` ones, and a block inserted
+   above them would quietly reorder that.
+
+   Almost nothing here is new. The tabs are `.settings-tabs`, the tables are `.taxpay-table` with
+   `.taxpay-name` inside them, the switches are `.pref-toggle`, the row menus are
+   `.row-menu`/`.roles-menu`, the day pills are `.availability-chip`, the limitation tokens are
+   `.staff-chip`, the failure is `.availability-error`, the empty state is `.taxpay-empty`, the
+   pager is `.pager` and the coupon editor is `.drawer`. What is genuinely new is four families:
+
+     `.field-affix`         a unit or a button living inside the field it acts on. The unit HAS to
+                            move when the mode moves, and Generate has to sit where the value it
+                            writes will appear.
+     `.coupon-limit-*`      the limitation rows, their gated fieldsets and the live summary.
+     `.coupon-limits-cell`  the token list in the table's Limitations column.
+     `.stacking-*`          the mode chooser and its worked example. */
+.discounts-root{min-width:0}
+.discounts-panel .panel-head{align-items:flex-start;gap:var(--space-3);margin-bottom:var(--space-3)}
+.discounts-panel .panel-head h4{margin:0}
+.discounts-panel .panel-head p{max-width:60ch;margin:2px 0 0}
+.discounts-panel .taxpay-empty{padding-top:var(--space-2)}
+/* A code is read one character at a time, off a card or over the phone, so it is spaced and never
+   allowed to wrap in the middle. */
+.coupon-code{font-weight:700;letter-spacing:.06em;font-variant-numeric:tabular-nums;white-space:nowrap}
+.coupon-code-input{text-transform:uppercase;letter-spacing:.06em;font-variant-numeric:tabular-nums}
+/* The uppercasing is for the code, not for the hint that no code is needed. Without this the
+   checkout field's placeholder reads OPTIONAL, which looks like a value rather than an absence. */
+.coupon-code-input::placeholder{text-transform:none;letter-spacing:normal}
+.coupon-col-redeemed{font-variant-numeric:tabular-nums}
+/* Tokens, not prose, and they wrap rather than truncate. Nothing hides behind a `title` here: a
+   limitation the operator cannot see is one they will quote a price without. */
+.coupon-limits-cell{display:flex;flex-wrap:wrap;gap:4px;max-width:32ch}
+
+/* --- A unit or an action inside the field it acts on --------------------- */
+.field-affix{display:flex;align-items:center;gap:var(--space-2);min-width:0}
+.field-affix input{flex:1 1 auto;min-width:0}
+.field-affix-unit{flex:0 0 auto;min-width:16px;color:var(--muted);font-size:13px;font-weight:700;text-align:center}
+.field-affix-action{flex:0 0 auto;border:1px solid var(--line);white-space:nowrap}
+
+/* --- The shared value controls ------------------------------------------ */
+.discount-controls{display:grid;gap:var(--space-3)}
+.discount-choice{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);min-width:0;margin:0;padding:0;border:0}
+/* The legend reads as the label it is - same size and weight as the labels around it - so the two
+   radio groups do not look like a different kind of control from the fields between them. */
+.discount-choice legend{float:left;width:100%;margin:0 0 6px;padding:0;font-size:13px;font-weight:600}
+.discount-value{max-width:280px;margin:0}
+.discount-controls .field-hint{margin:0}
+
+/* --- Coupon limitations -------------------------------------------------- */
+.coupon-limit-group{display:grid;gap:var(--space-3);min-width:0;margin:var(--space-4) 0 0;padding:var(--space-3) 0 0;border:0;border-top:1px solid var(--line)}
+.coupon-limit-group>legend{padding:0;color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+.coupon-limit-row{display:grid;gap:var(--space-2)}
+.coupon-limit-switch{display:flex;align-items:center;gap:var(--space-3);margin:0;font-size:13px;font-weight:600}
+.coupon-limit-label{display:grid;gap:2px;min-width:0}
+.coupon-limit-label small{color:var(--muted);font-size:11.5px;font-weight:400}
+/* Disabled, never hidden. Dimmed and inert still says what checking the box is going to ask for;
+   removing the fields makes the drawer jump under the pointer and leaves the question unasked.
+   `disabled` on the fieldset does the real work - every descendant is announced unavailable,
+   leaves the tab order and drops out of `FormData` - so this only has to make it visible. */
+.coupon-limit-inputs{display:flex;flex-wrap:wrap;gap:var(--space-3);min-width:0;margin:0 0 0 56px;padding:0;border:0}
+.coupon-limit-inputs:disabled{opacity:.5}
+.coupon-limit-field{min-width:0;margin:0;font-size:12px;font-weight:600}
+.coupon-limit-days{display:flex;flex-wrap:wrap;gap:4px}
+.coupon-limit-error{margin:0 0 0 56px;min-height:0}
+.coupon-limit-error:empty{display:none}
+/* One sentence saying what the switches above add up to. An unlimited coupon says so, rather than
+   leaving a blank that reads as a summary which has not loaded. */
+.coupon-limit-summary{margin:0;padding:var(--space-3);border-radius:var(--radius-md);background:var(--mint);color:var(--muted);font-size:12px;font-weight:600;line-height:1.5}
+
+/* --- Stacking ------------------------------------------------------------ */
+.stacking-mode{max-width:420px;margin-bottom:var(--space-4)}
+.stacking-example{display:grid;gap:var(--space-2);margin:0 0 var(--space-4);padding:var(--space-4);border:1px solid var(--line);border-radius:var(--radius-md);background:var(--cream)}
+.stacking-example-head{margin:0;font-size:13px}
+/* All three cases, always, with the chosen one marked - the operator is choosing between them,
+   not confirming one. The mark is a word as well as a tint and a rule, so it survives a screen
+   where those two greens are the same grey. */
+.stacking-case{display:grid;grid-template-columns:minmax(140px,auto) minmax(0,1fr) auto;align-items:baseline;gap:var(--space-2) var(--space-3);padding:var(--space-2) var(--space-3);border-left:2px solid transparent;border-radius:var(--radius-sm);font-size:12.5px}
+.stacking-case.is-selected{border-left-color:var(--brand);background:var(--brand-tint)}
+.stacking-case-name{display:flex;align-items:baseline;gap:var(--space-2);font-weight:700}
+.stacking-case-mark{padding:1px 6px;border-radius:999px;background:var(--brand);color:var(--on-brand);font-size:10px;font-weight:700;letter-spacing:.02em}
+.stacking-case-steps{color:var(--muted)}
+.stacking-case-total{justify-self:end;font-variant-numeric:tabular-nums;white-space:nowrap}
+
+@media(max-width:900px){
+  /* The Discount column goes first: a coupon's value is already on its Name line at this width,
+     and the tokens are the column that most needs the room back. */
+  .coupon-col-discount{display:none}
+  .coupon-limits-cell{max-width:22ch}
+  .stacking-case{grid-template-columns:minmax(0,1fr) auto}
+  .stacking-case-steps{grid-column:1/-1}
+}
+@media(max-width:620px){
+  .discounts-panel .panel-head{flex-direction:column;align-items:stretch;gap:var(--space-2)}
+  /* Code, value and the redemption count fold onto the Name line through the same
+     `.taxpay-inline-type` mechanism Tax & payments already uses. Limitations keeps its own column
+     rather than folding in with them: it is chips that already wrap, and it is the one thing on a
+     coupon row that changes whether a customer may redeem it at all. */
+  .coupon-col-code,.coupon-col-redeemed{display:none}
+  /* Tightened only here. Four columns plus a row menu do not fit a 390px phone at the desktop
+     cell padding, and a row menu parked off the right edge is a menu nobody will find. */
+  .discounts-panel .taxpay-table th,.discounts-panel .taxpay-table td{padding:8px 7px}
+  .coupon-limits-cell{max-width:13ch}
+  .coupon-limit-inputs,.coupon-limit-error{margin-left:0}
+  .stacking-mode{max-width:none}
+}
+/* The checkout picker: the salon's configured discounts, as a list to tick.
+
+   Reuses the checkbox-with-a-description shape `.stacked-dialog-options` already uses in every
+   stacked dialog. It is a `<fieldset>` because the group needs a visible name that is also its
+   accessible one, and `#modal-fields` has no fieldset of its own to inherit a reset from. */
+#modal-fields .checkout-discounts{min-width:0;margin:0 0 var(--space-3);padding:0;border:0}
+.checkout-discounts>legend{padding:0;margin-bottom:6px;font-size:13px;font-weight:600}
+.checkout-discount{display:flex;align-items:center;gap:9px;margin:0;padding:6px 8px;border-radius:var(--radius-sm);font-size:13px;font-weight:400}
+.checkout-discount:hover{background:var(--surface-2)}
+.checkout-discount input{flex:0 0 auto;width:16px;height:16px;min-height:0;margin:0;padding:0;border-radius:3px;accent-color:var(--brand)}
+.checkout-discount>span{display:grid;gap:1px;min-width:0}
+.checkout-discount strong{font-weight:700}
+.checkout-discount small{color:var(--muted);font-size:11.5px}
+/* Whatever is not carrying the selection, while the salon allows one per appointment. Dimmed and
+   inert rather than gone, so clearing the one that IS set is the obvious way back. */
+.checkout-discount:has(input:disabled){opacity:.5}
+.checkout-discount:has(input:disabled):hover{background:transparent}
+/* Empty until something is actually taken off. A row that always said "$85.00 = $85.00" would be
+   a statement about the product rather than about this visit. */
+.checkout-running-total{margin:0 0 var(--space-3);padding:9px 11px;border-radius:var(--radius-md);background:var(--mint);color:var(--muted);font-size:12px;font-weight:600;line-height:1.5}
+.checkout-running-total:empty{display:none}
+/* One step of a discount breakdown, under the total it is part of. `.receipt>div` sets
+   `padding:9px 0` and outranks a bare class, so the indent is written at the same specificity -
+   the same reason `.receipt>.receipt-refund` above is. */
+.receipt>.receipt-discount-step{padding:9px 0 9px 13px}
+/* The rate a percentage line took, beside the amount it took. "-$8.00" alone does not say it was
+   10% of what the line above left, which is the whole reason the stacking order changes a total. */
+.receipt-discount-rate{color:var(--muted);font-weight:600}
+/* A 36px input cannot hold a 44px control, so on touch the button leaves the field and takes the
+   width beneath it rather than squeezing the value it writes into. */
+@media(pointer:coarse){
+  .field-affix{flex-wrap:wrap}
+  .field-affix-action{width:100%}
+}
+
+/* == Full-screen appointment stack ==
+   Three levels, each a <dialog> in the top layer. The pattern is the one
+   `.appointment-detail-dialog` already established; it is generalised here so Check Out and
+   Ticket share it rather than each restating 100dvh. */
+.fullscreen-surface{
+  width:100vw;max-width:none;height:100dvh;max-height:none;
+  margin:0;padding:0;border:0;border-radius:0;
+  background:var(--cream);color:var(--ink);
+  overscroll-behavior:contain;
+}
+.fullscreen-surface::backdrop{background:rgba(32,37,34,.45)}
+/* The dialog holds one shell, and the shell carries the three rows. The extra element exists
+   because the dialog itself is named `appointment-detail-surface` and the shell is what
+   `appointment-detail` names - one element can only answer to one testid. Never a bare `1fr`:
+   an unbounded track would let the body push the footer off the screen. */
+.fullscreen-surface[open]{display:grid;grid-template-rows:minmax(0,1fr)}
+.surface-shell{display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-height:0}
+
+.surface-head{
+  display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;
+  gap:var(--space-4);
+  padding:var(--space-4) clamp(16px,3vw,40px);
+  border-bottom:1px solid var(--line);background:var(--paper);
+}
+.surface-head-text{display:grid;gap:2px;min-width:0}
+.surface-head h2{margin:0;font:600 19px/1.25 var(--font-sans)}
+/* The reference and its two chips read as one line, so the row is the flex container rather
+   than a separate meta strip beside it. */
+.surface-head .appointment-reference{
+  display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;margin:0;
+}
+.surface-subhead{margin:0;color:var(--muted);font-size:13px}
+.surface-close{
+  width:40px;height:40px;min-height:40px;border:0;border-radius:var(--radius-md);
+  background:transparent;font-size:22px;line-height:1;color:var(--muted);
+}
+.surface-close:hover{background:var(--surface-2);color:var(--ink)}
+
+/* Two columns, each its own scroller. Matches `.client-profile-workspace`. */
+.surface-body{
+  display:grid;grid-template-columns:320px minmax(0,1fr);
+  min-height:0;background:var(--paper);
+}
+.surface-rail{
+  min-height:0;overflow-y:auto;padding:var(--space-4) var(--space-5);
+  border-right:1px solid var(--line);background:var(--surface-2);
+}
+.surface-main{
+  min-height:0;overflow-y:auto;
+  padding:var(--space-4) clamp(16px,3vw,40px);
+  display:grid;gap:var(--space-4);align-content:start;
+}
+/* Above the breakpoint the rail is a column, so its disclosure control is meaningless - script
+   forces `open` and the summary is hidden rather than removed, so the element stays a valid
+   <details> at every width. */
+.surface-rail-toggle{display:none;gap:var(--space-2)}
+.surface-rail>.surface-rail-body{min-width:0}
+/* The rail is the profile's own column; inside the surface it supplies its own padding, so the
+   shared class must not add a second set. */
+.surface-rail .client-profile-left{padding:0;border-right:0;background:transparent;overflow:visible}
+.surface-rail .profile-tabs button{min-height:44px}
+.rail-status{display:grid;gap:var(--space-2);justify-items:start}
+
+.surface-foot{
+  display:flex;flex-wrap:wrap;gap:var(--space-3);
+  align-items:center;justify-content:space-between;
+  padding:var(--space-3) clamp(16px,3vw,40px);
+  border-top:1px solid var(--line);background:var(--paper);
+  box-shadow:0 -1px 3px rgba(32,37,34,.06);
+}
+.surface-foot-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center}
+
+/* == Status strip ==
+   Reuses `.appointment-lifecycle`; only the surface variant and the unrecorded/derived
+   treatments are new. */
+/* The strip is a direct child of the work column on the detail and of the bill column on Check
+   Out. The selector reaches both rather than the declarations being written out twice. */
+.surface-main>.appointment-lifecycle,
+.checkout-bill>.appointment-lifecycle{
+  display:flex;flex-wrap:wrap;gap:6px 22px;align-items:center;
+  padding:9px 12px;border:1px solid var(--line);border-radius:var(--radius-lg);
+  background:var(--cream);color:var(--muted);font-size:12px;
+}
+.appointment-lifecycle strong{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+.appointment-lifecycle strong.is-unrecorded{color:var(--muted);font-weight:400}
+.lifecycle-note{flex-basis:100%;margin:0}
+
+/* == Work column ==
+   Pomelo drew one bordered card; the column carries several, so the card treatment lives on
+   `.work-block` and the container keeps only the stack. */
+.appointment-work{display:grid;gap:var(--space-4)}
+.work-block{
+  display:grid;gap:var(--space-2);
+  padding:var(--space-4);border:1px solid var(--line);
+  border-radius:var(--radius-lg);background:var(--paper);
+}
+.work-block>p{margin:0}
+.work-block>.rabies-needed,.work-block>.detail-warning{justify-self:start}
+.work-block>.detail-warning{margin:0;font-size:13px}
+.work-block-head{
+  display:flex;flex-wrap:wrap;gap:var(--space-2) var(--space-4);
+  align-items:center;justify-content:space-between;
+}
+.work-block-head h3{margin:0}
+.appointment-service-row{
+  display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--space-2) var(--space-4);
+  padding:var(--space-3);border:1px solid var(--line);
+  border-radius:var(--radius-md);background:var(--surface-2);
+}
+.appointment-service-row>span{display:grid;gap:2px;min-width:0}
+.appointment-service-row>strong{font-variant-numeric:tabular-nums;font-weight:600;white-space:nowrap}
+.appointment-service-row small{color:var(--muted)}
+.appointment-service-total{
+  display:flex;flex-wrap:wrap;gap:var(--space-2) var(--space-4);
+  align-items:center;justify-content:space-between;
+  padding-top:var(--space-2);border-top:1px solid var(--line);
+}
+.appointment-service-total strong{font-variant-numeric:tabular-nums}
+/* States where money and notes live, rather than acts on them. Quieter than a block that
+   carries a control, because neither of these does. */
+.appointment-discount-row p,.appointment-note>p{margin:0;color:var(--muted);font-size:13px}
+.appointment-note>p[data-testid]{color:var(--ink)}
+.appointment-note .work-block-head+p{margin-bottom:var(--space-2)}
+.surface-note-field{margin:0}
+.surface-note-field textarea{width:100%;min-height:96px}
+
+/* == Responsive == */
+@media(max-width:1199px){
+  .surface-body{grid-template-columns:280px minmax(0,1fr)}
+}
+/* Below this the rail stops being a column. It collapses to a disclosure BELOW the work, so
+   times, service and money are what the operator lands on rather than something to scroll a
+   client record to reach. One scroller, not two: with the rail stacked under the work there is
+   no second column to scroll independently, and two nested scrollers on a phone is one too many. */
+@media(max-width:900px){
+  /* `min-content` IS LOAD-BEARING, and `auto` is wrong here. In a grid whose height is definite -
+     which this one's is, since the shell gives the body `minmax(0,1fr)` - `auto` tracks share the
+     space out between them, so two stacked columns whose content does not fit are both compressed
+     and, being `overflow:visible`, paint over each other. `min-content` sizes each track to its
+     own content and leaves the container to scroll; `align-content:start` stops the tracks
+     stretching when the content is short enough to leave room. */
+  .surface-body{
+    grid-template-columns:minmax(0,1fr);grid-template-rows:min-content min-content;
+    align-content:start;overflow-y:auto;
+  }
+  .surface-main{order:1;overflow:visible}
+  .surface-rail{
+    order:2;max-height:none;overflow:visible;
+    border-right:0;border-top:1px solid var(--line);
+  }
+  .surface-rail-toggle{
+    display:flex;align-items:center;min-height:48px;
+    font-weight:700;cursor:pointer;list-style:none;
+  }
+  .surface-rail-toggle::-webkit-details-marker{display:none}
+  /* The same chevron the activity and photo disclosures use, so a collapsed rail reads as
+     something to open rather than as a heading. */
+  .surface-rail[open]>.surface-rail-toggle .service-section-chevron{transform:rotate(90deg)}
+}
+@media(max-width:640px){
+  .surface-head{gap:var(--space-2) var(--space-3)}
+  .surface-foot{flex-direction:column-reverse;align-items:stretch}
+  .surface-foot-actions:last-child{flex-direction:column-reverse}
+  .surface-foot-actions:last-child>.primary{width:100%;min-height:48px}
+  .surface-foot-actions:first-child{justify-content:space-between}
+}
+
+/* == Check Out ==
+   Level 2 of the appointment stack. The bill takes the width and the money column is fixed, which
+   is the opposite way round from the detail's client rail - so the grid is restated on the
+   surface's own class rather than inherited. */
+.surface-body.checkout-body{grid-template-columns:minmax(0,1fr) 380px}
+.checkout-bill,.checkout-money{
+  min-height:0;overflow-y:auto;padding:var(--space-4) clamp(16px,3vw,40px);
+  display:grid;gap:var(--space-4);align-content:start;
+}
+.checkout-money{border-left:1px solid var(--line);background:var(--surface-2)}
+
+/* One part of the bill: who, what, and what it comes to. */
+.checkout-block{
+  display:grid;gap:var(--space-2);
+  padding:var(--space-4);border:1px solid var(--line);
+  border-radius:var(--radius-lg);background:var(--paper);
+}
+.checkout-block h3{margin:0}
+.checkout-block>p{margin:0}
+.checkout-line{display:flex;justify-content:space-between;gap:var(--space-4);font-size:13px}
+.checkout-line strong{font-variant-numeric:tabular-nums}
+.checkout-line.is-total{padding-top:6px;border-top:1px solid var(--line);font-weight:700}
+.checkout-frozen{margin:0}
+
+/* == The adjustments ==
+   Discount, coupon and tip behind their own disclosures, because the common case at a counter is
+   taking the amount already on the screen. */
+.checkout-adjustments{display:grid;gap:var(--space-2)}
+.checkout-disclosure{border:1px solid var(--line);border-radius:var(--radius-md);background:var(--paper)}
+.checkout-disclosure>summary{
+  display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);
+  min-height:44px;padding:0 var(--space-3);
+  cursor:pointer;list-style:none;font-size:13px;font-weight:600;
+}
+.checkout-disclosure>summary::-webkit-details-marker{display:none}
+.checkout-disclosure>summary:focus-visible{outline:2px solid var(--ink);outline-offset:-3px}
+/* What a collapsed disclosure is carrying. It is never the only signal: a value also forces its
+   own disclosure open, so this reads back something already on screen rather than standing in
+   for it. */
+.checkout-disclosure [data-disclosure-value]{
+  color:var(--brand);font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;
+}
+.checkout-disclosure [data-disclosure-value]:empty{display:none}
+.checkout-disclosure-body{padding:0 var(--space-3) var(--space-3)}
+.checkout-disclosure-body label{margin-bottom:0}
+.checkout-disclosure-body .checkout-discounts{margin-bottom:var(--space-2)}
+
+/* == The money column == */
+.checkout-pay{margin:0;gap:4px}
+.checkout-pay input{
+  width:100%;text-align:right;font-size:22px;font-weight:600;
+  font-variant-numeric:tabular-nums;
+}
+/* Revealed only while the amount exceeds the balance, so it can afford to be tinted: it is never
+   sitting there inert. */
+.checkout-remainder{
+  display:flex;align-items:center;gap:var(--space-2);margin:0;
+  padding:7px 9px;border-radius:var(--radius-sm);
+  background:var(--brand-tint);font-size:12.5px;font-weight:600;
+}
+.checkout-remainder input{width:16px;height:16px;min-height:0;margin:0;accent-color:var(--brand)}
+/* A chip row, not a select. Six or fewer options; above that checkout renders the shared
+   <select> instead and none of this applies. */
+.checkout-methods{display:grid;gap:var(--space-2);margin:0;padding:0;border:0;min-width:0}
+.checkout-methods>legend{padding:0;margin-bottom:6px;font-size:13px;font-weight:600}
+.checkout-method{
+  display:flex;gap:var(--space-2);align-items:center;
+  min-height:44px;padding:0 var(--space-3);margin:0;
+  border:1px solid var(--line);border-radius:var(--radius-md);background:var(--paper);
+  font-weight:400;
+}
+.checkout-method input{width:16px;height:16px;min-height:0;margin:0;accent-color:var(--brand)}
+.checkout-method>span{display:grid;gap:1px;min-width:0}
+.checkout-method small{color:var(--muted);font-size:11.5px}
+.checkout-method:has(input:checked){border-color:var(--brand);background:var(--brand-tint);font-weight:600}
+.checkout-method:has(input:focus-visible){outline:3px solid var(--brand);outline-offset:2px}
+/* The receipt brings its own chrome, so the column adds none. */
+.checkout-settled{padding:0}
+.checkout-settled .receipt{margin:0}
+
+.checkout-balance{margin:0;font-size:17px;font-weight:700;font-variant-numeric:tabular-nums}
+
+/* == Responsive == */
+@media(max-width:1199px){
+  .surface-body.checkout-body{grid-template-columns:minmax(0,1fr) 330px}
+}
+/* Money first. On a phone at a counter the operator opened this to take an amount, not to read
+   the bill back - so the bill follows underneath rather than being scrolled past to reach it.
+   One scroller, as on the detail: two nested ones on a phone is one too many. */
+@media(max-width:900px){
+  .surface-body.checkout-body{
+    grid-template-columns:minmax(0,1fr);grid-template-rows:min-content min-content;
+    align-content:start;
+  }
+  .checkout-money{order:1;overflow:visible;border-left:0;border-bottom:1px solid var(--line)}
+  .checkout-bill{order:2;overflow:visible}
+}

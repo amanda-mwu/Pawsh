@@ -1,5 +1,5 @@
 import type postgres from "postgres";
-import {resolveTierPrice,type PricingClass,type PriceTier} from "@pawsh/domain";
+import {isWeightUnit,resolveTierPrice,type PricingClass,type PriceTier,type WeightUnit} from "@pawsh/domain";
 
 type Sql=postgres.Sql|postgres.TransactionSql;
 export interface ResolvedServicePrice {
@@ -10,8 +10,17 @@ export interface ResolvedServicePrice {
 }
 
 export async function resolveServicePrices(sql:Sql,input:{businessId:string;petId:string;serviceIds:readonly string[]}):Promise<ResolvedServicePrice[]>{
- const [pet]=await sql<{weightOunces:number|null;breed:string|null;breedId:string|null;species:string}[]>`select weight_ounces,breed,breed_id,species from pets where business_id=${input.businessId} and id=${input.petId} and archived_at is null`;
+ // The workspace's weight unit rides along on the pet lookup rather than costing a second round
+ // trip. It changes NOTHING about which tier the pet lands in - that is `resolveWeightTier`
+ // comparing integer ounces, whatever the salon reads - and only decides how the returned
+ // `weightTierLabel` is captioned. A salon on kilograms must not be shown its pet's weight in
+ // kilograms beside a band captioned in pounds; see `weight.ts`.
+ const [pet]=await sql<{weightOunces:number|null;breed:string|null;breedId:string|null;species:string;weightUnit:string|null}[]>`
+   select weight_ounces,breed,breed_id,species,
+     (select business.weight_unit from businesses business where business.id=${input.businessId}) as weight_unit
+   from pets where business_id=${input.businessId} and id=${input.petId} and archived_at is null`;
  if(!pet)throw Object.assign(new Error("Pet not found"),{statusCode:404});
+ const weightUnit:WeightUnit=isWeightUnit(pet.weightUnit??"")?pet.weightUnit as WeightUnit:"lb";
  // Coat class resolves through the canonical breed ID, never through `pets.breed` text.
  //
  // The old lookup matched the stored name against this tenant's `business_breeds` rows. That
@@ -44,11 +53,11 @@ export async function resolveServicePrices(sql:Sql,input:{businessId:string;petI
  const output:ResolvedServicePrice[]=[];
  for(const service of services){
   const tiers=await sql<(PriceTier&{durationMinutes:number|null})[]>`select pricing_class,weight_tier_code,price_minor,duration_minutes from service_price_tiers where business_id=${input.businessId} and service_id=${service.id} and active`;
-  const exact=resolveTierPrice({pricingMode:service.pricingMode,basePriceMinor:service.basePriceMinor,pricingClass:petClass,weightOunces:pet.weightOunces,tiers});
+  const exact=resolveTierPrice({pricingMode:service.pricingMode,basePriceMinor:service.basePriceMinor,pricingClass:petClass,weightOunces:pet.weightOunces,tiers,weightUnit});
   let result=exact;
   let resolvedClass=petClass;
   if(exact.status==="confirmation_required" && service.pricingMode==="TIERED" && petClass!=="STANDARD"){
-    result=resolveTierPrice({pricingMode:service.pricingMode,basePriceMinor:service.basePriceMinor,pricingClass:"STANDARD",weightOunces:pet.weightOunces,tiers});resolvedClass="STANDARD";
+    result=resolveTierPrice({pricingMode:service.pricingMode,basePriceMinor:service.basePriceMinor,pricingClass:"STANDARD",weightOunces:pet.weightOunces,tiers,weightUnit});resolvedClass="STANDARD";
   }
   if(result.status!=="resolved"){output.push({serviceId:service.id,name:service.name,category:service.category,pricingMode:service.pricingMode,durationMinutes:service.baseDurationMinutes,status:result.status,pricingClass:resolvedClass,weightTierCode:null,weightTierLabel:null,priceMinor:null,resolutionSource:result.status});continue;}
   const duration=tiers.find(t=>t.pricingClass===resolvedClass&&t.weightTierCode===result.weightTierCode)?.durationMinutes??service.baseDurationMinutes;

@@ -7,6 +7,11 @@ import { setTenant, type Database } from "../db/client.js";
 import { DocumentStorageError, sha256, type DocumentStorage } from "../storage/documents.js";
 import { canTransition, invoiceSettledStatuses, type AppointmentStatus } from "@pawsh/domain";
 import { calculateInvoice } from "@pawsh/domain";
+import { supportedCurrencies } from "@pawsh/domain";
+import { isWeightUnit, weightTierLabel, weightTiers, type WeightUnit } from "@pawsh/domain";
+import {
+  dateTimePreferences, formatPreferredDateTime, formatPreferredLocalDate
+} from "../domain/date-format.js";
 import { canonicalHash } from "../domain/canonical.js";
 import { applyInvoiceSettlement } from "../domain/invoice-settlement.js";
 import { refundPresentation, type RefundStatus } from "../domain/refunds.js";
@@ -954,6 +959,49 @@ function agreementMessage(input: {
   ].join("\n\n");
 }
 
+const weekdayNames = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"] as const;
+
+/**
+ * The two ways a weekly grid can be wrong, refused before anything is deleted.
+ *
+ * Both endpoints that accept a grid - the salon's hours and a groomer's - REPLACE the whole set:
+ * every row for the owner is deleted and the payload reinserted. So a payload the database will
+ * refuse must be caught BEFORE the delete, or the transaction rolls back having done nothing
+ * while the caller is handed a 400 carrying a raw Postgres message, or a 409 reading "violates a
+ * data integrity rule". Neither tells a salon owner that Tuesday ends before it starts.
+ *
+ * `check (start_time < end_time)` and the `(location_id, weekday)` / `(employee_id, weekday)`
+ * unique constraints in 0001 remain the durable guarantee and are not weakened by this. This is
+ * the layer that makes the refusal legible, and it names the day, because the caller sent seven
+ * of these and needs to know which one to fix.
+ *
+ * Times are `HH:MM`, fixed-width and zero-padded by the schema's regex, so string comparison is
+ * chronological comparison. A period may not end when it starts either: a zero-length opening is
+ * not a shorter day, it is a closed one, and the way to say closed is to omit the day.
+ */
+function refuseInvalidWorkingHours(
+  hours: readonly { weekday: number; startTime: string; endTime: string }[]
+): { code: string; error: string } | null {
+  const inverted = hours.find((period) => period.endTime <= period.startTime);
+  if (inverted) {
+    return {
+      code: "INVALID_WORKING_HOURS",
+      error: `${weekdayNames[inverted.weekday] ?? "That day"} ends at ${inverted.endTime}, which is not after it starts at ${inverted.startTime}. A day that is closed should be left off instead.`
+    };
+  }
+  const seen = new Set<number>();
+  for (const period of hours) {
+    if (seen.has(period.weekday)) {
+      return {
+        code: "DUPLICATE_WORKING_HOURS_DAY",
+        error: `${weekdayNames[period.weekday] ?? "That day"} is listed more than once. Each day takes a single opening period.`
+      };
+    }
+    seen.add(period.weekday);
+  }
+  return null;
+}
+
 async function lockSchedulingResources(
   tx: Transaction,
   businessId: string,
@@ -1413,6 +1461,39 @@ function salonClosedError(closure: { localDate: string; reason: string | null })
       ? `The salon is closed on ${closure.localDate} (${closure.reason}).`
       : `The salon is closed on ${closure.localDate}.`,
     { localDate: closure.localDate, closureReason: closure.reason }
+  );
+}
+
+/**
+ * Settings → Business `appointment_lock` governs whether an appointment may be MOVED — the
+ * drag-to-reschedule affordance on the calendar. It is NOT a lock on editing an appointment's
+ * contents: services, price, notes and status stay writable under it, and only a change to an
+ * appointment's start time and/or its assigned groomer is refused.
+ *
+ * It STACKS with `appointments.edit` as an AND. The permission answers WHO may move an
+ * appointment (receptionist, manager, owner today); the setting answers WHETHER anyone may right
+ * now. Neither substitutes for the other, so the permission gate on the route is unchanged and
+ * this runs in addition to it.
+ *
+ * The lock binds owners as well, deliberately. It is a policy switch rather than a permission, the
+ * owner is the person who controls the switch, and a lock that silently exempts the person most
+ * likely to be testing it is a confusing lock. This is the ONLY site that enforces it, so
+ * reintroducing an owner bypass is one line here: `if (context.isOwner) return;`.
+ */
+async function ensureAppointmentMovable(
+  tx: Transaction,
+  context: { businessId: string; isOwner: boolean },
+  moving: boolean
+): Promise<void> {
+  if (!moving) return;
+  const [business] = await tx<{ appointmentLock: string }[]>`
+    select appointment_lock from businesses where id=${context.businessId}
+  `;
+  if (business?.appointmentLock !== "enabled") return;
+  throw new SchedulingRequestError(
+    409,
+    "APPOINTMENT_MOVE_LOCKED",
+    "Appointments are locked from being moved. A manager can unlock this in Settings → Business."
   );
 }
 
@@ -2048,15 +2129,45 @@ export function registerRoutes(
     `;
     // Joined on the session's already-resolved location id, so a multi-location
     // business returns exactly one deterministic row instead of an arbitrary one.
+    // `address` is the active location's, a single free-text line. It rides along here rather
+    // than on a settings read of its own because this is the payload Settings -> Business already
+    // draws its every other field from, and a second endpoint would be a second thing to keep in
+    // step with the version bump.
     const [business] = await db`
-      select b.*, l.id as location_id, l.name as location_name, l.timezone, l.version as location_version,
+      select b.*, l.id as location_id, l.name as location_name, l.timezone, l.address,
+        l.version as location_version,
         (select count(*)::int from locations c where c.business_id = b.id and c.active) as location_count
       from businesses b
       left join locations l
         on l.business_id = b.id and l.active and l.id = ${context.locationId}::uuid
       where b.id = ${context.businessId}
     `;
-    return { ...context, account, business };
+    // What the currency picker may offer is answered by the server, the same way
+    // `cardProcessing.connectable` is on Tax & payments, so a client cannot present a currency
+    // this product would render wrong. See `currency.ts` in `@pawsh/domain`.
+    //
+    // `weightTiers` rides along for the same reason and a sharper one. The six price bands are
+    // defined in ounces and captioned in the workspace's `weightUnit`, and there are THREE
+    // hand-copied restatements of those captions in the web client today - the pricing matrix, the
+    // service editor, and the pet card - none of which imports the domain constant. A workspace on
+    // kilograms cannot have its pet weights converted while its tier headers stay in pounds, so
+    // the captions are derived here from the same bounds the pricing resolver compares against and
+    // published, rather than left for each client to re-derive and get subtly different.
+    // `business` is a left join and the row is untyped (`select b.*`), so the stored unit is
+    // narrowed rather than asserted. A workspace with no active location still gets a coherent
+    // answer instead of `undefined` reaching the label derivation.
+    const stored = typeof business?.weightUnit === "string" ? business.weightUnit : "";
+    const unit: WeightUnit = isWeightUnit(stored) ? stored : "lb";
+    return {
+      ...context, account, business, supportedCurrencies,
+      weightUnit: unit,
+      weightTiers: weightTiers.map((tier) => ({
+        code: tier.code,
+        label: weightTierLabel(tier, unit),
+        minExclusiveOunces: tier.minExclusiveOunces,
+        maxOunces: tier.maxOunces
+      }))
+    };
   });
 
   app.get("/api/workspaces",{preHandler:authenticate},async request=>{
@@ -2503,6 +2614,29 @@ export function registerRoutes(
     };
   });
 
+  /**
+   * Settings -> Business.
+   *
+   * A MERGE, not a replace. `businessSettingsSchema` says which fields carry the
+   * absent-versus-explicitly-null distinction and why; this is the half that honours it. The
+   * previous form wrote `phone=${input.phone ?? null}, email=${input.email ?? null}`
+   * unconditionally, and no client has ever sent either, so every save of this screen - a
+   * rename, a tax rate, a reminder lead - emptied both columns.
+   *
+   * That was worse than a blank field on a settings screen. `businesses.email` is one of the two
+   * identities `POST /api/workspace-access-requests` will match a workspace administrator on, so
+   * a wiped address quietly removed a route back into a workspace for an owner who knows the
+   * salon's address but not which personal account holds the ownership. `businesses.phone` and
+   * `businesses.email` are also the "contact us" line composed into rabies expiry notices,
+   * agreement signature requests and report cards - `contact = phone ?? email ?? name` in three
+   * places - so a client asked to confirm an agreement was told to contact a bare business name.
+   * Neither is the sending identity: mail goes out as `EMAIL_FROM`, which is configuration.
+   *
+   * `coalesce` is right for `name` and `currency`, which are `not null` and can never arrive as
+   * null. It is wrong for `phone`, `email` and `address`, where null is a value an operator may
+   * deliberately choose, so those use the `case when <sent> then <value> else <column> end` form
+   * `PATCH /api/employees/:id` already uses for exactly this.
+   */
   app.put("/api/business/settings", {
     preHandler: [authenticate, requirePermission("settings.manage")]
   }, async (request, reply) => {
@@ -2514,31 +2648,125 @@ export function registerRoutes(
       const [activeLocation]=await tx<{id:string}[]>`select id from locations where business_id=${context.businessId} and id=${context.locationId}::uuid and active`;
       if(!activeLocation)return reply.code(404).send({error:"Active location not found"});
       await tx`select pg_advisory_xact_lock(hashtextextended(${'location-settings:' + activeLocation.id},0))`;
-      const [location] = await tx<{ id:string; timezone:string; version:number }[]>`
-        select id,timezone,version from locations
+      const [location] = await tx<{ id:string; timezone:string; address:string|null; version:number }[]>`
+        select id,timezone,address,version from locations
         where id=${activeLocation.id} and version=${input.locationVersion} for update
       `;
       if (!location) return reply.code(409).send({ code:"STALE_LOCATION_SETTINGS", error:"Location settings changed. Refresh and try again." });
+      // Read for the audit entry, not for the write: the write below decides field by field what
+      // it touches, so this is only what the row held beforehand.
+      const [before] = await tx<Record<string, unknown>[]>`
+        select phone,email,currency,website,business_type,date_format,hour_format,weight_unit,
+          appointment_lock,coupon_stacking,upcoming_appointment_count,
+          default_service_frequency_weeks,social_facebook,social_google,social_yelp
+        from businesses where id=${context.businessId}
+      `;
+      // The six preferences that cannot be null. Omitted leaves the column alone; there is no
+      // clearing a weight unit. `coalesce` is exact for these because the parsed value is either a
+      // member of the tuple or `undefined`, never null, so a null in the coalesce can only mean
+      // "the caller did not send it".
       const [updated] = await tx`
-        update businesses set name=${input.name}, phone=${input.phone ?? null}, email=${input.email ?? null},
-          currency=${input.currency}, tax_rate_basis_points=${input.taxRateBasisPoints},
-          reminder_lead_minutes=${input.reminderLeadMinutes}, updated_at=now()
+        update businesses set name=${input.name},
+          phone=case when ${input.phone !== undefined} then ${input.phone ?? null}::text else phone end,
+          email=case when ${input.email !== undefined} then ${input.email ?? null}::text else email end,
+          website=case when ${input.website !== undefined} then ${input.website ?? null}::text else website end,
+          business_type=coalesce(${input.businessType ?? null}, business_type),
+          currency=coalesce(${input.currency ?? null}, currency),
+          tax_rate_basis_points=${input.taxRateBasisPoints},
+          reminder_lead_minutes=${input.reminderLeadMinutes},
+          date_format=coalesce(${input.dateFormat ?? null}, date_format),
+          hour_format=coalesce(${input.hourFormat ?? null}, hour_format),
+          weight_unit=coalesce(${input.weightUnit ?? null}, weight_unit),
+          appointment_lock=coalesce(${input.appointmentLock ?? null}, appointment_lock),
+          coupon_stacking=coalesce(${input.couponStacking ?? null}, coupon_stacking),
+          -- Null is a VALUE here (it means All), not an absence, so this cannot use coalesce:
+          -- the case is what keeps "set it to All" apart from "do not touch it".
+          upcoming_appointment_count=case when ${input.upcomingAppointmentCount !== undefined}
+            then ${input.upcomingAppointmentCount ?? null}::int else upcoming_appointment_count end,
+          default_service_frequency_weeks=case when ${input.defaultServiceFrequencyWeeks !== undefined}
+            then ${input.defaultServiceFrequencyWeeks ?? null}::int else default_service_frequency_weeks end,
+          social_facebook=case when ${input.socialFacebook !== undefined} then ${input.socialFacebook ?? null}::text else social_facebook end,
+          social_google=case when ${input.socialGoogle !== undefined} then ${input.socialGoogle ?? null}::text else social_google end,
+          social_yelp=case when ${input.socialYelp !== undefined} then ${input.socialYelp ?? null}::text else social_yelp end,
+          updated_at=now()
         where id=${context.businessId} returning *
       `;
       await tx`
-        update locations set name=${input.name}, timezone=${timezone}, version=version+1, updated_at=now()
+        update locations set name=${input.name}, timezone=${timezone},
+          address=case when ${input.address !== undefined} then ${input.address ?? null}::text else address end,
+          version=version+1, updated_at=now()
         where id=${location.id}
       `;
       // This form writes the tax rate directly, so the rate in force on the Tax & Payment
       // screen is moved with it. Two screens may set the rate; neither may leave the other
       // showing a different number.
       await mirrorBusinessTaxRate(tx, context.businessId, input.taxRateBasisPoints);
+      // The timezone pair is what this entry has always carried and stays exactly as it was.
+      // The contact fields are recorded ONLY when the caller actually sent them and the value
+      // moved, so an ordinary rename does not fill the log with three unchanged nulls. They are
+      // worth recording at all because `businesses.email` is a workspace-administrator identity
+      // for access requests: a change to it is a change to who can ask their way back in.
+      const address = input.address !== undefined ? input.address : location.address;
+      // Every field is recorded on the same rule: only when the caller actually SENT it and the
+      // value MOVED. An ordinary rename therefore writes no `changed` block at all rather than a
+      // dozen unchanged nulls, and the entries that do appear are edits somebody made on purpose.
+      //
+      // These are worth an audit trail for three different reasons and it is worth being precise
+      // about which. `email` is one of the two identities `POST /api/workspace-access-requests`
+      // matches a workspace administrator on, so changing it changes who can ask their way back
+      // into the workspace. `weightUnit` and `currency` change how every price and every pet
+      // weight in the product READS, without changing a single stored number, which is exactly the
+      // sort of edit that later looks like a data corruption to whoever did not make it. The rest
+      // are ordinary configuration, and cost one row.
+      //
+      // `before` is read from the row's own columns rather than assumed, so a field the update did
+      // not touch cannot be reported as having changed.
+      const trackedFields = [
+        ["phone", input.phone, before?.phone],
+        ["email", input.email, before?.email],
+        ["address", input.address, location.address],
+        ["website", input.website, before?.website],
+        ["businessType", input.businessType, before?.businessType],
+        ["currency", input.currency, before?.currency],
+        ["dateFormat", input.dateFormat, before?.dateFormat],
+        ["hourFormat", input.hourFormat, before?.hourFormat],
+        ["weightUnit", input.weightUnit, before?.weightUnit],
+        ["appointmentLock", input.appointmentLock, before?.appointmentLock],
+        ["couponStacking", input.couponStacking, before?.couponStacking],
+        ["upcomingAppointmentCount", input.upcomingAppointmentCount, before?.upcomingAppointmentCount],
+        ["defaultServiceFrequencyWeeks", input.defaultServiceFrequencyWeeks, before?.defaultServiceFrequencyWeeks],
+        ["socialFacebook", input.socialFacebook, before?.socialFacebook],
+        ["socialGoogle", input.socialGoogle, before?.socialGoogle],
+        ["socialYelp", input.socialYelp, before?.socialYelp]
+      ] as const satisfies readonly (readonly [string, unknown, unknown])[];
+      const changed: Record<string, { before: unknown; after: unknown }> = {};
+      for (const [field, sent, stored] of trackedFields) {
+        if (sent === undefined) continue;
+        if ((sent ?? null) === (stored ?? null)) continue;
+        changed[field] = { before: stored ?? null, after: sent ?? null };
+      }
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "business.settings.update",
         resourceType: "business", resourceId: context.businessId,
-        before:{ timezone:location.timezone }, after:{ timezone }
+        before:{ timezone:location.timezone },
+        after:{ timezone, ...(Object.keys(changed).length ? { changed } : {}) }
       });
-      return updated;
+      // The tier captions are returned with the save because `weightUnit` may have just changed
+      // them, and the pricing screens read them. Without this a workspace that switches to
+      // kilograms shows converted pet weights against pound-captioned bands until the next
+      // `/api/me`, which is the exact mismatch the conversion exists to prevent.
+      const savedUnit: WeightUnit = isWeightUnit(String(updated?.weightUnit ?? "")) 
+        ? String(updated?.weightUnit) as WeightUnit : "lb";
+      return {
+        ...updated, address,
+        weightUnit: savedUnit,
+        weightTiers: weightTiers.map((tier) => ({
+          code: tier.code,
+          label: weightTierLabel(tier, savedUnit),
+          minExclusiveOunces: tier.minExclusiveOunces,
+          maxOunces: tier.maxOunces
+        }))
+      };
     });
   });
 
@@ -3943,6 +4171,9 @@ export function registerRoutes(
         error: "Concurrent appointments per groomer are fixed at 1 and cannot be changed yet."
       });
     }
+    // Same grid, same two ways to be wrong, same refusal as the salon's own hours.
+    const refusal = refuseInvalidWorkingHours(input.hours);
+    if (refusal) return reply.code(400).send(refusal);
     const exists = await db`select id from employees where business_id=${context.businessId} and id=${id}`;
     if (!exists.length) return reply.code(404).send({ error: "Employee not found" });
     await db.begin(async (tx) => {
@@ -4074,9 +4305,13 @@ export function registerRoutes(
 
   app.put("/api/business/working-hours", {
     preHandler: [authenticate, requirePermission("settings.manage")]
-  }, async (request) => {
+  }, async (request, reply) => {
     const context = auth(request);
     const input = body(workingHoursSchema, request.body);
+    // Checked before the delete-and-reinsert below, which would otherwise roll back on the
+    // database's own constraints and answer with something unrenderable.
+    const refusal = refuseInvalidWorkingHours(input.hours);
+    if (refusal) return reply.code(400).send(refusal);
     await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
       const [location] = await tx<{ id: string }[]>`
@@ -4300,15 +4535,31 @@ export function registerRoutes(
     const input = body(customerSchema, request.body);
     const customer = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
+      // A new client starts on the salon's default booking cadence.
+      //
+      // This is what `defaultServiceFrequencyWeeks` MEANS, and wiring it is what keeps it from
+      // being a number an operator sets and nothing reads. `customers.booking_frequency_weeks` is
+      // the per-client override and has always been nullable; this only decides what it starts as,
+      // so `PATCH /api/customers/:id` still clears it to null or moves it freely, and a workspace
+      // that has set no default seeds null exactly as before.
+      //
+      // Read as a subselect inside the insert rather than as a prior round trip, so the value
+      // cannot be read from one transaction and written in another. EXISTING CLIENTS ARE NOT
+      // TOUCHED: changing the default does not reach back over the book, because a cadence
+      // somebody already set for a specific dog is not a default and must not be overwritten by
+      // one.
       const [created] = await tx<(Record<string, unknown> & { id: string })[]>`
         insert into customers
           (business_id, first_name, last_name, phone, normalized_phone, email, normalized_email,
-           address, preferred_contact_method, email_allowed, created_by, updated_by)
+           address, preferred_contact_method, email_allowed, booking_frequency_weeks,
+           created_by, updated_by)
         values
           (${context.businessId}, ${input.firstName ?? null}, ${input.lastName ?? null}, ${input.phone ?? null},
            ${normalizePhone(input.phone)}, ${input.email ?? null},
            ${input.email ? normalizeEmail(input.email) : null}, ${input.address ?? null},
            ${input.preferredContactMethod}, ${input.emailAllowed},
+           (select business.default_service_frequency_weeks from businesses business
+             where business.id=${context.businessId}),
            ${context.userId}, ${context.userId})
         returning *
       `;
@@ -5313,13 +5564,21 @@ export function registerRoutes(
       } satisfies AgreementRecipient;
       const reason = agreementEmailReason(recipient);
       if (reason !== "ok") return { undeliverable: reason, recipient } as const;
-      const [business] = await tx<{ name: string; phone: string | null; email: string | null }[]>`
-        select name,phone,email from businesses where id=${context.businessId}
+      const [business] = await tx<{
+        name: string; phone: string | null; email: string | null;
+        dateFormat: string; hourFormat: string;
+      }[]>`
+        select name,phone,email,date_format,hour_format from businesses where id=${context.businessId}
       `;
       const contact = business?.phone ?? business?.email ?? business?.name ?? "the business";
+      // Both of these are CALENDAR DATES - a `YYYY-MM-DD` request field and a `date` column - not
+      // instants, so they are reordered rather than converted, and no time zone is involved. They
+      // reached the client as bare ISO strings before ("booking Rex for 2026-09-15"), which is
+      // neither of the two formats a workspace can choose and reads like a machine wrote it.
+      const preferences = dateTimePreferences(business);
       const message = [
-        `${business?.name ?? "Your salon"} is booking ${pet.name} for ${input.appointmentLocalDate}.`,
-        `The rabies vaccination information on file expires on ${pet.expirationDate}, so it will not be current for that visit.`,
+        `${business?.name ?? "Your salon"} is booking ${pet.name} for ${formatPreferredLocalDate(input.appointmentLocalDate, preferences)}.`,
+        `The rabies vaccination information on file expires on ${formatPreferredLocalDate(pet.expirationDate, preferences)}, so it will not be current for that visit.`,
         `Please send updated rabies information before the appointment, or contact ${contact}.`
       ].join("\n\n");
       const key = `rabies:${createHash("sha256").update(JSON.stringify([
@@ -7390,6 +7649,7 @@ export function registerRoutes(
       customerEmail: string | null; customerEmailAllowed: boolean; customerBlockMessages: boolean;
       startAt: Date; schedulingTimezone: string; employeeName: string; businessName: string;
       businessPhone: string | null; businessEmail: string | null; authorName: string | null;
+      dateFormat: string; hourFormat: string;
     }[]>`
       select card.id,card.appointment_id,card.pet_id,card.customer_id,card.note,card.version,
         card.last_sent_at,card.send_count,card.created_at,card.updated_at,
@@ -7400,6 +7660,7 @@ export function registerRoutes(
         appointment.start_at,appointment.scheduling_timezone,
         employee.display_name as employee_name,
         business.name as business_name,business.phone as business_phone,business.email as business_email,
+        business.date_format,business.hour_format,
         coalesce(author_employee.display_name,author_user.display_name,author_user.email) as author_name
       from appointment_report_cards card
       join appointments appointment
@@ -7603,9 +7864,12 @@ export function registerRoutes(
     const view = await reportCardView(id, context.businessId);
     if (!view) return reply.code(404).send({ error: "Report card not found" });
     const { card, services, photos } = view;
-    const when = new Intl.DateTimeFormat("en-US", {
-      timeZone: card.schedulingTimezone, dateStyle: "full", timeStyle: "short"
-    }).format(card.startAt);
+    // Formatted in the workspace's chosen date order and clock rather than the `en-US` locale
+    // this hard-coded until now. See `date-format.ts` for why the layout is assembled here instead
+    // of being delegated to a second locale.
+    const when = formatPreferredDateTime(
+      card.startAt, card.schedulingTimezone, dateTimePreferences(card)
+    );
     const strip = (phase: string) => {
       const set = photos.filter((photo) => photo.phase === phase);
       if (!set.length) return "";
@@ -7703,9 +7967,12 @@ export function registerRoutes(
         channel: "email", reason, supportedChannels: ["email"]
       });
     }
-    const when = new Intl.DateTimeFormat("en-US", {
-      timeZone: card.schedulingTimezone, dateStyle: "full", timeStyle: "short"
-    }).format(card.startAt);
+    // Formatted in the workspace's chosen date order and clock rather than the `en-US` locale
+    // this hard-coded until now. See `date-format.ts` for why the layout is assembled here instead
+    // of being delegated to a second locale.
+    const when = formatPreferredDateTime(
+      card.startAt, card.schedulingTimezone, dateTimePreferences(card)
+    );
     const contact = card.businessPhone ?? card.businessEmail ?? card.businessName;
     const message = [
       `${card.petName}'s visit to ${card.businessName} on ${when}, with ${card.employeeName}.`,
@@ -8076,6 +8343,16 @@ export function registerRoutes(
       if (!location) throw new SchedulingRequestError(404,"RESOURCE_NOT_FOUND","Location not found");
       if (location.version !== input.expectedLocationVersion) throw new SchedulingRequestError(409,"STALE_LOCATION_SETTINGS","Location settings changed. Refresh and try again.");
       const resolved=resolveWallTime(input.localStart,location.timezone,input.disambiguation);
+      // A "move" is a change to WHEN or to WHO, measured against what is stored - not against
+      // which endpoint was called. This handler always rewrites start_at and employee_id, so a
+      // client that re-posts the appointment's current time and groomer (a save that touched
+      // nothing schedulable) is not a move and is not refused. See `ensureAppointmentMovable`.
+      const assignedNow=new Set(currentAssignments.map(row=>row.employeeId));
+      const timeChanged=resolved.instant.getTime()!==current.startAt.getTime();
+      const groomerChanged=primaryEmployeeId!==current.employeeId
+        ||assignedNow.size!==employeeIds.length
+        ||employeeIds.some(employeeId=>!assignedNow.has(employeeId));
+      await ensureAppointmentMovable(tx,context,timeChanged||groomerChanged);
       await schedulingHooks.afterLocationLock?.({operation:"reschedule",businessId:context.businessId,timezone:location.timezone,version:location.version});
       await schedulingHooks.beforeLock?.({
         operation: "reschedule",

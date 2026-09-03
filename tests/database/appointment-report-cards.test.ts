@@ -245,4 +245,63 @@ describeDatabase("appointment report cards", () => {
       expect([403, 404], `${method} ${url}`).toContain(denied.statusCode);
     }
   });
+
+  /**
+   * The date preference, proved on a surface the server actually renders.
+   *
+   * This page is one of the four places the server used to hard-code `en-US`, so a workspace that
+   * chose DD/MM/YYYY saw month-first anyway. Asserting it here rather than only against the
+   * formatter is the difference between "the function can produce that string" and "the setting
+   * reaches the page a client is shown". The appointment is 09:00 on 12 June 2034, a date whose
+   * day and month cannot be confused for one another.
+   */
+  it("renders the preview date in the format the workspace chose", async () => {
+    // Read the card that exists for this visit rather than assuming which of the tests above
+    // created or removed one: there is at most one per pet per visit, by unique constraint.
+    const card = await app.inject({
+      method: "POST", url: `/api/appointments/${appointmentId}/report-cards`,
+      headers: { cookie: ownerCookie }, payload: { petId }
+    });
+    expect([201, 409]).toContain(card.statusCode);
+    const id = card.statusCode === 201 ? card.json().id : (await db<{ id: string }[]>`
+      select id from appointment_report_cards
+      where business_id=${businessId} and appointment_id=${appointmentId} and pet_id=${petId}
+    `)[0]!.id;
+    const preview = async () => (await app.inject({
+      method: "GET", url: `/api/report-cards/${id}/preview`, headers: { cookie: ownerCookie }
+    })).body;
+
+    const saveSettings = async (payload: Record<string, unknown>) => {
+      const current = (await app.inject({
+        method: "GET", url: "/api/me", headers: { cookie: ownerCookie }
+      })).json();
+      const saved = await app.inject({
+        method: "PUT", url: "/api/business/settings",
+        headers: { cookie: ownerCookie, origin: config.APP_ORIGIN },
+        payload: {
+          name: current.business.name, timezone: current.business.timezone,
+          taxRateBasisPoints: current.business.taxRateBasisPoints,
+          reminderLeadMinutes: current.business.reminderLeadMinutes,
+          locationVersion: current.business.locationVersion, ...payload
+        }
+      });
+      expect(saved.statusCode, saved.body).toBe(200);
+    };
+
+    // The default, which is what every workspace behaved as before 0047 - unchanged output for a
+    // salon that never opens the setting.
+    expect(await preview()).toContain("06/12/2034 at 9:00 AM");
+
+    await saveSettings({ dateFormat: "DD/MM/YYYY", hourFormat: "24" });
+    const international = await preview();
+    expect(international).toContain("12/06/2034 at 09:00");
+    expect(international).not.toContain("06/12/2034");
+
+    // The two are independent columns, so one may move without the other.
+    await saveSettings({ hourFormat: "12" });
+    expect(await preview()).toContain("12/06/2034 at 9:00 AM");
+
+    await saveSettings({ dateFormat: "MM/DD/YYYY" });
+    expect(await preview()).toContain("06/12/2034 at 9:00 AM");
+  });
 });

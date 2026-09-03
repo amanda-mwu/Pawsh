@@ -341,5 +341,62 @@ describe("database migrations", () => {
       .toBeLessThan(retire.indexOf("drop column permissions"));
     expect(retire).toContain("alter table business_memberships drop column permissions");
     expect(retire).toContain("alter table membership_invitations drop column permissions");
+
+    const addressBound = await readMigration("0046_business_address_bound.sql");
+    // Character for character the bound `customer_addresses.address` has carried since 0025. The
+    // salon's address is not a different kind of address from a client's, and the day the two
+    // disagree is the day somebody argues for structured columns on one of them.
+    expect(addressBound).toContain("location_address_bounded");
+    expect(addressBound).toContain("check (char_length(btrim(address)) between 1 and 500)");
+    const clientAddresses = await readMigration("0025_client_addresses_and_contacts.sql");
+    expect(clientAddresses).toContain("check (char_length(btrim(address)) between 1 and 500)");
+    // Adding a bound over existing rows fails the DEPLOY, not the request. This one is safe only
+    // because nothing has ever written the column, so it must not quietly start rewriting data.
+    expect(addressBound).not.toContain("update locations");
+    expect(addressBound).not.toContain("not null");
+
+    const preferences = await readMigration("0047_business_preferences.sql");
+    // Every enum value spelled here is a wire value and a stored value with no mapping layer
+    // between them, so the check constraints ARE the contract. A tuple in `@pawsh/domain` that
+    // drifts from one of these produces a request the schema accepts and the database refuses.
+    expect(preferences).toContain("check (business_type in ('mobile', 'salon', 'hybrid'))");
+    expect(preferences).toContain("check (date_format in ('MM/DD/YYYY', 'DD/MM/YYYY'))");
+    expect(preferences).toContain("check (hour_format in ('12', '24'))");
+    expect(preferences).toContain("check (weight_unit in ('lb', 'kg'))");
+    expect(preferences).toContain("check (appointment_lock in ('enabled', 'disabled'))");
+    expect(preferences)
+      .toContain("check (coupon_stacking in ('single', 'amount_first', 'percentage_first'))");
+    // Null is the value "All", so the count must stay NULLABLE. A `not null` here would force a
+    // sentinel integer to mean "all of them".
+    expect(preferences).toContain("add column upcoming_appointment_count integer,");
+    expect(preferences).toContain("upcoming_appointment_count between 1 and 20");
+    // The same bound `customers.booking_frequency_weeks` carries in 0019, because this is the
+    // default that seeds that column. A default outside its range saves and then fails on use.
+    const clientPreferences = await readMigration("0019_client_notes_and_preferences.sql");
+    expect(clientPreferences).toContain("booking_frequency_weeks between 1 and 104");
+    expect(preferences).toContain("default_service_frequency_weeks between 1 and 104");
+    // The four link columns take the address bound, so blank cannot become a third way of saying
+    // "not recorded" alongside null and absent.
+    for (const column of ["website", "social_facebook", "social_google", "social_yelp"]) {
+      expect(preferences, column)
+        .toContain(`check (${column} is null or char_length(btrim(${column})) between 1 and 500)`);
+    }
+    // Every not-null column added over a populated table carries a default, or the deploy fails.
+    // The defaults are what existing workspaces already behave as - see the note in the migration.
+    for (const declaration of [
+      "add column business_type text not null default 'salon'",
+      "add column date_format text not null default 'MM/DD/YYYY'",
+      "add column hour_format text not null default '12'",
+      "add column weight_unit text not null default 'lb'",
+      "add column appointment_lock text not null default 'disabled'",
+      "add column coupon_stacking text not null default 'single'"
+    ]) {
+      expect(preferences, declaration).toContain(declaration);
+    }
+    // Columns on `businesses`, not a `business_settings` side table: the three preferences this
+    // screen already saves live there, and a 1:1 table would cost a join, a bootstrap path and a
+    // policy at every call site. If this ever starts failing the storage decision was revisited.
+    expect(preferences).toContain("alter table businesses");
+    expect(preferences).not.toContain("create table business_settings");
   });
 });

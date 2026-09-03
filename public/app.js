@@ -280,6 +280,90 @@ async function refresh() {
 }
 
 function schedulingZone(){return state.me?.business?.timezone||"UTC";}
+// --- Dates and times in the shape the workspace chose ----------------------
+//
+// WHY THIS EXISTS. Every date and clock time this client drew went through `Intl.DateTimeFormat([])`
+// - the empty locale list, meaning "whatever this browser is set to". Two operators sitting at the
+// same front desk on differently-configured laptops read the same appointment as 09/02 and 02/09,
+// and `Settings -> Business -> Date format` changed nothing at all. A preference that changes
+// nothing is worse than no preference: the operator has been told the product does something it
+// does not.
+//
+// WHY THE PATTERN IS ASSEMBLED RATHER THAN DELEGATED TO A LOCALE. The shortcut is to pass "en-GB"
+// for DD/MM and "en-US" for MM/DD and let ICU lay it out. That couples the salon's choice to two
+// locales' worth of unrelated decisions - separators, month names, whether a comma precedes the
+// time, the space before PM - none of which the operator picked. So `Intl` is used ONLY to resolve
+// an instant into numeric parts in the right time zone, which is real calendar arithmetic and the
+// one thing it must be trusted for, and the layout happens here. This mirrors
+// `src/domain/date-format.ts` deliberately: the server renders the report-card page, the
+// report-card email and the appointment and rabies bodies, and one workspace must read the same
+// in an email as it does on screen.
+//
+// A CALENDAR DATE IS NOT AN INSTANT. `vaccination_expires_on` and the scheduling `localDate` are
+// `YYYY-MM-DD` strings. The old code anchored them at noon UTC purely to survive being formatted;
+// `formatPrefLocalDate` reorders the three fields and goes nowhere near a time zone.
+const PREF_WEEKDAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const PREF_SHORT_WEEKDAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+function prefDateFormat(){return state.me?.business?.dateFormat==="DD/MM/YYYY"?"DD/MM/YYYY":"MM/DD/YYYY";}
+function prefHourFormat(){return String(state.me?.business?.hourFormat)==="24"?"24":"12";}
+function prefPad(value,width=2){return String(value).padStart(width,"0");}
+// `weekday:"short"` is asked for as a name and mapped back to an index because `Intl` has no
+// numeric weekday part; the English short names are the ones "en-US" is guaranteed to emit.
+function prefParts(instant,zone){
+  const parts=new Intl.DateTimeFormat("en-US",{timeZone:zone||schedulingZone(),calendar:"gregory",
+    numberingSystem:"latn",hourCycle:"h23",year:"numeric",month:"2-digit",day:"2-digit",
+    hour:"2-digit",minute:"2-digit",weekday:"short"}).formatToParts(instant);
+  const value=type=>parts.find(part=>part.type===type)?.value||"";
+  return {year:Number(value("year")),month:Number(value("month")),day:Number(value("day")),
+    hour:Number(value("hour"))%24,minute:Number(value("minute")),
+    weekday:Math.max(0,PREF_SHORT_WEEKDAYS.indexOf(value("weekday")))};
+}
+function prefLayOutDate(parts){
+  const month=prefPad(parts.month),day=prefPad(parts.day),year=prefPad(parts.year,4);
+  return prefDateFormat()==="DD/MM/YYYY"?`${day}/${month}/${year}`:`${month}/${day}/${year}`;
+}
+// Midnight and noon are the two the modulo gets wrong on its own: 0 and 12 both map to 12, and
+// the meridiem does the distinguishing.
+function prefLayOutTime(parts){
+  const minute=prefPad(parts.minute);
+  if(prefHourFormat()==="24")return `${prefPad(parts.hour)}:${minute}`;
+  const hour=parts.hour%12===0?12:parts.hour%12;
+  return `${hour}:${minute} ${parts.hour<12?"AM":"PM"}`;
+}
+/** "09/02/2026" / "02/09/2026". */
+function formatPrefDate(instant,zone){return prefLayOutDate(prefParts(instant,zone));}
+/** "3:30 PM" / "15:30". */
+function formatPrefTime(instant,zone){return prefLayOutTime(prefParts(instant,zone));}
+/** A wall clock with no instant behind it, for the calendar's time axis. */
+function formatPrefClock(hour,minute){return prefLayOutTime({hour,minute});}
+/** "09/02/2026 3:30 PM" - the numeric stamp, where a weekday would be noise. */
+function formatPrefDateAndTime(instant,zone){
+  const parts=prefParts(instant,zone);
+  return `${prefLayOutDate(parts)} ${prefLayOutTime(parts)}`;
+}
+/** "Wednesday, 09/02/2026 at 3:30 PM" - the same line `formatPreferredDateTime` sends by email. */
+function formatPrefDateTime(instant,zone){
+  const parts=prefParts(instant,zone);
+  return `${PREF_WEEKDAYS[parts.weekday]}, ${prefLayOutDate(parts)} at ${prefLayOutTime(parts)}`;
+}
+/** "Wed 3:30 PM". */
+function formatPrefWeekdayTime(instant,zone){
+  const parts=prefParts(instant,zone);
+  return `${PREF_SHORT_WEEKDAYS[parts.weekday]} ${prefLayOutTime(parts)}`;
+}
+/** A `YYYY-MM-DD` reordered, without going near a time zone. */
+function formatPrefLocalDate(localDate){
+  const match=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(localDate??"").slice(0,10));
+  if(!match)return String(localDate??"");
+  const [,year,month,day]=match;
+  return prefDateFormat()==="DD/MM/YYYY"?`${day}/${month}/${year}`:`${month}/${day}/${year}`;
+}
+/** "Wednesday, 09/02/2026" for a calendar date the operator is looking at. */
+function formatPrefLocalWeekdayDate(localDate){
+  const day=String(localDate??"").slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(day))return formatPrefLocalDate(localDate);
+  return `${PREF_WEEKDAYS[dateAt(day).getUTCDay()]}, ${formatPrefLocalDate(day)}`;
+}
 function wallParts(value=new Date()){
   return new Intl.DateTimeFormat("en-CA",{timeZone:schedulingZone(),hourCycle:"h23",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}).formatToParts(value);
 }
@@ -295,7 +379,7 @@ function calendarPreferences(){if(state.calendar.preferences)return state.calend
 function weekStart(value){const date=dateAt(value),first=calendarPreferences().firstDay==="monday"?1:0,offset=(date.getUTCDay()-first+7)%7;return dateShift(value,-offset);}
 function appointmentLocalValue(item){const parts=new Intl.DateTimeFormat("en-CA",{timeZone:item.schedulingTimezone||schedulingZone(),hourCycle:"h23",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}).formatToParts(new Date(item.startAt)),value=type=>parts.find(part=>part.type===type).value;return `${value("year")}-${value("month")}-${value("day")}T${value("hour")==="24"?"00":value("hour")}:${value("minute")}`;}
 function schedulingTime(item){
-  return new Intl.DateTimeFormat([], {timeZone:item.schedulingTimezone||schedulingZone(),hour:"numeric",minute:"2-digit"}).format(new Date(item.startAt));
+  return formatPrefTime(new Date(item.startAt),item.schedulingTimezone||schedulingZone());
 }
 function disambiguationField(value=""){
   return `<label class="wide">Repeated-time occurrence<select name="disambiguation"><option value="" ${!value?"selected":""}>Automatic when unique</option><option value="earlier" ${value==="earlier"?"selected":""}>First occurrence</option><option value="later" ${value==="later"?"selected":""}>Second occurrence</option></select></label>`;
@@ -313,7 +397,7 @@ function renderDashboard(data) {
 
 function safetyContext(item) {
   const rabiesLabels={valid_for_appointment:"Valid for appointment",expires_before_appointment:"Expires before appointment",expired:"Expired",unverified:"Unverified",not_provided:"Not provided"};
-  const rabies=item.rabiesAppointmentStatus?`<span class="rabies-status rabies-${escape(item.rabiesAppointmentStatus)}" role="status" data-testid="rabies-appointment-status"><strong>Rabies:</strong> ${escape(rabiesLabels[item.rabiesAppointmentStatus]||item.rabiesAppointmentStatus)}${item.vaccinationExpiresOn?` · Expires ${new Date(`${String(item.vaccinationExpiresOn).slice(0,10)}T12:00:00Z`).toLocaleDateString()}`:""}${item.rabiesAppointmentStatus==="expires_before_appointment"?` · Appointment ${new Date(`${String(item.scheduledLocalStart).slice(0,10)}T12:00:00Z`).toLocaleDateString()} · Update required`:""}${item.rabiesCustomerNotificationStatus&&item.rabiesCustomerNotificationStatus!=="not_required"?` · Customer notice ${escape(item.rabiesCustomerNotificationStatus)}`:""}</span>`:"";
+  const rabies=item.rabiesAppointmentStatus?`<span class="rabies-status rabies-${escape(item.rabiesAppointmentStatus)}" role="status" data-testid="rabies-appointment-status"><strong>Rabies:</strong> ${escape(rabiesLabels[item.rabiesAppointmentStatus]||item.rabiesAppointmentStatus)}${item.vaccinationExpiresOn?` · Expires ${formatPrefLocalDate(item.vaccinationExpiresOn)}`:""}${item.rabiesAppointmentStatus==="expires_before_appointment"?` · Appointment ${formatPrefLocalDate(item.scheduledLocalStart)} · Update required`:""}${item.rabiesCustomerNotificationStatus&&item.rabiesCustomerNotificationStatus!=="not_required"?` · Customer notice ${escape(item.rabiesCustomerNotificationStatus)}`:""}</span>`:"";
   const rabiesNeeded=["expires_before_appointment","expired","unverified","not_provided"].includes(item.rabiesAppointmentStatus);
   const compactRabies=rabiesNeeded?`<span class="rabies-status rabies-needed" role="status" data-testid="rabies-appointment-status"><strong>Rabies needed</strong></span>`:"";
   // Only the safety alert is an alarm. Behaviour, medical, and grooming notes are things the
@@ -355,7 +439,7 @@ function calendarHours(){
   const values=state.businessHours.flatMap(period=>[String(period.startTime).slice(0,5),String(period.endTime).slice(0,5)]).map(value=>Number(value.slice(0,2))*60+Number(value.slice(3,5)));
   const derived=values.length?[Math.floor(Math.min(...values)/30)*30,Math.ceil(Math.max(...values)/30)*30]:[8*60,19*60],preferences=calendarPreferences(),start=preferences.visibleStart===null?derived[0]:Number(preferences.visibleStart),end=preferences.visibleEnd===null?derived[1]:Number(preferences.visibleEnd);return start<end?[start,end]:derived;
 }
-function timeLabel(minutes){const hour=Math.floor(minutes/60),minute=minutes%60;return new Intl.DateTimeFormat([],{hour:"numeric",minute:"2-digit"}).format(new Date(2020,0,1,hour,minute));}
+function timeLabel(minutes){return formatPrefClock(Math.floor(minutes/60),minutes%60);}
 function currentBusinessMinutes(){const parts=wallParts(),value=name=>Number(parts.find(part=>part.type===name)?.value||0);return value("hour")*60+value("minute");}
 // Week and day cards are ~140px wide, so the header strip prints a compact range that states the
 // meridiem once, at the end ("8:00–9:35 AM", "10:00–1:00 PM"). Anything shorter than twelve hours
@@ -363,9 +447,11 @@ function currentBusinessMinutes(){const parts=wallParts(),value=name=>Number(par
 // enough to be ambiguous keeps both. The full range still drives the accessible name, the hover
 // preview and the appointment detail dialog.
 function compactTimeRange(start,end,zone){
-  const format=new Intl.DateTimeFormat([],{hour:"numeric",minute:"2-digit",timeZone:zone}),period=value=>format.formatToParts(value).find(part=>part.type==="dayPeriod")?.value||"";
-  const startText=format.format(start),endText=format.format(end),startPeriod=period(start),ambiguous=end-start>=12*60*60*1000;
-  return startPeriod&&!ambiguous?`${startText.replace(startPeriod,"").trim()}–${endText}`:`${startText}–${endText}`;
+  const startText=formatPrefTime(start,zone),endText=formatPrefTime(end,zone);
+  // A 24-hour clock carries no meridiem, so there is nothing to state once and nothing to strip.
+  if(prefHourFormat()==="24")return `${startText}–${endText}`;
+  const startPeriod=startText.slice(-2),ambiguous=end-start>=12*60*60*1000;
+  return !ambiguous?`${startText.replace(startPeriod,"").trim()}–${endText}`:`${startText}–${endText}`;
 }
 // DOG_ADDON and A_LA_CARTE are the catalog's add-on families; every other category is a base
 // groom or bath. The card prints one base service in ink and greys the add-ons back, so a booking
@@ -405,7 +491,7 @@ function appointmentNoteEntries(item){
   return [["Safety alert",item.safetyAlerts],["Behavior",item.behaviorNotes],["Medical",item.medicalNotes],["Grooming preferences",item.groomingPreferences],["Coat notes",item.coatNotes],["Appointment notes",item.notes]].filter(([,value])=>typeof value==="string"&&value.trim().length>0);
 }
 function appointmentPresentation(item){
-  const start=new Date(item.startAt),end=new Date(item.endAt),zone=item.schedulingTimezone||schedulingZone(),formatTime=value=>new Intl.DateTimeFormat([],{hour:"numeric",minute:"2-digit",timeZone:zone}).format(value),serviceSnapshots=item.services||[],services=serviceSnapshots.map(service=>service.name),groomers=(item.groomers||[]).map(groomer=>groomer.displayName),prices=serviceSnapshots.map(service=>service.priceMinor).filter(value=>value!==null&&value!==undefined);
+  const start=new Date(item.startAt),end=new Date(item.endAt),zone=item.schedulingTimezone||schedulingZone(),formatTime=value=>formatPrefTime(value,zone),serviceSnapshots=item.services||[],services=serviceSnapshots.map(service=>service.name),groomers=(item.groomers||[]).map(groomer=>groomer.displayName),prices=serviceSnapshots.map(service=>service.priceMinor).filter(value=>value!==null&&value!==undefined);
   return {id:item.id,date:appointmentLocalValue(item).slice(0,10),dateLabel:new Intl.DateTimeFormat([],{weekday:"long",month:"long",day:"numeric",timeZone:zone}).format(start),timeRange:`${formatTime(start)}–${formatTime(end)}`,timeRangeCompact:compactTimeRange(start,end,zone),petName:item.petName,breed:item.breed||"",customerName:`${clientName(item)}`,services,serviceSnapshots,groomer:groomers[0]||item.employeeName,status:item.status.replace("_"," "),conflictOverridden:Boolean(item.conflictOverridden),rabiesNeeded:["not_provided","expires_before_appointment"].includes(item.rabiesAppointmentStatus),warning:item.safetyAlerts||item.behaviorNotes||item.medicalNotes||item.groomingPreferences||item.coatNotes||"",durationMinutes:Math.max(1,Math.round((end-start)/60000)),totalPriceMinor:prices.length===serviceSnapshots.length?prices.reduce((sum,value)=>sum+Number(value),0):null};
 }
 function appointmentAccessibleName(model){return `${model.timeRange}, ${model.petName}${model.breed?`, ${model.breed}`:""}, ${model.customerName}, ${model.services.join(", ")}, ${model.status}`;}
@@ -414,7 +500,10 @@ function calendarAction(item){
   const definition={scheduled:["Check in","operations.check_in"],checked_in:["Start service","operations.perform_service"],in_service:["Complete","operations.complete"],completed:["Checkout","checkout.perform"]}[item.status];
   const controls=[`<button type="button" role="menuitem" class="calendar-action view-appointment-action" data-id="${item.id}">View / Edit</button>`];
   if(definition&&allowed(definition[1]))controls.unshift(`<button role="menuitem" data-testid="appointment-${item.status}" class="calendar-action appointment-action" data-id="${item.id}" data-status="${item.status}">${definition[0]}</button>`);
-  if(item.status==="scheduled"&&allowed("appointments.edit"))controls.push(`<button type="button" role="menuitem" class="calendar-action move-action" data-id="${item.id}">Move</button>`);
+  if(item.status==="scheduled"&&appointmentMoveAllowed())controls.push(`<button type="button" role="menuitem" class="calendar-action move-action" data-id="${item.id}">Move</button>`);
+  // In the slot Move vacated, and only there. A disabled Move button would say the capability is
+  // merely switched off without saying by what or where, which is the half-answer this replaces.
+  else if(item.status==="scheduled")controls.push(appointmentLockNoteMarkup("appointment-lock-note"));
   if(item.status==="scheduled"&&allowed("appointments.cancel")){controls.push(`<button type="button" role="menuitem" class="calendar-action terminal-action destructive" data-id="${item.id}" data-status="cancelled">Cancel appointment</button>`);controls.push(`<button type="button" role="menuitem" class="calendar-action terminal-action" data-id="${item.id}" data-status="no_show">No show</button>`);}
   if(["checked_in","in_service"].includes(item.status)&&allowed("appointments.edit"))controls.push(`<button type="button" role="menuitem" class="calendar-action service-action" data-id="${item.id}">Adjust services</button>`);
   return `<div class="calendar-actions-menu"><button type="button" class="calendar-action-trigger" aria-label="Appointment actions for ${escape(petName({petName:item.petName}))}" aria-haspopup="menu" aria-expanded="false" data-appointment-menu="${item.id}">&#8943;</button><div class="calendar-action-popover" role="menu" hidden>${controls.join("")}</div></div>`;
@@ -482,8 +571,8 @@ function renderGroomerFilter(){
 function renderCalendar(){if(state.calendar.displayMode==="agenda")renderAgendaCalendar();else if(state.calendar.view==="month")renderMonthCalendar();else if(state.calendar.view==="day")renderDayCalendar();else renderWeekCalendar();}
 function renderAgendaCalendar(){
   const target=$("#calendar-list"),items=filteredAppointments().slice().sort((a,b)=>new Date(a.startAt)-new Date(b.startAt));
-  const groups=items.reduce((map,item)=>{const date=appointmentPresentation(item).date,mapItems=map.get(date)||[];mapItems.push(item);map.set(date,mapItems);return map;},new Map());target.className="calendar-agenda";target.style.removeProperty("min-width");target.style.removeProperty("--groomer-count");target.innerHTML=items.length?[...groups].map(([date,group])=>`<section class="agenda-day"><h3>${new Intl.DateTimeFormat([],{weekday:"long",month:"long",day:"numeric"}).format(dateAt(date))}</h3>${group.map(item=>{const model=appointmentPresentation(item);return `<article class="agenda-entry" data-appointment-id="${item.id}"><time datetime="${escape(item.startAt)}">${escape(model.timeRange)}</time><button type="button" class="agenda-appointment" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><strong>${escape(petName({petName:model.petName}))}${model.breed?` <span>(${escape(model.breed)})</span>`:""}</strong><span>${escape(model.customerName)}</span><span>${model.services.map(escape).join(", ")}</span><small>${escape(model.groomer)}</small></button><div class="agenda-indicators"><span class="appointment-status">${escape(model.status)}</span>${model.rabiesNeeded?`<span class="rabies-needed">Rabies needed</span>`:""}${model.warning?`<span class="agenda-warning">⚠ ${escape(model.warning)}</span>`:""}</div></article>`;}).join("")}</section>`).join(""):"<p class=\"empty\">No appointments in this period.</p>";
-  const days=state.calendar.view==="day"?1:state.calendar.view==="month"?42:7,start=state.calendar.view==="day"?state.calendar.selectedDate:state.calendar.view==="month"?dateShift(`${state.calendar.month}-01`,-dateAt(`${state.calendar.month}-01`).getUTCDay()):state.calendar.weekStart,end=dateShift(start,days-1);$("#calendar-range").textContent=days===1?new Intl.DateTimeFormat([],{dateStyle:"full"}).format(dateAt(start)):`${new Intl.DateTimeFormat([],{month:"short",day:"numeric"}).format(dateAt(start))} – ${new Intl.DateTimeFormat([],{month:"short",day:"numeric",year:"numeric"}).format(dateAt(end))}`;bindCalendarInteractions(target);
+  const groups=items.reduce((map,item)=>{const date=appointmentPresentation(item).date,mapItems=map.get(date)||[];mapItems.push(item);map.set(date,mapItems);return map;},new Map());target.className="calendar-agenda";target.style.removeProperty("min-width");target.style.removeProperty("--groomer-count");target.innerHTML=items.length?[...groups].map(([date,group])=>`<section class="agenda-day"><h3>${escape(formatPrefLocalWeekdayDate(date))}</h3>${group.map(item=>{const model=appointmentPresentation(item);return `<article class="agenda-entry" data-appointment-id="${item.id}"><time datetime="${escape(item.startAt)}">${escape(model.timeRange)}</time><button type="button" class="agenda-appointment" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><strong>${escape(petName({petName:model.petName}))}${model.breed?` <span>(${escape(model.breed)})</span>`:""}</strong><span>${escape(model.customerName)}</span><span>${model.services.map(escape).join(", ")}</span><small>${escape(model.groomer)}</small></button><div class="agenda-indicators"><span class="appointment-status">${escape(model.status)}</span>${model.rabiesNeeded?`<span class="rabies-needed">Rabies needed</span>`:""}${model.warning?`<span class="agenda-warning">⚠ ${escape(model.warning)}</span>`:""}</div></article>`;}).join("")}</section>`).join(""):"<p class=\"empty\">No appointments in this period.</p>";
+  const days=state.calendar.view==="day"?1:state.calendar.view==="month"?42:7,start=state.calendar.view==="day"?state.calendar.selectedDate:state.calendar.view==="month"?dateShift(`${state.calendar.month}-01`,-dateAt(`${state.calendar.month}-01`).getUTCDay()):state.calendar.weekStart,end=dateShift(start,days-1);$("#calendar-range").textContent=days===1?formatPrefLocalWeekdayDate(start):`${new Intl.DateTimeFormat([],{month:"short",day:"numeric"}).format(dateAt(start))} – ${new Intl.DateTimeFormat([],{month:"short",day:"numeric",year:"numeric"}).format(dateAt(end))}`;bindCalendarInteractions(target);
 }
 // Month cells are a fixed height so all six week rows stay uniform; MONTH_EVENT_LIMIT is the
 // number of 21px pills that fit under the header line, with the "+N more" link occupying the
@@ -499,7 +588,7 @@ function renderMonthCalendar(){
   const first=`${state.calendar.month}-01`,start=weekStart(first),days=Array.from({length:42},(_,index)=>dateShift(start,index)),today=businessDate(),visible=filteredAppointments(state.calendar.monthAppointments.length?state.calendar.monthAppointments:state.appointments);
   target.className="calendar-month-view";target.setAttribute("aria-label","Monthly appointment schedule");target.style.removeProperty("--groomer-count");target.style.removeProperty("min-width");
   const headings=(calendarPreferences().firstDay==="monday"?["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]:["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]).map(day=>`<div class="calendar-month-weekday">${day}</div>`).join("");
-  const cells=days.map(day=>{const items=visible.filter(item=>appointmentLocalValue(item).slice(0,10)===day).sort((a,b)=>new Date(a.startAt)-new Date(b.startAt)),outside=day.slice(0,7)!==state.calendar.month,periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(day).getUTCDay()),closed=state.businessHours.length>0&&!periods.length,booked=items.filter(item=>!monthNeutralStatus(item)),revenue=booked.reduce((total,item)=>total+(item.services||[]).reduce((sum,service)=>sum+Number(service.priceMinor||0),0),0),ordered=[...booked,...items.filter(monthNeutralStatus)],shown=ordered.slice(0,MONTH_EVENT_LIMIT),dayLabel=new Intl.DateTimeFormat([],{dateStyle:"full"}).format(dateAt(day));return `<div class="calendar-month-day ${outside?"outside":""} ${closed?"closed":""} ${day===today?"today":""} ${day===state.calendar.selectedDate?"selected":""}" data-month-cell="${day}"><div class="month-day-head">${booked.length?`<span class="month-day-total"><span class="month-day-money">(${escape(money(revenue))}, </span>${booked.length} pet${booked.length===1?"":"s"}<span class="month-day-money">)</span></span>`:`<span class="month-day-total"></span>`}<button type="button" class="calendar-month-add" data-month-book-date="${day}" aria-label="Create appointment on ${escape(dayLabel)}">+</button><button type="button" class="calendar-month-date" data-month-open-date="${day}" aria-label="Open ${escape(dayLabel)} in day view">${Number(day.slice(8,10))}</button></div><div class="calendar-month-events">${shown.map(item=>{const model=appointmentPresentation(item),neutral=monthNeutralStatus(item),slot=neutral?"":groomerColorSlot((item.groomers||[])[0]?.id||item.employeeId);return `<span class="month-appointment-wrap ${neutral?"neutral":""}" data-appointment-id="${item.id}" ${slot===""?"":`data-groomer-slot="${slot}"`}><button type="button" class="calendar-month-event" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><time>${escape(schedulingTime(item))}</time><span class="month-event-name">${escape(model.customerName)}</span></button></span>`;}).join("")}</div>${ordered.length>MONTH_EVENT_LIMIT?`<button type="button" class="calendar-month-more" data-month-open-date="${day}">+${ordered.length-MONTH_EVENT_LIMIT} more</button>`:""}</div>`;}).join("");
+  const cells=days.map(day=>{const items=visible.filter(item=>appointmentLocalValue(item).slice(0,10)===day).sort((a,b)=>new Date(a.startAt)-new Date(b.startAt)),outside=day.slice(0,7)!==state.calendar.month,periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(day).getUTCDay()),closed=state.businessHours.length>0&&!periods.length,booked=items.filter(item=>!monthNeutralStatus(item)),revenue=booked.reduce((total,item)=>total+(item.services||[]).reduce((sum,service)=>sum+Number(service.priceMinor||0),0),0),ordered=[...booked,...items.filter(monthNeutralStatus)],shown=ordered.slice(0,MONTH_EVENT_LIMIT),dayLabel=formatPrefLocalWeekdayDate(day);return `<div class="calendar-month-day ${outside?"outside":""} ${closed?"closed":""} ${day===today?"today":""} ${day===state.calendar.selectedDate?"selected":""}" data-month-cell="${day}"><div class="month-day-head">${booked.length?`<span class="month-day-total"><span class="month-day-money">(${escape(money(revenue))}, </span>${booked.length} pet${booked.length===1?"":"s"}<span class="month-day-money">)</span></span>`:`<span class="month-day-total"></span>`}<button type="button" class="calendar-month-add" data-month-book-date="${day}" aria-label="Create appointment on ${escape(dayLabel)}">+</button><button type="button" class="calendar-month-date" data-month-open-date="${day}" aria-label="Open ${escape(dayLabel)} in day view">${Number(day.slice(8,10))}</button></div><div class="calendar-month-events">${shown.map(item=>{const model=appointmentPresentation(item),neutral=monthNeutralStatus(item),slot=neutral?"":groomerColorSlot((item.groomers||[])[0]?.id||item.employeeId);return `<span class="month-appointment-wrap ${neutral?"neutral":""}" data-appointment-id="${item.id}" ${slot===""?"":`data-groomer-slot="${slot}"`}><button type="button" class="calendar-month-event" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><time>${escape(schedulingTime(item))}</time><span class="month-event-name">${escape(model.customerName)}</span></button></span>`;}).join("")}</div>${ordered.length>MONTH_EVENT_LIMIT?`<button type="button" class="calendar-month-more" data-month-open-date="${day}">+${ordered.length-MONTH_EVENT_LIMIT} more</button>`:""}</div>`;}).join("");
   target.innerHTML=headings+cells;$("#calendar-range").textContent=new Intl.DateTimeFormat([],{month:"long",year:"numeric"}).format(dateAt(first));
   $$('[data-month-open-date]').forEach(button=>button.addEventListener("click",()=>{state.calendar.view="day";updateCalendarViewControls();selectCalendarDate(button.dataset.monthOpenDate);}));
   $$('[data-month-book-date]').forEach(button=>button.addEventListener("click",()=>{state.calendar.bookingPreset=`${button.dataset.monthBookDate}T09:00`;state.calendar.bookingGroomerId=null;actions["new-appointment"]();}));bindCalendarInteractions();
@@ -528,17 +617,17 @@ function renderDayCalendar(){
   const groomers=selectedGroomers();
   const [start,end]=calendarHours(),slots=(end-start)/30,columns=Math.max(1,groomers.length);
   target.className="day-grid";target.setAttribute("aria-label","Daily appointment schedule by groomer");target.style.setProperty("--groomer-count",columns);target.style.minWidth=`${64+columns*190}px`;
-  if(!groomers.length){target.className="calendar-empty-groomers";target.innerHTML="<p><strong>No groomers selected.</strong><br>Choose groomers to display.</p>";$("#calendar-range").textContent=new Intl.DateTimeFormat([],{dateStyle:"full"}).format(dateAt(state.calendar.selectedDate));return;}
+  if(!groomers.length){target.className="calendar-empty-groomers";target.innerHTML="<p><strong>No groomers selected.</strong><br>Choose groomers to display.</p>";$("#calendar-range").textContent=formatPrefLocalWeekdayDate(state.calendar.selectedDate);return;}
   let content=`<div class="day-corner" style="grid-column:1;grid-row:1">Time</div>${groomers.map((groomer,index)=>`<div class="day-groomer" data-groomer-slot="${groomerColorSlot(groomer.id)}" style="grid-column:${index+2};grid-row:1">${escape(groomer.displayName)}</div>`).join("")}`;
   for(let slot=0;slot<slots;slot++){const minutes=start+slot*30,row=slot+2,periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(state.calendar.selectedDate).getUTCDay()),open=!periods.length&&!state.businessHours.length||periods.some(period=>{const from=Number(String(period.startTime).slice(0,2))*60+Number(String(period.startTime).slice(3,5)),to=Number(String(period.endTime).slice(0,2))*60+Number(String(period.endTime).slice(3,5));return minutes>=from&&minutes<to;});content+=`<div class="day-time" style="grid-column:1;grid-row:${row}">${timeLabel(minutes)}</div>`;for(let index=0;index<groomers.length;index++){const groomer=groomers[index],preset=`${state.calendar.selectedDate}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`;content+=`<button type="button" class="day-slot ${open?"":"closed"}" ${open?`data-slot="${preset}" data-slot-groomer="${groomer.id}"`:`disabled`} style="grid-column:${index+2};grid-row:${row}" aria-label="${escape(state.calendar.selectedDate)}, ${timeLabel(minutes)}, ${escape(groomer.displayName)}, ${open?"create appointment":"closed"}"></button>`;}}
   for(const item of filteredAppointments().filter(appointment=>appointmentLocalValue(appointment).slice(0,10)===state.calendar.selectedDate)){const local=appointmentLocalValue(item),minutes=Number(local.slice(11,13))*60+Number(local.slice(14,16)),duration=Math.max(30,Math.round((new Date(item.endAt)-new Date(item.startAt))/60000)),row=Math.floor((minutes-start)/30)+2;if(row<2||row>slots+1)continue;for(const assigned of item.groomers||[]){const column=groomers.findIndex(groomer=>groomer.id===assigned.id);if(column<0)continue;content+=appointmentCard(item,{day:true,groomerId:assigned.id,style:`grid-column:${column+2};grid-row:${row}/span ${Math.max(1,Math.ceil(duration/30))}`});}}
-  const now=currentBusinessMinutes(),nowRow=Math.floor((now-start)/30)+2;if(state.calendar.selectedDate===businessDate()&&now>=start&&now<end)content+=`<div class="calendar-now-line" role="status" aria-label="Current business time" style="grid-column:2/-1;grid-row:${nowRow}"></div>`;target.innerHTML=content;$("#calendar-range").textContent=new Intl.DateTimeFormat([],{dateStyle:"full"}).format(dateAt(state.calendar.selectedDate));bindCalendarInteractions();
+  const now=currentBusinessMinutes(),nowRow=Math.floor((now-start)/30)+2;if(state.calendar.selectedDate===businessDate()&&now>=start&&now<end)content+=`<div class="calendar-now-line" role="status" aria-label="Current business time" style="grid-column:2/-1;grid-row:${nowRow}"></div>`;target.innerHTML=content;$("#calendar-range").textContent=formatPrefLocalWeekdayDate(state.calendar.selectedDate);bindCalendarInteractions();
 }
 // The slot menu shares the popover styling but is anchored to the pointer rather than parked
 // beside a trigger, so it has no expanded sibling to reset. Guarding on the attribute keeps this
 // from writing aria-expanded onto whatever element happens to precede a floating popover.
 function closeCalendarMenus({restoreFocus=false}={}){$$(".calendar-action-popover:not([hidden])").forEach(popover=>{popover.hidden=true;const trigger=popover.previousElementSibling;if(!trigger?.hasAttribute("aria-expanded"))return;trigger.setAttribute("aria-expanded","false");if(restoreFocus)trigger.focus();});}
-function bindCalendarInteractions(root=document){const find=selector=>[...root.querySelectorAll(selector)];find('[data-slot]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openSlotMenu(button);}));find('[data-calendar-appointment]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();closeCalendarMenus();openCalendarAppointment(button.dataset.calendarAppointment,event.currentTarget);}));find('[data-appointment-notes]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openAppointmentNotes(button.dataset.appointmentNotes,event.currentTarget);}));find('[data-appointment-menu]').forEach(trigger=>trigger.addEventListener("click",event=>{event.stopPropagation();const popover=trigger.nextElementSibling,opening=popover.hidden;closeCalendarMenus();popover.hidden=!opening;trigger.setAttribute("aria-expanded",String(opening));if(opening)popover.querySelector("button")?.focus();}));find('.calendar-action-popover').forEach(popover=>popover.addEventListener("keydown",event=>{if(!["ArrowDown","ArrowUp","Home","End"].includes(event.key))return;event.preventDefault();const items=[...popover.querySelectorAll('[role="menuitem"]')],index=items.indexOf(document.activeElement),next=event.key==="Home"?0:event.key==="End"?items.length-1:(index+(event.key==="ArrowDown"?1:-1)+items.length)%items.length;items[next]?.focus();}));find('.view-appointment-action').forEach(button=>button.addEventListener("click",event=>{closeCalendarMenus();openCalendarAppointment(button.dataset.id,event.currentTarget);}));}
+function bindCalendarInteractions(root=document){bindAppointmentLockNote(root);const find=selector=>[...root.querySelectorAll(selector)];find('[data-slot]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openSlotMenu(button);}));find('[data-calendar-appointment]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();closeCalendarMenus();openCalendarAppointment(button.dataset.calendarAppointment,event.currentTarget);}));find('[data-appointment-notes]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openAppointmentNotes(button.dataset.appointmentNotes,event.currentTarget);}));find('[data-appointment-menu]').forEach(trigger=>trigger.addEventListener("click",event=>{event.stopPropagation();const popover=trigger.nextElementSibling,opening=popover.hidden;closeCalendarMenus();popover.hidden=!opening;trigger.setAttribute("aria-expanded",String(opening));if(opening)popover.querySelector("button")?.focus();}));find('.calendar-action-popover').forEach(popover=>popover.addEventListener("keydown",event=>{if(!["ArrowDown","ArrowUp","Home","End"].includes(event.key))return;event.preventDefault();const items=[...popover.querySelectorAll('[role="menuitem"]')],index=items.indexOf(document.activeElement),next=event.key==="Home"?0:event.key==="End"?items.length-1:(index+(event.key==="ArrowDown"?1:-1)+items.length)%items.length;items[next]?.focus();}));find('.view-appointment-action').forEach(button=>button.addEventListener("click",event=>{closeCalendarMenus();openCalendarAppointment(button.dataset.id,event.currentTarget);}));}
 // Small notes dialog. Reuses the shared <dialog>, so Escape closes it and focus returns to the
 // card button through the existing #modal close handler.
 function openAppointmentNotes(id,origin=null){
@@ -559,10 +648,77 @@ function appointmentHost(target){return target.closest?.("[data-appointment-id]"
 // optimistically - the request goes first and the calendar reloads from what the server did.
 const CALENDAR_DRAG_THRESHOLD=5,CALENDAR_DRAG_EDGE=48,CALENDAR_DRAG_SPEED=16;
 let calendarDrag=null;
-// Drag is a fine-pointer affordance. On touch the same move is one tap away through the card menu's
-// Move action, and an accidental drag across a working schedule is expensive to undo, so coarse
-// pointers keep the menu path only.
-function calendarDragAvailable(){return allowed("appointments.edit")&&globalThis.matchMedia("(hover: hover) and (pointer: fine)").matches;}
+/**
+ * Whether a MOVE is on offer at all.
+ *
+ * A move is a change to WHEN an appointment starts or WHO is assigned to it, and nothing else.
+ * Two gates govern it and they stack as an AND, because they answer different questions: the
+ * permission answers WHO may move an appointment, and `appointmentLock` answers WHETHER anyone may
+ * right now. Neither replaces the other.
+ *
+ * THERE IS NO OWNER BYPASS, deliberately. The lock is a policy switch rather than a permission, the
+ * owner is the person holding the switch, and the server has no exemption either - so a client-side
+ * one would draw an owner a drag that snaps back with no explanation.
+ *
+ * ONLY MOVING IS GATED. Editing services, price, notes and status stay available under the lock, and
+ * so does booking a new appointment. None of those is a move.
+ */
+function appointmentsLocked(){return state.me?.business?.appointmentLock==="enabled";}
+function appointmentMoveAllowed(){return allowed("appointments.edit")&&!appointmentsLocked();}
+// Drag is a fine-pointer affordance on top of that. On touch the same move is one tap away through
+// the card menu's Move action, and an accidental drag across a working schedule is expensive to
+// undo, so coarse pointers keep the menu path only.
+function calendarDragAvailable(){return appointmentMoveAllowed()&&globalThis.matchMedia("(hover: hover) and (pointer: fine)").matches;}
+const APPOINTMENT_LOCK_MESSAGE="Appointments are locked from being moved. A manager can unlock this in Settings \u2192 Business.";
+/**
+ * Why the Move affordance is not there - drawn for exactly one of the two reasons.
+ *
+ * Without `appointments.edit`, moving appointments is not this person's job and an explanation
+ * would be noise about a capability they never had. Under the lock it is the opposite: somebody who
+ * could drag a card yesterday is looking at a calendar whose appointments have silently stopped
+ * dragging, and the sentence is the whole of the answer.
+ *
+ * It goes where Move was rather than into a banner over the calendar. The question is asked at the
+ * card - the operator opens its menu looking for Move - so that is where it is answered, and no
+ * persistent chrome is spent on a state most workspaces are never in.
+ *
+ * The pointer at Settings is drawn only for somebody holding `settings.manage`. Anyone else is being
+ * told to ask a manager, which the sentence already says; a link they would be refused at is worse
+ * than no link.
+ */
+function appointmentLockNoteMarkup(testId){
+  if(!appointmentsLocked()||!allowed("appointments.edit"))return "";
+  return `<p class="appointment-lock-note" data-testid="${testId}">${escape(APPOINTMENT_LOCK_MESSAGE)}`
+    +(allowed("settings.manage")
+      ?` <button type="button" class="text-button" data-appointment-lock-settings>Open Settings</button>`:"")
+    +`</p>`;
+}
+function bindAppointmentLockNote(root=document){
+  root.querySelectorAll("[data-appointment-lock-settings]").forEach(button=>button.addEventListener("click",event=>{
+    event.stopPropagation();
+    runDetached(async()=>{
+      closeCalendarMenus();$("#modal")?.close();
+      await showView("admin-settings");
+      renderSettingsCategory("business",{history:"push"});
+    });
+  }));
+}
+function appointmentMoveRefused(error){
+  // Matched on `code`, never on the message text.
+  return error.status===409&&error.data?.code==="APPOINTMENT_MOVE_LOCKED";
+}
+/**
+ * A refusal is also the news that this tab's copy of the lock is stale.
+ *
+ * Hiding the affordance is not enforcement, and the two ways past it - a second tab, or a manager
+ * flipping the switch mid-drag - both leave a calendar still drawing a drag the server will refuse.
+ * Re-reading `/api/me` and redrawing is what makes the affordance disappear, so the operator is told
+ * once rather than discovering it again on the next card.
+ */
+async function reconcileAppointmentLock(){
+  try{state.me=await api("/api/me");}catch{/* the refusal already carried the message */}
+  try{renderAppointments();}catch{/* the calendar is not mounted; nothing to redraw */}
+}
 function calendarDragCard(target){
   if(!target?.closest)return null;
   // The overflow menu and the notes button are small, deliberate targets, so a press there is only
@@ -670,6 +826,10 @@ async function dropAppointment(id,localStart,employeeId){
       toast(`${appointment.petName} moved to ${dropSlotLabel(localStart,employeeId)}`);
     }catch(error){
       if(error.status===403)await reconcilePermissions();
+      // A lock refuses the OPERATION, not the slot, so there is nothing for the Move dialog to
+      // correct - opening it would offer to retype a time that will be refused again. The server's
+      // own sentence is shown, because it is written to be read by an operator.
+      if(appointmentMoveRefused(error)){toast(error.message);await reconcileAppointmentLock();return;}
       await openMoveRejection(error,id,{localStart,employeeId});
     }
   });
@@ -698,7 +858,7 @@ async function loadCalendarWeek(start=state.calendar.weekStart){
 async function openCalendarView(){await loadCalendarWeek();if(!state.calendar.opened&&!state.appointments.length&&state.calendar.selectedGroomerIds===null){const upcoming=await api(`/api/appointments?localDate=${businessDate()}&days=31`);if(upcoming.length){const date=appointmentLocalValue(upcoming[0]).slice(0,10);state.calendar.opened=true;return selectCalendarDate(date);}}state.calendar.opened=true;}
 async function loadCalendarMonth(month=state.calendar.month){const start=weekStart(`${month}-01`),appointments=await loadAppointmentRange(start,42);state.calendar.monthAppointments=appointments;return appointments;}
 async function selectCalendarDate(date){const changedMonth=state.calendar.month!==date.slice(0,7);state.calendar.selectedDate=date;state.calendar.weekStart=weekStart(date);state.calendar.month=date.slice(0,7);if(changedMonth)await loadCalendarMonth(state.calendar.month,false);await loadCalendarWeek();}
-async function openCalendarAppointmentLegacy(id){const item=state.appointments.find(appointment=>appointment.id===id);if(!item)return;try{const data=await api(`/api/customers/${item.customerId}/history`),pet=data.pets.find(candidate=>candidate.id===item.petId),groomers=(item.groomers||[]).map(groomer=>groomer.displayName).join(", ")||item.employeeName,services=item.services.map(service=>service.name).join(", ");openModal(`${clientName(data.customer)}`,`<div class="wide calendar-customer-context"><section><p class="eyebrow">Customer</p><h3>${escape(clientName(data.customer))}</h3><p>${escape(data.customer.phone||"No phone")} · ${escape(data.customer.email||"No email")}</p></section><section><p class="eyebrow">Pet</p><h4>${escape(petName({petName:item.petName}))}</h4><p>${escape(pet?.breed||"Breed not provided")}${pet?.weightOunces?` · ${Number(pet.weightOunces)/16} lb`:""}</p>${pet?.safetyAlerts?`<p><strong>Safety:</strong> ${escape(pet.safetyAlerts)}</p>`:""}</section><section><p class="eyebrow">Appointment</p><h4>${new Intl.DateTimeFormat([],{dateStyle:"full",timeStyle:"short",timeZone:item.schedulingTimezone||schedulingZone()}).format(new Date(item.startAt))}</h4><p>${escape(groomers)}</p><p>${escape(services)}</p>${safetyContext(item)}<span class="appointment-status">${escape(item.status.replace("_"," "))}</span></section><div class="customer-context-actions"><button type="button" class="secondary compact context-full-profile">View full customer profile</button>${item.status==="scheduled"&&allowed("appointments.edit")?`<button type="button" class="secondary compact calendar-move-detail">Move</button><button type="button" class="primary compact context-edit-appointment">Edit appointment</button>`:""}</div></div>`,null,{cancelLabel:"Close"});const next=callback=>{$("#modal").close();setTimeout(callback,50);};$(".context-full-profile")?.addEventListener("click",()=>next(()=>showCustomerDetail(item.customerId)));$(".calendar-move-detail")?.addEventListener("click",()=>next(()=>moveAppointment(id)));$(".context-edit-appointment")?.addEventListener("click",()=>next(()=>adjustServices(id)));}catch(error){toast(error.message);}}
+async function openCalendarAppointmentLegacy(id){const item=state.appointments.find(appointment=>appointment.id===id);if(!item)return;try{const data=await api(`/api/customers/${item.customerId}/history`),pet=data.pets.find(candidate=>candidate.id===item.petId),groomers=(item.groomers||[]).map(groomer=>groomer.displayName).join(", ")||item.employeeName,services=item.services.map(service=>service.name).join(", ");openModal(`${clientName(data.customer)}`,`<div class="wide calendar-customer-context"><section><p class="eyebrow">Customer</p><h3>${escape(clientName(data.customer))}</h3><p>${escape(data.customer.phone||"No phone")} · ${escape(data.customer.email||"No email")}</p></section><section><p class="eyebrow">Pet</p><h4>${escape(petName({petName:item.petName}))}</h4><p>${escape(pet?.breed||"Breed not provided")}${pet?.weightOunces?` · ${escape(formatPetWeight(pet.weightOunces))}`:""}</p>${pet?.safetyAlerts?`<p><strong>Safety:</strong> ${escape(pet.safetyAlerts)}</p>`:""}</section><section><p class="eyebrow">Appointment</p><h4>${escape(formatPrefDateTime(new Date(item.startAt),item.schedulingTimezone||schedulingZone()))}</h4><p>${escape(groomers)}</p><p>${escape(services)}</p>${safetyContext(item)}<span class="appointment-status">${escape(item.status.replace("_"," "))}</span></section><div class="customer-context-actions"><button type="button" class="secondary compact context-full-profile">View full customer profile</button>${item.status==="scheduled"&&allowed("appointments.edit")?`<button type="button" class="secondary compact calendar-move-detail">Move</button><button type="button" class="primary compact context-edit-appointment">Edit appointment</button>`:""}</div></div>`,null,{cancelLabel:"Close"});const next=callback=>{$("#modal").close();setTimeout(callback,50);};$(".context-full-profile")?.addEventListener("click",()=>next(()=>showCustomerDetail(item.customerId)));$(".calendar-move-detail")?.addEventListener("click",()=>next(()=>moveAppointment(id)));$(".context-edit-appointment")?.addEventListener("click",()=>next(()=>adjustServices(id)));}catch(error){toast(error.message);}}
 void openCalendarAppointmentLegacy;
 function adjustServices(id) {
   const appointment=state.appointments.find(item=>item.id===id);
@@ -976,7 +1136,7 @@ function receiptRefundRow(refund){
     :"";
   return `<div class="receipt-refund is-${escape(refund.status)}" data-testid="receipt-refund" data-refund-status="${escape(refund.status)}">`
     +`<span><strong>${escape(refund.label)}</strong>`
-    +`<small>${escape(new Date(when).toLocaleDateString())}${tip}</small>`
+    +`<small>${escape(formatPrefDate(new Date(when)))}${tip}</small>`
     +(detail?`<small class="fine">${detail}</small>`:"")
     +`</span>`
     // A minus sign, because this is money leaving. Only a settled refund is shown as an amount
@@ -1233,7 +1393,7 @@ function placeClientRowMenu(menu){
 }
 function renderCustomersEnhanced() {
   const directory=state.customerDirectory,
-    formatDate=value=>value?new Intl.DateTimeFormat([],{dateStyle:"medium",timeZone:schedulingZone()}).format(new Date(value)):"—",
+    formatDate=value=>value?formatPrefDate(new Date(value)):"—",
     attr=value=>escape(value).replaceAll('"',"&quot;"),
     cell=(value,className)=>{const text=value||"—",tooltip=text==="—"?"":` title="${attr(text)}"`;return `<td class="${className}"${tooltip}>${escape(text)}</td>`;};
   $("#customer-grid").innerHTML=directory.items.length?directory.items.map(customer=>{
@@ -1305,11 +1465,11 @@ function renderCustomerPager(){
   $("#customer-prev").disabled=page<=1;$("#customer-next").disabled=page>=pages;
 }
 async function loadCustomerDirectory(page=1){const result=await api(`/api/customers?${customerDirectoryParams(page)}`);state.customerDirectory=result;state.customers=result.items;renderCustomersEnhanced();}
-async function showCustomerDetail(id){try{const data=await api(`/api/customers/${id}/history`);state.pets=[...state.pets.filter(pet=>pet.customerId!==id),...data.pets];if(!state.customers.some(customer=>customer.id===id))state.customers.push(data.customer);const pets=data.pets.map(pet=>`<div class="customer-pet-row"><span><strong>${escape(petName(pet))}</strong><small>${escape(pet.breed||"Breed not provided")} · ${pet.weightOunces?`${Number(pet.weightOunces)/16} lb`:"Weight not provided"}</small><small>${pet.vaccinationExpiresOn?`Rabies expires ${String(pet.vaccinationExpiresOn).slice(0,10)}`:"Rabies expiration not provided"}${pet.safetyAlerts?` · Safety: ${escape(pet.safetyAlerts)}`:""}</small></span><span>${allowed("pets.edit")?`<button type="button" class="text-button detail-edit-pet" data-id="${pet.id}">Profile</button>`:""}${allowed("pets.care.view")?`<button type="button" class="text-button detail-care" data-id="${pet.id}">Care & history</button>`:""}</span></div>`).join("")||"<p>No pets yet.</p>";openModal(`${clientName(data.customer)}`,`<div class="wide customer-detail"><p><strong>${escape(data.customer.phone||"No phone")}</strong> · ${escape(data.customer.email||"No email")}</p><div class="customer-detail-actions">${allowed("customers.edit")?`<button type="button" class="text-button detail-edit-customer">Edit customer</button><button type="button" class="text-button detail-archive-customer">Archive</button>`:""}<button type="button" class="text-button detail-history">Full history</button></div><h4>Pets</h4>${pets}</div>`,async()=>{});const next=callback=>{$("#modal").close();setTimeout(callback,50);};$(".detail-edit-customer")?.addEventListener("click",()=>next(()=>editCustomer(id)));$(".detail-archive-customer")?.addEventListener("click",()=>next(()=>archiveCustomer(id)));$(".detail-history")?.addEventListener("click",()=>next(()=>showCustomerHistory(id)));$$(".detail-edit-pet").forEach(button=>button.addEventListener("click",()=>next(()=>editPet(button.dataset.id))));$$(".detail-care").forEach(button=>button.addEventListener("click",()=>next(()=>editPetCare(button.dataset.id))));}catch(error){toast(error.message);}}
+async function showCustomerDetail(id){try{const data=await api(`/api/customers/${id}/history`);state.pets=[...state.pets.filter(pet=>pet.customerId!==id),...data.pets];if(!state.customers.some(customer=>customer.id===id))state.customers.push(data.customer);const pets=data.pets.map(pet=>`<div class="customer-pet-row"><span><strong>${escape(petName(pet))}</strong><small>${escape(pet.breed||"Breed not provided")} · ${pet.weightOunces?`${escape(formatPetWeight(pet.weightOunces))}`:"Weight not provided"}</small><small>${pet.vaccinationExpiresOn?`Rabies expires ${formatPrefLocalDate(pet.vaccinationExpiresOn)}`:"Rabies expiration not provided"}${pet.safetyAlerts?` · Safety: ${escape(pet.safetyAlerts)}`:""}</small></span><span>${allowed("pets.edit")?`<button type="button" class="text-button detail-edit-pet" data-id="${pet.id}">Profile</button>`:""}${allowed("pets.care.view")?`<button type="button" class="text-button detail-care" data-id="${pet.id}">Care & history</button>`:""}</span></div>`).join("")||"<p>No pets yet.</p>";openModal(`${clientName(data.customer)}`,`<div class="wide customer-detail"><p><strong>${escape(data.customer.phone||"No phone")}</strong> · ${escape(data.customer.email||"No email")}</p><div class="customer-detail-actions">${allowed("customers.edit")?`<button type="button" class="text-button detail-edit-customer">Edit customer</button><button type="button" class="text-button detail-archive-customer">Archive</button>`:""}<button type="button" class="text-button detail-history">Full history</button></div><h4>Pets</h4>${pets}</div>`,async()=>{});const next=callback=>{$("#modal").close();setTimeout(callback,50);};$(".detail-edit-customer")?.addEventListener("click",()=>next(()=>editCustomer(id)));$(".detail-archive-customer")?.addEventListener("click",()=>next(()=>archiveCustomer(id)));$(".detail-history")?.addEventListener("click",()=>next(()=>showCustomerHistory(id)));$$(".detail-edit-pet").forEach(button=>button.addEventListener("click",()=>next(()=>editPet(button.dataset.id))));$$(".detail-care").forEach(button=>button.addEventListener("click",()=>next(()=>editPetCare(button.dataset.id))));}catch(error){toast(error.message);}}
 function pricingMatrix(service){
   if(service.pricingMode!=="TIERED")return "";
-  const classes=["SMOOTH_SINGLE","STANDARD","EXTRA_FLOOF"];const tiers=[["TIER_1","1–20"],["TIER_2","21–40"],["TIER_3","41–60"],["TIER_4","61–80"],["TIER_5","81–100"],["TIER_6","100+"]];
-  return `<div class="pricing-scroll"><table class="pricing-matrix"><caption>${escape(service.name)} pricing tiers</caption><thead><tr><th scope="col">Pricing class</th>${tiers.map(([,label])=>`<th scope="col">${label} lb</th>`).join("")}</tr></thead><tbody>${classes.map(pricingClass=>`<tr><th scope="row">${escape(pricingClass.replaceAll("_"," "))}</th>${tiers.map(([code])=>`<td>${money(service.priceTiers.find(price=>price.pricingClass===pricingClass&&price.weightTierCode===code)?.priceMinor??0)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  const classes=["SMOOTH_SINGLE","STANDARD","EXTRA_FLOOF"];const tiers=weightTierList();
+  return `<div class="pricing-scroll"><table class="pricing-matrix"><caption>${escape(service.name)} pricing tiers</caption><thead><tr><th scope="col">Pricing class</th>${tiers.map(tier=>`<th scope="col">${escape(tier.label)}</th>`).join("")}</tr></thead><tbody>${classes.map(pricingClass=>`<tr><th scope="row">${escape(pricingClass.replaceAll("_"," "))}</th>${tiers.map(tier=>`<td>${money(service.priceTiers.find(price=>price.pricingClass===pricingClass&&price.weightTierCode===tier.code)?.priceMinor??0)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
 // The catalog opens on the work a salon does every day. DOG_BASE leads, the add-ons that
 // hang off it follow, then à la carte, cat, and anything general; a category the server
@@ -1504,7 +1664,7 @@ function renderReportTables(){
     // Each revenue row is a DATE - the business-local day the invoice was cut - which arrives
     // as UTC midnight. Formatting it in the viewer's zone slides it a day backwards west of
     // UTC, so it is read back in UTC to land on the day the server actually meant.
-    dayFormat=new Intl.DateTimeFormat([],{dateStyle:"medium",timeZone:"UTC"});
+    dayFormat={format:value=>formatPrefDate(value,"UTC")};
   // The metric rows stay one-to-one with the Summary card, in the same order: Charts and
   // Report are two readings of one server payload and must never disagree.
   $("#report-table-body").innerHTML=[
@@ -1624,7 +1784,7 @@ function revealCheckedBookingServices() {
 }
 function editService(id) {
   const service=state.services.find(item=>item.id===id);
-  const tierFields=service.pricingMode==="TIERED"?`<fieldset class="wide"><legend>Pricing matrix</legend><div class="pricing-scroll"><table class="pricing-matrix"><thead><tr><th scope="col">Class</th>${["1–20","21–40","41–60","61–80","81–100","100+"].map(label=>`<th scope="col">${label}</th>`).join("")}</tr></thead><tbody>${["SMOOTH_SINGLE","STANDARD","EXTRA_FLOOF"].map(pricingClass=>`<tr><th scope="row">${escape(pricingClass.replaceAll("_"," "))}</th>${[1,2,3,4,5,6].map(index=>{const price=service.priceTiers.find(item=>item.pricingClass===pricingClass&&item.weightTierCode===`TIER_${index}`);return `<td><label><span class="sr-only">${escape(pricingClass)} ${index} price</span><input name="tier:${pricingClass}:TIER_${index}" type="number" min="0" step=".01" value="${Number(price?.priceMinor??0)/100}"></label></td>`;}).join("")}</tr>`).join("")}</tbody></table></div></fieldset>`:"";
+  const tierFields=service.pricingMode==="TIERED"?`<fieldset class="wide"><legend>Pricing matrix</legend><div class="pricing-scroll"><table class="pricing-matrix"><thead><tr><th scope="col">Class</th>${weightTierList().map(tier=>`<th scope="col">${escape(tier.label)}</th>`).join("")}</tr></thead><tbody>${["SMOOTH_SINGLE","STANDARD","EXTRA_FLOOF"].map(pricingClass=>`<tr><th scope="row">${escape(pricingClass.replaceAll("_"," "))}</th>${weightTierList().map(tier=>{const price=service.priceTiers.find(item=>item.pricingClass===pricingClass&&item.weightTierCode===tier.code);return `<td><label><span class="sr-only">${escape(pricingClass)} ${escape(tier.label)} price</span><input name="tier:${pricingClass}:${tier.code}" type="number" min="0" step=".01" value="${Number(price?.priceMinor??0)/100}"></label></td>`;}).join("")}</tr>`).join("")}</tbody></table></div></fieldset>`:"";
   openModal("Edit service",field("name","Service name","text",`required value="${escape(service.name)}"`)+field("baseDurationMinutes","Duration (minutes)","number",`required min="1" value="${service.baseDurationMinutes}"`)+field("basePrice","Base/fixed price ($)","number",`required min="0" step=".01" value="${Number(service.basePriceMinor)/100}`)+field("description","Description","text",`value="${escape(service.description||"")}"`,true)+`<label><input name="active" type="checkbox" ${service.active?"checked":""}> Active</label>`+tierFields,async form=>{const values=Object.fromEntries(form);await api(`/api/services/${id}`,{method:"PUT",body:JSON.stringify({name:values.name,description:values.description||null,baseDurationMinutes:Number(values.baseDurationMinutes),basePriceMinor:Math.round(Number(values.basePrice)*100),category:service.category,pricingMode:service.pricingMode,rangeMaxMinor:service.rangeMaxMinor,priceConfirmationRequired:service.priceConfirmationRequired,active:form.has("active")})});const prices=[...form.entries()].filter(([name])=>name.startsWith("tier:")).map(([name,value])=>{const [,pricingClass,weightTierCode]=name.split(":");return {pricingClass,weightTierCode,priceMinor:Math.round(Number(value)*100)};});if(prices.length)await api(`/api/services/${id}/pricing`,{method:"PUT",body:JSON.stringify({prices})});});
 }
 const breedClasses=[["SMOOTH_SINGLE","Smooth Single"],["STANDARD","Standard"],["EXTRA_FLOOF","Extra Floof"]];
@@ -1891,7 +2051,7 @@ async function showCustomerHistory(id) {
     // This summary reads both, newest first, because it is a single "what has happened" list.
     const combined=[...(historyData.upcoming?.items||[]),...(historyData.history?.items||[])]
       .sort((left,right)=>new Date(right.startAt)-new Date(left.startAt));
-    const appointments=combined.map(item=>`<div><span>${new Intl.DateTimeFormat([],{timeZone:item.schedulingTimezone||schedulingZone()}).format(new Date(item.startAt))} / ${escape(petName({petName:item.petName}))}</span><strong>${escape(item.status.replace("_"," "))}</strong></div>`).join("")||"<p>No appointments yet.</p>";
+    const appointments=combined.map(item=>`<div><span>${escape(formatPrefDate(new Date(item.startAt),item.schedulingTimezone||schedulingZone()))} / ${escape(petName({petName:item.petName}))}</span><strong>${escape(item.status.replace("_"," "))}</strong></div>`).join("")||"<p>No appointments yet.</p>";
     const invoices=historyData.invoices.map(item=>`<div><span>Invoice ${escape(item.invoiceNumber)}</span><span><strong>${money(item.totalMinor)} / ${escape(invoiceStatusLabel(item.status))}</strong><button type="button" class="text-button history-receipt" data-invoice-id="${item.id}">Receipt</button></span></div>`).join("")||`<p>${allowed("payments.view")?"No invoices yet.":"Financial history requires payment access."}</p>`;
     const petDocuments=allowed("pets.care.view")?historyData.pets.map(pet=>`<div><span>${escape(petName(pet))}${pet.archivedAt?" (archived)":""}</span><button type="button" class="text-button history-pet-documents" data-pet-id="${pet.id}">Documents</button></div>`).join(""):"";
     openModal(`${clientName(historyData.customer)} history`,`<div class="wide history-list">${petDocuments?`<h4>Pet Care documents</h4>${petDocuments}`:""}<h4>Appointments</h4>${appointments}<h4>Transactions</h4>${invoices}</div>`,async()=>{});
@@ -1917,9 +2077,9 @@ async function showPetDocuments(petId,historicalOnly=false){
     const data=await api(`/api/pets/${petId}/documents`);
     const current=data.current;
     const activeRequest=null;
-    const previous=data.previous.map(item=>`<div><span>${escape(item.filename)}<small>${item.expiresOn?`Expires ${new Date(`${item.expiresOn}T00:00:00`).toLocaleDateString()}`:"Expiration date not recorded"}</small></span><button type="button" class="text-button download-pet-document" data-id="${item.id}">Download</button></div>`).join("");
+    const previous=data.previous.map(item=>`<div><span>${escape(item.filename)}<small>${item.expiresOn?`Expires ${formatPrefLocalDate(item.expiresOn)}`:"Expiration date not recorded"}</small></span><button type="button" class="text-button download-pet-document" data-id="${item.id}">Download</button></div>`).join("");
     const expired=current?.expiresOn&&new Date(`${current.expiresOn}T23:59:59`)<new Date();
-    const currentView=current?`<section class="wide document-current" data-testid="rabies-current"><p><strong>${escape(current.filename)}</strong></p><p>${current.expiresOn?`${expired?"Rabies vaccination expired — ":"Expires "}${new Date(`${current.expiresOn}T00:00:00`).toLocaleDateString()}`:"Expiration date not recorded"}</p><button type="button" class="text-button download-pet-document" data-id="${current.id}">Download</button></section>`:`<p class="wide empty">No rabies vaccination record uploaded</p>`;
+    const currentView=current?`<section class="wide document-current" data-testid="rabies-current"><p><strong>${escape(current.filename)}</strong></p><p>${current.expiresOn?`${expired?"Rabies vaccination expired — ":"Expires "}${formatPrefLocalDate(current.expiresOn)}`:"Expiration date not recorded"}</p><button type="button" class="text-button download-pet-document" data-id="${current.id}">Download</button></section>`:`<p class="wide empty">No rabies vaccination record uploaded</p>`;
     const activityView="";
     const upload=!activeRequest&&!historicalOnly&&allowed("pets.edit")&&allowed("pets.care.edit")?`<fieldset class="wide"><legend>${current?"Replace":"Upload"} Supporting Rabies Document</legend><label>PDF<input data-testid="field-rabiesPdf" name="rabiesPdf" type="file" accept="application/pdf" required></label><label>Document date<input name="documentDate" type="date"></label><p>Optional supporting evidence only. Uploading does not change rabies expiration or compliance.</p></fieldset>`:"";
     openModal("Rabies Vaccination Record",currentView+activityView+upload+(previous?`<details class="wide"><summary>Previous records</summary><div class="history-list" data-testid="previous-rabies-records">${previous}</div></details>`:""),async(form)=>{
@@ -1970,7 +2130,7 @@ function editPet(id) {
         ...breedPayload(form),
         dateOfBirth:form.get("dateOfBirth")||null,
         approximateAge:form.get("approximateAge")||null,
-        weightOunces:form.get("weightPounds")===""?null:Math.round(Number(form.get("weightPounds"))*16),
+        weightOunces:ouncesFromWeight(form.get("weightPounds")),
         sex:form.get("sex")||null,
         coatNotes:form.get("coatNotes")||null,
         groomingPreferences:form.get("groomingPreferences")||null,
@@ -1998,7 +2158,7 @@ function petProfileFields(pet){
     breedField(pet)+
     field("dateOfBirth","Date of birth","date",`value="${pet.dateOfBirth?String(pet.dateOfBirth).slice(0,10):""}"`)+
     field("approximateAge","Approximate age","text",`value="${escape(pet.approximateAge||"")}"`)+
-    field("weightPounds","Weight (lb)","number",`min="0.0625" step="0.0625" value="${pet.weightOunces===null||pet.weightOunces===undefined?"":Number(pet.weightOunces)/16}"`)+
+    field("weightPounds",weightFieldLabel(),"number",`${weightInputAttrs()} value="${weightInputValue(pet.weightOunces)}"`)+
     field("sex","Sex","text",`value="${escape(pet.sex||"")}"`)+
     field("coatNotes","Coat notes","text",`value="${escape(pet.coatNotes||"")}"`,true)+
     field("groomingPreferences","Grooming preferences","text",`value="${escape(pet.groomingPreferences||"")}"`,true)+
@@ -2008,7 +2168,7 @@ function petProfileFields(pet){
 function petCareFields(pet){
   const expiration=pet.vaccinationExpiresOn?String(pet.vaccinationExpiresOn).slice(0,10):null;
   const nextDate=pet.nextAppointmentLocalStart?String(pet.nextAppointmentLocalStart).slice(0,10):null;
-  const display=date=>new Date(`${date}T12:00:00Z`).toLocaleDateString("en-US");
+  const display=date=>formatPrefLocalDate(date);
   const warning=!expiration?"Rabies expiration date not provided."
     :expiration<businessDate()?`Rabies vaccination expired on ${display(expiration)}.`
     :nextDate&&expiration<nextDate?`Rabies expires ${display(expiration)} and will not be current for the appointment on ${display(nextDate)}.`
@@ -2056,6 +2216,72 @@ function field(name, label, type = "text", extra = "", wide = false) {
 // therefore resolves the pet type first and scopes every breed lookup to it, so it can never
 // offer a breed the server would then refuse.
 function petTypeNames(){return state.petTypes.length?state.petTypes.map(type=>type.name):PET_TYPES;}
+// --- Weights, in the unit the workspace reads ------------------------------
+//
+// WHY THE TIER CAPTIONS ARE NO LONGER WRITTEN HERE. The six price bands were defined in OUNCES
+// and chosen in pounds - 320, 640, 960, 1280 and 1600 oz are 20, 40, 60, 80 and 100 lb - and this
+// file used to restate their captions twice by hand, once in the pricing matrix and once in the
+// service editor, neither of them anywhere near the bounds they describe. `/api/me` now publishes
+// `weightTiers` derived from the same boundaries `resolveWeightTier` compares against, so a
+// caption and its band cannot drift apart because there is only one of them.
+//
+// WHY THE PET WEIGHTS MOVED WITH THEM. A workspace on kilograms that converted only the captions
+// would show a 19.1 kg dog in a column headed "21-40 lb", and the operator could not tell whether
+// the tier, the weight or the price was wrong. The domain module says so in as many words. So
+// every place this client prints a pet weight, and both places it reads one back off a form, go
+// through the same unit.
+//
+// `pets.weight_ounces` does not move. The unit is a PRESENTATION setting: it decides what an
+// operator reads, never what the database holds and never which tier a pet lands in. A workspace
+// can switch it twice a day and no price changes.
+const WEIGHT_OUNCES_PER={lb:16,kg:1000/28.349523125};
+// The pound bands as they have always read, so a client whose `/api/me` predates 0047 - or whose
+// session was restored from a cached payload - captions its pricing columns rather than blanking
+// six table headers.
+const WEIGHT_TIER_FALLBACK=[
+  {code:"TIER_1",label:"1–20 lb"},{code:"TIER_2",label:"21–40 lb"},{code:"TIER_3",label:"41–60 lb"},
+  {code:"TIER_4",label:"61–80 lb"},{code:"TIER_5",label:"81–100 lb"},{code:"TIER_6",label:"100+ lb"}
+];
+function workspaceWeightUnit(){
+  const unit=state.me?.weightUnit||state.me?.business?.weightUnit;
+  return unit==="kg"?"kg":"lb";
+}
+/** The served bands, matched on `code` and never on label text. */
+function weightTierList(){
+  const served=state.me?.weightTiers;
+  return Array.isArray(served)&&served.length?served:WEIGHT_TIER_FALLBACK;
+}
+function weightFromOunces(ounces){
+  if(ounces===null||ounces===undefined||ounces==="")return null;
+  const value=Number(ounces);
+  return Number.isFinite(value)?value/WEIGHT_OUNCES_PER[workspaceWeightUnit()]:null;
+}
+/** The inverse, for a number an operator typed. Whole ounces, because that is the column. */
+function ouncesFromWeight(value){
+  const entered=String(value??"").trim();
+  if(!entered)return null;
+  const number=Number(entered);
+  if(!Number.isFinite(number)||number<0)return null;
+  return Math.round(number*WEIGHT_OUNCES_PER[workspaceWeightUnit()]);
+}
+// Three decimals, then the trailing zeros dropped: enough that a kilogram value round-trips
+// through `ouncesFromWeight` to the same ounce, without printing 9.0718474 into a form field.
+function weightInputValue(ounces){
+  const value=weightFromOunces(ounces);
+  return value===null?"":String(Number(value.toFixed(3)));
+}
+/** "42 lb", "3.5 lb", "19.1 kg". A trailing `.0` is trimmed. */
+function formatPetWeight(ounces){
+  const value=weightFromOunces(ounces);
+  if(value===null)return null;
+  const text=value.toFixed(1);
+  return (text.includes(".")?text.replace(/\.?0+$/,""):text)+" "+workspaceWeightUnit();
+}
+function weightFieldLabel(){return "Weight ("+workspaceWeightUnit()+")";}
+// One ounce, expressed in the display unit, is the finest the column can hold.
+function weightInputAttrs(){
+  return workspaceWeightUnit()==="kg"?`min="0.03" step="0.01"`:`min="0.0625" step="0.0625"`;
+}
 function petTypeIdFor(species){
   const wanted=normalizeBreedFilter(species??"");
   if(!wanted)return null;
@@ -2259,6 +2485,9 @@ function openModal(title, fields, submit, options={}) {
       if(error.retryConflictOverride) renderConflictOverride(error);
       else {
         $("#modal-error").textContent = error.message;
+        // The message is the server's, verbatim. The re-read behind it is what stops the calendar
+        // still offering Move on every other card once this dialog closes.
+        if(appointmentMoveRefused(error))await reconcileAppointmentLock();
         if(error.reconcileLifecycle||error.reconcileFinancial)await refresh().catch(failure=>toast(failure.message));
       }
     }
@@ -2292,7 +2521,7 @@ function renderConflictOverride(error,{container=$("#modal-error"),dialog=$("#mo
   container.textContent="";
   const conflicts=error.data.conflicts||[];
   const proposed=error.proposedStart;
-  const locationConflictTimes=conflicts.map(item=>`${new Intl.DateTimeFormat([],{timeZone:schedulingZone(),dateStyle:"short",timeStyle:"short"}).format(new Date(item.startsAt))} to ${new Intl.DateTimeFormat([],{timeZone:schedulingZone(),timeStyle:"short"}).format(new Date(item.endsAt))}`).join(", ");
+  const locationConflictTimes=conflicts.map(item=>`${formatPrefDateAndTime(new Date(item.startsAt))} to ${formatPrefTime(new Date(item.endsAt))}`).join(", ");
   const message=document.createElement("span");
   message.textContent=`${error.proposedEmployee} already has an overlapping appointment. ${error.operationLabel} at ${proposed} will overlap ${locationConflictTimes}.`;
   const button=document.createElement("button");
@@ -2465,7 +2694,7 @@ function bookingDefaultsNote() {
   if(!defaults)return "Loading this pet's usual services…";
   if(defaults.serviceSource==="last_paid_visit"){
     const when=defaults.lastPaidVisitAt
-      ? ` on ${new Intl.DateTimeFormat([],{timeZone:schedulingZone(),dateStyle:"medium"}).format(new Date(defaults.lastPaidVisitAt))}`
+      ? ` on ${formatPrefDate(new Date(defaults.lastPaidVisitAt))}`
       : "";
     return `Services carried over from this pet's last paid visit${when}.`;
   }
@@ -2703,10 +2932,10 @@ const actions = {
     +`<p class="wide fine">Enough to find them again is enough to save: a name, a phone number, or an email. Take what an enquiry gives you and fill the rest in later.</p>`,
     (form) => api("/api/customers",{method:"POST",body:JSON.stringify(Object.fromEntries(form))})),
   "new-pet": () => { openModal("New pet",
-    select("customerId","Customer",state.customers.map(c=>[c.id,`${clientName(c)}`]),true)+field("name","Pet name","text","")+petTypeField()+breedField()+field("weightPounds","Weight (lb)","number",'min="0.0625" step="0.0625"')+field("groomingPreferences","Grooming preferences","text","",true)+(allowed("pets.care.edit")?field("behaviorNotes","Behavior notes","text","",true)+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true):""),
+    select("customerId","Customer",state.customers.map(c=>[c.id,`${clientName(c)}`]),true)+field("name","Pet name","text","")+petTypeField()+breedField()+field("weightPounds",weightFieldLabel(),"number",weightInputAttrs())+field("groomingPreferences","Grooming preferences","text","",true)+(allowed("pets.care.edit")?field("behaviorNotes","Behavior notes","text","",true)+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true):""),
     async (form) => {
       const values=Object.fromEntries(form);
-      values.weightOunces=values.weightPounds===""?null:Math.round(Number(values.weightPounds)*16);
+      values.weightOunces=ouncesFromWeight(values.weightPounds);
       delete values.weightPounds;
       try{return await api("/api/pets",{method:"POST",body:JSON.stringify({...values,...breedPayload(form)})});}
       catch(error){markBreedRefusal(error);throw error;}
@@ -2743,25 +2972,16 @@ const actions = {
       return {afterClose:null,message:copied?"Secure invitation link copied":"Invitation queued"};
     });
   },
-  "business-settings": () => openModal("Business settings",
-    field("name","Salon name","text",`required value="${escape(state.me.business.name)}"`,true)+
-    field("timezone","IANA timezone","text",`required value="${escape(state.me.business.timezone)}"`)+
-    field("currency","Currency","text",`required maxlength="3" value="${escape(state.me.business.currency)}"`)+
-    field("taxRate","Tax rate (%)","number",`readonly aria-readonly="true" min="0" max="100" step=".01" value="${Number(state.me.business.taxRateBasisPoints)/100}"`)+
-    field("reminderHours","Reminder lead (hours)","number",`required min="0" value="${Number(state.me.business.reminderLeadMinutes)/60}"`)+`<p class="wide fine">The rate in force is chosen in Settings &rarr; Tax &amp; payments. It is shown here because it is what new invoices charge.</p>`,
-    async(form)=>{
-      const values=Object.fromEntries(form);
-      if(values.timezone!==state.me.business.timezone&&state.appointments.some(item=>new Date(item.startAt)>new Date())&&!confirm("Changing this location's timezone affects how new and rescheduled appointment times are interpreted. Existing appointment instants will not be moved."))return;
-      await api("/api/business/settings",{method:"PUT",body:JSON.stringify({
-        name:values.name,timezone:values.timezone,currency:values.currency,
-        taxRateBasisPoints:Math.round(Number(values.taxRate)*100),
-        reminderLeadMinutes:Math.round(Number(values.reminderHours)*60),locationVersion:state.me.business.locationVersion
-      })});
-      state.me=await api("/api/me");renderAccountIdentity();
-    }),
-  "business-hours": () => openModal("Business hours",
-    `<fieldset class="wide hours-grid"><legend>Weekly schedule</legend>${["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"].map((day,index)=>`<div><label><input type="checkbox" name="day${index}" ${index>0&&index<6?"checked":""}> ${day}</label><input type="time" name="start${index}" value="09:00"><input type="time" name="end${index}" value="17:00"></div>`).join("")}</fieldset>`,
-    form=>api("/api/business/working-hours",{method:"PUT",body:JSON.stringify({hours:[0,1,2,3,4,5,6].filter(index=>form.get(`day${index}`)).map(index=>({weekday:index,startTime:form.get(`start${index}`),endTime:form.get(`end${index}`)}))})})),
+  // Settings -> Business is the workspace both retired dialogs became. This entry stays only as
+  // the Salon view's route into it: data-action="business-hours" on two controls there opens
+  // Settings on the hours tab rather than a dialog. The dialogs themselves are gone - one wrote a
+  // hardcoded Mon-Fri 09:00-17:00 over the location's real hours, and the other sent no phone or
+  // email, which the merge handler now preserves but the old whole-object write cleared.
+  "business-hours": () => runDetached(async () => {
+    closeSetupMenus();
+    await showView("admin-settings");
+    renderSettingsCategory("business",{history:"push",tab:"hours"});
+  }),
   // Every entry point into booking — the slot menu, the month view's add button, the New menu,
   // and "book again" from a client — funnels through the same workspace. The calendar's preset
   // fields are read once and cleared, so a preset left over from one entry point cannot leak
@@ -5763,7 +5983,7 @@ function rolePersonRow(member){
 function roleInvitationRow(invitation){
   const email=String(invitation.email||"");
   const role=invitation.role?.name||invitation.roleName||"No role";
-  const sent=invitation.createdAt?new Date(invitation.createdAt).toLocaleDateString():"";
+  const sent=invitation.createdAt?formatPrefDate(new Date(invitation.createdAt)):"";
   return `<tr data-testid="invitation-row" data-invitation-row="${escapeAttr(invitation.id)}">`
     +`<td><span class="roles-name"><strong>${escape(email)}</strong>${sent?`<small>Invited ${escape(sent)}</small>`:""}</span></td>`
     +`<td>${escape(role)}</td>`
@@ -5785,7 +6005,7 @@ function rolesPeopleMarkup(){
 function rolesAccessRequestsMarkup(){
   const requests=(state.accessRequests||[]).filter(request=>request.status==="pending");
   const rows=requests.map(request=>`<div data-testid="access-request-row" data-access-request="${escapeAttr(request.id)}">`
-    +`<span><strong>${escape(request.requesterName)}</strong><small>${escape(request.requesterEmail)} · ${escape(new Date(request.createdAt).toLocaleDateString())}</small></span>`
+    +`<span><strong>${escape(request.requesterName)}</strong><small>${escape(request.requesterEmail)} · ${escape(formatPrefDate(new Date(request.createdAt)))}</small></span>`
     +`<span><button type="button" class="text-button" data-access-approve="${escapeAttr(request.id)}" data-testid="access-request-approve">Approve</button> `
     +`<button type="button" class="text-button danger" data-access-reject="${escapeAttr(request.id)}" data-testid="access-request-reject">Reject</button></span></div>`).join("");
   return `<h4>Pending access requests</h4><div class="simple-list" data-testid="roles-access-requests">${rows||`<p class="empty">No pending requests.</p>`}</div>`;
@@ -6586,7 +6806,1043 @@ function bindRoles(root){
   root.querySelectorAll(".roles-menu .row-menu-item").forEach(button=>button.addEventListener("click",closeRolesMenus));
 }
 
-function renderSettingsCategory(category=settingsPathCategory(),{history="replace"}={}){const definition=settingsCategories.find(([id])=>id===category)||settingsCategories[0],[id,title]=definition,nav=$("#settings-navigation"),content=$("#settings-content");if(!nav||!content)return;nav.innerHTML=settingsCategories.map(([key,label])=>`<button type="button" data-settings-category="${key}" class="${key===id?"active":""}" ${key===id?'aria-current="page"':""}>${escape(label)}</button>`).join("");let html="";if(id==="account")html=settingsLink("Account","Personal identity and password security remain in your canonical account workspace.","Manage profile & security","profile-account");else if(id==="staff")html=`<div id="staff-root" class="staff-root"></div>`;else if(id==="business")html=`<article class="settings-panel"><h3>Business</h3><p>Manage the workspace name and authoritative timezone, currency, tax rate, and reminder lead time.</p><button type="button" class="primary compact settings-business-action">Edit business settings</button></article>`;else if(id==="availability")html=`<div id="availability-root" class="availability-root"></div>`;else if(id==="permissions")html=allowed("team.manage")?`<div id="roles-root" class="roles-root"></div>`:settingsPlaceholder(id,title);else if(id==="services")html=settingsLink("Services","Service names, pricing, durations, and availability have one canonical workspace.","Open Services","services");else if(id==="pet-options")html=`<div id="pet-options-workspace" class="pet-options-workspace"></div>`;else if(id==="tax-payments")html=`<div id="taxpay-root" class="taxpay-root"></div>`;else if(id==="automated-messages")html=`<article class="settings-panel"><h3>Automated messages</h3><p>Pawsh’s durable reminder/outbox flow uses the configured reminder lead time. Template and channel management are deferred.</p><button type="button" class="primary compact settings-business-action">Manage reminder timing</button></article>`;else html=settingsPlaceholder(id,title);content.innerHTML=`<div class="settings-content-head"><p class="eyebrow">Settings</p><h2>${escape(title)}</h2></div>${html}`;nav.querySelectorAll("[data-settings-category]").forEach(button=>button.addEventListener("click",()=>renderSettingsCategory(button.dataset.settingsCategory,{history:"push"})));content.querySelectorAll(".settings-canonical-link").forEach(button=>button.addEventListener("click",()=>showView(button.dataset.target)));content.querySelectorAll(".settings-business-action").forEach(button=>button.addEventListener("click",actions["business-settings"]));if(id==="permissions"){renderRoles();ensureRolesData();}if(id==="staff")renderStaff();if(id==="pet-options")renderPetOptions();if(id==="availability"){renderAvailability();ensureAvailabilityData();}if(id==="tax-payments"){renderTaxPayments();ensureTaxPaymentsData();}if(history!=="none")globalThis.history[history==="push"?"pushState":"replaceState"]({view:"admin-settings",settingsCategory:id},"",`/settings/${id}`);content.focus({preventScroll:true});}
+// ---------------------------------------------------------------------------
+// Settings → Business
+//
+// Five tabs over one panel, on the Tax & payments pattern: `.settings-tabs`, a single
+// `#business-panel` tabpanel, module state, `render*` + `ensure*Data`. Two of the tabs are
+// working surfaces and three state their own absence in sentences.
+//
+// Both working surfaces exist to close the same class of bug, which is why nothing here renders
+// a value it has not read and nothing here sends a field the operator did not touch:
+//
+//   - The retired hours dialog drew a hardcoded Mon-Fri 09:00-17:00 without ever calling
+//     GET /api/business/working-hours, and the PUT is a delete-then-insert over the whole
+//     location. Opening it and pressing Save replaced a real week with a fabricated one. So the
+//     grid here renders NOTHING until the read resolves, and says so while it waits.
+//   - `businessSettingsSchema` is a MERGE, not a whole-object write: an omitted field keeps the
+//     stored value and an explicit null clears it. The payload below therefore carries `phone`,
+//     `email`, `address` and `currency` only when the operator actually moved them. `currency`
+//     matters most - a workspace holding a code from before the supported list existed can still
+//     rename itself, because an untouched picker sends nothing to be held to that list.
+// ---------------------------------------------------------------------------
+const BUSINESS_TABS=[
+  ["info","Info"],["number","Pawsh Number"],["domain","Domain"],
+  ["hours","Business Hours"],["billing","Business Billing"]
+];
+// Sunday first, matching `business_hours.weekday` and the calendar's `dateAt(day).getUTCDay()`.
+const BUSINESS_WEEKDAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const businessState={
+  tab:"info",draft:null,fieldErrors:{},submitted:false,saving:false,status:"",error:null,stale:false,
+  // The two picker filters are view state, not draft state: narrowing a list of 132 codes is not
+  // an unsaved change and must never make the Save button light up.
+  filters:{currency:"",timezone:""},
+  hours:null,hoursDraft:null,hoursBaseline:null,hoursError:null,hoursLoading:false,
+  hoursSubmitted:false,hoursSaving:false,hoursStatus:"",hoursSaveError:""
+};
+
+function businessRecord(){return state.me?.business||{};}
+
+// The six enum vocabularies, in the order Amanda's reference lists them. The values are the
+// server's tuples verbatim; the labels are the operator's words. `hourFormat` is the STRING "12" /
+// "24", not a number - it is stored as text and the schema compares it as text.
+const BUSINESS_TYPES=[["mobile","Mobile"],["salon","Salon"],["hybrid","Hybrid (mobile + salon)"]];
+const BUSINESS_DATE_FORMATS=[["MM/DD/YYYY","MM/DD/YYYY"],["DD/MM/YYYY","DD/MM/YYYY"]];
+const BUSINESS_HOUR_FORMATS=[["12","12 Hours"],["24","24 Hours"]];
+const BUSINESS_WEIGHT_UNITS=[["lb","Lb"],["kg","Kg"]];
+const BUSINESS_APPOINTMENT_LOCKS=[["enabled","Enable Lock"],["disabled","Disable Lock"]];
+const BUSINESS_COUPON_STACKING=[
+  ["single","One coupon/discount per appt."],
+  ["amount_first","Apply Amount First"],
+  ["percentage_first","Apply Percentage First"]
+];
+// `null` is the value **All**, not "unset", so the select carries `All` as a literal. The schema
+// takes it case-insensitively and returns it as null, which is why the option's value can be
+// posted straight through without a second representation to keep in step.
+const BUSINESS_UPCOMING_COUNTS=[["All","All"],...Array.from({length:20},(unused,index)=>
+  [String(index+1),`${index+1} appointment${index?"s":""}`])];
+
+const BUSINESS_ENUM_FIELDS=[
+  ["businessType",BUSINESS_TYPES],["dateFormat",BUSINESS_DATE_FORMATS],
+  ["hourFormat",BUSINESS_HOUR_FORMATS],["weightUnit",BUSINESS_WEIGHT_UNITS],
+  ["appointmentLock",BUSINESS_APPOINTMENT_LOCKS],["couponStacking",BUSINESS_COUPON_STACKING]
+];
+// Every nullable free-text column, in one list, because the merge rule treats them identically:
+// omitted preserves, blank clears, a value stores.
+const BUSINESS_TEXT_FIELDS=[
+  "phone","email","address","website","socialFacebook","socialGoogle","socialYelp"
+];
+const BUSINESS_URL_FIELDS=[
+  ["website","Website"],["socialFacebook","Facebook"],["socialGoogle","Google"],["socialYelp","Yelp"]
+];
+
+/** The saved record as the form's own strings, so "dirty" is one comparison rather than twenty. */
+function businessStoredValues(){
+  const record=businessRecord();
+  const text=key=>String(record[key]??"");
+  const values={
+    name:text("name"),timezone:text("timezone"),
+    currency:text("currency").toUpperCase(),
+    reminderHours:String(Number(record.reminderLeadMinutes??0)/60),
+    // `String(null)` is the literal "null", so All is mapped explicitly rather than coerced.
+    upcomingAppointmentCount:record.upcomingAppointmentCount===null||record.upcomingAppointmentCount===undefined
+      ?"All":String(record.upcomingAppointmentCount),
+    defaultServiceFrequencyWeeks:record.defaultServiceFrequencyWeeks===null||record.defaultServiceFrequencyWeeks===undefined
+      ?"":String(record.defaultServiceFrequencyWeeks)
+  };
+  for(const key of BUSINESS_TEXT_FIELDS)values[key]=text(key);
+  // The six columns are `not null` behind check constraints, so a stored value is always in its
+  // tuple. A row that somehow sat outside one falls back to the tuple's first entry rather than
+  // rendering a select with nothing selected and silently posting whatever the browser picked.
+  for(const [key,options] of BUSINESS_ENUM_FIELDS){
+    const stored=text(key);
+    values[key]=options.some(([value])=>value===stored)?stored:options[0][0];
+  }
+  return values;
+}
+function businessDraft(){
+  if(!businessState.draft)businessState.draft=businessStoredValues();
+  return businessState.draft;
+}
+function businessInfoDirty(){
+  const draft=businessDraft(),stored=businessStoredValues();
+  return Object.keys(stored).some(key=>draft[key]!==stored[key]);
+}
+// The lead time is a whole-hours control and `reminder_lead_minutes` is minutes. A stored value
+// that is not a whole number of hours cannot be expressed here, so an UNTOUCHED field round-trips
+// the stored minutes rather than being validated against a granularity it never claimed - which
+// is also what stops such a workspace from being unable to save its own name.
+function businessReminderTouched(){return businessDraft().reminderHours!==businessStoredValues().reminderHours;}
+
+/**
+ * What the currency picker may offer, answered by the server.
+ *
+ * `/api/me` reports `supportedCurrencies` - 132 codes, already sorted - from the same domain tuple
+ * `businessSettingsSchema` validates against, so the picker and the server derive from one
+ * declaration and no list is restated here. The stored value is appended when the list does not
+ * carry it: a workspace on a legacy code must be able to see what it is set to, and the payload
+ * simply omits an untouched picker.
+ */
+function businessCurrencyOptions(){
+  const supported=Array.isArray(state.me?.supportedCurrencies)
+    ?state.me.supportedCurrencies.map(code=>String(code).toUpperCase()):[];
+  const stored=businessStoredValues().currency;
+  const list=supported.length?[...supported]:(stored?[stored]:["USD"]);
+  if(stored&&!list.includes(stored))list.push(stored);
+  return list;
+}
+function businessCurrencySample(code){
+  try{
+    return `Prices read ${new Intl.NumberFormat("en-US",{style:"currency",currency:code}).format(1234.56)}.`;
+  }catch{return `Prices read 1,234.56 ${code}.`;}
+}
+function businessTimeZoneList(){
+  try{return typeof Intl.supportedValuesOf==="function"?Intl.supportedValuesOf("timeZone"):[];}
+  catch{return [];}
+}
+function businessTimeZoneOptions(value){
+  const zones=businessTimeZoneList();
+  if(!zones.length)return null;
+  // A zone this runtime does not list is kept as an option rather than silently rewritten by the
+  // next save - the same rule the pet species select follows.
+  return !value||zones.includes(value)?zones:[...zones,value].sort();
+}
+// An identifier nobody can verify is worth nothing, so the hint says what time it is there now -
+// on the workspace's own clock, so a salon on 24 Hours is not told "3:42 PM".
+function businessTimeZoneNow(zone){
+  if(!zone)return "Choose the timezone this salon's appointment times are read in.";
+  try{return `It is ${formatPrefTime(new Date(),zone)} in ${zone} right now.`;}
+  catch{return `Pawsh cannot read the current time in ${zone}. It is saved exactly as written.`;}
+}
+
+/**
+ * A FILTER OVER A NATIVE SELECT, not a custom combobox.
+ *
+ * 132 currencies and roughly 420 zones both need narrowing, and Amanda's reference shows a filter
+ * affordance on each. Keeping the `<select>` keeps its keyboard behaviour, its mobile wheel picker,
+ * its form value and its accessible name for free; a `role="listbox"` with `aria-activedescendant`
+ * would have to reimplement all four to arrive back where it started, and would be the second
+ * combobox idiom in a codebase that already has one.
+ *
+ * The count line is `role="status"` so narrowing 132 codes to 3 is audible, not only visible.
+ */
+const BUSINESS_PICKERS={
+  currency:{plural:"currencies"},
+  timezone:{plural:"timezones",grouped:true}
+};
+function businessPickerSource(key){
+  return key==="currency"?businessCurrencyOptions():(businessTimeZoneOptions(businessDraft().timezone)||[]);
+}
+function businessPickerMatches(key,query){
+  const all=businessPickerSource(key),needle=String(query||"").trim().toLowerCase();
+  if(!needle)return {options:all,total:all.length,filtered:false};
+  const selected=businessDraft()[key];
+  const matched=all.filter(value=>value.toLowerCase().includes(needle));
+  // The selected value never leaves the list. A filter that hid it would leave the select
+  // reporting whichever option the browser fell back to, and the next save would store that.
+  if(selected&&!matched.includes(selected))matched.unshift(selected);
+  return {options:matched,total:all.length,filtered:true};
+}
+function businessPickerOptionsMarkup(key,options,selected){
+  const render=value=>`<option value="${escapeAttr(value)}"${value===selected?" selected":""}>${escape(value)}</option>`;
+  if(!BUSINESS_PICKERS[key].grouped)return options.map(render).join("");
+  const groups=new Map();
+  for(const value of options){
+    const region=value.includes("/")?value.slice(0,value.indexOf("/")):"Other";
+    if(!groups.has(region))groups.set(region,[]);
+    groups.get(region).push(value);
+  }
+  return [...groups].map(([region,items])=>`<optgroup label="${escapeAttr(region)}">`
+    +items.map(render).join("")+`</optgroup>`).join("");
+}
+function businessPickerCountText(key,result){
+  const {plural}=BUSINESS_PICKERS[key];
+  return result.filtered
+    ?`${result.options.length} of ${result.total} ${plural} shown.`
+    :`${result.total} ${plural}.`;
+}
+function businessPickerMarkup(key,testId){
+  const draft=businessDraft(),config=BUSINESS_PICKERS[key];
+  const query=businessState.filters[key]||"";
+  const result=businessPickerMatches(key,query);
+  return `<span class="business-picker" data-business-picker="${key}">`
+    +`<input type="search" class="business-picker-filter" data-business-filter="${key}"`
+    +` data-testid="${testId}-filter" autocomplete="off" spellcheck="false"`
+    +` placeholder="Filter ${escapeAttr(config.plural)}" aria-label="Filter ${escapeAttr(config.plural)}"`
+    +` aria-controls="business-${key}-select" value="${escapeAttr(query)}">`
+    +`<select id="business-${key}-select" name="${key}" data-business-field="${key}"`
+    +` data-testid="${testId}"${businessInvalidAttrs(key)}>`
+    +businessPickerOptionsMarkup(key,result.options,draft[key])
+    +`</select>`
+    +`<span class="field-hint business-picker-count" role="status" data-testid="${testId}-count">`
+    +`${escape(businessPickerCountText(key,result))}</span>`
+    +`</span>`;
+}
+
+function businessTabsMarkup(){
+  return `<div class="settings-tabs" role="tablist" aria-label="Business" data-testid="business-tabs">`
+    +BUSINESS_TABS.map(([id,label])=>{
+      const active=businessState.tab===id;
+      return `<button type="button" role="tab" id="business-tab-${id}" class="settings-tab${active?" active":""}"`
+        +` data-business-tab="${id}" data-testid="business-tab-${id}" aria-selected="${active}"`
+        +` aria-controls="business-panel" tabindex="${active?0:-1}">${escape(label)}</button>`;
+    }).join("")
+    +`</div>`;
+}
+function businessPanelMarkup(body,{focusable=false}={}){
+  return `<div id="business-panel" role="tabpanel" class="business-panel"`
+    +` aria-labelledby="business-tab-${businessState.tab}" data-testid="business-panel"`
+    +`${focusable?` tabindex="0"`:""}>${body}</div>`;
+}
+
+// --- The three unavailable tabs ------------------------------------------
+// Static prose, and deliberately nothing else. A disabled input, a greyed select, an empty table
+// or a skeleton would each assert the capability exists and is merely pending. The eyebrow is
+// `Not available` rather than `Coming soon` for the same reason - these are standing deferrals,
+// not a delivery date Pawsh is withholding.
+const BUSINESS_UNAVAILABLE={
+  number:{
+    title:"Pawsh Number",
+    body:[
+      "Pawsh does not provide phone numbers. There is no telephony behind it — no number to rent, no calls to route, and no inbox for two-way SMS — so there is nothing here to claim or configure.",
+      "The number clients call is your own line, recorded on Info so staff can find it. Nothing a client sends to it by text reaches Pawsh. The one message Pawsh sends on its own is the appointment reminder, and its timing is set by the reminder lead time on Info."
+    ],
+    pointer:["automated-messages","Open Automated messages"]
+  },
+  domain:{
+    title:"Domain",
+    body:[
+      "Pawsh has no public client surface, so there is no address to point a domain at. Online booking, intake forms and agreement signing are all deferred, which means there is no page a client could open — a custom domain here would resolve to nothing.",
+      "Every appointment is booked by the salon. Pawsh is reached at the address your staff sign in on, and that address is not configurable per salon."
+    ],
+    pointer:null
+  },
+  billing:{
+    title:"Business Billing",
+    body:[
+      "Pawsh does not charge for itself from inside the product. There is no card on file, no plan and no invoice history here, because Pawsh stores no card-not-present payment credentials of its own — recurring billing against a stored card is deliberately not something it does. What this workspace is charged is arranged directly, outside Pawsh.",
+      "Taking payment from clients is a different thing and is real: payment methods, tax rates and card processors are configured under Tax & payments."
+    ],
+    pointer:["tax-payments","Open Tax &amp; payments"]
+  }
+};
+function businessUnavailableMarkup(tab){
+  const entry=BUSINESS_UNAVAILABLE[tab];
+  return `<article class="settings-panel settings-placeholder business-unavailable" data-testid="business-unavailable">`
+    +`<p class="eyebrow">Not available</p><h3>${escape(entry.title)}</h3>`
+    +entry.body.map(paragraph=>`<p>${escape(paragraph)}</p>`).join("")
+    +(entry.pointer?`<p class="business-unavailable-elsewhere">`
+      +`<button type="button" class="text-button" data-settings-goto="${entry.pointer[0]}">${entry.pointer[1]}</button></p>`:"")
+    +`</article>`;
+}
+
+// --- Info ----------------------------------------------------------------
+function businessFieldErrorMarkup(name){
+  const message=businessState.fieldErrors[name];
+  return `<p class="error business-field-error" id="business-error-${name}" data-testid="business-field-error-${name}" role="alert">${message?escape(message):""}</p>`;
+}
+function businessInvalidAttrs(name){
+  return businessState.fieldErrors[name]?` aria-invalid="true" aria-describedby="business-error-${name}"`:"";
+}
+// Mark the exception, not the rule: the two required fields carry `required` and no adornment, and
+// every optional field carries the visible chip. This is the Staff form's convention.
+const BUSINESS_OPTIONAL=`<span class="staff-optional">Optional</span>`;
+
+/**
+ * A settings row whose behaviour Pawsh has not built.
+ *
+ * The voice is the three unavailable tabs': what Pawsh does not have, stated flatly, then what the
+ * control does anyway. No date, no "coming soon", no apology. A control that stores a preference
+ * for a capability that does not exist is defensible; one that lets the operator believe the
+ * capability exists is not, and the difference is entirely in this sentence.
+ */
+function businessPendingNote(testId,text){
+  return `<span class="field-hint business-pending-note" data-testid="${testId}">${escape(text)}</span>`;
+}
+/** One `<select>` over a fixed vocabulary, with the form's one hint placement. */
+function businessSelectField(key,label,options,{testId,hint="",note="",required=false}={}){
+  const draft=businessDraft();
+  return `<label>${escape(label)}`
+    +`<select name="${key}" data-business-field="${key}" data-testid="${testId}"`
+    +`${required?" required":""}${businessInvalidAttrs(key)}>`
+    +options.map(([value,text])=>`<option value="${escapeAttr(value)}"${draft[key]===value?" selected":""}>${escape(text)}</option>`).join("")
+    +`</select>`
+    +(hint?`<span class="field-hint">${escape(hint)}</span>`:"")
+    +note
+    +businessFieldErrorMarkup(key)
+    +`</label>`;
+}
+/** One free-text control. `optional` renders the chip; `hint` is the sentence beneath it. */
+function businessTextField(key,label,{type="text",testId,hint="",maxlength=255,optional=true,extra=""}={}){
+  const draft=businessDraft();
+  return `<label>${escape(label)}${optional?` ${BUSINESS_OPTIONAL}`:""}`
+    +`<input type="${type}" name="${key}" data-business-field="${key}" data-testid="${testId}"`
+    +` maxlength="${maxlength}" autocomplete="off"${extra} value="${escapeAttr(draft[key])}"${businessInvalidAttrs(key)}>`
+    +(hint?`<span class="field-hint">${escape(hint)}</span>`:"")
+    +businessFieldErrorMarkup(key)
+    +`</label>`;
+}
+
+function businessInfoStatusText(){
+  if(businessState.saving)return "Saving…";
+  // Field errors carry an invalid submit, so the foot stays quiet: one message per problem.
+  if(Object.keys(businessState.fieldErrors).length)return "";
+  if(businessInfoDirty())return "Unsaved changes.";
+  return businessState.status;
+}
+function businessInfoMarkup(){
+  const draft=businessDraft();
+  const zoneOptions=businessTimeZoneOptions(draft.timezone);
+  const timezoneControl=zoneOptions
+    ?businessPickerMarkup("timezone","business-timezone")
+    // A picker that cannot be populated is worse than the field it replaced, so the free-text
+    // input stays as the fallback rather than shipping an empty select - and with no filter over
+    // it, because there is nothing to filter.
+    :`<input type="text" name="timezone" data-business-field="timezone" data-testid="business-timezone" maxlength="80" autocomplete="off" value="${escapeAttr(draft.timezone)}"${businessInvalidAttrs("timezone")}>`;
+  const foot=`<div class="business-form-foot">`
+    +`<p class="business-form-status" role="status" data-testid="business-status">${escape(businessInfoStatusText())}</p>`
+    +`<p class="error" data-testid="business-error">${businessState.error?escape(businessState.error):""}</p>`
+    +(businessState.stale?`<button type="button" class="secondary compact" data-business-reload data-testid="business-reload">Reload saved values</button>`:"")
+    +`<button type="submit" class="primary compact" data-testid="business-save"${businessInfoDirty()&&!businessState.saving?"":" disabled"}>${businessState.saving?"Saving…":"Save changes"}</button>`
+    +`</div>`;
+  return `<form class="business-form" data-business-form${businessState.saving?` aria-busy="true"`:""} novalidate>`
+    +`<section class="settings-panel">`
+      +`<h3>Business info</h3>`
+      +`<p class="panel-note">What this salon is called, how the salon itself is reached, and how it operates. None of it is shown to clients — Pawsh has no client-facing surface.</p>`
+      +`<div class="business-field-grid">`
+        +`<label>Salon name`
+          +`<input type="text" name="name" data-business-field="name" data-testid="business-name" required minlength="2" maxlength="120" autocomplete="off" value="${escapeAttr(draft.name)}"${businessInvalidAttrs("name")}>`
+          +`<span class="field-hint">Appears in the header, on invoices and on receipts.</span>`
+          +businessFieldErrorMarkup("name")
+        +`</label>`
+        +businessTextField("phone","Phone",{type:"tel",testId:"business-phone",maxlength:40,
+          extra:` inputmode="tel"`,
+          hint:"Kept so staff can reach the salon. Pawsh never calls or texts it."})
+        +businessTextField("website","Website",{type:"url",testId:"business-website",maxlength:500,
+          extra:` inputmode="url"`,
+          hint:"A bare address is stored with https:// in front of it. Web links only."})
+        +businessTextField("email","Email",{type:"email",testId:"business-email",maxlength:320,
+          hint:"Where salon correspondence goes. Not a login — sign-in emails are on each person's account."})
+        // A textarea rather than an input: 500 characters scroll out of sight in a single line,
+        // and an operator cannot proof-read what they cannot see.
+        +`<label class="business-field-wide">Address ${BUSINESS_OPTIONAL}`
+          +`<textarea name="address" rows="2" data-business-field="address" data-testid="business-address" maxlength="500"${businessInvalidAttrs("address")}>${escape(draft.address)}</textarea>`
+          +`<span class="field-hint">One free-text line, written however this salon writes it. Pawsh does not parse or geocode it.</span>`
+          +businessFieldErrorMarkup("address")
+        +`</label>`
+        // Required and non-emptyable: the column is `not null`, so there is no state in which the
+        // operator is choosing "none", and a blank option would offer one.
+        +businessSelectField("businessType","Business type",BUSINESS_TYPES,{
+          testId:"business-type",required:true,
+          hint:"Whether this salon travels to the pet, works from a fixed address, or does both."})
+      +`</div>`
+    +`</section>`
+    +`<section class="settings-panel">`
+      +`<h3>Preferences</h3>`
+      +`<p class="panel-note">How Pawsh reads times, money and weights for this location. Every one of these changes what is on screen, not what is stored.</p>`
+      +`<div class="business-field-grid">`
+        +`<label>Currency${businessPickerMarkup("currency","business-currency")}`
+          +`<span class="field-hint" data-testid="business-currency-sample">${escape(businessCurrencySample(draft.currency))}</span>`
+          +businessFieldErrorMarkup("currency")
+        +`</label>`
+        +businessSelectField("dateFormat","Date format",BUSINESS_DATE_FORMATS,{
+          testId:"business-date-format",
+          hint:"The order every date is written in, on screen and in the mail Pawsh sends."})
+        +businessSelectField("hourFormat","Hour format",BUSINESS_HOUR_FORMATS,{
+          testId:"business-hour-format",
+          hint:"Whether times read 3:30 PM or 15:30."})
+        +businessSelectField("weightUnit","Weight unit",BUSINESS_WEIGHT_UNITS,{
+          testId:"business-weight-unit",
+          hint:"Pet weights and the pricing tier captions both move to this unit. No price and no tier changes."})
+        // A real setting with real enforcement, so it carries an ordinary hint rather than the
+        // caveat treatment the two inert preferences below and above it use.
+        +businessSelectField("appointmentLock","Lock date/time for appointments",BUSINESS_APPOINTMENT_LOCKS,{
+          testId:"business-appointment-lock",
+          hint:"Enable Lock stops appointments being moved: nobody can change when one starts or who is assigned to it, and drag-to-reschedule leaves the calendar. Everything else stays editable, new appointments can still be booked, and the lock applies to owners too."})
+        +businessSelectField("couponStacking","How to apply multiple coupons",BUSINESS_COUPON_STACKING,{
+          testId:"business-coupon-stacking",
+          note:businessPendingNote("business-note-coupon-stacking",
+            "Pawsh has no coupons or discounts. The choice is stored now and takes effect when they ship.")})
+        +`<label>Timezone${timezoneControl}`
+          +`<span class="field-hint" data-testid="business-timezone-now">${escape(businessTimeZoneNow(draft.timezone))}</span>`
+          +businessFieldErrorMarkup("timezone")
+        +`</label>`
+        +businessSelectField("upcomingAppointmentCount","Upcoming appointment count",BUSINESS_UPCOMING_COUNTS,{
+          testId:"business-upcoming-count",
+          hint:"How many appointments are shown in the sent-out upcoming link.",
+          note:businessPendingNote("business-note-upcoming-count",
+            "Pawsh has no send-out link — there is no public page a client could open. The count is stored now and takes effect when there is one.")})
+        // The number-plus-unit idiom the reminder lead time already uses, so two quantities on the
+        // same card are not two different shapes.
+        +`<label>Default service frequency ${BUSINESS_OPTIONAL}`
+          +`<span class="pref-frequency">`
+            +`<input type="number" name="defaultServiceFrequencyWeeks" data-business-field="defaultServiceFrequencyWeeks" data-testid="business-service-frequency" min="1" max="104" step="1" value="${escapeAttr(draft.defaultServiceFrequencyWeeks)}"${businessInvalidAttrs("defaultServiceFrequencyWeeks")}>`
+            +`<span class="pref-unit">Weeks</span>`
+          +`</span>`
+          +`<span class="field-hint">The default service frequency for all clients. It seeds a new client's booking frequency; clients already on the books are never rewritten.</span>`
+          +businessFieldErrorMarkup("defaultServiceFrequencyWeeks")
+        +`</label>`
+        +`<label>Reminder lead time`
+          +`<span class="pref-frequency">`
+            +`<input type="number" name="reminderHours" data-business-field="reminderHours" data-testid="business-reminder-hours" min="0" max="720" step="1" value="${escapeAttr(draft.reminderHours)}"${businessInvalidAttrs("reminderHours")}>`
+            +`<span class="pref-unit">hours before the appointment</span>`
+          +`</span>`
+          +`<span class="field-hint">How far ahead the reminder outbox queues an appointment reminder. Set it to 0 to stop queuing them.</span>`
+          +businessFieldErrorMarkup("reminderHours")
+        +`</label>`
+        // A mirrored value, not a control. `readonly` renders as a disabled input and the eye
+        // learns to skip it, which is the opposite of the point: this is what invoices charge.
+        +`<div class="business-readonly">`
+          +`<span class="business-readonly-label">Tax rate</span>`
+          +`<span class="business-readonly-value" data-testid="business-tax-rate">${escape(taxPayPercent(businessRecord().taxRateBasisPoints))}%</span>`
+          +`<p class="field-hint">The rate in force is chosen in Tax &amp; payments and is what new invoices charge. It is shown here because it is a business-wide number, not because it is set here. `
+            +`<button type="button" class="text-button" data-settings-goto="tax-payments">Open Tax &amp; payments</button></p>`
+        +`</div>`
+      +`</div>`
+    +`</section>`
+    +`<section class="settings-panel">`
+      +`<h3>Social media</h3>`
+      +`<p class="panel-note">Where this salon is listed. Pawsh records the addresses and does nothing else with them — it does not post, read reviews, or check that a page is still there.</p>`
+      +`<div class="business-field-grid">`
+        +businessTextField("socialFacebook","Facebook",{type:"url",testId:"business-social-facebook",maxlength:500,
+          extra:` inputmode="url"`,hint:"The salon's page, not a personal profile."})
+        +businessTextField("socialGoogle","Google",{type:"url",testId:"business-social-google",maxlength:500,
+          extra:` inputmode="url"`,hint:"The Business Profile listing clients find in search and on maps."})
+        +businessTextField("socialYelp","Yelp",{type:"url",testId:"business-social-yelp",maxlength:500,
+          extra:` inputmode="url"`,hint:"The salon's Yelp page."})
+      +`</div>`
+    +`</section>`
+    +foot
+    +`</form>`;
+}
+
+const BUSINESS_EMAIL_PATTERN=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const BUSINESS_SCHEME_PATTERN=/^([a-z][a-z0-9+.-]*):/i;
+/**
+ * The four link fields, refused for the reason the server refuses them.
+ *
+ * These are rendered as links, so a `javascript:` or `data:` value is a stored-XSS bound rather
+ * than untidiness, and the schema 400s on it. The client refuses the same set - not a looser one -
+ * so the operator is told at the field rather than by a server message in the foot. A bare host is
+ * allowed through untouched: the server prefixes `https://` and returns what it stored.
+ */
+function businessUrlError(value){
+  const text=String(value||"").trim();
+  if(!text)return null;
+  if(text.length>500)return "That address is longer than the 500 characters Pawsh stores.";
+  const scheme=BUSINESS_SCHEME_PATTERN.exec(text);
+  if(scheme&&!["http","https"].includes(scheme[1].toLowerCase()))
+    return "Pawsh stores web addresses only. Start it with https:// or leave the scheme off entirely.";
+  return null;
+}
+// On submit only, never on keystroke. On failure nothing is sent, every invalid field is marked,
+// and focus moves to the first one.
+function businessValidateInfo(){
+  const draft=businessDraft(),errors={};
+  if(draft.name.trim().length<2)errors.name="A salon name is needed — it is what appears on every invoice.";
+  const email=draft.email.trim();
+  if(email&&!BUSINESS_EMAIL_PATTERN.test(email))errors.email="That is not an email address Pawsh can send to.";
+  if(!draft.timezone.trim())errors.timezone="A timezone is needed — appointment times are read in it.";
+  // The select has no blank option and the column is `not null`, so this can only fire for a value
+  // that reached the draft some other way. It is checked rather than assumed because the field is
+  // optional in the request schema - the server would accept the omission, not the emptiness.
+  if(!draft.businessType.trim())errors.businessType="Choose whether this salon is mobile, fixed, or both.";
+  for(const [key] of BUSINESS_URL_FIELDS){
+    const message=businessUrlError(draft[key]);
+    if(message)errors[key]=message;
+  }
+  const weeks=draft.defaultServiceFrequencyWeeks.trim();
+  if(weeks&&(!Number.isInteger(Number(weeks))||Number(weeks)<1||Number(weeks)>104)){
+    errors.defaultServiceFrequencyWeeks="Enter a whole number of weeks, from 1 to 104.";
+  }
+  if(businessReminderTouched()){
+    const hours=Number(draft.reminderHours);
+    if(!draft.reminderHours.trim()||!Number.isInteger(hours)||hours<0||hours>720){
+      errors.reminderHours="Enter a whole number of hours, from 0 to 720.";
+    }
+  }
+  return errors;
+}
+/**
+ * The payload, built against a MERGE schema.
+ *
+ * `name`, `timezone`, `taxRateBasisPoints`, `reminderLeadMinutes` and `locationVersion` are
+ * required and always sent. Everything else is sent ONLY when this form moved it, which is what
+ * makes a rename incapable of clearing a contact detail and what keeps a workspace holding a
+ * legacy currency code from being refused by a picker it never operated.
+ *
+ * Three rules the schema enforces and this function has to respect:
+ *   - the six enums have NO null. Sending one is a 400, so an untouched select sends nothing.
+ *   - `upcomingAppointmentCount` is the one field where null IS a value. Omitted preserves; `All`
+ *     or null sets All; 1-20 sets a number. It refuses a NUMERIC STRING, so the select's value is
+ *     coerced here rather than posted as it comes off the DOM.
+ *   - the nullable text fields clear on null or "", which is why an untouched one must be absent.
+ *
+ * The tax rate is round-tripped from `state.me.business` unchanged, so `mirrorBusinessTaxRate`
+ * writes back the rate Tax & payments already has in force.
+ */
+function businessSettingsPayload(){
+  const draft=businessDraft(),stored=businessStoredValues(),record=businessRecord();
+  const payload={
+    name:draft.name.trim(),
+    timezone:draft.timezone.trim(),
+    taxRateBasisPoints:Number(record.taxRateBasisPoints??0),
+    reminderLeadMinutes:businessReminderTouched()
+      ?Math.round(Number(draft.reminderHours)*60)
+      :Number(record.reminderLeadMinutes??0),
+    locationVersion:Number(record.locationVersion)
+  };
+  // Blank means cleared, and it is sent as null rather than "": the schema maps a blank string to
+  // null anyway, and `location_address_bounded` refuses a whitespace-only address outright.
+  for(const key of BUSINESS_TEXT_FIELDS){
+    if(draft[key].trim()===stored[key].trim())continue;
+    payload[key]=draft[key].trim()||null;
+  }
+  if(draft.currency!==stored.currency)payload.currency=draft.currency;
+  for(const [key] of BUSINESS_ENUM_FIELDS){
+    if(draft[key]!==stored[key])payload[key]=draft[key];
+  }
+  if(draft.upcomingAppointmentCount!==stored.upcomingAppointmentCount){
+    payload.upcomingAppointmentCount=draft.upcomingAppointmentCount==="All"
+      ?"All":Number(draft.upcomingAppointmentCount);
+  }
+  if(draft.defaultServiceFrequencyWeeks!==stored.defaultServiceFrequencyWeeks){
+    const weeks=draft.defaultServiceFrequencyWeeks.trim();
+    payload.defaultServiceFrequencyWeeks=weeks?Number(weeks):null;
+  }
+  return payload;
+}
+
+function businessSubmitInfo(){
+  businessState.submitted=true;
+  businessState.error=null;businessState.stale=false;
+  const errors=businessValidateInfo();
+  businessState.fieldErrors=errors;
+  if(Object.keys(errors).length){
+    businessState.status="";
+    renderBusiness();
+    $(`#business-root [data-business-field="${Object.keys(errors)[0]}"]`)?.focus();
+    return;
+  }
+  const next=businessDraft().timezone.trim(),current=String(businessRecord().timezone??"");
+  // Unconditional, unlike the retired dialog's `state.appointments.some(...)` gate: that array
+  // holds only the calendar range currently in memory, so an operator who went straight to
+  // Settings got no confirmation at all. A confirmation that disappears based on what happens to
+  // be cached is worse than none.
+  if(next!==current){
+    openStackedDialog({
+      title:"Change this location's timezone?",
+      body:`<p>New and rescheduled appointments will be interpreted in <strong>${escape(next)}</strong> instead of <strong>${escape(current)}</strong>. Appointments already on the calendar keep the exact instant they were booked for, so their displayed times will move.</p>`,
+      confirmLabel:"Change timezone",
+      dismissLabel:`Keep ${current}`,
+      onConfirm:()=>{runDetached(businessSaveInfo);return true;},
+      onDismiss:()=>$(`#business-root [data-business-field="timezone"]`)?.focus()
+    });
+    return;
+  }
+  runDetached(businessSaveInfo);
+}
+async function businessSaveInfo(){
+  if(businessState.saving)return;
+  businessState.saving=true;businessState.error=null;businessState.status="";
+  renderBusiness();
+  try{
+    await api("/api/business/settings",{method:"PUT",body:JSON.stringify(businessSettingsPayload())});
+    // Re-read rather than trusting the reply: the save bumped `locations.version`, and the next
+    // booking or blocked time sends it as `expectedLocationVersion`.
+    state.me=await api("/api/me");
+    renderAccountIdentity();
+    // The calendar is already in the DOM and every time on it was laid out under the OLD hour
+    // format. Re-rendering it here is what makes "24 Hours" visible without the operator having
+    // to guess that leaving Settings is part of the change. Guarded because a workspace that has
+    // not opened the calendar this session has nothing there to redraw.
+    try{renderAppointments();}catch{/* the calendar is not mounted; nothing to restate */}
+    businessState.draft=null;businessState.fieldErrors={};businessState.submitted=false;
+    businessState.status="Business settings saved.";
+    toast("Business settings saved");
+  }catch(error){
+    if(error.status===409&&error.data?.code==="STALE_LOCATION_SETTINGS"){
+      // Nothing the operator typed is discarded without them pressing the button below.
+      businessState.stale=true;
+      businessState.error="Business settings were changed somewhere else while this form was open. Reload the saved values and make the change again.";
+    }else{
+      businessState.error=error.message;
+    }
+  }finally{
+    businessState.saving=false;
+    renderBusiness();
+    $(`#business-root [data-testid="business-save"]`)?.focus();
+  }
+}
+async function businessReloadSaved(){
+  state.me=await api("/api/me");
+  renderAccountIdentity();
+  businessState.draft=null;businessState.fieldErrors={};businessState.submitted=false;
+  businessState.stale=false;businessState.error=null;businessState.status="Saved values reloaded.";
+  renderBusiness();
+}
+
+// --- Business Hours ------------------------------------------------------
+function businessHoursDraftFrom(hours){
+  const byDay=new Map();
+  for(const period of hours||[]){
+    const day=Number(period.weekday);
+    if(!Number.isInteger(day)||day<0||day>6)continue;
+    if(!byDay.has(day))byDay.set(day,[]);
+    byDay.get(day).push({start:String(period.startTime??"").slice(0,5),end:String(period.endTime??"").slice(0,5)});
+  }
+  const draft={};
+  for(let day=0;day<7;day+=1){
+    const periods=(byDay.get(day)||[]).slice().sort((a,b)=>a.start.localeCompare(b.start));
+    draft[day]={
+      open:periods.length>0,start:periods[0]?.start||"",end:periods[0]?.end||"",
+      // A weekday carrying more than one saved period cannot be expressed by one from/to pair, so
+      // the row goes read-only and the save passes its periods through untouched. A single-range
+      // editor over it would read the first period and silently delete the rest.
+      multi:periods.length>1,periods,touched:false
+    };
+  }
+  return draft;
+}
+function businessHoursRowDirty(day){
+  const row=businessState.hoursDraft?.[day],base=businessState.hoursBaseline?.[day];
+  if(!row||!base||row.multi)return false;
+  return row.open!==base.open||(row.open&&(row.start!==base.start||row.end!==base.end));
+}
+function businessHoursDirtyCount(){
+  if(!businessState.hoursDraft)return 0;
+  return [0,1,2,3,4,5,6].filter(businessHoursRowDirty).length;
+}
+function businessHoursRowError(day){
+  const row=businessState.hoursDraft?.[day];
+  if(!row||row.multi||!row.open)return null;
+  const name=BUSINESS_WEEKDAYS[day];
+  if(!row.start||!row.end)return `${name} is open, so it needs an opening and a closing time.`;
+  // `workingHoursSchema` refines startTime < endTime and the column is a bare `time`, so an
+  // overnight salon genuinely cannot be expressed. Saying so beats a message nobody can act on.
+  if(row.end<=row.start)return `${name} must close after it opens. Hours cannot run past midnight.`;
+  return null;
+}
+function businessHoursShownError(day){
+  const row=businessState.hoursDraft?.[day];
+  if(!row)return null;
+  if(!businessState.hoursSubmitted&&!row.touched)return null;
+  return businessHoursRowError(day);
+}
+function businessHoursInvalidDays(){
+  if(!businessState.hoursDraft)return [];
+  return [0,1,2,3,4,5,6].filter(day=>businessHoursRowError(day));
+}
+// A day switched on that has never had hours is suggested from the week around it rather than
+// snapped to a constant. Nothing is written until Save, so a suggestion is safe here.
+function businessHoursSuggestion(){
+  const counts=new Map();
+  for(let day=0;day<7;day+=1){
+    const row=businessState.hoursDraft[day];
+    if(!row.open||row.multi||!row.start||!row.end)continue;
+    const key=`${row.start}|${row.end}`;
+    counts.set(key,(counts.get(key)||0)+1);
+  }
+  let best=null,seen=0;
+  for(const [key,count] of counts)if(count>seen){best=key;seen=count;}
+  const [start,end]=best?best.split("|"):["09:00","17:00"];
+  return {start,end};
+}
+function businessMultiNote(count){
+  return `${count===2?"Two":count} periods — editing here would remove one.`;
+}
+function businessHoursTimesMarkup(day,editable){
+  const row=businessState.hoursDraft[day],name=BUSINESS_WEEKDAYS[day];
+  if(row.multi){
+    return `<span class="business-hours-times is-readonly" data-testid="business-hours-multi-${day}">`
+      +`<span class="business-hours-state">${escape(row.periods.map(period=>`${period.start}–${period.end}`).join(", "))}</span>`
+      +`<span class="business-hours-multi">${escape(businessMultiNote(row.periods.length))}</span></span>`;
+  }
+  // The state is a word, never the switch's position or hue alone - and never a disabled input,
+  // which would assert a closed day has hours that merely cannot be reached.
+  if(!row.open){
+    return `<span class="business-hours-times is-closed">`
+      +`<span class="business-hours-state" data-testid="business-hours-state-${day}">Closed</span></span>`;
+  }
+  if(!editable){
+    return `<span class="business-hours-times">`
+      +`<span class="business-hours-state" data-testid="business-hours-state-${day}">${escape(`${row.start}–${row.end}`)}</span></span>`;
+  }
+  const invalid=businessHoursShownError(day)?` aria-invalid="true"`:"";
+  // No `step`: `step="900"` would refuse a stored `09:05` that already exists in the database,
+  // and the default already renders as HH:MM with no seconds.
+  return `<span class="business-hours-times">`
+    +`<label class="visually-hidden" for="business-hours-start-${day}">${escape(name)} opens at</label>`
+    +`<input type="time" id="business-hours-start-${day}" data-business-start="${day}" data-testid="business-hours-start-${day}" value="${escapeAttr(row.start)}"${invalid}>`
+    +`<span class="business-hours-dash" aria-hidden="true">–</span>`
+    +`<label class="visually-hidden" for="business-hours-end-${day}">${escape(name)} closes at</label>`
+    +`<input type="time" id="business-hours-end-${day}" data-business-end="${day}" data-testid="business-hours-end-${day}" value="${escapeAttr(row.end)}"${invalid}>`
+    +`</span>`;
+}
+function businessHoursToggleMarkup(day,editable){
+  const row=businessState.hoursDraft[day],name=BUSINESS_WEEKDAYS[day];
+  // A switch on a read-only row would offer to turn off a day whose second period it cannot
+  // redraw, so those rows say the state in a word instead.
+  if(row.multi||!editable){
+    return `<span class="business-hours-toggle"><span class="business-hours-state">${row.open?"Open":"Closed"}</span></span>`;
+  }
+  // The accessible name is an `aria-label` rather than a wrapping label: the row holds three
+  // controls, and a wrapping label would claim clicks meant for the time inputs.
+  return `<span class="business-hours-toggle">`
+    +`<input type="checkbox" role="switch" class="pref-toggle" data-business-day="${day}"`
+    +` data-testid="business-hours-open-${day}" aria-label="Open on ${escapeAttr(name)}"${row.open?" checked":""}>`
+    +`</span>`;
+}
+function businessHoursRowMarkup(day,editable){
+  const error=businessHoursShownError(day);
+  const classes=["business-hours-row"];
+  if(businessHoursRowDirty(day))classes.push("is-dirty");
+  if(error)classes.push("is-invalid");
+  return `<div class="${classes.join(" ")}" data-weekday="${day}">`
+    +`<span class="business-hours-day">${escape(BUSINESS_WEEKDAYS[day])}</span>`
+    +businessHoursToggleMarkup(day,editable)
+    +businessHoursTimesMarkup(day,editable)
+    +(error?`<p class="error" role="alert" data-testid="business-hours-row-error-${day}">${escape(error)}</p>`:"")
+    +`</div>`;
+}
+function businessHoursScopeMarkup(){
+  const name=escape(availabilityLocationName());
+  // Zero saved rows is not an empty week. The calendar treats it as open at all times
+  // (`!periods.length && !state.businessHours.length`), so seven off switches with no note would
+  // tell the operator the exact opposite of how the product behaves.
+  const unconfigured=(businessState.hours||[]).length===0;
+  return `<p class="availability-scope is-location" data-testid="business-hours-scope">`
+    +(unconfigured
+      ?`No business hours are saved for <strong>${name}</strong>. Until some are, the calendar treats every slot on every day as open. Saving here replaces that.`
+      :`These are the hours saved for <strong>${name}</strong>. The calendar shades slots outside them as closed.`)
+    +`</p>`;
+}
+function businessHoursLoadingMarkup(){
+  // Nothing is rendered before the read resolves. Never `09:00`, never `17:00`, never a checked
+  // switch, until the GET answers - the fabricated week is the bug this screen exists to replace.
+  return `<section class="settings-panel business-hours-skeleton" aria-busy="true" data-testid="business-hours-loading">`
+    +`<h3>Business hours</h3><p class="panel-note">Reading the hours saved for this location…</p>`
+    +`<div class="business-hours-list">`
+    +BUSINESS_WEEKDAYS.map(name=>`<div class="business-hours-row">`
+      +`<span class="business-hours-day">${escape(name)}</span>`
+      +`<span class="business-hours-toggle"><span class="business-skeleton-bar"></span></span>`
+      +`<span class="business-hours-times"><span class="business-skeleton-bar"></span></span></div>`).join("")
+    +`</div></section>`;
+}
+function businessHoursErrorMarkup(){
+  const error=businessState.hoursError;
+  const message=error?.status===403?"You do not have permission to view this."
+    :"Pawsh could not read the hours saved for this location, so it is not showing any. Nothing has changed.";
+  // No editable grid is rendered in this state at all: a form over unknown data that saves a
+  // destructive whole-week replace is the original bug wearing a better error message.
+  return `<div class="availability-error" data-testid="business-hours-error"><h4>These could not load</h4>`
+    +`<p>${escape(message)}</p>`
+    +`<button type="button" class="secondary compact" data-business-hours-retry>Try again</button></div>`;
+}
+function businessHoursStatusText(){
+  if(businessState.hoursSaving)return "Saving…";
+  const invalid=businessState.hoursSubmitted?businessHoursInvalidDays().length:0;
+  if(invalid)return `Fix ${invalid} day${invalid===1?"":"s"} before saving.`;
+  const dirty=businessHoursDirtyCount();
+  if(dirty)return `${dirty} day${dirty===1?"":"s"} changed.`;
+  return businessState.hoursStatus;
+}
+function businessHoursMarkup(){
+  if(businessState.hoursError)return businessHoursErrorMarkup();
+  if(!businessState.hoursDraft)return businessHoursLoadingMarkup();
+  // Settings is gated on settings.manage, so anyone here can write. The branch is kept for
+  // consistency with the closed-days grid, and uses `.availability-note` rather than its quiet
+  // variant because `--placeholder` fails AA for body text.
+  const editable=allowed("settings.manage");
+  const rows=`<div class="business-hours-list" data-testid="business-hours-list">`
+    +[0,1,2,3,4,5,6].map(day=>businessHoursRowMarkup(day,editable)).join("")+`</div>`;
+  const panel=`<section class="settings-panel">`
+    +`<h3>Business hours</h3>`
+    +`<p class="panel-note">The opening times scheduling reads for this location. One opening period per day.</p>`
+    +(editable?"":`<p class="availability-note">Changing business hours needs the Settings permission.</p>`)
+    +rows+`</section>`;
+  if(!editable)return businessHoursScopeMarkup()+panel;
+  const foot=`<div class="business-form-foot">`
+    +`<p class="business-form-status" role="status" data-testid="business-hours-status">${escape(businessHoursStatusText())}</p>`
+    +`<p class="error" data-testid="business-hours-save-error">${businessState.hoursSaveError?escape(businessState.hoursSaveError):""}</p>`
+    +`<button type="submit" class="primary compact" data-testid="business-hours-save"${businessHoursDirtyCount()&&!businessState.hoursSaving?"":" disabled"}>${businessState.hoursSaving?"Saving…":"Save hours"}</button>`
+    +`</div>`;
+  return businessHoursScopeMarkup()
+    +`<form class="business-form" data-business-hours-form${businessState.hoursSaving?` aria-busy="true"`:""} novalidate>${panel}${foot}</form>`;
+}
+
+async function loadBusinessHours(){
+  businessState.hoursLoading=true;businessState.hoursError=null;
+  try{
+    const hours=await api("/api/business/working-hours");
+    businessState.hours=Array.isArray(hours)?hours:[];
+    // The calendar's copy comes from the same read, so the two cannot disagree about which slots
+    // are shaded closed.
+    state.businessHours=businessState.hours;
+    businessState.hoursDraft=businessHoursDraftFrom(businessState.hours);
+    businessState.hoursBaseline=businessHoursDraftFrom(businessState.hours);
+    businessState.hoursSubmitted=false;businessState.hoursSaveError="";
+  }catch(error){businessState.hoursError=error;}
+  finally{businessState.hoursLoading=false;}
+}
+function businessHoursPayload(){
+  const hours=[];
+  for(let day=0;day<7;day+=1){
+    const row=businessState.hoursDraft[day];
+    // The PUT is `delete … insert` over the whole location, so the payload carries all seven
+    // days' state every time. Building it from changed rows would delete every unchanged day.
+    if(row.multi){
+      for(const period of row.periods)hours.push({weekday:day,startTime:period.start,endTime:period.end});
+      continue;
+    }
+    if(row.open)hours.push({weekday:day,startTime:row.start,endTime:row.end});
+  }
+  return {hours};
+}
+// The server names the day and the reason in both refusals, so its sentence is the one shown. The
+// duplicate case is only reachable through a read-only multi-period row, and the client adds why.
+function businessHoursServerMessage(error){
+  if(error.data?.code==="DUPLICATE_WORKING_HOURS_DAY"){
+    return `${error.message} Pawsh stores one opening period per day, so a day that already holds two cannot be saved from here.`;
+  }
+  return error.message;
+}
+function businessSubmitHours(){
+  businessState.hoursSubmitted=true;businessState.hoursSaveError="";
+  const invalid=businessHoursInvalidDays();
+  if(invalid.length){
+    renderBusiness();
+    const day=invalid[0],row=businessState.hoursDraft[day];
+    $(`#business-hours-${row.start&&row.end?"end":"start"}-${day}`)?.focus();
+    return;
+  }
+  runDetached(businessSaveHours);
+}
+async function businessSaveHours(){
+  if(businessState.hoursSaving)return;
+  businessState.hoursSaving=true;businessState.hoursSaveError="";businessState.hoursStatus="";
+  renderBusiness();
+  try{
+    await api("/api/business/working-hours",{method:"PUT",body:JSON.stringify(businessHoursPayload())});
+    // Two reads, both load-bearing. `loadBusinessHours` refreshes the grid AND the calendar's own
+    // copy; `/api/me` carries the `locations.version` the PUT bumped but does not return, and
+    // without it the operator's very next booking or blocked time fails STALE_LOCATION_SETTINGS
+    // with no cause on screen - the hazard `applyAvailabilityClosure` already documents.
+    await loadBusinessHours();
+    state.me=await api("/api/me");
+    businessState.hoursStatus="Business hours saved.";
+    toast("Business hours saved");
+  }catch(error){
+    businessState.hoursSaveError=businessHoursServerMessage(error);
+  }finally{
+    businessState.hoursSaving=false;
+    renderBusiness();
+    $(`#business-root [data-testid="business-hours-save"]`)?.focus();
+  }
+}
+
+// --- Shell ---------------------------------------------------------------
+function businessMarkup(){
+  if(businessState.tab==="info")return businessTabsMarkup()+businessPanelMarkup(businessInfoMarkup());
+  if(businessState.tab==="hours")return businessTabsMarkup()+businessPanelMarkup(businessHoursMarkup());
+  // `tabindex="0"` only where the panel holds nothing focusable, which is the condition
+  // `availabilityMarkup` already applies it under. The two working tabs must not carry it.
+  return businessTabsMarkup()+businessPanelMarkup(businessUnavailableMarkup(businessState.tab),{focusable:true});
+}
+function renderBusiness(){
+  const root=$("#business-root");if(!root)return;
+  root.innerHTML=businessMarkup();
+  bindBusiness(root);
+}
+function selectBusinessTab(tab,{focus=true}={}){
+  if(businessState.tab===tab)return;
+  businessState.tab=tab;
+  renderBusiness();
+  if(focus)$(`#business-tab-${tab}`)?.focus();
+  ensureBusinessData();
+}
+function ensureBusinessData(){
+  if(businessState.tab!=="hours")return;
+  if(businessState.hoursDraft||businessState.hoursLoading||businessState.hoursError)return;
+  runDetached(async()=>{await loadBusinessHours();renderBusiness();});
+}
+// Entering the category rebuilds from server truth. A draft left behind by a previous visit would
+// re-render as though it had been saved, and the URL makes no claim about the tab.
+function resetBusinessWorkspace(tab){
+  businessState.tab=BUSINESS_TABS.some(([id])=>id===tab)?tab:"info";
+  businessState.draft=null;businessState.fieldErrors={};businessState.submitted=false;
+  businessState.saving=false;businessState.status="";businessState.error=null;businessState.stale=false;
+  businessState.filters={currency:"",timezone:""};
+  businessState.hours=null;businessState.hoursDraft=null;businessState.hoursBaseline=null;
+  businessState.hoursError=null;businessState.hoursLoading=false;businessState.hoursSubmitted=false;
+  businessState.hoursSaving=false;businessState.hoursStatus="";businessState.hoursSaveError="";
+}
+
+function businessSyncInfoFoot(root){
+  const save=root.querySelector(`[data-testid="business-save"]`);
+  const status=root.querySelector(`[data-testid="business-status"]`);
+  if(save)save.disabled=!businessInfoDirty()||businessState.saving;
+  if(status)status.textContent=businessInfoStatusText();
+}
+function businessSyncHoursFoot(root){
+  const save=root.querySelector(`[data-testid="business-hours-save"]`);
+  const status=root.querySelector(`[data-testid="business-hours-status"]`);
+  if(save)save.disabled=!businessHoursDirtyCount()||businessState.hoursSaving;
+  if(status)status.textContent=businessHoursStatusText();
+}
+// One row, swapped in place. Re-rendering the panel would move focus off the switch or the time
+// input the operator just used.
+function businessRefreshHoursRow(day,root){
+  const rowEl=root.querySelector(`.business-hours-row[data-weekday="${day}"]`);
+  if(!rowEl)return;
+  rowEl.querySelector(".business-hours-times")?.remove();
+  rowEl.querySelector(".error")?.remove();
+  const error=businessHoursShownError(day);
+  rowEl.insertAdjacentHTML("beforeend",businessHoursTimesMarkup(day,true)
+    +(error?`<p class="error" role="alert" data-testid="business-hours-row-error-${day}">${escape(error)}</p>`:""));
+  rowEl.classList.toggle("is-dirty",businessHoursRowDirty(day));
+  rowEl.classList.toggle("is-invalid",Boolean(error));
+  businessBindHoursRow(rowEl,root);
+  businessSyncHoursFoot(root);
+}
+function businessBindHoursRow(rowEl,root){
+  rowEl.querySelectorAll("[data-business-start],[data-business-end]").forEach(input=>{
+    const edge=input.dataset.businessStart===undefined?"end":"start";
+    const day=Number(input.dataset.businessStart??input.dataset.businessEnd);
+    const apply=()=>{
+      const row=businessState.hoursDraft[day];
+      if(row[edge]===input.value&&row.touched)return;
+      row[edge]=input.value;row.touched=true;
+      const refocus=document.activeElement===input;
+      businessRefreshHoursRow(day,root);
+      if(refocus)root.querySelector(`#business-hours-${edge}-${day}`)?.focus();
+    };
+    input.addEventListener("change",apply);
+    input.addEventListener("blur",apply);
+  });
+}
+function bindBusiness(root){
+  // Arrows move focus, Enter and Space commit. Activating on focus would swap the panel out from
+  // under somebody simply passing along the bar.
+  root.querySelector(`[role="tablist"]`)?.addEventListener("keydown",event=>{
+    const buttons=[...root.querySelectorAll("[data-business-tab]")],index=buttons.indexOf(document.activeElement);
+    if(index<0)return;
+    if(event.key==="Enter"||event.key===" "||event.key==="Spacebar"){event.preventDefault();selectBusinessTab(buttons[index].dataset.businessTab);return;}
+    if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;
+    event.preventDefault();
+    const next=event.key==="Home"?0:event.key==="End"?buttons.length-1:(index+(event.key==="ArrowRight"?1:-1)+buttons.length)%buttons.length;
+    buttons[next]?.focus();
+  });
+  root.querySelectorAll("[data-business-tab]").forEach(button=>button.addEventListener("click",()=>
+    selectBusinessTab(button.dataset.businessTab,{focus:false})));
+  bindSettingsGoto(root);
+
+  // Info. These write to the draft and touch only the button and the status line: a full
+  // re-render on keystroke would destroy the caret.
+  root.querySelectorAll("[data-business-field]").forEach(control=>{
+    const key=control.dataset.businessField;
+    const apply=()=>{
+      businessDraft()[key]=key==="currency"?String(control.value).toUpperCase():control.value;
+      if(key==="timezone"){
+        const hint=root.querySelector(`[data-testid="business-timezone-now"]`);
+        if(hint)hint.textContent=businessTimeZoneNow(control.value.trim());
+      }
+      if(key==="currency"){
+        const hint=root.querySelector(`[data-testid="business-currency-sample"]`);
+        if(hint)hint.textContent=businessCurrencySample(businessDraft().currency);
+      }
+      businessSyncInfoFoot(root);
+    };
+    control.addEventListener("input",apply);
+    control.addEventListener("change",apply);
+  });
+  // Narrowing a picker rebuilds ONLY that select's options. The selected value is reassigned
+  // explicitly afterwards because replacing a select's children resets it to the first option,
+  // and the operator did not choose that one.
+  root.querySelectorAll("[data-business-filter]").forEach(input=>{
+    const key=input.dataset.businessFilter;
+    input.addEventListener("input",()=>{
+      businessState.filters[key]=input.value;
+      const wrap=root.querySelector(`[data-business-picker="${key}"]`),select=wrap?.querySelector("select");
+      if(!wrap||!select)return;
+      const result=businessPickerMatches(key,input.value);
+      select.innerHTML=businessPickerOptionsMarkup(key,result.options,businessDraft()[key]);
+      select.value=businessDraft()[key];
+      const count=wrap.querySelector(".business-picker-count");
+      if(count)count.textContent=businessPickerCountText(key,result);
+    });
+  });
+  root.querySelector("[data-business-form]")?.addEventListener("submit",event=>{
+    event.preventDefault();businessSubmitInfo();
+  });
+  root.querySelector("[data-business-reload]")?.addEventListener("click",()=>runDetached(businessReloadSaved));
+
+  // Hours.
+  root.querySelector("[data-business-hours-retry]")?.addEventListener("click",()=>{
+    businessState.hoursError=null;businessState.hours=null;businessState.hoursDraft=null;
+    renderBusiness();ensureBusinessData();
+  });
+  root.querySelectorAll("[data-business-day]").forEach(input=>input.addEventListener("change",()=>{
+    const day=Number(input.dataset.businessDay),row=businessState.hoursDraft[day];
+    row.open=input.checked;
+    // The row's times are kept while it is closed, so switching back on restores what was there
+    // rather than snapping to a default.
+    if(row.open&&(!row.start||!row.end)){
+      const suggestion=businessHoursSuggestion();
+      row.start=row.start||suggestion.start;row.end=row.end||suggestion.end;
+    }
+    businessRefreshHoursRow(day,root);
+  }));
+  root.querySelectorAll(".business-hours-row").forEach(rowEl=>businessBindHoursRow(rowEl,root));
+  root.querySelector("[data-business-hours-form]")?.addEventListener("submit",event=>{
+    event.preventDefault();businessSubmitHours();
+  });
+}
+
+// `tab` is how the Salon view's two Business-hours entry points land on the right tab. The URL
+// stays `/settings/business` on every tab: `settingsPathCategory` matches `^/settings/([^/]+)$`,
+// so a second path segment would fail that regex and silently land the operator on Account.
+function renderSettingsCategory(category=settingsPathCategory(),{history="replace",tab=null}={}){const definition=settingsCategories.find(([id])=>id===category)||settingsCategories[0],[id,title]=definition,nav=$("#settings-navigation"),content=$("#settings-content");if(!nav||!content)return;nav.innerHTML=settingsCategories.map(([key,label])=>`<button type="button" data-settings-category="${key}" class="${key===id?"active":""}" ${key===id?'aria-current="page"':""}>${escape(label)}</button>`).join("");let html="";if(id==="account")html=settingsLink("Account","Personal identity and password security remain in your canonical account workspace.","Manage profile & security","profile-account");else if(id==="staff")html=`<div id="staff-root" class="staff-root"></div>`;else if(id==="business")html=`<div id="business-root" class="business-root"></div>`;else if(id==="availability")html=`<div id="availability-root" class="availability-root"></div>`;else if(id==="permissions")html=allowed("team.manage")?`<div id="roles-root" class="roles-root"></div>`:settingsPlaceholder(id,title);else if(id==="services")html=settingsLink("Services","Service names, pricing, durations, and availability have one canonical workspace.","Open Services","services");else if(id==="pet-options")html=`<div id="pet-options-workspace" class="pet-options-workspace"></div>`;else if(id==="tax-payments")html=`<div id="taxpay-root" class="taxpay-root"></div>`;else if(id==="automated-messages")html=`<article class="settings-panel"><h3>Automated messages</h3><p>Pawsh’s durable reminder/outbox flow uses the configured reminder lead time. Template and channel management are deferred.</p><button type="button" class="primary compact" data-settings-goto="business">Open Business settings</button></article>`;else html=settingsPlaceholder(id,title);content.innerHTML=`<div class="settings-content-head"><p class="eyebrow">Settings</p><h2>${escape(title)}</h2></div>${html}`;nav.querySelectorAll("[data-settings-category]").forEach(button=>button.addEventListener("click",()=>renderSettingsCategory(button.dataset.settingsCategory,{history:"push"})));bindSettingsGoto(content);if(id==="permissions"){renderRoles();ensureRolesData();}if(id==="staff")renderStaff();if(id==="pet-options")renderPetOptions();if(id==="availability"){renderAvailability();ensureAvailabilityData();}if(id==="tax-payments"){renderTaxPayments();ensureTaxPaymentsData();}if(id==="business"){resetBusinessWorkspace(tab);renderBusiness();ensureBusinessData();}if(history!=="none")globalThis.history[history==="push"?"pushState":"replaceState"]({view:"admin-settings",settingsCategory:id},"",`/settings/${id}`);content.focus({preventScroll:true});}
 
 async function openClientProfile(customerId,{petId=null,appointmentId=null,returnView=null}={}){
   if(returnView)state.clientProfileReturnView=returnView;
@@ -6661,7 +7917,7 @@ function petIdentitySectionMarkup(pet,photos){
       +`<label class="pet-check"><input data-testid="field-mixedBreed" name="mixedBreed" type="checkbox" ${pet.mixedBreed?"checked":""}> Mixed breed</label>`
       +choice("hairLength","Hair length",PET_HAIR_LENGTHS,pet.hairLength)
       +choice("sex","Gender",PET_GENDERS,pet.sex)
-      +field("weightPounds","Weight (lb)","number",`min="0.0625" step="0.0625" value="${pet.weightOunces===null||pet.weightOunces===undefined?"":Number(pet.weightOunces)/16}"`)
+      +field("weightPounds",weightFieldLabel(),"number",`${weightInputAttrs()} value="${weightInputValue(pet.weightOunces)}"`)
       +field("dateOfBirth","Birthday","date",`value="${pet.dateOfBirth?String(pet.dateOfBirth).slice(0,10):""}"`)
       +choice("approximateAgeYears","Age (years)",years,pet.approximateAgeYears===null||pet.approximateAgeYears===undefined?"":String(pet.approximateAgeYears),"Year")
       +choice("approximateAgeMonths","Age (months)",months,pet.approximateAgeMonths===null||pet.approximateAgeMonths===undefined?"":String(pet.approximateAgeMonths),"Month")
@@ -6747,7 +8003,7 @@ function petVaccinationsSectionMarkup(){
   }
   const data=petProfileState.vaccinations;
   if(!data)return `<section class="pet-profile-section"><h4>Vaccination records</h4><p class="pet-empty">Loading records…</p></section>`;
-  const stamp=value=>value?new Date(`${String(value).slice(0,10)}T12:00:00Z`).toLocaleDateString():"—";
+  const stamp=value=>value?formatPrefLocalDate(value):"—";
   const rabiesDocument=data.rabies.documentId
     ? `<a href="/api/pet-documents/${encodeURIComponent(data.rabies.documentId)}/download?disposition=inline" target="_blank" rel="noopener">View document</a>`
     : "—";
@@ -6838,11 +8094,9 @@ async function reloadPetProfile({sections=["pet","notes","photos","vaccinations"
   renderPetProfile();
 }
 
-function petPoundsToOunces(value){
-  const pounds=String(value??"").trim();
-  if(!pounds)return null;
-  return Math.round(Number(pounds)*16);
-}
+// Kept as a name because three call sites read as "the weight off the form"; the arithmetic is
+// the workspace unit's, not the pound it was written for.
+function petPoundsToOunces(value){return ouncesFromWeight(value);}
 
 async function savePetIdentity(form){
   const data=new FormData(form);
@@ -7214,7 +8468,7 @@ async function reloadClientProfile(){
 // stamp rather than a scheduling instant, so they use the browser zone the author was in.
 function noteStamp(value){
   const when=new Date(value);
-  return `${new Intl.DateTimeFormat([],{dateStyle:"full"}).format(when)} ${new Intl.DateTimeFormat([],{timeStyle:"short"}).format(when)}`;
+  return formatPrefDateTime(when);
 }
 function clientNoteMarkup(note,editable){
   const menu=editable?`<details class="row-menu note-menu"><summary class="row-menu-trigger" aria-expanded="false" aria-label="Actions for note by ${clientAttr(note.authorName)}"><span aria-hidden="true">⋯</span></summary><div class="row-menu-list" role="group" aria-label="Actions for note by ${clientAttr(note.authorName)}"><button type="button" class="row-menu-item note-edit" data-note-id="${clientAttr(note.id)}">Edit</button><button type="button" class="row-menu-item note-pin" data-note-id="${clientAttr(note.id)}">${note.pinned?"Stop showing as popup":"Show as popup note"}</button><button type="button" class="row-menu-item note-delete" data-note-id="${clientAttr(note.id)}">Delete</button></div></details>`:"";
@@ -7323,7 +8577,7 @@ function clientPreferenceMarkup(customer){
   return `<p class="pref-intro">Pawsh stores every preference below, but only the marketing-email opt-out and the inactive flag change what the system does today. The rest are recorded for the salon and marked accordingly.</p>`
     +`<div class="pref-row pref-row-frequency"><span class="pref-text"><span class="pref-name">Booking frequency</span>${unenforced}</span><span class="pref-frequency"><label class="visually-hidden" for="pref-booking-frequency">Booking frequency in weeks</label><input id="pref-booking-frequency" type="number" min="1" max="104" step="1" inputmode="numeric" value="${clientAttr(frequency)}" placeholder="—"${disabled}><span class="pref-unit">Weeks</span></span></div>`
     +switches
-    +`<div class="pref-row pref-row-status"><span class="pref-text"><span class="pref-name">Client status</span><span class="pref-hint">${customer.archivedAt?`Inactive since ${escape(new Date(customer.archivedAt).toLocaleDateString())}. Pawsh has no reactivation flow yet.`:"History is kept. Pawsh has no reactivation flow yet, so this is one-way."}</span></span>${customer.archivedAt?`<span class="status-dot inactive">Inactive</span>`:`<button type="button" class="secondary compact pref-archive"${allowed("customers.edit")?"":" disabled"}>Mark inactive</button>`}</div>`
+    +`<div class="pref-row pref-row-status"><span class="pref-text"><span class="pref-name">Client status</span><span class="pref-hint">${customer.archivedAt?`Inactive since ${escape(formatPrefDate(new Date(customer.archivedAt)))}. Pawsh has no reactivation flow yet.`:"History is kept. Pawsh has no reactivation flow yet, so this is one-way."}</span></span>${customer.archivedAt?`<span class="status-dot inactive">Inactive</span>`:`<button type="button" class="secondary compact pref-archive"${allowed("customers.edit")?"":" disabled"}>Mark inactive</button>`}</div>`
     +(customer.archivedAt?`<p class="pref-hint">Preferences cannot be changed while the client is inactive.</p>`:"");
 }
 
@@ -7332,7 +8586,7 @@ function clientPreferenceMarkup(customer){
 function petFactCells(pet){
   const care=allowed("pets.care.view"),locked="Requires Pet Care access";
   const rabies=pet.vaccinationExpiresOn
-    ? `Expires ${new Date(`${String(pet.vaccinationExpiresOn).slice(0,10)}T12:00:00Z`).toLocaleDateString()}`
+    ? `Expires ${formatPrefLocalDate(pet.vaccinationExpiresOn)}`
     : (care?"Not recorded":locked);
   return [["Behavior",care?(pet.behaviorNotes||"Not recorded"):locked],["Rabies",rabies],["Hair length",pet.coatNotes||"Not recorded"],["Gender",pet.sex||"Not recorded"]]
     .map(([label,value])=>`<div><dt>${escape(label)}</dt><dd>${escape(value)}</dd></div>`).join("");
@@ -7347,7 +8601,7 @@ function petNotesMarkup(pet){
   return `<div class="pet-card-notes">${entries.map(([label,value])=>`<p class="pet-note${label==="safety alert"?" alert":""}"><span class="note-pinned">[${escape(label)}]</span> ${escape(value)}</p>`).join("")}<p class="note-meta">Pet record updated ${escape(noteStamp(pet.updatedAt))}</p></div>`;
 }
 function petCardMarkup(pet){
-  const weight=pet.weightOunces?`${Number(pet.weightOunces)/16} lb`:null;
+  const weight=formatPetWeight(pet.weightOunces);
   const detail=[pet.breed||pet.species||"Pet",weight].filter(Boolean).join(" - ");
   return `<article class="pet-card"><div class="pet-card-head">${pet.avatarPhotoId?`<img class="pet-avatar-image pet-card-avatar" src="/api/pet-photos/${encodeURIComponent(pet.avatarPhotoId)}/content" alt="">`:`<span class="pet-avatar" aria-hidden="true">${escape(Array.from(pet.name||"P")[0]?.toUpperCase()||"P")}</span>`}<button type="button" class="pet-card-name" data-pet-profile="${clientAttr(pet.id)}"><strong>${escape(petName(pet))}</strong> <span>(${escape(detail)})</span></button></div><dl class="pet-fact-grid">${petFactCells(pet)}</dl>${petNotesMarkup(pet)}</article>`;
 }
@@ -7381,7 +8635,7 @@ function historyRowMarkup(item,{pets,payments,selectedId}){
   return `<tr class="history-row${item.id===selectedId?" active":""}">`
     +`<td class="history-id"><button type="button" class="text-button" data-profile-appointment="${clientAttr(item.id)}" aria-haspopup="dialog" aria-label="Open appointment #${escape(String(item.id).slice(0,8))}">#${escape(String(item.id).slice(0,8))}</button></td>`
     +`<td class="history-status"><span class="history-chip chip-${clientAttr(item.status)}">${escape(item.status.replace("_"," "))}</span>${payment}</td>`
-    +`<td class="history-date">${escape(new Intl.DateTimeFormat([],{dateStyle:"medium",timeZone:zone}).format(start))}<span>${escape(new Intl.DateTimeFormat([],{weekday:"short",hour:"numeric",minute:"2-digit",timeZone:zone}).format(start))}</span></td>`
+    +`<td class="history-date">${escape(formatPrefDate(start,zone))}<span>${escape(formatPrefWeekdayTime(start,zone))}</span></td>`
     +`<td class="history-pets"><strong>${escape(item.petName||"—")}</strong>${pet?.breed?`<span>(${escape(pet.breed)})</span>`:""}</td>`
     +`<td class="history-items">${services.length?`Services: ${escape(services.map(service=>service.name).join(", "))}`:"<span class=\"muted-cell\">No services recorded</span>"}</td>`
     +`<td class="history-total">${total}</td>`
@@ -7418,7 +8672,7 @@ async function loadClientAgreements(customerId){
 function agreementChannel(agreements,channel){return agreements?.delivery?.channels?.find(entry=>entry.channel===channel)||null;}
 function agreementStamp(value){
   const when=new Date(value);
-  return `${new Intl.DateTimeFormat([],{dateStyle:"medium"}).format(when)} ${new Intl.DateTimeFormat([],{timeStyle:"short"}).format(when)}`;
+  return formatPrefDateAndTime(when);
 }
 // Signing and sending are both `customers.edit`, and the server refuses either against an archived
 // client, so the controls are withheld rather than offered and then rejected.
@@ -7697,7 +8951,7 @@ function clientSummaryMarkup(profile,{back=true}={}){
     +(customer.archivedAt?`<p class="profile-banner">This client is marked inactive. History is kept and new bookings are blocked.</p>`:"")
     +agreementBannerMarkup(profile.agreements,customer.id)
     +`<div class="client-identity"><span class="client-avatar" aria-hidden="true">${escape(Array.from(clientName(customer,"?"))[0]?.toUpperCase()||"?")}</span><div><p class="eyebrow">Basic Info</p><h2>${escape(clientName(customer))}</h2></div>${allowed("customers.edit")?`<button type="button" class="secondary compact client-edit">Edit</button>`:""}</div>`
-    +`<dl class="profile-facts"><div><dt>Phone</dt><dd>${escape(customer.phone||"Not provided")}</dd></div><div><dt>Email</dt><dd>${escape(customer.email||"Not provided")}</dd></div><div><dt>Preferred groomer</dt><dd><button type="button" class="text-button preferred-groomer"${allowed("customers.edit")?"":" disabled"}>${escape(customer.preferredEmployeeName||"Not set")}</button></dd></div><div><dt>Client since</dt><dd>${escape(new Date(customer.createdAt).toLocaleDateString())}</dd></div></dl>`
+    +`<dl class="profile-facts"><div><dt>Phone</dt><dd>${escape(customer.phone||"Not provided")}</dd></div><div><dt>Email</dt><dd>${escape(customer.email||"Not provided")}</dd></div><div><dt>Preferred groomer</dt><dd><button type="button" class="text-button preferred-groomer"${allowed("customers.edit")?"":" disabled"}>${escape(customer.preferredEmployeeName||"Not set")}</button></dd></div><div><dt>Client since</dt><dd>${escape(formatPrefDate(new Date(customer.createdAt)))}</dd></div></dl>`
     +`<div class="profile-section-head"><h3>Notes</h3>${allowed("customers.edit")&&!customer.archivedAt?`<button type="button" class="text-button note-add">Add</button>`:""}</div>`
     +`<div class="client-notes">${clientNotesMarkup(profile)}</div>`
     +`<div class="profile-tabs" role="tablist" aria-label="Client detail">`
@@ -7815,7 +9069,7 @@ function renderClientProfile(){
           : "")
         +`</div>`
       : "")
-    +(allowed("payments.view")&&data.invoices.length?`<section class="profile-invoices"><h4>Invoices</h4>${data.invoices.slice(0,20).map(invoice=>`<div><span>${escape(invoice.invoiceNumber)} · ${escape(new Date(invoice.createdAt).toLocaleDateString())}</span><strong>${money(invoice.totalMinor)} · ${escape(invoiceStatusLabel(invoice.status))}</strong></div>`).join("")}</section>`:"")
+    +(allowed("payments.view")&&data.invoices.length?`<section class="profile-invoices"><h4>Invoices</h4>${data.invoices.slice(0,20).map(invoice=>`<div><span>${escape(invoice.invoiceNumber)} · ${escape(formatPrefDate(new Date(invoice.createdAt)))}</span><strong>${money(invoice.totalMinor)} · ${escape(invoiceStatusLabel(invoice.status))}</strong></div>`).join("")}</section>`:"")
     +clientAgreementsPanelMarkup(profile.agreements)
     +`</section>`;
 
@@ -7928,7 +9182,7 @@ function bindAppointmentPhotos(dialog,appointmentId,photos,rerender){
 function reportCardStamp(value){
   if(!value)return null;
   const when=new Date(value);
-  return `${new Intl.DateTimeFormat([],{dateStyle:"medium"}).format(when)} ${new Intl.DateTimeFormat([],{timeStyle:"short"}).format(when)}`;
+  return formatPrefDateAndTime(when);
 }
 
 function reportCardActionsMarkup(card,canEdit,canSend){
@@ -7954,7 +9208,7 @@ function appointmentReportCardsMarkup(state){
     +`<thead><tr><th scope="col">Date</th><th scope="col">Pet</th><th scope="col">Client</th>`
     +`<th scope="col">Last edited</th><th scope="col">Last sent</th><th scope="col">Actions</th></tr></thead><tbody>`
     +items.map(card=>`<tr>`
-      +`<td>${escape(new Intl.DateTimeFormat([],{dateStyle:"medium"}).format(new Date(card.appointmentDate)))}</td>`
+      +`<td>${escape(formatPrefLocalDate(card.appointmentDate))}</td>`
       +`<td>${escape(petName({petName:card.petName}))}</td>`
       +`<td>${escape(card.customerName)}</td>`
       +`<td>${escape(reportCardStamp(card.lastEditedAt)||"—")}<small>${escape(card.lastEditedBy||"")}</small></td>`
@@ -8056,7 +9310,7 @@ const APPOINTMENT_ACTIVITY_LABELS={
 };
 function activityStamp(value){
   const when=new Date(value);
-  return `${new Intl.DateTimeFormat([],{dateStyle:"medium"}).format(when)} ${new Intl.DateTimeFormat([],{timeStyle:"short"}).format(when)}`;
+  return formatPrefDateAndTime(when);
 }
 function appointmentActivityLine(entry){
   const label=APPOINTMENT_ACTIVITY_LABELS[entry.action]||entry.action.replaceAll("."," ").replaceAll("_"," ");
@@ -8135,7 +9389,7 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
     +`<section class="appointment-photos"><h4>Photos</h4><div data-testid="appointment-photos">${appointmentPhotosMarkup(photos)}</div></section>`
     +`<section class="appointment-report-cards"><div class="report-card-head"><h4>Report Card</h4><span data-testid="report-card-add-slot"></span></div>`
       +`<div data-testid="appointment-report-cards">${appointmentReportCardsMarkup(cards)}</div></section>`
-    +`<footer><button type="button" class="secondary compact appointment-detail-client">View client</button>${item.status==="scheduled"&&allowed("appointments.edit")?`<button type="button" class="secondary compact appointment-detail-move">Move</button>`:""}${["checked_in","in_service"].includes(item.status)&&allowed("appointments.edit")?`<button type="button" class="secondary compact appointment-detail-services-action">Adjust services</button>`:""}</footer>`
+    +`<footer>${appointmentLockNoteMarkup("appointment-detail-lock-note")}<button type="button" class="secondary compact appointment-detail-client">View client</button>${item.status==="scheduled"&&appointmentMoveAllowed()?`<button type="button" class="secondary compact appointment-detail-move">Move</button>`:""}${["checked_in","in_service"].includes(item.status)&&allowed("appointments.edit")?`<button type="button" class="secondary compact appointment-detail-services-action">Adjust services</button>`:""}</footer>`
     +`</article>`,
     null,{cancelLabel:"Close"});
 
@@ -8144,6 +9398,7 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
   dialog.querySelector(".modal-head .close").setAttribute("aria-label","Close appointment details");
   dialog.querySelector(".modal-head .close").focus();
   const next=callback=>{dialog.close();setTimeout(callback,50);};
+  bindAppointmentLockNote(dialog);
   dialog.querySelectorAll(".appointment-detail-client").forEach(button=>button.addEventListener("click",()=>next(()=>openClientProfile(item.customerId,{petId:item.petId,appointmentId:item.id,returnView}))));
   dialog.querySelector(".appointment-detail-move")?.addEventListener("click",()=>next(()=>moveAppointment(id)));
   dialog.querySelector(".appointment-detail-services-action")?.addEventListener("click",()=>next(()=>adjustServices(id)));
@@ -8232,8 +9487,8 @@ function renderMessageClientPane(){
 }
 const reminderTabs=[["appointment_reminder","Appointment Reminder","supported"],["secondary_reminder","Secondary Reminder","deferred"],["same_day_reminder","Same-Day Reminder","deferred"],["rebook_reminder","Rebook Reminder","deferred"],["vaccination_reminder","Vaccination Reminder","supported"],["birthday_reminder","Pet Birthday Reminder","deferred"]];
 async function loadReminders(type=state.reminders.type){state.reminders.type=type;const result=await api(`/api/reminders?type=${encodeURIComponent(type)}`);state.reminders={type,items:result.items,supported:result.supported};renderReminders();}
-function renderReminders(){const {type,items,supported}=state.reminders;$("#reminder-tabs").innerHTML=reminderTabs.map(([id,label])=>`<button type="button" role="tab" data-reminder-tab="${id}" aria-selected="${id===type}">${escape(label)}</button>`).join("");$$('[data-reminder-tab]').forEach(button=>button.addEventListener("click",()=>loadReminders(button.dataset.reminderTab)));if(!supported){$("#reminder-content").innerHTML=`<div class="reminder-empty"><p class="eyebrow">Deferred</p><h3>${escape(reminderTabs.find(([id])=>id===type)?.[1]||"Reminder")}</h3><p>This reminder type has no Pawsh scheduling or delivery backend yet. No records or actions are fabricated.</p></div>`;return;}$("#reminder-content").innerHTML=`<div class="reminder-table-wrap"><table class="reminder-table"><thead><tr><th>Record ID</th><th>Status</th><th>Time</th><th>Client</th><th>Reminder Status</th><th>Action</th><th>Logs</th></tr></thead><tbody>${items.map(item=>`<tr><td><code>${escape(String(item.appointmentId||item.id).slice(0,8))}</code></td><td><span class="status-dot">${escape(item.appointmentStatus||"Scheduled")}</span></td><td>${new Intl.DateTimeFormat([],{dateStyle:"medium",timeStyle:"short"}).format(new Date(item.scheduledOccurrence))}</td><td>${escape([item.firstName,item.lastName].filter(Boolean).join(" ")||"Staff notification")}</td><td><span class="badge ${escape(item.reminderStatus)}">${escape(item.reminderStatus.replace("_"," "))}</span></td><td>${["pending","failed"].includes(item.reminderStatus)&&allowed("appointments.edit")?`<button type="button" class="secondary compact reminder-send" data-reminder-id="${item.id}">${item.reminderStatus==="failed"?"Retry":"Send"}</button>`:"—"}</td><td><button type="button" class="icon-action reminder-logs" data-reminder-id="${item.id}" aria-label="Show reminder logs" aria-expanded="false">+</button></td></tr><tr class="reminder-log-row" data-reminder-logs="${item.id}" hidden><td colspan="7">${item.logs.length?item.logs.map(log=>`<div class="reminder-log"><time>${new Date(log.createdAt).toLocaleString()}</time><span>${escape(item.channel)} · ${escape(item.destination)}</span><strong>${escape(log.outcome)}</strong>${log.safeFailureReason?`<small>${escape(log.safeFailureReason)}</small>`:""}</div>`).join(""):`<span class="empty">No delivery attempts yet.</span>`}</td></tr>`).join("")||`<tr><td colspan="7" class="empty">No reminders in this workspace.</td></tr>`}</tbody></table></div>`;$$('.reminder-logs').forEach(button=>button.addEventListener("click",()=>{const row=$(`[data-reminder-logs="${button.dataset.reminderId}"]`),open=row.hidden;row.hidden=!open;button.textContent=open?"−":"+";button.setAttribute("aria-expanded",String(open));}));$$('.reminder-send').forEach(button=>button.addEventListener("click",async()=>{button.disabled=true;try{await api(`/api/reminders/${button.dataset.reminderId}/send`,{method:"POST"});toast("Reminder queued for delivery");await loadReminders();}catch(error){toast(error.message);button.disabled=false;}}));}
-async function hydrateReminderLogs(button){try{const detail=await api(`/api/reminders/${button.dataset.reminderId}/logs`),row=$(`[data-reminder-logs="${button.dataset.reminderId}"] td`);if(!row)return;row.innerHTML=detail.logs.length?detail.logs.map(log=>`<div class="reminder-log"><time>${new Date(log.createdAt).toLocaleString()}</time><span>${escape(detail.channel)} · ${escape(detail.destination)}</span><strong>${escape(log.attemptKind)} · ${escape(log.outcome)}</strong>${log.safeFailureReason?`<small>${escape(log.safeFailureReason)}</small>`:""}</div>`).join(""):`<span class="empty">No delivery attempts yet.</span>`;}catch(error){toast(error.message);}}
+function renderReminders(){const {type,items,supported}=state.reminders;$("#reminder-tabs").innerHTML=reminderTabs.map(([id,label])=>`<button type="button" role="tab" data-reminder-tab="${id}" aria-selected="${id===type}">${escape(label)}</button>`).join("");$$('[data-reminder-tab]').forEach(button=>button.addEventListener("click",()=>loadReminders(button.dataset.reminderTab)));if(!supported){$("#reminder-content").innerHTML=`<div class="reminder-empty"><p class="eyebrow">Deferred</p><h3>${escape(reminderTabs.find(([id])=>id===type)?.[1]||"Reminder")}</h3><p>This reminder type has no Pawsh scheduling or delivery backend yet. No records or actions are fabricated.</p></div>`;return;}$("#reminder-content").innerHTML=`<div class="reminder-table-wrap"><table class="reminder-table"><thead><tr><th>Record ID</th><th>Status</th><th>Time</th><th>Client</th><th>Reminder Status</th><th>Action</th><th>Logs</th></tr></thead><tbody>${items.map(item=>`<tr><td><code>${escape(String(item.appointmentId||item.id).slice(0,8))}</code></td><td><span class="status-dot">${escape(item.appointmentStatus||"Scheduled")}</span></td><td>${escape(formatPrefDateAndTime(new Date(item.scheduledOccurrence)))}</td><td>${escape([item.firstName,item.lastName].filter(Boolean).join(" ")||"Staff notification")}</td><td><span class="badge ${escape(item.reminderStatus)}">${escape(item.reminderStatus.replace("_"," "))}</span></td><td>${["pending","failed"].includes(item.reminderStatus)&&allowed("appointments.edit")?`<button type="button" class="secondary compact reminder-send" data-reminder-id="${item.id}">${item.reminderStatus==="failed"?"Retry":"Send"}</button>`:"—"}</td><td><button type="button" class="icon-action reminder-logs" data-reminder-id="${item.id}" aria-label="Show reminder logs" aria-expanded="false">+</button></td></tr><tr class="reminder-log-row" data-reminder-logs="${item.id}" hidden><td colspan="7">${item.logs.length?item.logs.map(log=>`<div class="reminder-log"><time>${escape(formatPrefDateAndTime(new Date(log.createdAt)))}</time><span>${escape(item.channel)} · ${escape(item.destination)}</span><strong>${escape(log.outcome)}</strong>${log.safeFailureReason?`<small>${escape(log.safeFailureReason)}</small>`:""}</div>`).join(""):`<span class="empty">No delivery attempts yet.</span>`}</td></tr>`).join("")||`<tr><td colspan="7" class="empty">No reminders in this workspace.</td></tr>`}</tbody></table></div>`;$$('.reminder-logs').forEach(button=>button.addEventListener("click",()=>{const row=$(`[data-reminder-logs="${button.dataset.reminderId}"]`),open=row.hidden;row.hidden=!open;button.textContent=open?"−":"+";button.setAttribute("aria-expanded",String(open));}));$$('.reminder-send').forEach(button=>button.addEventListener("click",async()=>{button.disabled=true;try{await api(`/api/reminders/${button.dataset.reminderId}/send`,{method:"POST"});toast("Reminder queued for delivery");await loadReminders();}catch(error){toast(error.message);button.disabled=false;}}));}
+async function hydrateReminderLogs(button){try{const detail=await api(`/api/reminders/${button.dataset.reminderId}/logs`),row=$(`[data-reminder-logs="${button.dataset.reminderId}"] td`);if(!row)return;row.innerHTML=detail.logs.length?detail.logs.map(log=>`<div class="reminder-log"><time>${escape(formatPrefDateAndTime(new Date(log.createdAt)))}</time><span>${escape(detail.channel)} · ${escape(detail.destination)}</span><strong>${escape(log.attemptKind)} · ${escape(log.outcome)}</strong>${log.safeFailureReason?`<small>${escape(log.safeFailureReason)}</small>`:""}</div>`).join(""):`<span class="empty">No delivery attempts yet.</span>`;}catch(error){toast(error.message);}}
 document.addEventListener("click",event=>{const button=event.target.closest?.(".reminder-logs");if(button)hydrateReminderLogs(button);},{capture:true});
 document.addEventListener("click",event=>{const button=event.target.closest?.("[data-pet-profile]");if(!button)return;event.stopImmediatePropagation();const petId=button.dataset.petProfile;state.clientProfile.petId=petId;state.clientProfile.appointmentId=null;renderClientProfile();api(`/api/pets/${petId}`).then(pet=>{state.clientProfile.data.pets=state.clientProfile.data.pets.map(item=>item.id===petId?pet:item);openPetProfile(petId);}).catch(error=>toast(error.message));},{capture:true});
 $$('[data-action]').forEach((button) => button.addEventListener("click", () => actions[button.dataset.action]?.()));

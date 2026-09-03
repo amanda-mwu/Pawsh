@@ -73,16 +73,18 @@ test("@smoke business configuration persists through the GUI",async({page,tenant
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-settings").click();
   await expect(page.getByTestId("admin-settings-view")).toBeVisible();
-  await page.locator("#settings-navigation").getByRole("button",{name:"Business",exact:true}).click();await page.getByRole("button",{name:"Edit business settings"}).click();
-  await page.getByTestId("field-name").fill(`QA Salon ${tenant.runId}`);
-  await page.getByTestId("field-timezone").fill("America/Los_Angeles");
-  await page.getByTestId("field-currency").fill("USD");
+  // Business is a workspace now rather than a link to a dialog: Info is its first tab and the
+  // form is in the page. `tests/e2e/business.spec.ts` covers the rest of it.
+  await page.locator("#settings-navigation").getByRole("button",{name:"Business",exact:true}).click();
+  await expect(page.getByTestId("business-tabs")).toBeVisible();
+  await page.getByTestId("business-name").fill(`QA Salon ${tenant.runId}`);
+  await page.getByTestId("business-currency").selectOption("USD");
   // The tax rate moved to Settings -> Tax & payments, where a named rate is marked as the one in
-  // force and mirrored onto the business. It is shown here read-only so the two screens cannot
-  // disagree, so this asserts the field reports itself as read-only rather than typing into it.
-  await expect(page.getByTestId("field-taxRate")).toHaveAttribute("aria-readonly","true");
-  await page.locator('input[name="reminderHours"]').fill("24");
-  await page.getByTestId("modal-submit").click();
+  // force and mirrored onto the business. It is shown here as a value rather than a control, so
+  // this asserts what it reports rather than typing into it.
+  await expect(page.getByTestId("business-tax-rate")).toHaveText("8.25%");
+  await page.getByTestId("business-reminder-hours").fill("24");
+  await page.getByTestId("business-save").click();
   await expect(page.locator("#account-role")).toContainText(`QA Salon ${tenant.runId}`);
   await page.reload();
   await expect(page.locator("#account-role")).toContainText(`QA Salon ${tenant.runId}`);

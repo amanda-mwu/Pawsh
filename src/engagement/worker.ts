@@ -3,6 +3,9 @@ import { hasEffectivePermission } from "../db/effective-permissions.js";
 import nodemailer from "nodemailer";
 import type { Config } from "../config.js";
 import { createHash } from "node:crypto";
+import {
+  dateTimePreferences, formatPreferredDateTime, formatPreferredLocalDate
+} from "../domain/date-format.js";
 
 const RABIES_CUSTOMER="rabies_expiration_customer";
 const RABIES_STAFF="rabies_expiration_staff";
@@ -260,6 +263,8 @@ export async function deliverNotifications(
     expirationDate: string | null;
     businessPhone: string | null;
     businessEmail: string | null;
+    dateFormat: string | null;
+    hourFormat: string | null;
     customerNotificationStatus: string | null;
   }[]>`
     with claim as (
@@ -286,6 +291,8 @@ export async function deliverNotifications(
         join pets pet on pet.id=appointment.pet_id where appointment.id=intent.appointment_id) as expiration_date,
       (select business.phone from businesses business where business.id=intent.business_id) as business_phone,
       (select business.email from businesses business where business.id=intent.business_id) as business_email,
+      (select business.date_format from businesses business where business.id=intent.business_id) as date_format,
+      (select business.hour_format from businesses business where business.id=intent.business_id) as hour_format,
       (select customer_intent.status from notification_intents customer_intent
         where customer_intent.business_id=intent.business_id
           and customer_intent.appointment_id=intent.appointment_id
@@ -295,13 +302,19 @@ export async function deliverNotifications(
   for (const intent of intents) {
     const attempt = intent.attempts;
     try {
+      // The workspace's chosen date order and clock, not the `en-US` locale these hard-coded.
+      // These bodies are what a client actually receives for an appointment confirmation, a
+      // reminder, a cancellation and both rabies notices, so a date-format setting that did not
+      // reach here would be a setting that changes nothing a client ever sees.
+      const preferences = dateTimePreferences(intent);
       const when = intent.startAt && intent.timezone
-        ? new Intl.DateTimeFormat("en-US", {
-          timeZone: intent.timezone, dateStyle: "full", timeStyle: "short"
-        }).format(intent.startAt)
+        ? formatPreferredDateTime(intent.startAt, intent.timezone, preferences)
         : null;
-      const expiration=intent.expirationDate ? new Intl.DateTimeFormat("en-US",{dateStyle:"long",timeZone:"UTC"})
-        .format(new Date(`${intent.expirationDate}T12:00:00.000Z`)) : "the recorded date";
+      // `vaccination_expires_on` is a `date`, and the noon-UTC anchoring this used to need was
+      // only ever a way to survive being passed through an instant formatter. A calendar date has
+      // no time zone to be shifted by, so it is reordered directly.
+      const expiration = intent.expirationDate
+        ? formatPreferredLocalDate(intent.expirationDate, preferences) : "the recorded date";
       const contact=intent.businessPhone??intent.businessEmail??intent.businessName??"the business";
       const generated=intent.notificationType===RABIES_CUSTOMER
         ? `Your pet ${intent.petName??"pet"} is scheduled for ${when??"an upcoming appointment"}. The rabies vaccination information we have expires on ${expiration}, so it will not be current for the appointment. Please provide updated rabies information before the visit or contact ${intent.businessName??"the business"} at ${contact}.`

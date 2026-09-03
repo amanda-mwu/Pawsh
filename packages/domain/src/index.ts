@@ -11,6 +11,9 @@
  * `catalog-seed.ts`, and `service-pricing.ts` need `node:crypto` or a database connection.
  */
 export * from "./appointments.js";
+export * from "./currency.js";
+export * from "./preferences.js";
+export * from "./weight.js";
 export * from "./enums.js";
 export * from "./labels.js";
 export * from "./money.js";

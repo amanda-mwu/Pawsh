@@ -38,7 +38,6 @@ dialog{border:0;border-radius:18px;padding:0;width:min(650px,calc(100vw - 30px))
 .refund-fields{display:grid;gap:2px;margin:12px 0 10px}
 .refund-fields label{display:grid;gap:4px;margin:0;font-size:12.5px;font-weight:600}
 .refund-fields input{width:100%}
-.hours-grid{border:1px solid var(--line);border-radius:10px;padding:15px}.hours-grid legend{font-weight:700}.hours-grid>div{display:grid;grid-template-columns:1fr 110px 110px;gap:9px;align-items:center;margin:7px 0}.hours-grid label{display:flex;align-items:center;gap:7px;margin:0}.hours-grid input{padding:8px}
 .transfer-control{display:flex;grid-column:1/-1;align-items:center;gap:8px;padding:10px;border-radius:8px;background:#fdecea}.transfer-control input{width:auto}
 .history-list>div{display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid var(--line)}.history-list h4{margin:18px 0 8px}
 .directory-controls{display:grid;grid-template-columns:minmax(260px,2fr) repeat(3,minmax(130px,1fr));gap:12px;align-items:end}.directory-controls label{margin:0}.directory-table-wrap{overflow:auto;background:var(--paper);border:1px solid var(--line);border-radius:12px}.directory-table{width:100%;border-collapse:collapse;font-size:13px}.directory-table th,.directory-table td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}.directory-table th{position:sticky;top:0;background:var(--mint);z-index:1}.directory-row{cursor:pointer}.directory-row:hover,.directory-row:focus-within{background:#f7f8f6}.directory-customer{display:grid;gap:3px;min-width:210px}.directory-customer button{text-align:left;padding:0}.pet-summary{color:var(--muted);font-size:12px}.status-dot{display:inline-flex;align-items:center;gap:6px}.status-dot::before{content:"";width:8px;height:8px;border-radius:50%;background:#2f6f62}.status-dot.inactive::before{background:#68706b}.directory-pagination{display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-top:12px}.directory-pagination span{font-size:13px;color:var(--muted)}
@@ -1824,6 +1823,124 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
   .role-group-note{margin-right:0}
 }
 @media(prefers-reduced-motion:reduce){.role-group-summary::before{transition:none}}
+
+/* Settings → Business. Two working surfaces and three that state their own absence, over one
+   tab bar. The Info form spans two cards but is ONE form: `PUT /api/business/settings` is a
+   single version-guarded write, so two independent saves would race the token. */
+.business-root{display:block}
+.business-panel{display:grid;gap:var(--space-3);max-width:760px;margin-top:12px}
+.business-panel>.settings-panel{margin-top:0}
+/* The form is the panel's only child on the two working tabs, so it carries the same grid the
+   panel does - the cards are visual sections of one save, not separate ones. */
+.business-form{display:grid;gap:var(--space-3)}
+.business-form>.settings-panel{margin-top:0}
+
+.business-field-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 var(--space-4)}
+.business-field-grid>label{align-content:start;margin-bottom:var(--space-3)}
+.business-field-grid input,.business-field-grid select,.business-field-grid textarea{min-width:0;max-width:100%}
+.business-field-wide{grid-column:1/-1}
+.business-field-error{min-height:0;margin:6px 0 0;font-size:12px;font-weight:400}
+.business-field-error:empty{display:none}
+/* Scoped rather than global: the same treatment exists for the breed combobox, and widening it
+   would reach screens this change has not been reviewed against. */
+.business-root [aria-invalid="true"]{border-color:var(--danger)}
+
+/* A mirrored value, not a control. A `readonly` input is visually a disabled input, and the eye
+   learns to skip it — which is the opposite of the point, since this number is what invoices charge. */
+.business-readonly{grid-column:1/-1;padding-top:var(--space-3);border-top:1px solid var(--line)}
+.business-readonly-label{display:block;font-size:13px;font-weight:600}
+.business-readonly-value{display:block;margin-top:5px;font-size:17px;font-weight:700;font-variant-numeric:tabular-nums}
+.business-readonly .field-hint{max-width:64ch}
+.business-readonly .text-button{padding:0;font-size:12px}
+
+.business-form-foot{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;
+  gap:var(--space-3);margin-top:var(--space-2)}
+.business-form-foot .business-form-status{flex:1;min-width:0;margin:0;color:var(--muted);font-size:12.5px}
+.business-form-foot .error{flex:1 0 100%;min-height:0;margin:0;text-align:left}
+.business-form-foot .error:empty{display:none}
+/* Nothing is loading when the form is merely clean, so the global disabled `cursor:wait` is a lie. */
+.business-form-foot .primary:disabled{cursor:default}
+
+.business-hours-list{display:grid;margin-top:var(--space-3)}
+.business-hours-row{display:grid;grid-template-columns:92px 44px minmax(0,1fr);align-items:center;
+  gap:var(--space-3);padding:6px 0 6px 9px;border-bottom:1px solid var(--line);font-size:13px}
+.business-hours-row:last-child{border-bottom:0}
+.business-hours-day{font-weight:650}
+.business-hours-toggle{display:grid;place-items:center;min-height:44px}
+.business-hours-times{display:flex;align-items:center;gap:var(--space-2);min-width:0}
+.business-hours-times input[type=time]{min-height:var(--control-h);padding:6px 9px;
+  border-radius:var(--radius-sm);font-variant-numeric:tabular-nums}
+.business-hours-dash{color:var(--muted)}
+/* The state is a word, never the switch's position or hue alone - and never a disabled input,
+   which would assert a closed day has hours that merely cannot be reached. */
+.business-hours-state{color:var(--muted);font-weight:650}
+/* A weekday holding two saved periods is shown, not edited: the note sits under the periods
+   rather than beside them, so it reads as a sentence about the row. */
+.business-hours-times.is-readonly{flex-wrap:wrap}
+.business-hours-multi{flex:1 0 100%;color:var(--muted);font-size:11.5px;font-weight:400;line-height:1.4}
+/* An inset rule locates the row; the sentence beside it carries the meaning. Two directions of
+   the same idiom, so a changed row and a broken one are never mistaken for each other. */
+.business-hours-row.is-dirty{box-shadow:inset 3px 0 0 var(--brand)}
+.business-hours-row.is-invalid{box-shadow:inset 3px 0 0 var(--danger)}
+.business-hours-row .error{grid-column:3;min-height:0;margin:0 0 6px;font-size:12px;font-weight:400}
+.business-hours-row.is-invalid .business-hours-times{flex-wrap:wrap}
+.business-hours-skeleton .business-skeleton-bar{display:block;width:100%;height:11px;border-radius:5px;background:var(--surface-2)}
+.business-hours-skeleton .business-hours-times .business-skeleton-bar{flex:1}
+
+/* A filter over a NATIVE select, not a second combobox. 132 currency codes and ~420 zones both
+   need narrowing, but the select keeps its own keyboard, its mobile wheel picker, its form value
+   and its accessible name; a listbox would have to reimplement all four to arrive back here. The
+   count line is role="status", so narrowing 132 to 3 is audible as well as visible. */
+.business-picker{display:grid;gap:6px;min-width:0}
+.business-picker-filter{min-height:var(--control-h);padding:6px 9px;border-radius:var(--radius-sm);font-size:13px}
+.business-picker select{min-width:0;max-width:100%}
+.business-picker .field-hint{margin:0}
+.business-picker-count{font-variant-numeric:tabular-nums}
+
+/* A setting Pawsh stores but does not yet act on. It is a hint, not a warning: the sentence is the
+   whole of the honesty and a coloured banner would make an ordinary control look broken. The rule
+   marks where the caveat starts so it does not read as a second half of the field's own hint. */
+.business-pending-note{display:block;margin-top:7px;padding-left:9px;border-left:2px solid var(--line);color:var(--muted)}
+
+/* Both quantity rows keep the field grid's column when the number sits beside its unit. */
+.business-field-grid .pref-frequency{margin-top:5px}
+
+/* Two paragraphs of prose, measure-capped so the tab reads as a written answer rather than a banner. */
+.business-unavailable p{max-width:68ch;color:var(--muted);line-height:1.6}
+.business-unavailable p:last-child{margin-bottom:0}
+.business-unavailable-elsewhere{margin-top:var(--space-4)}
+.business-unavailable .text-button{padding:0}
+
+@media(max-width:620px){
+  .business-field-grid{grid-template-columns:1fr}
+  .business-picker-filter{min-height:44px}
+  .business-hours-row{grid-template-columns:1fr 44px;row-gap:var(--space-2)}
+  .business-hours-times{grid-column:1/-1}
+  .business-hours-times input[type=time]{flex:1;min-width:0}
+  .business-hours-row .error{grid-column:1/-1}
+  .business-form-foot{justify-content:stretch}
+  .business-form-foot .primary{flex:1}
+}
+@media(pointer:coarse){
+  .settings-tab{min-height:44px}
+  .business-form-foot .compact{min-height:44px}
+}
+
+/* Why the Move affordance is not there.
+
+   Drawn only under the lock, and only for somebody who holds appointments.edit - the other reason a
+   Move button is missing is that moving appointments is not this person's job, and explaining that
+   would be noise about a capability they never had. It is prose rather than a disabled button:
+   `disabled` says the capability is merely switched off without saying by what or where, and the
+   whole point of the sentence is the where. Not a banner either - the question is asked at the card,
+   so it is answered at the card, and no persistent chrome is spent on a state most workspaces are
+   never in. --muted is 5.3:1 on both grounds it renders against. */
+.appointment-lock-note{margin:0;color:var(--muted);font-size:11.5px;line-height:1.45}
+.calendar-action-popover .appointment-lock-note{max-width:190px;padding:2px 3px}
+/* The footer is a flex row ending in buttons, so the note takes the leading space and leaves them
+   exactly where they were rather than pushing them onto a second line. */
+.appointment-detail>footer .appointment-lock-note{flex:1;min-width:0;align-self:center;font-size:12px;text-align:left}
+.appointment-lock-note .text-button{padding:0;font-size:inherit}
 
 /* Settings → Coupons & discounts.
 

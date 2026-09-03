@@ -303,17 +303,40 @@ export const pricingClassLabels: Record<PricingClass, string> = {
  * a receipt readable rather than blank, which matters more than the symbol.
  *
  * Input is always integer minor units, matching every `*Minor` field the API returns.
+ *
+ * THE TWO FRACTION DIGITS ARE PINNED, and that is load-bearing rather than tidy. Left to itself
+ * `Intl.NumberFormat` applies CLDR's display convention for the currency, which is how many
+ * decimals a place actually shows - not the exponent ISO 4217 defines. For twelve supported
+ * currencies the two disagree: AFN, ALL, IRR, KPW, LAK, LBP, MGA, MMK, RSD, SOS, SYP and YER all
+ * have an ISO minor unit of two while CLDR formats them with none, because the subunit has been
+ * inflated into irrelevance. Unpinned, an invoice of 1250 minor units of AFN printed as "AFN 13" -
+ * the caller's exact integer silently rounded away on a document a client pays against. Pinning
+ * makes the formatter state what the money model already is: minor units over one hundred, always.
+ * Currencies whose CLDR convention is already two decimals, which is every other supported code
+ * including USD, are formatted identically to before.
+ *
+ * This does not give Pawsh multi-exponent money. `currency.ts` still admits only minor-unit-2
+ * currencies, for the reasons written there. This keeps the formatter honest INSIDE that rule.
  */
 export function formatMinor(valueMinor: number | null | undefined, currency = "USD"): string {
   const amount = Number(valueMinor ?? 0) / 100;
   try {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(amount);
+    return new Intl.NumberFormat("en-US", {
+      style: "currency", currency, minimumFractionDigits: 2, maximumFractionDigits: 2
+    }).format(amount);
   } catch {
     return `${amount.toFixed(2)} ${currency}`;
   }
 }
 
-/** Pounds from the stored ounces, for display beside a weight tier. */
+/**
+ * Pounds from the stored ounces, for display beside a weight tier.
+ *
+ * Retained as-is for callers that genuinely mean pounds. Anything rendering a weight to an
+ * OPERATOR should use `weightFromOunces` / `formatWeight` in `weight.ts` instead, which take the
+ * workspace's `weightUnit` and convert the price-tier band labels along with the number - see the
+ * note there about why converting one without the other is worse than converting neither.
+ */
 export function poundsFromOunces(weightOunces: number | null | undefined): number | null {
   if (weightOunces === null || weightOunces === undefined) return null;
   const ounces = Number(weightOunces);

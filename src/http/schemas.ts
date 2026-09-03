@@ -7,6 +7,8 @@ import {pricingClasses,weightTiers} from "@pawsh/domain";
 import {cardProcessorProviders,configurableSettlementTypes,paymentMethods,staffCreditEntryKinds} from "@pawsh/domain";
 import {discountApplyScopes,discountKinds,discountStackingModes} from "@pawsh/domain";
 import {groomerPaletteSize} from "@pawsh/domain";
+import {isSupportedCurrency,supportedCurrencies} from "@pawsh/domain";
+import {appointmentLockModes,businessTypes,couponStackingModes,dateFormats,hourFormats,weightUnits,upcomingAppointmentCountMax} from "@pawsh/domain";
 
 export const idParams = z.object({ id: z.string().uuid() });
 export const locationParams = z.object({ locationId: z.string().uuid() });
@@ -826,17 +828,160 @@ export const creditLedgerQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(10).max(100).default(50)
 });
 
+/**
+ * A currency the workspace may be switched to.
+ *
+ * The list, and the reason it is a list rather than "any ISO 4217 code", live in
+ * `@pawsh/domain`'s `currency.ts`: every Pawsh amount is minor units divided by exactly one
+ * hundred, so a currency with any other exponent would put wrong numbers on invoices. The set is
+ * DERIVED from the tuple, never restated, in the same way `permissionKey` derives from
+ * `permissions` - a code cannot become settable here while being unrenderable everywhere else.
+ */
+const currencyCode = z.string().trim().length(3)
+  .transform((value) => value.toUpperCase())
+  .refine(isSupportedCurrency, {
+    error: `Unsupported currency. Pawsh supports ${supportedCurrencies.join(", ")}.`
+  });
+
+/**
+ * Settings -> Business, saved as a MERGE over the stored record.
+ *
+ * ABSENCE IS DISTINCT FROM AN EXPLICIT VALUE, and the distinction is not cosmetic. `phone` and
+ * `email` were `nullish()` while the handler wrote `input.phone ?? null` unconditionally, so a
+ * client that sent neither - which is every client that exists - cleared both columns on every
+ * save. Renaming the salon silently erased its contact details. Those two columns are not
+ * decoration: `businesses.email` is one of the two identities
+ * `POST /api/workspace-access-requests` matches a workspace administrator on, and the pair is the
+ * "contact us" line on rabies notices, agreement requests and report cards. See the note above
+ * the handler.
+ *
+ *   phone omitted        -> the stored number is left exactly as it is
+ *   phone: null or ""    -> the operator is clearing the number, on purpose
+ *   email omitted        -> the stored address is left exactly as it is
+ *   email: null or ""    -> the operator is clearing the address, on purpose
+ *   address omitted      -> the stored address line is left exactly as it is
+ *   address: null or ""  -> the operator is clearing the address line, on purpose
+ *   currency omitted     -> the stored currency is left exactly as it is
+ *
+ * This mirrors `employeeUpdateSchema`, which carries the same treatment for the same reason after
+ * the same class of defect. `name`, `timezone`, `taxRateBasisPoints`, `reminderLeadMinutes` and
+ * `locationVersion` stay REQUIRED: every existing caller sends all five, `timezone` drives the
+ * confirm the client raises before a change, and `locationVersion` is the optimistic-concurrency
+ * token the handler refuses a stale save on.
+ *
+ * `currency` is optional rather than required so a workspace still holding a value from before
+ * `currencyCode` existed is not locked out of editing its own name - only a caller that actually
+ * operates the picker is held to the supported list.
+ *
+ * `address` is `locations.address`, a single free-text line, matching the convention
+ * `customer_addresses` set in 0025. Pawsh has no structured address anywhere and no need of one:
+ * nothing geocodes, routes, or validates a postcode.
+ */
+/**
+ * A link an operator typed, normalised and made safe to render.
+ *
+ * TWO THINGS HAPPEN HERE AND BOTH MATTER.
+ *
+ * The PROTOCOL IS RESTRICTED TO http AND https, which is a security bound rather than tidiness.
+ * Zod's bare `z.url()` accepts `javascript:alert(1)` - it is a well-formed URL. These four fields
+ * exist to be rendered as links, so an unrestricted one is stored XSS with the salon's own
+ * settings screen as the injection point and every viewer of the workspace as the target. `data:`
+ * and `vbscript:` fall to the same bound. No escaping downstream can save an `href` whose scheme
+ * is the payload, so the refusal belongs here, where it can be a 400 rather than a rendered link.
+ *
+ * A BARE HOST IS PREFIXED with `https://`. Nobody types a scheme into a "Yelp page" box, and
+ * rejecting `www.yelp.com/biz/pawsh` for the absence of eight characters is the kind of validation
+ * that teaches operators the form is broken. The prefix is applied ONLY when no scheme is present
+ * at all, so `javascript:alert(1)` is not quietly rescued into `https://javascript:alert(1)` - it
+ * already has a scheme, keeps it, and is refused.
+ *
+ * 500 matches the column bound in 0047, which matches `locations.address` and
+ * `customer_addresses.address`. Blank is null, the one way to say "not recorded", exactly as the
+ * contact fields treat it.
+ */
+const withScheme = /^[a-z][a-z0-9+.-]*:/i;
+const businessLink = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const trimmed = value.trim();
+    if (trimmed === "") return null;
+    return withScheme.test(trimmed) ? trimmed : `https://${trimmed}`;
+  },
+  z.url({ protocol: /^https?$/ }).max(500).nullable().optional()
+);
+
+/**
+ * Settings -> Business: the business info card, the preferences card and the social links.
+ *
+ * WHY EVERY NEW FIELD IS OPTIONAL. Absence means "leave the stored value alone", which is the
+ * merge contract the contact fields above already follow, and it is the only shape that does not
+ * break the callers that exist today: nothing in the product sends `weightUnit` or `dateFormat`
+ * yet, and a required field would turn every current save of this screen into a 400. `businessType`
+ * is REQUIRED OF THE OPERATOR without being required of the request - the column is `not null`
+ * with a default, so a value always exists, and the form presents a select with no empty option.
+ * Requiredness that would 400 an existing client is not requiredness, it is an outage.
+ *
+ * WHICH FIELDS MAY BE CLEARED, AND WHICH MAY NOT. The six enum-valued preferences are `not null`
+ * columns over closed sets: there is no "no weight unit". They accept a value or nothing, never
+ * null. `website` and the three social links are nullable text and follow the contact-field rule -
+ * omitted preserves, null or blank clears.
+ *
+ * `upcomingAppointmentCount` IS THE ONE FIELD WHERE NULL IS A VALUE RATHER THAN A CLEAR. Null
+ * means "All", which is a real choice an operator makes and the product default besides. The
+ * literal string "All" is accepted as an alias for it so a client can round-trip the value its
+ * select element holds without translating; both land as null. Omission still preserves, so the
+ * three cases stay distinct.
+ *
+ * `defaultServiceFrequencyWeeks` takes the same 1-104 bound as `customers.booking_frequency_weeks`
+ * because it is the default that seeds that column on a new client. A business default outside the
+ * range of the column it fills would be a setting that saves and then fails on use.
+ *
+ * `couponStacking` and `upcomingAppointmentCount` have NO CONSUMER TODAY and that is deliberate,
+ * not an omission - see `preferences.ts`. `appointmentLock` likewise stores and returns with no
+ * enforcement anywhere, pending a ruling on what it should actually refuse.
+ */
 export const businessSettingsSchema = z.object({
   name: z.string().trim().min(2).max(120),
-  phone: z.string().trim().max(40).nullish(),
-  email: z.string().email().max(320).nullish(),
+  phone: z.preprocess(blankToNull, z.string().trim().max(40).nullable().optional()),
+  email: z.preprocess(blankToNull, z.string().trim().email().max(320).nullable().optional()),
+  address: z.preprocess(blankToNull, z.string().trim().min(1).max(500).nullable().optional()),
+  website: businessLink,
+  businessType: z.enum(businessTypes).optional(),
   timezone: z.string().trim().min(1).max(80),
-  currency: z.string().trim().length(3).transform((value) => value.toUpperCase()),
+  currency: currencyCode.optional(),
   taxRateBasisPoints: z.number().int().min(0).max(10_000),
   reminderLeadMinutes: z.number().int().min(0).max(60 * 24 * 30),
+  dateFormat: z.enum(dateFormats).optional(),
+  hourFormat: z.enum(hourFormats).optional(),
+  weightUnit: z.enum(weightUnits).optional(),
+  appointmentLock: z.enum(appointmentLockModes).optional(),
+  couponStacking: z.enum(couponStackingModes).optional(),
+  upcomingAppointmentCount: z.preprocess(
+    (value) => (typeof value === "string" && value.trim().toLowerCase() === "all" ? null : value),
+    z.number().int().min(1).max(upcomingAppointmentCountMax).nullable().optional()
+  ),
+  defaultServiceFrequencyWeeks: z.number().int().min(1).max(104).nullable().optional(),
+  socialFacebook: businessLink,
+  socialGoogle: businessLink,
+  socialYelp: businessLink,
   locationVersion: z.number().int().positive()
 });
 
+/**
+ * A weekly grid of open periods, used by both the salon's hours and a groomer's.
+ *
+ * The two facts a grid can get wrong - a day that ends before it starts, and the same weekday
+ * listed twice - are checked by `refuseInvalidWorkingHours` in the handlers rather than here, for
+ * the reason already written below about `appointmentLimit`: a schema error reads like a typo,
+ * and these are not typos. Somebody dragged an end time past midnight, or ticked Tuesday twice.
+ * Both are answered with their own code so a modal can say which day and why.
+ *
+ * The database is the durable backstop for both - `check (start_time < end_time)` and
+ * `unique (location_id, weekday)` / `unique (employee_id, weekday)` in 0001 - but reaching those
+ * produces a constraint violation the error handler can only render as "violates a data integrity
+ * rule", or, for the ordering check, a bare 400 carrying a Postgres message. That is the wrong
+ * answer to give a salon owner setting their opening times.
+ */
 export const workingHoursSchema = z.object({
   hours: z.array(z.object({
     weekday: z.number().int().min(0).max(6),
@@ -848,8 +993,6 @@ export const workingHoursSchema = z.object({
     // that reads like a typo. Concurrency above one is enforced-against by four database objects
     // and is not a setting Pawsh can currently honour - see migration 0027.
     appointmentLimit: z.number().int().min(1).max(10).default(1)
-  }).refine((period)=>period.startTime<period.endTime,{
-    message:"Working hours must start before they end"
   })).max(7)
 });
 

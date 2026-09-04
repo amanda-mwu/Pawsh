@@ -31,7 +31,7 @@ import {
   appointmentSchema, checkoutSchema, customerSchema, employeeSchema, employeeUpdateSchema,
   idParams, loginSchema,
   normalizeEmail, normalizePhone, paymentSchema, petSchema, serviceSchema, signupSchema,
-  transitionSchema, appointmentTimesSchema, businessSettingsSchema, workingHoursSchema, blockedTimeSchema,
+  transitionSchema, appointmentTimesSchema, appointmentRecordSchema, businessSettingsSchema, workingHoursSchema, blockedTimeSchema,
   operationalUpdateSchema, voidPaymentSchema, appointmentMoveSchema, appointmentServicesSchema,
   passwordResetRequestSchema, passwordResetConfirmSchema, invitationSchema,
   invitationAcceptSchema, ownershipTransferSchema, petProfileUpdateSchema, petCareUpdateSchema,
@@ -9325,6 +9325,92 @@ export function registerRoutes(
     if (!result) return reply.code(404).send({ error: "Appointment not found" });
     if ("stale" in result) return reply.code(409).send({ error: "Appointment changed; refresh before continuing" });
     return result;
+  });
+
+  /**
+   * THE APPOINTMENT RECORD ITSELF. Today that is one field, `notes`, and the route is named for
+   * the record rather than for the field because the field is not the point.
+   *
+   * WHY IT DID NOT EXIST. Every other appointment write on this file is a purpose-built
+   * sub-resource - `/transition` performs a lifecycle move, `/times` corrects a recorded
+   * check-in, `/schedule` moves a booking under an idempotency claim, `/services` re-snapshots
+   * the catalog, `/operations` writes the service note. `notes` belonged to none of them, so it
+   * was written once by `POST /api/appointments` and never again: not a decision that the booking
+   * note is immutable, just a route nobody had written. `ensureAppointmentMovable` says as much
+   * in its own doc comment - the move lock "is NOT a lock on editing an appointment's contents:
+   * services, price, notes and status stay writable under it" - which describes a product where
+   * the note is editable and an API where it was not. This closes that.
+   *
+   * NOT A `/notes` ENDPOINT. A note-shaped URL would have to be joined by a `/note-and-whatever`
+   * URL the first time a second piece of plain appointment metadata becomes editable, and the
+   * client would then be choosing between two routes to save one form. `PATCH
+   * /api/appointments/:id` is the general edit for the appointment record, gated on the general
+   * appointment-edit permission, and a field graduates OUT of it into its own route only when it
+   * needs preconditions of its own - which is exactly the story of `/times` and `/schedule`.
+   *
+   * IT WORKS IN EVERY STATUS, INCLUDING AFTER THE MONEY. A completed, invoiced, paid visit whose
+   * note says "Bnetley" must be correctable without cancelling and rebooking the appointment, and
+   * cancelling a paid visit to fix a spelling is not a workflow anybody should be pushed into.
+   *
+   * AND IT TOUCHES NOTHING FINANCIAL. The statement below writes `notes` and the three bookkeeping
+   * columns every write on this table writes. It reads no invoice, no payment and no credit entry,
+   * it re-snapshots nothing, and it recalculates nothing - so an invoice's subtotal, discount,
+   * tax, tip, total and balance, its payments, the `appointment_services.*_snapshot` values it was
+   * built from, and the client's credit ledger are all exactly as they were the instant before.
+   * Editable appointment metadata is not mutable financial history, and the two are kept apart
+   * here by the write being narrow rather than by a guard that could be forgotten.
+   *
+   * NO OUTBOX EVENT, FOLLOWING `/times` RATHER THAN `/schedule`. `AppointmentUpdated` means "when
+   * or with whom this visit happens has changed": the worker responds by DELETING the pending
+   * reminder intent and inserting a fresh one, and its delete matches `cancelled` intents too. So
+   * emitting it for a note edit would re-arm a reminder that a cancellation had already stood
+   * down, and mail a customer about a visit that is not happening. A note is not a change to the
+   * appointment the customer was told about, so it gets the audit event and no outbox event.
+   *
+   * Returns the full calendar row for the same reason `/times` does: the detail screen re-renders
+   * from the projection it opened with rather than merging two shapes.
+   */
+  app.patch("/api/appointments/:id", {
+    preHandler: [authenticate, requirePermission("appointments.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(appointmentRecordSchema, request.body);
+    const result = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [current] = await tx<{ notes: string | null; version: number }[]>`
+        select notes,version from appointments
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!current) return null;
+      // Optional, exactly as it is on `/times`, `/services` and `/operations`: a caller that knows
+      // which version it read may say so and be refused if somebody else has written since. The
+      // row lock above is what makes the comparison honest.
+      if (input.version && current.version !== input.version) return { stale: true } as const;
+      // `?? null` is the create path's own normalisation, restated so the two agree: an empty
+      // string is a note that says nothing and is stored as one, and `null` is the absence of a
+      // note. Anything else would mean the value a booking wrote could not be written back.
+      const notes = input.notes ?? null;
+      const [updated] = await tx<{ id: string }[]>`
+        update appointments set notes=${notes},
+          version=version+1, updated_by=${context.userId}, updated_at=now()
+        where business_id=${context.businessId} and id=${id} returning id
+      `;
+      if (!updated) return null;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "appointment.notes_edit", resourceType: "appointment", resourceId: id,
+        before: { notes: current.notes }, after: { notes }, reason: input.reason
+      });
+      return { edited: true } as const;
+    });
+    if (!result) return reply.code(404).send({ error: "Appointment not found" });
+    if ("stale" in result) return reply.code(409).send({ error: "Appointment changed; refresh before continuing" });
+    const [appointment] = await appointmentCalendarRows(db, db`
+      a.business_id=${context.businessId} and a.id=${id}
+    `);
+    if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
+    return mayViewPetCare(context) ? appointment : redactPetCare(appointment);
   });
 
   /**

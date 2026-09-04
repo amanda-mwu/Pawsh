@@ -742,6 +742,42 @@ export const appointmentTimesSchema = z.object({
 });
 
 /**
+ * Editing the appointment RECORD - the general note that travels with the visit.
+ *
+ * `notes` IS THE SAME FIELD `appointmentSchema` WRITES AT BOOKING, under the same contract: the
+ * same 5000 characters, the same absence of trimming, and the same reading of `null` as "there is
+ * no note". It has to be the same, because the thing being corrected here is the thing that was
+ * typed there, and a field that accepted 5000 characters on Tuesday and 2000 on Wednesday would
+ * refuse to save back text the product itself had written.
+ *
+ * IT IS NOT `operational_notes`, which stays where it is. That column is the service-progress note
+ * written while a dog is on the table, gated on `operations.perform_service` and reachable only in
+ * `checked_in`/`in_service` through `PATCH /api/appointments/:id/operations`. This is the booking
+ * note - what the client asked for, what the front desk needs to remember, and the typo somebody
+ * has just noticed. Two notes, two audiences, two permissions; merging them would mean a groomer
+ * with no editing authority could rewrite a booking instruction, or a receptionist could overwrite
+ * a half-finished service note.
+ *
+ * `notes` IS OPTIONAL BUT MUST BE PRESENT, which is not a contradiction: the key may be omitted
+ * from the TYPE because more editable fields will join it, and the refinement below refuses a body
+ * that names none of them. An empty PATCH is not an edit, and accepting one would bump `version`
+ * and write an audit event recording that nothing happened. `null` is how the client CLEARS the
+ * note and is entirely different from an absent key, which is why the route reads
+ * `hasOwnProperty` rather than testing for undefined.
+ *
+ * `reason` is the same optional correction note `appointmentTimesSchema` carries, recorded on the
+ * audit event and nowhere else.
+ */
+export const appointmentRecordSchema = z.object({
+  notes: z.string().max(5000).nullish(),
+  reason: z.string().trim().max(500).nullish(),
+  version: z.number().int().positive().optional()
+}).strict().refine(
+  (value) => Object.prototype.hasOwnProperty.call(value, "notes"),
+  { message: "At least one editable appointment field is required", path: ["notes"] }
+);
+
+/**
  * Checking out an appointment.
  *
  * `discountMinor` and `discountType` are THE MANUAL PATH and they are unchanged: a number and a

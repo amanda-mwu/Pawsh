@@ -29,8 +29,10 @@ const detail = (page: Page): Locator => page.getByTestId("appointment-detail");
 async function openFromCalendar(page: Page, appointmentId: string): Promise<Locator> {
   await page.getByTestId("nav-calendar").click();
   // The calendar renders twice on entry (the week, then the month it backfills), so the card is
-  // replaced under anything that clicked the first copy. Focus restoration returns to the element
-  // that opened the surface, and a detached one restores to <body>.
+  // replaced under anything that clicked the first copy — and it is replaced again by any refresh
+  // that lands while the surface is open. Focus restoration resolves the card by its appointment
+  // id for that reason, so the assertion below holds whichever copy is on screen; this wait is
+  // only so the click has a card to land on.
   await page.waitForLoadState("networkidle");
   const card = page.locator(`[data-appointment-id="${appointmentId}"]`);
   await card.locator(".calendar-open").first().click();
@@ -63,10 +65,15 @@ test("the surface is its own dialog, and the checkout and ticket levels stand re
   // surface's own children.
   await expect(page.getByTestId("appointment-detail-surface")).toBeVisible();
   await expect(page.getByTestId("modal")).toBeHidden();
-  // Levels 2 and 3 exist from the first render so the primitive has somewhere to push to. Stage 1
-  // never opens them.
+  // Levels 2 and 3 exist from the first render so the primitive has somewhere to push to, and a
+  // SCHEDULED appointment opens neither on arrival. Check Out is offered only once the visit is
+  // completed, so its footer button is absent here — but the Ticket is a printable work sheet
+  // rather than a record of what happened, so its entry point is the header's print icon and it
+  // is offered at every stage. `tests/e2e/ticket-surface.spec.ts` is where level 3 is driven open.
   await expect(page.getByTestId("checkout-surface")).toBeHidden();
   await expect(page.getByTestId("ticket-surface")).toBeHidden();
+  await expect(page.getByTestId("appointment-ticket")).toHaveCount(0);
+  await expect(page.getByTestId("appointment-ticket-print")).toBeVisible();
 
   await expect(page.getByTestId("appointment-reference"))
     .toContainText(`Appointment #${appointment.id.slice(0, 8)}`);
@@ -223,10 +230,17 @@ test("a terminal appointment offers only what still means something", async ({
     "appointment-take-payment",
     "appointment-save",
     "appointment-groomer-edit",
-    "appointment-adjust-services"
+    "appointment-adjust-services",
+    // The footer's own Ticket button is a settled-visit control and a cancelled visit never
+    // settles, so Close keeps the primary slot it gives up on a completed appointment. The
+    // header's print icon is a different thing and is still there: see below.
+    "appointment-ticket"
   ]) {
     await expect(page.getByTestId(control), control).toHaveCount(0);
   }
+  // A cancelled visit still has a work sheet. Nothing on it asserts the visit happened, and an
+  // operator reprinting the sheet for a cancellation they are chasing is an ordinary thing to do.
+  await expect(page.getByTestId("appointment-ticket-print")).toBeVisible();
   // Nothing can be written to a cancelled appointment, so the note is text rather than a field.
   await expect(page.getByTestId("appointment-note").locator("textarea")).toHaveCount(0);
 

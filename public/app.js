@@ -1444,6 +1444,11 @@ async function checkout(id) {
     dialog.querySelector('[data-testid="checkout-print-receipt"]')?.addEventListener("click",()=>{
       if(co.receipt)printReceipt(co.receipt);
     });
+    // NO RECEIPT IS HANDED UP. The Ticket is a work sheet and carries no money at all, so the
+    // receipt this surface is holding is not its business; the bill stays here, on the screen that
+    // took the payment.
+    dialog.querySelector('[data-testid="checkout-ticket"]')?.addEventListener("click",()=>runDetached(()=>
+      runOnce(`ticket:${co.appointment.id}`,()=>openTicket(co.appointment))));
     if(checkoutMode(co)==="settled"){
       bindReceiptActions(dialog,co.receipt);
       return;
@@ -11882,6 +11887,27 @@ let appointmentStackBacks=0;
 function appointmentStackState(){return {apptStack:appointmentStack.levels.map(level=>level.id)};}
 
 /**
+ * Focus, handed back to the control that opened the stack - or to whatever has replaced it.
+ *
+ * `restoreFocus` is the ELEMENT that was clicked, and the calendar underneath is redrawn whole by
+ * anything that refreshes it: returning to the tab does it, and so does a permission
+ * reconciliation. The card that opened the surface is a detached node by then, `focus()` on it is
+ * a silent no-op, and the operator is dropped at the top of the document with the calendar they
+ * were working scrolled somewhere behind them. Every other `restoreFocus` in this file is a
+ * selector for exactly this reason, so a detached card is resolved again by the appointment id it
+ * carries - preferring the same kind of control, because the week grid, the month cell and the
+ * agenda each draw one for the same visit.
+ */
+function focusStackReturn(target){
+  if(!target?.focus)return;
+  if(target.isConnected){target.focus();return;}
+  const appointmentId=target.dataset?.calendarAppointment;
+  if(!appointmentId)return;
+  const replacements=$$(`[data-calendar-appointment="${appointmentId}"]`);
+  (replacements.find(node=>node.className===target.className)||replacements[0])?.focus();
+}
+
+/**
  * `path` is accepted and ignored today. Level 1 is expected to gain a real URL once an
  * appointment is addressable; taking the parameter now means that lands as a call-site change
  * rather than a rework of this primitive.
@@ -11902,7 +11928,9 @@ async function popStackLevel({viaHistory=false}={}){
   appointmentStack.levels.pop();
   level.dialog.close();
   level.onClose?.();
-  (appointmentStack.levels.at(-1)?.dialog.querySelector("[data-surface-close]")||level.restoreFocus)?.focus?.();
+  const beneath=appointmentStack.levels.at(-1)?.dialog.querySelector("[data-surface-close]");
+  if(beneath)beneath.focus();
+  else focusStackReturn(level.restoreFocus);
   if(!viaHistory){appointmentStackBacks++;globalThis.history.back();}
   return true;
 }
@@ -12067,7 +12095,19 @@ function appointmentSurfaceMarkup(surface){
       +`<h2 id="appointment-detail-title">${escape(model.dateLabel)}</h2>`
       +`<p class="surface-subhead">${escape(model.timeRange)} · scheduled ${model.durationMinutes} min</p>`
     +`</div>`
-    +`<button type="button" class="surface-close" data-surface-close aria-label="Close appointment details">&#215;</button>`
+    // The Ticket's own entry point, and the reason it is an icon rather than a footer button: the
+    // work sheet is printed from every appointment at any stage, so it sits with the surface's
+    // chrome rather than among the controls that act on the visit. `.header-icon-button` is the
+    // product's existing icon button, so it already carries the 44px touch target on a coarse
+    // pointer and the stroke conventions every other icon in the app is drawn with.
+    +`<div class="surface-head-actions">`
+      +`<button type="button" class="header-icon-button" data-testid="appointment-ticket-print"`
+        +` aria-label="Print ticket" title="Print ticket">`
+        +`<svg viewBox="0 0 24 24" aria-hidden="true">`
+          +`<path d="M7 8V3h10v5M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2"/>`
+          +`<path d="M7 14h10v7H7zM9 17h6M9 19h4"/></svg></button>`
+      +`<button type="button" class="surface-close" data-surface-close aria-label="Close appointment details">&#215;</button>`
+    +`</div>`
   +`</header>`;
 
   // The rail is clientSummaryMarkup() verbatim, written in after open by
@@ -12127,17 +12167,26 @@ function appointmentSurfaceMarkup(surface){
   +`</div></div>`;
 
   const print=`<button type="button" class="secondary compact" data-testid="appointment-print">Print</button>`;
+  // Level 3. On a settled visit CLOSE GIVES UP THE PRIMARY SLOT: opening the Ticket is what the
+  // operator came to a completed appointment for, and dismissal is not. A cancelled or no-show
+  // visit has no Ticket, so Close keeps the slot there.
+  const ticket=can.ticket
+    ? `<button type="button" class="${can.readOnly?"primary":"secondary"} compact" data-testid="appointment-ticket">Ticket</button>`
+    : "";
   const foot=can.readOnly
-    // Nothing on this appointment can move any more, so the footer offers the two things that
-    // still mean something rather than a row of controls the server would refuse.
+    // Nothing on this appointment can move any more, so the footer offers the things that still
+    // mean something rather than a row of controls the server would refuse.
     ? `<footer class="surface-foot"><div class="surface-foot-actions"></div>`
       +`<div class="surface-foot-actions">${print}`
-      +`<button type="button" class="primary compact" data-testid="appointment-close">Close</button></div></footer>`
+      +`<button type="button" class="${can.ticket?"secondary":"primary"} compact" data-testid="appointment-close">Close</button>`
+      +ticket+`</div></footer>`
     : `<footer class="surface-foot"><div class="surface-foot-actions">`
         +(can.cancel?`<button type="button" class="secondary compact destructive" data-testid="appointment-cancel">Cancel</button>`:"")
         +(can.cancel?`<button type="button" class="secondary compact" data-testid="appointment-no-show">No-show</button>`:"")
         +(can.bookAgain?`<button type="button" class="secondary compact" data-testid="appointment-book-again">Book Again</button>`:"")
-      +`</div><div class="surface-foot-actions">${print}`
+      +`</div><div class="surface-foot-actions">${print}${ticket}`
+        // Billing the visit stays the primary action while it is still unbilled; the Ticket is
+        // available beside it.
         +(can.checkout?`<button type="button" class="primary compact" data-testid="appointment-take-payment">Take Payment</button>`:"")
         +(can.editNote?`<button type="button" class="primary compact" data-testid="appointment-save">Save</button>`:"")
       +`</div></footer>`;
@@ -12201,6 +12250,11 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
       checkout:status==="completed"&&!invoiced&&allowed("checkout.perform"),
       cancel:status==="scheduled"&&allowed("appointments.cancel"),
       bookAgain:allowed("appointments.create"),
+      // No permission gate. The visit half of the Ticket is what this operator is already reading
+      // one level down, and the money half is gated by the endpoint that serves it rather than by
+      // a client that declines to draw it. Only a completed visit has a Ticket: before completion
+      // the working record IS this surface.
+      ticket:status==="completed",
       editNote:["checked_in","in_service"].includes(status)&&allowed("operations.perform_service")
     };
   };
@@ -12332,6 +12386,13 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
     // than opened through #modal. Guarded by the same key the calendar's own Checkout uses: two
     // concurrent renders of that screen is the failure advanceAppointment() documents.
     on("appointment-take-payment",()=>runDetached(()=>runOnce(`checkout:${id}`,()=>checkout(id))));
+    // Level 3, pushed the same way and guarded the same way: `openTicket` awaits its two note
+    // reads after it pushes, and a second press inside that window would render and bind the
+    // surface twice. Both entry points share the one key, so the header icon and the footer
+    // button cannot open two.
+    const ticketLevel=()=>runDetached(()=>runOnce(`ticket:${id}`,()=>openTicket(surface.item)));
+    on("appointment-ticket",ticketLevel);
+    on("appointment-ticket-print",ticketLevel);
     // Booking is navigation away from this visit, so the stack comes down first rather than
     // leaving a stale appointment standing behind the booking workspace.
     on("appointment-book-again",()=>runDetached(async()=>{
@@ -12410,6 +12471,306 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
     })()
   ]);
 }
+
+/* ---------------------------------------------------------------------------
+   The Ticket: level 3 of the appointment stack.
+
+   A TICKET IS A PRINTABLE WORK SHEET AND IT CARRIES NO MONEY. Not a price, not a total, not a
+   tax line, not a payment, not a balance, and not an invoice status. It is the sheet the groomer
+   works from: who the pet is, who is grooming it, what was booked, how long each service takes,
+   and the three notes anybody handling this visit needs to have read.
+
+   THE RECEIPT IS A DIFFERENT DOCUMENT AND IT LIVES IN CHECK OUT. The Ticket never reads
+   `GET /api/invoices/:id/receipt`, never calls `receiptBodyMarkup`, and has no money states to
+   be in - so it needs no `payments.view` gate either. A work sheet discloses nothing financial,
+   which means every operator who can open the appointment sees exactly the same sheet, and there
+   is no withheld-money footnote because there is nothing being withheld.
+
+   AND IT IS NOT GATED ON COMPLETION. The sheet is most useful BEFORE the visit - it is what gets
+   printed and clipped to the run - so a scheduled appointment has one exactly as a finished one
+   does.
+   --------------------------------------------------------------------------- */
+
+/**
+ * The salon's own identity, for the head of the sheet.
+ *
+ * THE SESSION'S ACTIVE LOCATION, from `state.me.business`, which `GET /api/me` returns whole -
+ * name, phone, email and the active location's single free-text address line. The receipt
+ * resolves its own header through the invoice's appointment's location instead, because a
+ * receipt is a document about one visit and the address on it has to be a fact about that visit.
+ * The Ticket has no invoice to resolve through and does not want one.
+ */
+function salonIdentity(){
+  const business=state.me?.business;
+  // Blank is the same absence as null here: a line is drawn only when there is something on it,
+  // and a bare `Phone:` with nothing after it is never rendered.
+  const line=value=>String(value??"").trim();
+  return {name:line(business?.name),address:line(business?.address),
+    phone:line(business?.phone),email:line(business?.email)};
+}
+
+// A cell with nothing in it. One character, so an absent note reads as a filled-in blank rather
+// than as a row somebody forgot to complete.
+const TICKET_EMPTY="-";
+// A note thread that has not come back yet, and one that could not be read. Both are conventions
+// this file already uses - the lifecycle strip shows "…" while the activity feed is in flight,
+// and the activity disclosure says "unavailable" when it failed - so neither is a new vocabulary.
+// "unavailable" is never collapsed into TICKET_EMPTY: "there is no note" and "the note could not
+// be read" are different facts, and only one of them is safe to act on.
+const TICKET_PENDING="…";
+const TICKET_UNAVAILABLE="unavailable";
+
+// A UUID is not a counter, so this is presented as a reference rather than an invented number.
+// The same value the panel header carries and the sheet repeats under it.
+function ticketReference(item){return String(item.id).slice(0,8);}
+
+/**
+ * A duration the way the sheet writes it: `2 h`, `30 m`, `1 h 30 m`.
+ *
+ * NOT `lifecycleDurationLabel`, which writes "30 min" and exists to describe a MEASURED elapsed
+ * time that may not have been recorded at all. These are booked service durations: they are
+ * always present, they are read down a narrow table column, and the sheet is scanned rather than
+ * read, so the shorter form is the one that belongs here.
+ */
+function ticketDurationLabel(minutes){
+  const total=Math.max(0,Math.round(Number(minutes)||0));
+  const hours=Math.floor(total/60),rest=total%60;
+  if(!hours)return `${rest} m`;
+  return rest?`${hours} h ${rest} m`:`${hours} h`;
+}
+
+/**
+ * The latest entry in one note thread, out of a settled read.
+ *
+ * SORTED BY `createdAt` HERE RATHER THAN TRUSTED FROM THE SERVER. Both note endpoints order
+ * `pinned desc, created_at desc`, so their first row is the newest PINNED note whenever one
+ * exists - which is the right order for a thread and the wrong answer for a column headed
+ * "Latest Note". The sort is over one bounded page and settles the question here.
+ */
+function ticketLatestNote(settled){
+  if(settled.status!=="fulfilled")return {failed:true,body:""};
+  const items=[...(settled.value?.items||[])]
+    .sort((first,second)=>new Date(second.createdAt)-new Date(first.createdAt));
+  return {failed:false,body:String(items[0]?.body??"").trim()};
+}
+
+// Null while the read is in flight; `{failed}` or `{body}` once it has settled.
+function ticketNoteCell(thread){
+  if(!thread)return TICKET_PENDING;
+  if(thread.failed)return TICKET_UNAVAILABLE;
+  return thread.body||TICKET_EMPTY;
+}
+
+// Label and value on one line, the label carrying the weight. An absent line is not drawn.
+function ticketSalonMarkup(salon){
+  const line=(label,value)=>value
+    ? `<p class="ticket-salon-line"><span>${escape(label)}:</span> ${escape(value)}</p>`
+    : "";
+  return `<div class="ticket-salon" data-testid="ticket-salon">`
+    +`<p class="ticket-business">${escape(salon.name)}</p>`
+    +line("Phone",salon.phone)+line("Email",salon.email)+line("Address",salon.address)
+  +`</div>`;
+}
+
+// The visit's own two facts, opposite the salon block. The date is the APPOINTMENT'S date in the
+// appointment's own scheduling zone, laid out by the workspace's date preference - the same
+// formatter the rest of the product reads dates through.
+function ticketVisitMarkup(item,model){
+  const zone=item.schedulingTimezone||schedulingZone();
+  return `<div class="ticket-visit">`
+    +`<p data-testid="ticket-date"><span>Date:</span> ${escape(formatPrefDate(new Date(item.startAt),zone))}</p>`
+    +`<p data-testid="ticket-client"><span>Client:</span> ${escape(model.customerName)}</p>`
+  +`</div>`;
+}
+
+/**
+ * What was booked, ONE ROW PER PET-SERVICE PAIR.
+ *
+ * A visit with two services on one pet is two rows that repeat the pet, the breed and the
+ * groomer. That repetition is deliberate: the sheet is scanned a line at a time by somebody with
+ * a dog in front of them, and a row that inherits its pet from the row above is a row that reads
+ * wrong the moment it is the only one anybody looks at.
+ *
+ * NO PRICE COLUMN AND NO TOTAL ROW. A Pawsh appointment has one pet and a set of groomers
+ * assigned to the whole visit rather than one per service, so the Groomer cell is the visit's
+ * primary groomer on every row.
+ */
+function ticketServicesMarkup(model){
+  const pet=petName({petName:model.petName});
+  const breed=model.breed||TICKET_EMPTY;
+  const groomer=model.groomer||TICKET_EMPTY;
+  const rows=model.serviceSnapshots.map(service=>
+    `<tr data-testid="ticket-service-row">`
+      +`<td>${escape(pet)}</td><td>${escape(breed)}</td><td>${escape(groomer)}</td>`
+      +`<td>${escape(service.name)}</td>`
+      +`<td>${escape(ticketDurationLabel(service.durationMinutes))}</td>`
+    +`</tr>`).join("")
+    ||`<tr><td colspan="5" class="ticket-table-empty">No services on this appointment.</td></tr>`;
+  return `<section class="ticket-section"><h3>Services</h3>`
+    +`<div class="ticket-table-wrap"><table class="ticket-table" data-testid="ticket-services">`
+      +`<thead><tr><th>Pet</th><th>Breed</th><th>Groomer</th><th>Service</th><th>Duration</th></tr></thead>`
+      +`<tbody>${rows}</tbody></table></div>`
+  +`</section>`;
+}
+
+/**
+ * Three notes, always three rows.
+ *
+ * The pet's and the client's are the newest entry in each note thread; the third is the
+ * appointment's own booking note. NEVER A TEXTAREA: the note threads have no writer on this
+ * surface and `PATCH /api/appointments/:id/operations` writes the service note rather than the
+ * booking note, so an editor here would be a control the server has no route for.
+ *
+ * THE ROWS ARE PRESENT EVEN WHEN EMPTY. "Nobody has written a note about this pet" is a fact the
+ * groomer needs, and a table that silently drops the row leaves them unable to tell it from a
+ * sheet that never had the row at all.
+ */
+function ticketNotesMarkup(item,model,notes){
+  const row=(testid,label,value)=>
+    `<tr data-testid="${testid}"><td>${escape(label)}</td><td>${escape(value)}</td></tr>`;
+  return `<section class="ticket-section"><h3>Notes</h3>`
+    +`<div class="ticket-table-wrap">`
+      +`<table class="ticket-table ticket-notes-table" data-testid="ticket-notes">`
+      +`<thead><tr><th>Item</th><th>Latest Note</th></tr></thead><tbody>`
+      +row("ticket-note-pet",`${petName({petName:model.petName})} (Pet)`,ticketNoteCell(notes.pet))
+      +row("ticket-note-client",`${model.customerName} (Client)`,ticketNoteCell(notes.client))
+      +row("ticket-note-appointment","Appointment Note",item.notes||TICKET_EMPTY)
+    +`</tbody></table></div>`
+  +`</section>`;
+}
+
+/**
+ * The sheet itself - the thing that is on screen and the thing that goes on paper.
+ *
+ * ONE MARKUP FUNCTION, TWO HOSTS. The print root is not a second renderer, so whatever state the
+ * note reads are in prints in that state; there is no print-only variant of anything here.
+ */
+function ticketDocumentMarkup(item,notes){
+  const model=appointmentPresentation(item);
+  return `<article class="ticket-doc" data-testid="ticket-document">`
+    +`<p class="ticket-doc-reference" data-testid="ticket-appointment-reference">`
+      +`Appointment #: ${escape(ticketReference(item))}</p>`
+    +`<div class="ticket-doc-head">`
+      +ticketSalonMarkup(salonIdentity())
+      +ticketVisitMarkup(item,model)
+    +`</div>`
+    +ticketServicesMarkup(model)
+    +ticketNotesMarkup(item,model,notes)
+  +`</article>`;
+}
+
+/**
+ * A thin bar, the sheet, and one button.
+ *
+ * The panel header carries the reference and nothing else, and it IS the `<h2>` the dialog is
+ * labelled by, so the surface's accessible name is "Ticket #: 4f2c1a90" rather than a bare string
+ * of hex. No status chip, no billing chip, no date subhead: everything the sheet says, it says on
+ * the sheet.
+ */
+function ticketSurfaceMarkup(item,notes){
+  return `<div class="surface-shell" data-testid="ticket">`
+    +`<header class="surface-head ticket-head">`
+      +`<h2 id="appointment-ticket-title" data-testid="ticket-reference">`
+        +`Ticket #: ${escape(ticketReference(item))}</h2>`
+      +`<button type="button" class="surface-close" data-surface-close aria-label="Close ticket">&#215;</button>`
+    +`</header>`
+    +`<div class="surface-body ticket-body">${ticketDocumentMarkup(item,notes)}</div>`
+    +`<footer class="surface-foot ticket-foot"><div class="surface-foot-actions">`
+      +`<button type="button" class="primary compact" data-testid="ticket-print">Print</button>`
+    +`</div></footer>`
+  +`</div>`;
+}
+
+/**
+ * The sheet on paper.
+ *
+ * Printing is the one mechanism the product has: a `.print-root` appended to <body>, which the
+ * print stylesheet is the only thing that shows. NO PREPENDED <h1> - `printAppointment` prepends
+ * one because its body carries no title of its own, and this one opens on the appointment
+ * reference and the salon's name.
+ */
+function printTicket(item,notes){
+  const root=document.createElement("section");
+  root.className="print-root print-ticket";
+  root.innerHTML=ticketDocumentMarkup(item,notes);
+  document.body.append(root);
+  globalThis.print();
+  setTimeout(()=>root.remove(),1000);
+}
+
+/**
+ * Opens the Ticket. Level 3 of the appointment stack.
+ *
+ * It opens IMMEDIATELY: the salon block, the visit line and the whole Services table are composed
+ * from data already in memory, so the only thing that arrives late is two note cells, and they
+ * arrive underneath a sheet that is already on screen rather than delaying it.
+ *
+ * NO `guard`: nothing here is unsaved, and a confirm on the way out would be furniture that
+ * trains the operator to dismiss confirms unread. NO refresh and NO reload of the level beneath
+ * either, because the Ticket writes nothing at all.
+ */
+async function openTicket(item){
+  const dialog=$("#appointment-ticket");
+  const source=document.activeElement;
+  const ticket={item,notes:{pet:null,client:null}};
+  const level={id:"appointment-ticket",dialog,restoreFocus:source};
+
+  /**
+   * Where focus goes after a redraw.
+   *
+   * The Ticket is ONE DOCUMENT and redraws whole, unlike the detail surface, which redraws only
+   * the region that changed precisely so this question never arises. Replacing the dialog's
+   * markup detaches whatever was focused, and focus on a detached node falls to <body> - which
+   * strands a keyboard inside a modal that is still on screen. Every redraw here therefore puts
+   * focus back: on the same control when the new markup still has it, and otherwise on the close
+   * button, which is where every level in this stack opens.
+   */
+  const focusAfterDraw=()=>{
+    const active=document.activeElement;
+    if(!active||!dialog.contains(active))return null;
+    return active.dataset?.testid?`[data-testid="${active.dataset.testid}"]`:"[data-surface-close]";
+  };
+
+  const draw=()=>{
+    const wanted=focusAfterDraw();
+    dialog.innerHTML=ticketSurfaceMarkup(ticket.item,ticket.notes);
+    bind();
+    if(wanted)(dialog.querySelector(wanted)||dialog.querySelector("[data-surface-close]"))?.focus();
+  };
+
+  /**
+   * The two note threads.
+   *
+   * `allSettled`, so one thread the operator may not read - `pets.view` and `customers.view` are
+   * separate permissions - costs that one cell and not the other, and never the sheet. Neither
+   * read is retried from a button: a work sheet is printed and carried away, and a Retry beside
+   * one table cell is more machinery than the cell is worth.
+   */
+  const load=async()=>{
+    const [pet,client]=await Promise.allSettled([
+      ticket.item.petId
+        ? api(`/api/pets/${ticket.item.petId}/notes`)
+        : Promise.resolve({items:[]}),
+      ticket.item.customerId
+        ? api(`/api/customers/${ticket.item.customerId}/notes?page=1&pageSize=${CLIENT_NOTE_PAGE_SIZE}`)
+        : Promise.resolve({items:[]})
+    ]);
+    ticket.notes={pet:ticketLatestNote(pet),client:ticketLatestNote(client)};
+    if(!appointmentStack.levels.includes(level))return;
+    draw();
+  };
+
+  const bind=()=>{
+    dialog.querySelector("[data-surface-close]")?.addEventListener("click",()=>runDetached(()=>popStackLevel()));
+    dialog.querySelector('[data-testid="ticket-print"]')
+      ?.addEventListener("click",()=>printTicket(ticket.item,ticket.notes));
+  };
+
+  draw();
+  pushStackLevel(level);
+  await load();
+}
+
 function renderMessages(){const query=($("#message-search")?.value||"").trim().toLowerCase(),clients=state.customerDirectory.items.filter(item=>`${clientName(item)} ${item.phone||""} ${item.email||""}`.toLowerCase().includes(query));$("#message-client-list").innerHTML=clients.map(item=>`<button type="button" class="message-client ${item.id===state.messageClientId?"active":""}" data-message-client="${item.id}"><span><strong>${escape(clientName(item))}</strong><small>${escape(item.phone||item.email||"No contact details")}</small></span></button>`).join("")||`<p class="empty">No clients match.</p>`;$$('[data-message-client]').forEach(button=>button.addEventListener("click",()=>selectMessageClient(button.dataset.messageClient)));}
 async function selectMessageClient(id){
   const [data,notes,agreements]=await Promise.all([

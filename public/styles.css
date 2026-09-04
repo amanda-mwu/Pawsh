@@ -2116,6 +2116,10 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
   display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;margin:0;
 }
 .surface-subhead{margin:0;color:var(--muted);font-size:13px}
+/* The head's trailing slot. It holds the close button on every surface, and on the detail it also
+   holds the print icon that opens the Ticket - one flex row rather than a third grid column, so
+   the two-column head stays two columns whatever sits in this slot. */
+.surface-head-actions{display:flex;align-items:center;gap:var(--space-1)}
 .surface-close{
   width:40px;height:40px;min-height:40px;border:0;border-radius:var(--radius-md);
   background:transparent;font-size:22px;line-height:1;color:var(--muted);
@@ -2347,6 +2351,158 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
   }
   .checkout-money{order:1;overflow:visible;border-left:0;border-bottom:1px solid var(--line)}
   .checkout-bill{order:2;overflow:visible}
+}
+
+/* == Ticket ==
+   Level 3 of the appointment stack, and the one surface that is a document rather than a
+   workspace. It is a printable WORK SHEET: one reading order, no controls in the body, no money
+   anywhere in it, and the thing that gets printed. That difference is expressed in exactly three
+   ways - a grey ground, one centred sheet on it, and two plain tables. New tokens: none. New
+   component families: none.
+
+   NOTHING HERE STYLES `.receipt`. The receipt is a different document and it stays in Check Out,
+   so this block has no money rules to write and no identity lines to suppress. */
+
+/* A thin bar carrying the reference and the dismissal, and nothing else. */
+.ticket-head{padding-block:var(--space-3)}
+.ticket-head h2{margin:0;font:600 14px/1.35 var(--font-sans)}
+
+/* The ground the sheet sits on, so the sheet's edges are visible as edges. */
+.ticket-body{
+  grid-template-columns:minmax(0,1fr);
+  overflow-y:auto;
+  padding:var(--space-5) clamp(16px,3vw,40px);
+  background:var(--surface-2);
+}
+/* The sheet. A SCREEN AFFORDANCE ONLY: it shows the operator where the printed page begins
+   before they press Print. No shadow, no gradient, and no second inner card. */
+.ticket-doc{
+  max-width:940px;margin:0 auto;
+  padding:clamp(20px,4vw,44px);
+  border:1px solid var(--line);border-radius:var(--radius-lg);
+  background:var(--paper);
+  display:grid;gap:var(--space-5);align-content:start;
+  overflow-wrap:anywhere;
+}
+.ticket-doc-reference{margin:0;text-align:center;font:600 15px/1.35 var(--font-sans)}
+
+/* Salon on the left, visit on the right. The right column is set right-aligned rather than
+   pushed right, so `Date:` and `Client:` line up against the sheet's own edge. */
+.ticket-doc-head{
+  display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1fr);
+  gap:var(--space-3) var(--space-5);align-items:start;
+}
+.ticket-salon,.ticket-visit{display:grid;gap:3px;min-width:0}
+.ticket-visit{justify-items:end;text-align:right}
+.ticket-business{margin:0;font:600 15px/1.35 var(--font-sans)}
+/* FULL-INK VALUES, NOT MUTED ONES. This is a printed sheet and the head is the address block on
+   it, so the label and the value are separated by weight alone - setting the value back in grey
+   would make every fact on the sheet secondary to its own caption, and grey is the first thing a
+   laser printer loses. */
+.ticket-salon-line,.ticket-visit p{margin:0;font-size:12.5px;line-height:1.6}
+.ticket-salon-line span,.ticket-visit span{font-weight:600}
+
+.ticket-section{display:grid;gap:var(--space-2)}
+.ticket-section>h3{margin:0;font:600 13px/1.35 var(--font-sans)}
+
+/* Both tables are `.history-table` in everything but name: a tinted header row, hairline row
+   separators, and its own horizontal scroller so a five-column table never makes the sheet - or
+   the page under it - scroll sideways. */
+.ticket-table-wrap{
+  max-width:100%;overflow-x:auto;
+  border:1px solid var(--line);border-radius:var(--radius-lg);
+}
+.ticket-table{width:100%;min-width:560px;border-collapse:collapse;font-size:12.5px}
+.ticket-table th,.ticket-table td{
+  padding:9px 12px;border-bottom:1px solid var(--line);
+  text-align:left;vertical-align:top;
+}
+.ticket-table tbody tr:last-child td{border-bottom:0}
+.ticket-table th{
+  background:var(--surface-2);color:var(--muted);
+  font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;
+}
+.ticket-table-empty{color:var(--muted)}
+/* Two columns, and the note is the one that has to breathe. `pre-wrap` so a note somebody typed
+   across three lines prints across three lines. */
+.ticket-notes-table{min-width:420px}
+.ticket-notes-table td:first-child{width:34%}
+.ticket-notes-table td:last-child{white-space:pre-wrap}
+
+/* One control, and it is the reason the sheet exists, so it takes the primary slot on its own.
+   `.surface-foot` spreads two groups apart; with one group it is pushed to the trailing edge. */
+.ticket-foot{justify-content:flex-end}
+
+/* == Responsive ==
+   A bordered sheet inside a 360px viewport is margin spent on nothing, so below 640px the surface
+   body IS the sheet. One scroller, never two, as on the detail and Check Out. The two head
+   columns stack, and the right-hand one stops being right-aligned when it is no longer on the
+   right. */
+@media(max-width:640px){
+  .ticket-body{padding:0}
+  .ticket-doc{
+    max-width:none;
+    padding:var(--space-4) var(--space-3);
+    border:0;border-radius:0;
+  }
+  .ticket-doc-head{grid-template-columns:minmax(0,1fr)}
+  .ticket-visit{justify-items:start;text-align:left}
+}
+
+/* == Ticket print ==
+   The mechanism is unchanged: a `.print-root` appended to <body>, which
+   `body>*:not(.print-root){display:none!important}` near the top of this file is the only thing
+   that shows. That rule already hides the open <dialog> elements - they are body children, and
+   `display:none` removes an element from the top layer too - so no new hiding rule is added here.
+
+   `print-color-adjust` is deliberately NOT used: backgrounds are off by default in most print
+   dialogs, so anything whose meaning depended on a fill would silently lose it. The table header
+   row therefore stops relying on its tint and takes a rule under it instead.
+
+   The `.print-root` rules below are the RECEIPT's, which prints from Check Out and from the
+   receipt modal. They change colour, border colour, font-size and break behaviour only. They set
+   no `text-transform`, no `content`, no `font-variant-numeric` and no `letter-spacing` inside
+   `.receipt`, and they hide no element carrying a figure - the only hides are two controls. That
+   is what keeps the printed figures character-identical to the ones on screen. */
+@media print{
+  /* Page size is the printer's - US Letter or A4 - so the layout declares neither. */
+  @page{size:auto;margin:14mm}
+
+  /* On paper the page is the sheet, so the screen frame goes. */
+  .print-ticket .ticket-doc{
+    max-width:none;margin:0;padding:0;border:0;border-radius:0;background:transparent;
+  }
+  /* No scroller on paper: the table lays out at whatever width the page gives it. */
+  .print-ticket .ticket-table-wrap{overflow:visible;border-color:#aaa}
+  .print-ticket .ticket-table{min-width:0}
+  .print-ticket .ticket-table th,
+  .print-ticket .ticket-table td{border-bottom-color:#aaa}
+  .print-ticket .ticket-table th{
+    background:transparent!important;color:#111;border-bottom:1px solid #666;
+  }
+
+  /* Keep a short section whole, and never split a row across a page break. */
+  .print-ticket .ticket-section{break-inside:avoid;page-break-inside:avoid}
+  .print-ticket .ticket-table tr{break-inside:avoid;page-break-inside:avoid}
+  .print-root .receipt>div{break-inside:avoid;page-break-inside:avoid}
+
+  /* Controls, not figures. Hiding them cannot change a number. `refund-exhausted` is a FACT and
+     is not in this list: it prints. */
+  .print-root .text-button,
+  .print-root .refund-refresh{display:none!important}
+
+  /* Never depend on background printing. */
+  .print-root .appointment-billing,
+  .print-root .appointment-status{
+    border:1px solid #666;background:transparent!important;color:#111!important;
+  }
+  .print-root .receipt>.receipt-refund{border-left-color:#666!important}
+  .print-root .receipt-refund.is-failed .receipt-refund-amount{text-decoration:line-through}
+
+  .print-ticket .ticket-doc-reference{font-size:13pt}
+  .print-ticket .ticket-business{font-size:12pt}
+  .print-ticket h3{font-size:11pt}
+  .print-root .fine{font-size:9pt}
 }
 
 /* ---------------------------------------------------------------------------

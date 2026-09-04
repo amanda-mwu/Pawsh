@@ -17,7 +17,7 @@ This additive suite exercises the development runtime with filesystem storage, t
 - CI gate: `Document Scanning / P1 Asynchronous Security QA`
 - Retries: zero; workers: one
 
-The scanner stub decides only a deterministic simulated verdict. It does not inspect malware and does not prove scanner efficacy. `SEC-DOC-001` remains open for managed-scanner staging validation.
+The scanner stub decides only a deterministic simulated verdict. It does not inspect malware and does not prove scanner efficacy, and it is not closure evidence. `SEC-DOC-001` remains **open** and blocking for the controlled pilot. ADR-005's managed scanner is superseded and is not required; the finding closes on staging evidence for the current attachment control, as release governance requires, plus an explicit recorded closure. See [the finding register](../architecture/scale-readiness.md).
 
 ## Pending/recent status contract
 

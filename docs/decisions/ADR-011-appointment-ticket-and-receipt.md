@@ -1,11 +1,54 @@
-# ADR-011: The appointment Ticket and the receipt
+# ADR-011: The appointment Ticket, the invoice and the receipt
 
 Status: Amended 2026-09-03. The unification of the Ticket and the receipt
 recorded here is overruled by Product; it describes a product Pawsh does not
-have. The client-credit decisions, the receipt's server authority, and a
+have. The client-credit decisions, the money statement's server authority, and a
 narrowed Single Money Statement invariant stand. The overruled record is
 retained below in full, unedited, because the way it went wrong is worth
 reading.
+
+## Three documents, and they are three
+
+**A Ticket is not an Invoice. A Ticket is not a Receipt. An Invoice is not a
+Receipt.** They are three artifacts with three different subjects, and every
+error this record has had to be amended for came from collapsing two of them
+into one.
+
+- A **Ticket** is the shop's work sheet for one visit: who the pet is, who is
+  working on it, what was booked, and what has been written down about it. Its
+  subject is the work.
+- An **Invoice** is the statement of what is owed for that visit: the line
+  items, the discounts in applied order, tax, tip, the total and the balance.
+  Its subject is the debt.
+- A **Receipt** is the acknowledgement that money changed hands. Its subject is
+  the payment.
+
+Two rules follow from that and are the practical content of this distinction:
+
+- **A Ticket can exist without an Invoice, and in any appointment state.** The
+  work sheet for a visit that has not happened yet is the ordinary case. It is
+  composed from the appointment alone, and nothing about it waits on checkout.
+- **A Receipt requires a recorded payment.** An invoice with a full balance
+  outstanding has produced no receipt, because nothing has been received. An
+  invoice is raised by checkout; a receipt is earned by a payment.
+
+  **The surfaces do not enforce this yet, and that is a known gap rather than a
+  contradiction of the rule.** The endpoint is named `/receipt` but returns the
+  invoice's money statement whether or not a payment exists, and the client
+  history panel at `public/app.js:2921` offers a "Receipt" button on every
+  invoice row regardless of its status. Closing the gap is a naming and gating
+  question — which surfaces may say the word *receipt*, and on what condition —
+  and it is deliberately not settled in this amendment, which fixes what the
+  record says rather than what the client draws.
+
+What keeps the three from disagreeing is not that they are one document. It is
+that they draw every money figure from **one shared financial authority** on the
+server. The Ticket states no money at all, so it is outside that rule entirely.
+The Invoice and the Receipt both state money, and neither re-derives it: both
+render what `GET /api/invoices/:id/receipt` returned for that invoice, through
+one renderer. Separate documents that share one authority cannot disagree; that
+is what makes three documents safe, and it is what the overruled record below
+mistook for an argument that there could only be one.
 
 ## The decision
 
@@ -16,8 +59,8 @@ date, the client, a Services table of Pet, Breed, Groomer, Service and
 Duration, a Notes table of Item and Latest Note whose rows are the pet note,
 the client note and the appointment note, and a Print action.
 
-The receipt is a separate document, reached through Check Out, and stays what
-it already was.
+The invoice's money statement is a separate document, reached through Check Out,
+and stays what it already was.
 
 Three consequences follow directly and are the practical content of this
 amendment:
@@ -77,15 +120,38 @@ actually had, and nothing else.
 Every money value the product shows about an invoice is a value that
 `GET /api/invoices/:id/receipt` returned for that invoice, rendered by one call
 to `receiptBodyMarkup`, and no surface re-derives, re-sums, re-orders or
-re-formats an invoice figure. The receipt has three hosts, not four: the
-settled Check Out panel, the receipt modal, and the print root. Those three
-must agree character for character for every money test id on them — subtotal,
-each discount step and the discount total, tax, tip, total, balance, refunded,
-and every payment row — and the browser assertion stays a comparison between
-hosts rather than a golden file, so it fails when they drift and not when the
-design changes. `checkoutEstimate` remains the only client-side money
-derivation, and it survives only because it is confined to the pre-invoice
-build mode, where there is nothing yet to disagree with.
+re-formats an invoice figure.
+
+What has hosts is **the invoice's money statement**, not "the receipt" — the
+distinction matters, because the receipt is one of the documents that hosts the
+statement rather than the thing being hosted. The statement has three hosts: the
+settled Check Out panel, the receipt modal, and the print root. Those three must
+agree character for character for every money test id on them — subtotal, each
+discount step and the discount total, tax, tip, total, balance, refunded, and
+every payment row — and the browser assertion stays a comparison between hosts
+rather than a golden file, so it fails when they drift and not when the design
+changes.
+
+The invariant is about **invoice** figures, and that boundary has to be stated
+because the browser derives money elsewhere and always has. `checkoutEstimate`
+is not the only client-side money derivation; the earlier claim that it was is
+false. At least two others exist today and are legitimate:
+
+- `appointmentPresentation` at `public/app.js:512` sets `totalPriceMinor` by
+  summing the appointment's own `appointment_services` price snapshots, and it
+  is rendered in the calendar hover and the detail header.
+- The month cell at `public/app.js:608` sums those same snapshots across a day
+  into a `revenue` figure.
+
+Neither violates this invariant, because neither states an invoice figure. They
+state the value of the booked work, which is a fact about the appointment and
+exists before any invoice does — the same fact the Ticket deliberately declines
+to print, precisely so that a work sheet is never mistaken for a bill.
+`checkoutEstimate` is the third, and it is the one that comes closest to the
+line: it mirrors `calculateInvoice` and so predicts an invoice figure, which is
+why it is confined to the pre-invoice build mode where there is nothing yet to
+disagree with. The rule is therefore not "one client-side money derivation" but
+**no client-side derivation of a figure an invoice already carries**.
 
 The database half is unchanged. `tests/database/single-money-statement.test.ts`
 asserts, over every invoice built through the real routes, that
@@ -125,12 +191,22 @@ reason a surface is ever outside this rule.
   to mislead. It serves the receipt's own printed header. The Ticket takes its
   identity block from `state.me.business`, which `GET /api/me` already returns
   whole with the active location's address.
-- The Ticket is read-only. `PATCH /api/appointments/:id/operations` accepts
-  `checked_in` and `in_service` only, so an editor on the Ticket would be a
-  textarea whose save the server answers with 404. Whether a groomer may
-  correct a note after the pet has gone home, and whether they may once the
-  customer has been charged for it, is a real product question and is still not
-  answered here.
+- The Ticket is read-only, and it is read-only by choice rather than by
+  necessity. The reason first recorded here has since expired: the record said
+  an editor on the Ticket would be a textarea whose save the server answers with
+  404, because `PATCH /api/appointments/:id/operations` accepts `checked_in` and
+  `in_service` only. That endpoint still does, but it is no longer the only way
+  to write the note. `PATCH /api/appointments/:id`, gated on `appointments.edit`,
+  now writes `appointments.notes` **in every status, including after the money**,
+  and its own doc comment states the case: a completed, invoiced, paid visit
+  whose note is misspelled must be correctable without cancelling and rebooking.
+  So the product question this record left open — whether a groomer may correct
+  a note after the pet has gone home, and whether they may once the customer has
+  been charged — **is answered, and the answer is yes.** The write touches
+  nothing financial: it sets `notes` and the three bookkeeping columns, reads no
+  invoice, payment or credit entry, re-snapshots nothing and recalculates
+  nothing. The Ticket stays a read-only print artifact because printing is what
+  it is for, not because the server would refuse the save.
 - The customer-facing artifact this product sends is the appointment report
   card, which carries the pet's photos and the groomer's note to the owner. The
   Ticket is the shop's own copy of the work and does not duplicate it.

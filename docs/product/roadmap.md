@@ -2,11 +2,22 @@
 
 ## MVP attachment security supersession
 
-ADR-010 supersedes earlier roadmap language that treated managed malware
-scanning, quarantine, retries, or scanner operations as MVP or controlled-pilot
-runtime requirements. MVP uses the Rabies Attachment Minimum Safety controls;
-managed scanning is deferred post-MVP. The older sections below are retained as
-historical planning context and must be read through ADR-010.
+ADR-010 supersedes earlier roadmap language that treated ADR-005's managed
+malware scanning, quarantine, retries, or scanner operations as MVP or
+controlled-pilot **runtime requirements**. That runtime design is superseded and
+is not to be rebuilt. MVP uses the Rabies Attachment Minimum Safety controls. The
+older sections below are retained as historical planning context and must be read
+through ADR-010.
+
+**This supersedes an implementation, not a finding.** `SEC-DOC-001` is **open**
+and remains a controlled-pilot blocker. A superseded implementation design is not
+a closed security finding: the residual risk the finding names survived the
+architectural replacement that removed its original control, so the finding is
+open against the control that replaced it. **ADR-010 is not closure evidence for
+it.** `SEC-DOC-001` closes only on staging evidence for the current attachment
+control, as the applicable release-governance process requires, plus an explicit
+recorded closure by Security and the launch approver. The authoritative entry is
+in [Scale readiness](../architecture/scale-readiness.md).
 
 ## Authority and lifecycle
 
@@ -14,8 +25,14 @@ This is Pawsh's single authoritative customer-value roadmap. It governs product
 scope, sequencing, dependencies, approval status, and initiative-specific risk.
 It does not supersede accepted ADRs, validation evidence, security findings, or
 release gates. `SEC-DOC-001`, `SEC-DB-001`, the Master Release Gate, and other
-validated findings retain their existing authority. General platform risks stay
-in [Scale readiness](../architecture/scale-readiness.md).
+validated findings keep the authority recorded for each in
+[Scale readiness](../architecture/scale-readiness.md), which is where their
+current status is settled rather than here. For `SEC-DOC-001` specifically, that
+authority currently requires: the finding is **open**, it blocks the controlled
+pilot, ADR-010's supersession of ADR-005's runtime design did not close it and is
+not closure evidence for it, and it closes only on staging evidence for the
+current attachment control plus an explicit recorded closure. General platform
+risks stay in the same document.
 
 Pawsh has completed the working-product stage and is currently in
 controlled-pilot hardening. Customer-value prioritization governs future feature
@@ -55,15 +72,22 @@ web client.
 - **Customer reminders** means transactional appointment reminders, not
   marketing automation.
 - **Document upload** means the rabies-PDF workflow, not generic attachments.
-- **Manual discount** means one permission-gated aggregate invoice discount, not
-  coupon support.
+- **Manual discount** means the permission-gated amount an operator keys in at
+  checkout. It is no longer the only discount Pawsh has: a configured discount
+  catalogue and a coupon domain shipped in migration 0048, and a manual amount is
+  now one of three sources that can produce an invoice discount line.
 
 Repository evidence confirms server-owned invoice calculations, a discount cap
 at subtotal, rabies-only document typing, tenant-timezone-aware bounded reports,
 durable notification intents and delivery attempts, and an appointment-completed
-outbox event. It also confirms the absence of a coupon domain, general document
-manager, configurable recipient router, week-start preference, immutable
-customer-facing discount metadata, and feedback automation.
+outbox event. It also confirms the absence of a general document manager, a
+configurable recipient router, a week-start preference, and feedback automation.
+
+**A coupon domain now exists.** An earlier version of this section recorded its
+absence; migration 0048 built it and it is described under
+[Coupons and configured discounts](#coupons-and-configured-discounts) below.
+Customer-facing discount metadata is no longer absent either: `invoice_discounts`
+snapshots a name per line.
 
 ## Security by lifecycle
 
@@ -92,12 +116,16 @@ MVP minimum safety
 ├── Safe filenames and randomized immutable object identity
 └── Authorized download
 
-Controlled-pilot security requirement (MVP)
-├── Fail-closed quarantine and application scanning contract
-├── Managed-scanner integration
-├── Timeout and outage handling
-├── Queue monitoring
-└── Scanner operational evidence
+Controlled-pilot security requirement (MVP) -- SEC-DOC-001, open
+├── Staging evidence for the CURRENT attachment control
+└── An explicit recorded closure by Security and the launch approver
+
+  Superseded by ADR-010 and NOT required (historical, do not rebuild)
+  ├── Fail-closed quarantine and application scanning contract
+  ├── Managed-scanner integration
+  ├── Timeout and outage handling
+  ├── Queue monitoring
+  └── Scanner operational evidence
 
 Post-pilot or GA hardening
 ├── Rescanning after signature updates
@@ -109,9 +137,11 @@ Post-pilot or GA hardening
 Current PDF header, MIME, size, and trailer checks are shallow and are not
 malware detection. External persistent uploads create a pre-pilot security
 obligation. Existing document-malware ADR and validation evidence remain
-authoritative. `SEC-DOC-001` remains a controlled-pilot blocker until managed
-scanner staging validation closes it through existing governance. General
-document management is a separate post-pilot domain.
+authoritative. `SEC-DOC-001` is **open** and remains a controlled-pilot blocker.
+Rebuilding ADR-005's superseded managed scanner is **not** what closes it; it
+closes on staging evidence for the current attachment control, as release
+governance requires, plus an explicit recorded closure. General document
+management is a separate post-pilot domain.
 
 ## Roadmap summary
 
@@ -119,11 +149,12 @@ document management is a separate post-pilot domain.
 |---|---|---:|---|---|---|
 | Manual invoice discount | MVP | P1 | Existing capability | Repository behavior only | Permission-gated workaround |
 | Rabies PDF upload | MVP | P1 | Existing capability | Repository behavior only | Specialized workflow |
-| Managed document scanning | Controlled Pilot | P0/P1 per existing authority | Existing gate | Existing security evidence | Must remain blocking |
+| Attachment malware risk (`SEC-DOC-001`) | Controlled Pilot | P0/P1 | Open finding; ADR-005's scanner design is superseded and not required | Staging evidence for the current attachment control, plus an explicit recorded closure | Must remain blocking |
 | Receipt discount label | Controlled-pilot candidate or Post-Pilot | P2 | Not approved; Product approval required | No confirmed pilot blocker in repository evidence | Explicit scope approval required |
 | Reporting week start | Controlled-pilot candidate or Post-Pilot | P2 | Not approved; Product approval required | No confirmed pilot blocker in repository evidence | Evidence and scope approval required |
 | Client credit | Controlled-pilot candidate or Post-Pilot | P2 | Implemented; Product scope confirmation required for pilot entry | No confirmed pilot blocker in repository evidence | Explicit scope approval required |
-| Coupon domain | Post-Pilot | P2 | Not approved; Product and financial design approval required | No confirmed pilot blocker in repository evidence | Manual discount workaround |
+| Coupons and configured discounts | Shipped | P1 | Existing capability | Repository behavior only | Shipped; pilot scope confirmation required for owner-facing enablement |
+| Coupons at booking time | Post-Pilot | P2 | Not approved; Product approval required | No confirmed pilot blocker in repository evidence | Coupon is entered at checkout |
 | General documents | Post-Pilot | P2 | Not approved; Product and Security approval required | No confirmed pilot blocker in repository evidence | Rabies workflow remains |
 | Notification routing | Post-Pilot | P2 | Not approved; Product approval required | No confirmed pilot blocker in repository evidence | Narrow approved exception only |
 | Feedback automation | Post-Pilot | P3 | Not approved; Product and Privacy/Legal approval required | No confirmed pilot blocker in repository evidence | Manual communication |
@@ -136,9 +167,11 @@ release blockers without explicit scope-change approval.
 ## Dependencies
 
 ```text
-Receipt discount metadata
-        ↓
-Coupon domain and booking integration
+Coupons and configured discounts ── shipped. It did NOT wait on receipt discount
+                 metadata: `invoice_discounts` carries its own immutable
+                 per-line name snapshot, which is the part the receipt needed.
+
+Coupons at booking time ── depends on the shipped coupon domain
 
 Notification event registry
         ↓
@@ -156,19 +189,22 @@ Client credit ── independent of the coupon domain. Credit settles an invoice
                  a payment; a discount changes what is owed. They land on
                  opposite sides of the tax line and share no authority.
 
-Managed document scanning ── existing controlled-pilot security gate,
-                             not a post-pilot document dependency
+Attachment malware risk (SEC-DOC-001) ── open controlled-pilot security gate,
+                 not a post-pilot document dependency. ADR-005's scanner design
+                 is superseded and is not the thing that closes it.
 ```
 
 ## Customer workflow initiatives
 
 ### Manual invoice discount
 
-- **Foundation/gap:** checkout stores one aggregate discount, permission-gates
-  application, and calculates totals on the server; no coupon domain exists.
-- **Disposition:** MVP, P1, Existing capability. Pilot promotional workaround.
-- **Scope/non-goals:** retain one server-authoritative discount; no coupons,
-  stacking, campaigns, or browser-authoritative pricing.
+- **Foundation/gap:** none remaining for the manual amount itself. Checkout
+  permission-gates application and calculates totals on the server.
+- **Disposition:** MVP, P1, Existing capability.
+- **Scope/non-goals:** money stays server-authoritative and never
+  browser-authoritative. Coupons and stacking are no longer non-goals — both
+  shipped in 0048, and a manual amount is now one discount line among several,
+  counted against the stacking rule like any other. Campaigns remain a non-goal.
 - **Controls:** tenant authorization, integer money, audit, replay protection,
   and invoice history remain authoritative. No Master Release Gate change.
 
@@ -183,10 +219,14 @@ Managed document scanning ── existing controlled-pilot security gate,
 - **Candidate scope:** one bounded, escaped, immutable label per invoice,
   historical fallback, and consistency across representations that exist. The
   discount amount remains authoritative.
-- **Non-goals/decisions:** no coupons, multiple discounts, stacking, or campaigns.
-  Product must decide the default label, staff entry, history, and code display.
-- **Planning:** negligible growth and no live coupon lookup; snapshot immutability,
-  output escaping, channel-consistency tests, accessible mobile rendering.
+- **Non-goals/decisions:** campaigns. Coupons, multiple discounts and stacking
+  are no longer non-goals here — 0048 shipped all three, and `invoice_discounts`
+  already snapshots a per-line name, which is much of what this initiative was
+  for. What remains is the label on a *manual* discount line, which has no
+  configured row to take a name from. Product must decide the default label,
+  staff entry, history, and code display.
+- **Planning:** negligible growth; snapshot immutability, output escaping,
+  channel-consistency tests, accessible mobile rendering.
 - **Proposed release evidence:** `Receipt Discount Metadata Valid --
   CI/PostgreSQL/Browser`. No current gate change.
 
@@ -242,26 +282,84 @@ Managed document scanning ── existing controlled-pilot security gate,
 - **Proposed release evidence:** `Client Credit Valid --
   CI/PostgreSQL/Browser/Financial Integrity`. No current gate change.
 
-### Coupon domain and booking integration
+### Coupons and configured discounts
 
-- **Foundation/gap:** manual discounts and money rules exist; catalog,
-  eligibility, usage, appointment references, concurrency-safe consumption, and
-  immutable coupon snapshots do not.
-- **Disposition:** Post-Pilot, P2, Not approved. Manual discount is the workaround;
-  receipt metadata and an approved financial ADR are dependencies.
-- **Future scope:** administration, dates, fixed/percentage rules, eligibility,
-  limits, advisory appointment reference, transactional checkout revalidation,
-  snapshotting, concurrency, reopening, voids, and reversals.
-- **Non-goals:** stacking, campaigns, personalized generation, and online-booking
-  coupons without separate approval.
-- **Recommended, not approved:** booking selection is advisory; checkout
-  revalidates; invalid coupons stop checkout and never silently become manual;
-  first release permits one coupon or discount per invoice.
-- **Planning:** retained financial configuration and usage require audit, export,
-  and offboarding policy; bounded administration, tenant indexes, narrow locks,
-  uniqueness, and idempotency prevent cross-tenant use, double consumption,
-  replay, rounding drift, and negative totals.
-- **Proposed release evidence:** `Coupon Domain Valid --
+**Shipped in migration 0048.** This section previously recorded the domain as
+Post-Pilot and unapproved. It is built. What follows describes what exists, and
+is deliberately limited to that.
+
+- **Disposition:** Shipped, P1, Existing capability. It entered without the
+  financial-design ADR this roadmap named as a precondition; that ADR was never
+  written, and its absence is recorded below rather than treated as closed.
+- **Schema:** `discounts` (a per-business catalogue: name, `amount` or
+  `percentage`, a `per_appointment` or `per_pet` scope, an `active` flag, and a
+  unique active name per business); `coupons` (a case-insensitively unique code
+  per business, plus name, kind, value, scope, `starts_on`/`ends_on`, permitted
+  `weekdays`, `new_clients_only`, `max_redemptions`,
+  `max_redemptions_per_client`, `active`); `coupon_redemptions` (unique per
+  business, coupon and invoice); `invoice_discounts` (ordered lines carrying a
+  `manual`/`discount`/`coupon` source and an immutable name, kind and value
+  snapshot per line); and `businesses.discount_stacking_mode`.
+- **Administration:** `GET/POST/PUT/DELETE /api/settings/discounts` and
+  `POST/PUT/DELETE /api/settings/coupons`, behind `settings.discounts`, with a
+  Coupons and discounts settings workspace in the client.
+- **Eligibility, evaluated at checkout inside the transaction:** the coupon must
+  exist and be active; the appointment's own local civil date must fall inside
+  `starts_on`/`ends_on` and on a permitted weekday; `new_clients_only` requires
+  no prior non-void invoice for that client; and both redemption caps are
+  counted. Each refusal carries its own code -- `COUPON_NOT_FOUND`,
+  `COUPON_INACTIVE`, `COUPON_NOT_STARTED`, `COUPON_EXPIRED`,
+  `COUPON_WRONG_WEEKDAY`, `COUPON_NEW_CLIENTS_ONLY`, `COUPON_FULLY_REDEEMED`,
+  `COUPON_CLIENT_LIMIT_REACHED`.
+- **Concurrency:** the coupon row is taken with `select ... for update` before
+  the caps are counted, so two checkouts racing a coupon's last redemption
+  serialize and the second is refused rather than both reading the same
+  pre-redemption count.
+- **Stacking:** `businesses.discount_stacking_mode` is a real, enforced setting.
+  `one_per_appointment` refuses a second discount line outright with
+  `MULTIPLE_DISCOUNTS_NOT_ALLOWED`, counting a keyed manual amount as one of
+  them; `amount_first` and `percentage_first` order the fold, and the order
+  changes the total because a percentage taken after an amount is a percentage
+  of a smaller number.
+- **Validation in place:** `tests/database/discounts-coupons.test.ts`,
+  `tests/domain/money.test.ts`, `tests/e2e/discounts.spec.ts`, and the
+  `invoice_discounts` half of `tests/database/single-money-statement.test.ts`.
+
+**Known limitations, stated rather than implied:**
+
+- **One coupon per checkout.** Checkout accepts a single `couponCode`. Stacking
+  combines that one coupon with configured discounts and a manual amount; it
+  does not combine two coupons.
+- **A redemption cannot be given back.** There is no route that voids an
+  invoice, so a redemption is consumed permanently. This is recorded in the
+  checkout code and in the header of migration 0048, and it is the most
+  significant open item in this domain.
+- **No booking-time coupon entry.** A coupon is typed in at checkout. The
+  advisory appointment reference this roadmap once scoped is not built, and is
+  tracked separately below.
+- **No financial-design ADR.** The proposal remains in the ADR backlog.
+- **A duplicate stacking column is being retired.** `businesses.coupon_stacking`
+  arrived from a parallel branch in migration 0047 and encoded the same
+  three-valued rule in a different vocabulary, read by no money code. Product has
+  ruled: **`discount_stacking_mode` is canonical and `coupon_stacking` is
+  obsolete.** Retirement is in progress — the inert Business-screen control is
+  removed and stacking is managed on the Coupons and discounts screen, which
+  moves the setting from the `settings.manage` permission to
+  `settings.discounts`. No bill changes, because no money code ever read the
+  retired column.
+
+### Coupons at booking time
+
+- **Foundation/gap:** the coupon domain exists and is entered at checkout. There
+  is no advisory coupon selection on the booking form.
+- **Disposition:** Post-Pilot, P2, Not approved. Product approval and
+  customer/pilot evidence are required.
+- **Candidate scope:** booking selection is advisory only; checkout revalidates
+  every eligibility condition against the appointment's own date; an invalid
+  coupon stops checkout and never silently becomes a manual amount.
+- **Non-goals:** campaigns, personalized generation, and online-booking coupons
+  without separate approval.
+- **Proposed release evidence:** `Coupon Booking Integration Valid --
   CI/PostgreSQL/Browser/Financial Integrity`. No current gate change.
 
 ### General document management
@@ -327,8 +425,9 @@ Managed document scanning ── existing controlled-pilot security gate,
 ### Growth and Enterprise
 
 - **Growth, P3, Not approved:** OCR, AI-assisted document intelligence,
-  marketing automation, broader promotions, loyalty, and analytics. Coupons are
-  the nearer Post-Pilot initiative; reminders are not marketing. OCR requires
+  marketing automation, broader promotions, loyalty, and analytics. Coupons have
+  shipped and are not in this band; broader promotions and campaigns built on top
+  of them are. Reminders are not marketing. OCR requires
   confidence, provenance, governance, safe fallback, and low correction burden.
 - **Enterprise, Deferred, Not approved:** organizational administration, formal
   assurance, compliance expansion, enterprise integrations, and policy controls.
@@ -340,7 +439,7 @@ These proposals are not accepted ADRs and have no accepted ADR number.
 
 | Proposal | Decisions required | Dependencies | Approving functions | Status | Implementation blocked? |
 |---|---|---|---|---|---|
-| Coupon and invoice-discount authority | Authority, snapshots, rounding, eligibility, consumption, reopening, voids, reversals, stacking | Receipt inventory | Product, Engineering, Security | Backlog | Yes |
+| Coupon and invoice-discount authority | Reopening, voids and reversals of a redemption; the canonical stacking column and its vocabulary. Authority, snapshots, rounding, eligibility, consumption and stacking order are no longer open -- 0048 decided and built them | Shipped coupon domain | Product, Engineering, Security | Backlog; the domain shipped without it | No -- the domain is built. Outstanding for redemption reversal and the duplicate stacking column |
 | Document classification and retention | Domain classes, ownership, MIME, quotas, retention, deletion, legal hold, export, scanning | Existing document ADRs | Product, Engineering, Security, Privacy/Legal as applicable | Backlog | Yes |
 | Notification-recipient resolution | Events, rules, timing, authority, dedupe, deactivation, required recipients | Outbox/intent contract | Product, Engineering, Security, Operations | Backlog | Yes |
 | Feedback consent and durable scheduling | Classification, consent, scheduling, idempotency, links, templates, suppression, retention | Notification contract | Product, Engineering, Privacy/Legal, Security, Operations | Backlog | Yes |
@@ -355,7 +454,7 @@ General risks remain in [Scale readiness](../architecture/scale-readiness.md).
 | Receipt history mutation, injection, or inconsistent channels | Misleading financial history or unsafe output | Invoice snapshots and escaping convention | Immutable bounded label and channel tests | Product, Security | Financial integrity/security | Disable editable labels; restore renderer; verify snapshots |
 | Wrong reporting boundaries or changed grouping | Reports disagree or misstate periods | Timezone-aware bounded helpers | Approved defaults, shared helper, inventory, boundary tests | Product | Reporting correctness; financial gate if applicable | Revert setting use; regenerate explicit ranges |
 | Credit overdraft, double redemption, or a ledger that disagrees with an invoice | Money spent twice, or a balance no entry accounts for | Customer row lock, signed single-column ledger, immutable entries, per-payment partial unique indexes | Balance re-read under the lock, reversal on void, concurrent-redemption race test, one money statement per invoice | Product, financial design, Security | Financial integrity | Stop credit redemption; reconcile entries against payments; correct by compensating adjustment |
-| Coupon double/cross-tenant use, rounding drift, races, silent invalidation | Incorrect financial effect | Tenant context, integer money, replay protection | Transactional checks, narrow locks, uniqueness, snapshots, audit | Product, financial design, Security | Financial integrity | Stop coupons; reconcile invoices and usage |
+| Coupon double/cross-tenant use, rounding drift, races, silent invalidation | Incorrect financial effect | Shipped: tenant context, integer money, replay protection, a `for update` row lock on the coupon before the caps are counted, `unique (business_id, coupon_id, invoice_id)` on redemptions, per-line immutable snapshots in `invoice_discounts`, and a `coupon.redeem` audit event | A redemption reversal path, which does not exist -- there is no invoice void route, so a redemption cannot be given back | Product, financial design, Security | Financial integrity | Deactivate the coupon; reconcile invoices and redemptions by hand, since no automated reversal exists |
 | Document quarantine bypass, retention ambiguity, growth, or exposure | Malware/privacy incident or failed offboarding | Quarantine, authorization, immutable identity | Domain policy, scanning, quotas, audit, export/deletion contract | Product, Security, Privacy/Legal as applicable | Existing malware/tenant gates | Revoke, quarantine, preserve evidence, incident runbook |
 | Notification cross-tenant injection, fanout, duplicates, or deactivated delivery | Disclosure, duplicate messages, missed work | Tenant outbox and intent uniqueness | Scoped resolution, snapshots, limits, dedupe, deactivation policy | Product, Security, Operations | Tenant and duplicate-message gates | Disable rules; cancel intents; reconstruct evidence |
 | Feedback consent failure, duplicate outreach, spam, unsafe links/templates | Privacy, trust, deliverability harm | Durable intent and attempts | Approved consent, validation, idempotency, suppression evidence | Product, Privacy/Legal, Security, Operations | Privacy/duplicate-message gates | Disable automation; cancel pending work; remediate |

@@ -16,7 +16,7 @@ earlier-SHA evidence are not substitutes.
 | REPLAY | Scheduling/financial replay | None technical | Complete -- automated evidence sufficient | None | No technical blocker |
 | RABIES | Compliance contract and suites | Manual workflow evidence | Complete -- technical evidence ready, human approval pending | Product/Privacy decision, manual UX | Yes for human approval |
 | RABIES-ATTACHMENT | ADR-010 minimum attachment safety | Upload authorization, bounded PDF validation, private retrieval, tenant isolation | Complete -- technical evidence required on exact SHA | Security/Product review | Yes |
-| SEC-DOC-001 | Managed scanner in staging | Superseded by ADR-010 for MVP; historical finding retained | Superseded for MVP; post-MVP hardening candidate | Security/Product approval | No for MVP |
+| SEC-DOC-001 | Staging evidence for the current attachment control, per release governance | Staging evidence, and an explicit recorded closure | **Open.** ADR-010 superseded ADR-005's runtime scanning design; it did not close this finding, and it is not closure evidence for it. The superseded scanner is NOT required | Security and launch approver must record closure | **Yes** |
 | SEC-DB-001 | Schema-owner/RLS finding | Approved disposition | Open -- human approval | Engineering/Security/launch approver | Existing authority decides |
 | P2-A11Y | WCAG pilot workflows | Manual AT matrix and final automation | Open -- human execution | Accessibility approver | Yes |
 | P3-PERF | Pre-staging characterization | Approved envelope and run | Open -- approval then automatable | Product approval | P5 controls launch |
@@ -76,5 +76,7 @@ material uniqueness, staff identity, suppression, quarantine/download denial,
 scanner evidence and limitation, proposed policy, and residual risks. The launch
 packet must separate technical gates, human work, approvals, and infrastructure,
 including `SEC-DOC-001`, `SEC-DB-001`, staging, accessibility, device QA,
-monitoring, recovery, thresholds, and this non-effective proposal. Codex does not
-make the launch decision.
+monitoring, recovery, thresholds, and this non-effective proposal. `SEC-DOC-001`
+is open and blocking: it closes only on staging evidence for the current
+attachment control plus an explicit recorded closure, and ADR-010 is neither.
+Codex does not make the launch decision.

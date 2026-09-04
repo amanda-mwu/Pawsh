@@ -49,7 +49,11 @@ offboarding, backup, and incident controls. Physical deletion, legal hold, and
 long-term notification retention require approval before GA. Deactivation never
 rewrites historical verifier or resolved-recipient identity.
 
-Current PDF checks are not malware detection. `SEC-DOC-001` remains a
-controlled-pilot blocker. Manual entry does not waive it while uploads are
-enabled. See the [proposed limited-pilot decision](../decisions/proposed-rabies-limited-pilot-policy.md)
+Current PDF checks are not malware detection. **`SEC-DOC-001` is open and
+remains a controlled-pilot blocker.** ADR-010 superseded ADR-005's runtime
+scanning design; that supersession did not close the finding, and ADR-010 is not
+closure evidence for it. The superseded scanner is not required. Closure needs
+staging evidence for the current attachment control, as release governance
+requires, plus an explicit recorded closure. Manual entry does not waive the
+finding while uploads are enabled. See the [proposed limited-pilot decision](../decisions/proposed-rabies-limited-pilot-policy.md)
 and [gate matrix](../releases/controlled-pilot-execution-plan.md).

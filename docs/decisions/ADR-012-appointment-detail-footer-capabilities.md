@@ -1,9 +1,44 @@
 # ADR-012: Ready for Pickup, the waiting list, appointment confirmation, and Contact
 
-Status: Accepted. Amends the lifecycle recorded in
+Status: **Proposed; not built.** Nothing in this record exists.
+`ready_for_pickup` does not appear in the `appointment_status` enum or anywhere
+in `src/`, `public/` or `tests/`; there is no waitlist table, route or client
+surface; there is no confirmation field and no Contact send path. The record
+describes the work in full and the work has not started.
+
+The status was previously "Accepted", which readers took as a statement about
+the repository and which the repository does not support. It is corrected to
+describe what is true. The design below is not withdrawn and no decision in it is
+reopened by this line; whether Product has agreed the design is a separate
+question from whether the design is built, and only the second is settled here.
+
+It **would** amend the lifecycle recorded in
 `docs/architecture/appointment-lifecycle.md` and the workflow recorded in
-`docs/specifications/appointment-workflow.md`, both of which are updated to
-describe the lifecycle this record builds rather than the one that preceded it.
+`docs/specifications/appointment-workflow.md`. Neither has been amended. An
+earlier version of this line said both "are updated"; they were not, and neither
+mentions Ready for Pickup, the waiting list or this record at all. They describe
+the lifecycle the product actually has, which is the correct thing for them to
+describe while this record is unbuilt, and they are to be amended by the change
+that implements it rather than ahead of it.
+
+**The migration numbers named in this record are not reserved and several are
+already taken.** This record names `0051`, `0052`, `0054` and `0055`. Both of the
+first two have since been written by unrelated work: `0051` is
+`0051_local_wall_clock_integrity.sql`, the repair that derives the denormalised
+local wall clock from the instant it belongs to, and `0052` is
+`0052_tenant_qualified_foreign_keys.sql`. Neither has anything to do with Ready
+for Pickup. `0054` and `0055` are unallocated as this is written and carry no
+claim, which is not the same as being held. Migration numbers in this
+repository are allocated when a migration file is written, in the order files are
+written, and a record cannot hold one open in advance — which is precisely how
+the collision below happened. Every migration filename in the body of this record
+is therefore to be read as *"a migration, whose number is assigned when it is
+written"*, and the numbers are retained only because the surrounding prose refers
+to them by name. **The two-file split of the enum change is a real constraint and
+survives the renumbering**: the file that runs `alter type … add value` must be a
+different file, and therefore a different transaction, from the first file that
+uses the new label. That is a property of the pair, not of the numbers 0051 and
+0052.
 
 Four capabilities arrive from one reference surface: the appointment detail
 footer. Three are new product, one is a new client-messaging feature, and a
@@ -196,24 +231,28 @@ but **the new value may not be used in the same transaction that added it**.
 `scripts/apply-migrations.ts:36` applies each file in one `sql.unsafe(migration)`
 call, so one file is one transaction and a later file is a later transaction.
 
-- `0051_appointment_ready_for_pickup.sql` — `alter type appointment_status add
+- `…_appointment_ready_for_pickup.sql` — `alter type appointment_status add
   value 'ready_for_pickup' before 'completed'` and nothing else. `before
   'completed'` puts the label in lifecycle order, which affects only `order by
   status` and `min`/`max`; nothing sorts on it today, and getting it right is
   free now and awkward later.
-- `0052_ready_for_pickup_scheduling.sql` — `create or replace` for the three
-  trigger functions, with the new label omitted from all six `status in (…)`
-  predicates and a comment saying it is omitted deliberately.
+- `…_ready_for_pickup_scheduling.sql` — the immediately following number —
+  `create or replace` for the three trigger functions, with the new label
+  omitted from all six `status in (…)` predicates and a comment saying it is
+  omitted deliberately.
+
+The numbers are assigned when the files are written. What matters is that they
+are two consecutive files in that order, not which integers they get.
 
 A PL/pgSQL body is parsed lazily, so the two *could* be one file. They are not,
 because the cost of being wrong about that is a migration that fails in
 production, and the cost of being right about it is one extra file.
 
-0052 also carries a correction. The comment at
+The second of the two files also carries a correction. The comment at
 `migrations/0049_appointment_lifecycle_times.sql:110` asserts that `completed` is
 reachable only from `in_service`. That is no longer true. 0049 has run and must
-not be edited, so the correction is recorded in 0052 where the next reader of
-the lifecycle will find it. The `appointment_times_ordered` check constraint is
+not be edited, so the correction is recorded in that second file, where the next
+reader of the lifecycle will find it. The `appointment_times_ordered` check constraint is
 unaffected and stays as it is.
 
 ## 2. To WaitingList
@@ -254,7 +293,8 @@ dedicated waiting-list template is deferred until a salon asks for one.
 
 ### The table
 
-`0054_appointment_waitlist.sql`, in the shape 0048 and 0050 established:
+A migration `…_appointment_waitlist.sql`, whose number is assigned when it is
+written, in the shape 0048 and 0050 established:
 
 ```sql
 create table appointment_waitlist_entries (
@@ -536,7 +576,8 @@ the actor, so this needs no schema change and no new column.
 
 ### One migration, for one index and one permission
 
-`0055_client_messaging.sql`:
+A migration `…_client_messaging.sql`, whose number is assigned when it is
+written:
 
 ```sql
 -- A double-clicked menu item must not send a client two identical emails.
@@ -645,9 +686,12 @@ and a salon will meet it.
   `tests/domain/domain-labels.test.ts` asserts `appointmentStatusBadges` has
   exactly the domain's keys, so the badge is a compile-and-test gate rather than
   a thing to remember.
-- **Migration.** A test asserts that 0051 contains the `alter type` and nothing
-  that uses the new label, and that 0052 contains no `alter type`. The split is
-  the correctness property and it should fail loudly if the files are merged.
+- **Migration.** A test asserts that the `alter type` file contains the `alter
+  type` and nothing that uses the new label, and that the scheduling file that
+  follows it contains no `alter type`. The split is the correctness property and
+  it should fail loudly if the files are merged. The test must locate the two
+  files by name rather than by number, because the numbers are whatever is free
+  when the migration is written.
 - **Database, under concurrency.** Two simultaneous "To WaitingList" calls on one
   appointment produce one entry and one cancellation;
   `waitlist_open_entry_per_appointment` is the guarantee and the test is what

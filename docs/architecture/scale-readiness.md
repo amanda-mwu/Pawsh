@@ -226,17 +226,51 @@ inflate ordinary browser fixtures.
 - Status: Resolved in D3. Service-time identity and safety snapshots remain
   explicitly absent.
 
-### SEC-DOC-001 — No dedicated PDF malware scanning (superseded for MVP)
+### SEC-DOC-001 — No dedicated PDF malware scanning (OPEN)
 
-- Evidence: D3.2 restricts uploads to bounded PDFs with shallow signature/EOF
+**This entry is the authoritative status of SEC-DOC-001. Where any other
+document disagrees with it, this one governs.**
+
+- Evidence: uploads are restricted to bounded PDFs with shallow signature/EOF
   checks, private storage, permission-controlled attachment downloads, and no
-  Pawsh inline rendering. It does not scan or sanitize active PDF content.
+  Pawsh inline rendering. Nothing scans or sanitizes active PDF content.
 - Severity/current impact: a hostile PDF could reach an authorized staff
   browser or device PDF handler.
-- Disposition: Must Fix Before Controlled Pilot.
+- Disposition: **Must Fix Before Controlled Pilot.**
 - Promotion trigger: before any pilot user can upload or download Pet Care PDFs.
-- Status: Superseded for MVP by ADR-010; evaluate managed scanning later as
-  deployment hardening. Sanity validation is not represented as malware scanning.
+- Status: **OPEN.**
+
+#### A superseded design is not a closed finding
+
+ADR-010 supersedes the *runtime scanning design* recorded in ADR-005. **It does
+not, by itself, close SEC-DOC-001, and it is not closure evidence for it.**
+
+The finding describes a residual risk — an allowed PDF may carry malicious
+content nothing inspects — and that risk survived the architectural replacement
+that removed its original control. Superseding an implementation retires the
+implementation; it does not retire the risk the implementation existed to
+address. The current control is different from the one ADR-005 specified, and
+the finding is open against whatever control is actually in place.
+
+**ADR-005's asynchronous scanner, quarantine queue, retries, dead letters and
+scanner monitoring are superseded and are NOT required.** Nothing here asks for
+them to be rebuilt. The MVP control is the Rabies Attachment Minimum Safety set
+described in ADR-010, and SEC-DOC-001 is open against that set.
+
+#### What closes SEC-DOC-001
+
+Both of the following, and neither alone:
+
+1. **Staging evidence** that the replacement control meets what the applicable
+   release-governance process requires of it. What that evidence must consist of
+   is set by that process, not by this entry, and not by the superseded ADR-005
+   design.
+2. **An explicit recorded closure** of the finding by Security together with the
+   launch approver, naming the evidence relied on.
+
+Until both exist, SEC-DOC-001 is open and blocking for the controlled pilot.
+Shallow sanity validation is not represented as malware scanning and does not
+constitute closure evidence.
 
 ### ARCH-DOC-001 — Buffered document ingestion
 

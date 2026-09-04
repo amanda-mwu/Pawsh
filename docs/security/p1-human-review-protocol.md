@@ -1,12 +1,21 @@
-# P1 human Security review protocol (superseded for MVP)
+# P1 human Security review protocol
 
-ADR-010 supersedes the managed-scanner requirement for the MVP. SEC-DOC-001
-remains historical evidence and is replaced for MVP by the Rabies Attachment
-Minimum Safety gate: authenticated same-tenant authorization, strict PDF and
-size validation, private immutable storage identity, authorized download,
-attachment disposition, `nosniff`, and auditability. Managed scanning remains a
-post-MVP deployment-hardening candidate; its residual malware-detection risk is
-accepted only within this narrow scope.
+ADR-010 supersedes ADR-005's managed-scanner **runtime design** for the MVP.
+**It does not close SEC-DOC-001, which is OPEN and Must Fix Before Controlled
+Pilot.** A superseded implementation design is not a closed security finding.
+
+The MVP control is the Rabies Attachment Minimum Safety gate: authenticated
+same-tenant authorization, strict PDF and size validation, private immutable
+storage identity, authorized download, attachment disposition, `nosniff`, and
+auditability. The superseded scanner, quarantine queue, retries and dead letters
+are **not** required and are not to be rebuilt; SEC-DOC-001 is open against the
+control that replaced them.
+
+SEC-DOC-001 closes on staging evidence for that control, as the applicable
+release-governance process requires, plus an explicit recorded closure by
+Security and the launch approver. ADR-010 is not that evidence. See
+[the finding register](../architecture/scale-readiness.md) for the authoritative
+entry.
 
 Administrative status: not approved. A named human Security approver must review the exact tested runtime artifact.
 
@@ -40,7 +49,7 @@ The control sequence is `arm`, `await-held`, `status`, then `release` or `fail`.
 
 - `UX-DOC-003` — confirmed and remediated in this candidate: pending state was not rediscoverable after reload.
 - `SEC-DB-001` — confirmed and open: the application uses the schema owner and therefore does not obtain the intended RLS defense in depth. Classification requires Engineering, Security, and launch-approver agreement.
-- `SEC-DOC-001` — open, Must Fix Before Controlled Pilot: managed scanner efficacy and deployed integration await P4 staging.
+- `SEC-DOC-001` — **open**, Must Fix Before Controlled Pilot. The residual malware-detection risk survives ADR-010's supersession of the scanner design. Closure requires P4 staging evidence for the current attachment control plus an explicit recorded closure; ADR-010 alone is not closure.
 
 ## Decision record
 

@@ -93,8 +93,7 @@ describe("businessSettingsSchema preferences", () => {
     dateFormat: ["MM/DD/YYYY", "DD/MM/YYYY"],
     hourFormat: ["12", "24"],
     weightUnit: ["lb", "kg"],
-    appointmentLock: ["enabled", "disabled"],
-    couponStacking: ["single", "amount_first", "percentage_first"]
+    appointmentLock: ["enabled", "disabled"]
   } as const;
 
   it("accepts every value of every enum, verbatim", () => {
@@ -120,6 +119,27 @@ describe("businessSettingsSchema preferences", () => {
         field
       ).toBe(values[0] === values[0]!.toUpperCase());
     }
+  });
+
+  /**
+   * `couponStacking` used to be the sixth entry above. It was retired in
+   * `0053_retire_coupon_stacking.sql` along with the column it wrote, because
+   * `businesses.discount_stacking_mode` carried the same three-valued rule and was the only one of
+   * the two any bill was ever calculated from - `single` and `one_per_appointment` being the same
+   * rule spelled twice. The surviving control is `discountStackingSchema`.
+   *
+   * The two cases below are the wire contract that retirement leaves behind, and they are opposite
+   * halves of it: the field is GONE from the parsed value, and a client still sending it is not
+   * broken by that. This schema is deliberately not `.strict()` - every field on it is optional so
+   * that an existing client's payload keeps working - so an unknown key is dropped rather than
+   * refused, and that is what makes the removal safe to ship without a client release.
+   */
+  it("no longer parses couponStacking, and does not refuse a client that still sends it", () => {
+    const parsed = businessSettingsSchema.parse({ ...base, couponStacking: "percentage_first" });
+    expect(parsed).not.toHaveProperty("couponStacking");
+    // Even a value that was never legal is ignored rather than answered with a 400, because the
+    // field is not this schema's business any more at all.
+    expect(businessSettingsSchema.safeParse({ ...base, couponStacking: "both" }).success).toBe(true);
   });
 
   it("leaves an omitted preference undefined so the stored value survives", () => {

@@ -379,7 +379,11 @@ test("@smoke every preference on the Info tab saves and comes back",async({page,
   await expect(page.getByTestId("business-hour-format")).toHaveValue("12");
   await expect(page.getByTestId("business-weight-unit")).toHaveValue("lb");
   await expect(page.getByTestId("business-appointment-lock")).toHaveValue("disabled");
-  await expect(page.getByTestId("business-coupon-stacking")).toHaveValue("single");
+  // No coupon-stacking control here any more. It wrote `coupon_stacking`, which nothing that
+  // calculates a bill has ever read; the rule that does decide money is `discount_stacking_mode`
+  // and it belongs to the Coupons & discounts screen, under `settings.discounts`. Two controls for
+  // one rule is how an operator comes to believe they have set something they have not.
+  await expect(page.getByTestId("business-coupon-stacking")).toHaveCount(0);
   // `upcoming_appointment_count` is null, and null is the value All rather than an absence.
   await expect(page.getByTestId("business-upcoming-count")).toHaveValue("All");
   await expect(page.getByTestId("business-service-frequency")).toHaveValue("");
@@ -391,7 +395,6 @@ test("@smoke every preference on the Info tab saves and comes back",async({page,
   await page.getByTestId("business-hour-format").selectOption("24");
   await page.getByTestId("business-weight-unit").selectOption("kg");
   await page.getByTestId("business-appointment-lock").selectOption("enabled");
-  await page.getByTestId("business-coupon-stacking").selectOption("percentage_first");
   await page.getByTestId("business-upcoming-count").selectOption("7");
   await page.getByTestId("business-service-frequency").fill("6");
   await page.getByTestId("business-social-facebook").fill("https://facebook.com/riverside");
@@ -408,7 +411,6 @@ test("@smoke every preference on the Info tab saves and comes back",async({page,
   await expect(page.getByTestId("business-hour-format")).toHaveValue("24");
   await expect(page.getByTestId("business-weight-unit")).toHaveValue("kg");
   await expect(page.getByTestId("business-appointment-lock")).toHaveValue("enabled");
-  await expect(page.getByTestId("business-coupon-stacking")).toHaveValue("percentage_first");
   await expect(page.getByTestId("business-upcoming-count")).toHaveValue("7");
   await expect(page.getByTestId("business-service-frequency")).toHaveValue("6");
   // A bare host is stored with https:// in front of it, and the operator is shown what came back.
@@ -518,19 +520,22 @@ test("business type is required, and a hostile link is refused at the field",asy
     .toHaveText("Enter a whole number of weeks, from 1 to 104.");
 });
 
-test("the two inert settings say so, without promising a date",async({page,tenant})=>{
+test("the one inert setting says so, without promising a date",async({page,tenant})=>{
   await login(page,tenant.ownerEmail);
   await openBusiness(page);
 
-  await expect(page.getByTestId("business-note-coupon-stacking"))
-    .toHaveText("Pawsh has no coupons or discounts. The choice is stored now and takes effect when they ship.");
   await expect(page.getByTestId("business-note-upcoming-count"))
     .toContainText("Pawsh has no send-out link");
   await expect(page.getByTestId("business-note-upcoming-count"))
     .toContainText("stored now and takes effect when there is one");
-  // Exactly two, and the appointment lock is not one of them: it is enforced, so it carries an
-  // ordinary hint describing what it does rather than a caveat about what it does not.
-  await expect(page.locator(".business-pending-note")).toHaveCount(2);
+  // ONE, not two. The coupon-stacking control and its note are gone: the note said the choice
+  // would take effect when coupons shipped, coupons shipped, and the choice still reached nothing
+  // that calculates a bill. A caveat that has come true and stayed false is worse than no control.
+  await expect(page.locator(".business-pending-note")).toHaveCount(1);
+  await expect(page.getByTestId("business-note-coupon-stacking")).toHaveCount(0);
+  await expect(page.getByTestId("business-panel")).not.toContainText("multiple coupons");
+  // The appointment lock is not one of them either: it is enforced, so it carries an ordinary hint
+  // describing what it does rather than a caveat about what it does not.
   await expect(page.getByTestId("business-note-appointment-lock")).toHaveCount(0);
   await expect(page.getByTestId("business-panel"))
     .toContainText("Enable Lock stops appointments being moved");
@@ -540,7 +545,6 @@ test("the two inert settings say so, without promising a date",async({page,tenan
 
   // The controls are ordinary controls. A disabled select would say the capability exists and is
   // merely switched off, which is the opposite of what the sentence beside it says.
-  await expect(page.getByTestId("business-coupon-stacking")).toBeEnabled();
   await expect(page.getByTestId("business-upcoming-count")).toBeEnabled();
   await expect(page.getByTestId("business-appointment-lock")).toBeEnabled();
 });

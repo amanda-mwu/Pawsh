@@ -311,7 +311,7 @@ describeDatabase("business settings", () => {
    */
   describe("preferences", () => {
     const preferences = async () => (await db<Record<string, unknown>[]>`
-      select business_type,date_format,hour_format,weight_unit,appointment_lock,coupon_stacking,
+      select business_type,date_format,hour_format,weight_unit,appointment_lock,
         upcoming_appointment_count,default_service_frequency_weeks,website,
         social_facebook,social_google,social_yelp
       from businesses where id=${businessId}
@@ -323,7 +323,7 @@ describeDatabase("business settings", () => {
       // the same prices tomorrow as today.
       expect(await preferences()).toMatchObject({
         businessType: "salon", dateFormat: "MM/DD/YYYY", hourFormat: "12", weightUnit: "lb",
-        appointmentLock: "disabled", couponStacking: "single",
+        appointmentLock: "disabled",
         upcomingAppointmentCount: null, defaultServiceFrequencyWeeks: null, website: null
       });
     });
@@ -334,17 +334,21 @@ describeDatabase("business settings", () => {
       const business = (await me()).business;
       for (const field of [
         "businessType", "dateFormat", "hourFormat", "weightUnit", "appointmentLock",
-        "couponStacking", "upcomingAppointmentCount", "defaultServiceFrequencyWeeks",
+        "upcomingAppointmentCount", "defaultServiceFrequencyWeeks",
         "website", "socialFacebook", "socialGoogle", "socialYelp"
       ]) {
         expect(business, field).toHaveProperty(field);
       }
+      // And `couponStacking` is NOT here any more. `/api/me` selects `businesses.*`, so dropping
+      // the column in 0053 removed the field from this payload; the assertion is kept rather than
+      // deleted because its disappearance is the wire change, not an accident of the query.
+      expect(business).not.toHaveProperty("couponStacking");
     });
 
     it("round-trips every preference and preserves it through an unrelated save", async () => {
       const set = await save({
         businessType: "hybrid", dateFormat: "DD/MM/YYYY", hourFormat: "24", weightUnit: "kg",
-        appointmentLock: "enabled", couponStacking: "percentage_first",
+        appointmentLock: "enabled",
         upcomingAppointmentCount: 7, defaultServiceFrequencyWeeks: 6,
         website: "pawsh.test", socialFacebook: "https://facebook.com/pawsh",
         socialGoogle: "https://g.page/pawsh", socialYelp: "https://yelp.com/biz/pawsh"
@@ -352,7 +356,7 @@ describeDatabase("business settings", () => {
       expect(set.statusCode, set.body).toBe(200);
       expect(await preferences()).toMatchObject({
         businessType: "hybrid", dateFormat: "DD/MM/YYYY", hourFormat: "24", weightUnit: "kg",
-        appointmentLock: "enabled", couponStacking: "percentage_first",
+        appointmentLock: "enabled",
         upcomingAppointmentCount: 7, defaultServiceFrequencyWeeks: 6,
         website: "https://pawsh.test", socialFacebook: "https://facebook.com/pawsh"
       });
@@ -401,10 +405,15 @@ describeDatabase("business settings", () => {
       await save({ weightUnit: "kg", businessType: "mobile" });
       for (const payload of [
         { weightUnit: "stone" }, { businessType: "franchise" }, { dateFormat: "YYYY-MM-DD" },
-        { hourFormat: "36" }, { appointmentLock: "maybe" }, { couponStacking: "both" }
+        { hourFormat: "36" }, { appointmentLock: "maybe" }
       ]) {
         expect((await save(payload)).statusCode, JSON.stringify(payload)).toBe(400);
       }
+      // `couponStacking` is no longer one of them, and the difference is deliberate rather than an
+      // omission: the field left the schema with the column in 0053, and the schema is not
+      // `.strict()`, so a client still sending it is IGNORED rather than refused. A 400 here would
+      // break every such client on a deploy that removed a setting they cannot see anyway.
+      expect((await save({ couponStacking: "both" })).statusCode).toBe(200);
       expect(await preferences()).toMatchObject({ weightUnit: "kg", businessType: "mobile" });
     });
 
@@ -416,8 +425,7 @@ describeDatabase("business settings", () => {
         ["date_format", "YYYY-MM-DD", "business_date_format_supported"],
         ["hour_format", "36", "business_hour_format_supported"],
         ["weight_unit", "stone", "business_weight_unit_supported"],
-        ["appointment_lock", "maybe", "business_appointment_lock_supported"],
-        ["coupon_stacking", "both", "business_coupon_stacking_supported"]
+        ["appointment_lock", "maybe", "business_appointment_lock_supported"]
       ] as const) {
         await expect(
           db.unsafe(`update businesses set ${column}=$1 where id=$2`, [value, businessId]),

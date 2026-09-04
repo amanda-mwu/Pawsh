@@ -19,6 +19,17 @@ import { beforeEach, describe, expect, it } from "vitest";
  * against stubs. Both anchors are declarations this file would have to be rewritten for anyway.
  */
 const source = readFileSync("public/app.js", "utf8");
+/**
+ * `public/money.js` verbatim, with its `export` keywords dropped so it can be prepended to the
+ * block the way an import would have supplied it.
+ *
+ * NOT A STUB. `businessCurrencySample` is a promise about how this workspace's prices will read,
+ * and the promise is only true because it is made by the same formatter that will read them - so
+ * the harness runs the real one. A hand-written two-decimal stand-in here would pass while the
+ * browser rounded COP to whole units, which is the divergence
+ * `tests/domain/web-money-parity.test.mjs` exists to prevent.
+ */
+const moneySource = readFileSync("public/money.js", "utf8").replaceAll("\nexport function", "\nfunction");
 const blockStart = source.indexOf("const BUSINESS_TABS=[");
 const blockEnd = source.indexOf("\nfunction renderSettingsCategory(");
 
@@ -73,7 +84,6 @@ function businessFixture() {
     hourFormat: "24",
     weightUnit: "kg",
     appointmentLock: "enabled",
-    couponStacking: "amount_first",
     upcomingAppointmentCount: 5 as number | null,
     defaultServiceFrequencyWeeks: 6 as number | null,
     socialFacebook: "https://facebook.com/riverside",
@@ -121,7 +131,7 @@ function loadBusinessModule(business = businessFixture(), permissions = ["settin
   `;
   const factory = new Function(
     "state", "escape", "escapeAttr", "document",
-    prelude + source.slice(blockStart, blockEnd) + exported
+    prelude + moneySource + source.slice(blockStart, blockEnd) + exported
   ) as (
     state: unknown, escape: unknown, escapeAttr: unknown, document: unknown
   ) => BusinessModule;
@@ -251,7 +261,6 @@ describe("Settings → Business", () => {
         ["business-hour-format", '<option value="24" selected>24 Hours</option>'],
         ["business-weight-unit", '<option value="kg" selected>Kg</option>'],
         ["business-appointment-lock", '<option value="enabled" selected>Enable Lock</option>'],
-        ["business-coupon-stacking", '<option value="amount_first" selected>Apply Amount First</option>'],
         ["business-upcoming-count", '<option value="5" selected>5 appointments</option>'],
         ["business-service-frequency", 'value="6"'],
         ["business-social-facebook", 'value="https://facebook.com/riverside"'],
@@ -298,14 +307,19 @@ describe("Settings → Business", () => {
         expect(markup).toContain('<option value="12" selected>12 Hours</option>');
       });
 
-      it("says what the two stored-but-inert settings do not do, without promising a date", () => {
+      it("says what the one stored-but-inert setting does not do, without promising a date", () => {
         const markup = loadBusinessModule().businessInfoMarkup();
-        expect(markup).toContain("Pawsh has no coupons or discounts. The choice is stored now and takes effect when they ship.");
         expect(markup).toContain("Pawsh has no send-out link");
         expect(markup).toContain("The count is stored now and takes effect when there is one.");
-        // Exactly two. The appointment lock is enforced, so it carries an ordinary hint and must
-        // not be grouped with the settings that are stored and inert.
-        expect(markup.match(/class="field-hint business-pending-note"/g)).toHaveLength(2);
+        // The coupon-stacking control and its note are gone. The note said the choice would take
+        // effect when coupons shipped; coupons shipped, and it still reached nothing that
+        // calculates a bill, because `coupon_stacking` has no money consumers. The rule that does
+        // decide money is `discount_stacking_mode`, and its one control is on Coupons & discounts.
+        expect(markup).not.toContain("multiple coupons");
+        expect(markup).not.toContain("business-coupon-stacking");
+        // Exactly one. The appointment lock is enforced, so it carries an ordinary hint and must
+        // not be grouped with the setting that is stored and inert.
+        expect(markup.match(/class="field-hint business-pending-note"/g)).toHaveLength(1);
         expect(markup).not.toContain("business-note-appointment-lock");
         // The voice of the three unavailable tabs: no delivery promise anywhere on this form.
         expect(markup).not.toContain("Coming soon");
@@ -482,11 +496,13 @@ describe("Settings → Business", () => {
       });
 
       it("sends an enum only when it moved, and never sends one as null", () => {
-        const enums = ["businessType", "dateFormat", "hourFormat", "weightUnit",
-          "appointmentLock", "couponStacking"];
+        // Five now, not six. `couponStacking` was retired with its control: it wrote a column no
+        // bill calculation reads, and the rule that does decide money is `discount_stacking_mode`
+        // on the Coupons & discounts screen.
+        const enums = ["businessType", "dateFormat", "hourFormat", "weightUnit", "appointmentLock"];
         business.businessDraft().name = "Riverside Pet Spa";
         for (const key of enums) expect(Object.keys(business.businessSettingsPayload())).not.toContain(key);
-        // Sending null for any of the six is a 400 - they have no null - so an emptied draft value
+        // Sending null for any of the five is a 400 - they have no null - so an emptied draft value
         // must still not reach the payload as one.
         business.businessDraft().dateFormat = "MM/DD/YYYY";
         business.businessDraft().weightUnit = "lb";

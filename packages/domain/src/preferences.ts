@@ -49,16 +49,26 @@ export const appointmentLockModes = ["enabled", "disabled"] as const;
 export type AppointmentLockMode = typeof appointmentLockModes[number];
 
 /**
- * How coupons combine. Stored now, honoured when coupons exist.
+ * RETIRED. Nothing reads this tuple, and the column it described no longer exists.
  *
- * Pawsh has no coupon domain: `invoices` carries a single `discount` integer applied before tax in
- * `calculateInvoice`, and there is no coupon table, no code, no stacking to arbitrate. This tuple
- * records the rule a salon has chosen so that whatever builds coupons inherits an answer instead
- * of asking again.
+ * Every clause of what used to be written here is now false, and it is worth recording which,
+ * because the note is what kept a duplicate setting alive: Pawsh HAS a coupon domain, there IS a
+ * `coupons` table with codes and redemptions, and there IS a stacking rule being arbitrated -
+ * `applyDiscounts` in `money.ts` reads `businesses.discount_stacking_mode` and decides from it
+ * whether a $100 bill with a $20 discount and a 10% discount comes to $72 or to $70. All three
+ * arrived with `0048_discounts_and_coupons.sql`.
  *
- *   single           - one coupon or discount per appointment, no combining
- *   amount_first     - combine, applying fixed-amount discounts before percentage ones
- *   percentage_first - combine, applying percentage discounts before fixed-amount ones
+ * `businesses.coupon_stacking` was the OTHER column for the same rule, and never had a money
+ * consumer: `PUT /api/business/settings` wrote it and read it back only to name it in an audit
+ * entry, while the Business Settings control that fed it told an operator the choice would take
+ * effect when coupons shipped. It was dropped in `0053_retire_coupon_stacking.sql` WITHOUT copying
+ * any value into the financial authority, so no bill moved.
+ *
+ * `single` and `one_per_appointment` were the same rule spelled twice. The surviving vocabulary is
+ * `discountStackingModes` in `enums.ts`, written through `PUT /api/settings/discount-stacking` and
+ * gated on `settings.discounts`. Use that. This tuple is kept only so a stored value read out of
+ * an old audit entry still has something to be compared against, and it should be deleted once
+ * that is no longer worth anything.
  */
 export const couponStackingModes = ["single", "amount_first", "percentage_first"] as const;
 export type CouponStackingMode = typeof couponStackingModes[number];

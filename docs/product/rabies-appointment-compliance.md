@@ -50,9 +50,11 @@ long-term notification retention require approval before GA. Deactivation never
 rewrites historical verifier or resolved-recipient identity.
 
 Current PDF checks are not malware detection. **`SEC-DOC-001` is open and
-remains a controlled-pilot blocker.** ADR-010 superseded ADR-005's runtime
-scanning design; that supersession did not close the finding, and ADR-010 is not
-closure evidence for it. The superseded scanner is not required. Closure needs
+remains a controlled-pilot blocker.** ADR-010 accepts the residual risk of the
+replacement architecture and supersedes ADR-005's runtime design; it does not
+itself close the finding, and neither the supersession nor the risk acceptance is
+closure evidence. An accepted risk is an architectural decision, not a governance
+closure event. The superseded scanner is not required. Closure needs
 staging evidence for the current attachment control, as release governance
 requires, plus an explicit recorded closure. Manual entry does not waive the
 finding while uploads are enabled. See the [proposed limited-pilot decision](../decisions/proposed-rabies-limited-pilot-policy.md)

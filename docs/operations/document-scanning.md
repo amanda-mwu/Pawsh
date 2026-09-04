@@ -22,7 +22,9 @@ not what this document asks for.
 malicious content, and that risk is tracked as `SEC-DOC-001`, which is OPEN and
 blocking for the controlled pilot.** Retiring the scanner design did not close
 the finding — a superseded implementation design is not a closed security
-finding — and ADR-010 is not closure evidence for it. `SEC-DOC-001` closes on
+finding — and neither did ADR-010's acceptance of the replacement architecture's
+residual risk, which is an architectural decision statement rather than a
+governance closure event. ADR-010 is not closure evidence for it. `SEC-DOC-001` closes on
 staging evidence for the current attachment control, as release governance
 requires, plus an explicit recorded closure by Security and the launch approver.
 See [the finding register](../architecture/scale-readiness.md).

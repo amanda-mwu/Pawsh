@@ -5,10 +5,11 @@
 - **Existing authority:** `SEC-DOC-001` is **open** and blocking for the
   controlled pilot while uploads remain available. It closes on staging evidence
   for the current attachment control, as release governance requires, plus an
-  explicit recorded closure. ADR-005's managed-scanner runtime design is
-  superseded by ADR-010 and is **not** required; the finding is open against the
-  control that replaced it, because a superseded design is not a closed
-  finding.
+  explicit recorded closure. ADR-010 accepts the residual risk of the
+  replacement architecture and supersedes ADR-005's runtime design, which is
+  **not** required; neither act closes the finding, because a superseded design
+  is not a closed finding and an accepted risk is not one either. The finding is
+  open against the control that replaced the scanner.
 
 ## Requested decision
 

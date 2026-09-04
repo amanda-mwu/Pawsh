@@ -1,8 +1,16 @@
 # P1 human Security review protocol
 
-ADR-010 supersedes ADR-005's managed-scanner **runtime design** for the MVP.
-**It does not close SEC-DOC-001, which is OPEN and Must Fix Before Controlled
-Pilot.** A superseded implementation design is not a closed security finding.
+ADR-010 accepts the residual risk of the replacement architecture and supersedes
+ADR-005's managed-scanner **runtime design** for the MVP. **It does not itself
+close SEC-DOC-001, which is OPEN and Must Fix Before Controlled Pilot.**
+SEC-DOC-001 remains open until the required staging evidence is produced and
+explicit governance closure occurs.
+
+Neither half of ADR-010 discharges it. A superseded implementation design is not
+a closed security finding, and an accepted risk is not one either: accepting a
+risk in an ADR is an architectural decision statement, while closing a finding is
+an act of release governance performed by named approvers against named evidence.
+This protocol is where the second happens; ADR-010 is not.
 
 The MVP control is the Rabies Attachment Minimum Safety gate: authenticated
 same-tenant authorization, strict PDF and size validation, private immutable
@@ -49,7 +57,7 @@ The control sequence is `arm`, `await-held`, `status`, then `release` or `fail`.
 
 - `UX-DOC-003` — confirmed and remediated in this candidate: pending state was not rediscoverable after reload.
 - `SEC-DB-001` — confirmed and open: the application uses the schema owner and therefore does not obtain the intended RLS defense in depth. Classification requires Engineering, Security, and launch-approver agreement.
-- `SEC-DOC-001` — **open**, Must Fix Before Controlled Pilot. The residual malware-detection risk survives ADR-010's supersession of the scanner design. Closure requires P4 staging evidence for the current attachment control plus an explicit recorded closure; ADR-010 alone is not closure.
+- `SEC-DOC-001` — **open**, Must Fix Before Controlled Pilot. The residual malware-detection risk survives both ADR-010's supersession of the scanner design and ADR-010's own acceptance of that risk. Closure requires P4 staging evidence for the current attachment control plus an explicit recorded closure; ADR-010 alone is not closure, and an accepted risk is not a closed finding.
 
 ## Decision record
 

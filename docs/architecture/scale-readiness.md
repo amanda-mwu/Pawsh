@@ -240,17 +240,36 @@ document disagrees with it, this one governs.**
 - Promotion trigger: before any pilot user can upload or download Pet Care PDFs.
 - Status: **OPEN.**
 
-#### A superseded design is not a closed finding
+#### A superseded design is not a closed finding, and an accepted risk is not one either
 
-ADR-010 supersedes the *runtime scanning design* recorded in ADR-005. **It does
-not, by itself, close SEC-DOC-001, and it is not closure evidence for it.**
+**ADR-010 accepts the residual risk of the replacement architecture and
+supersedes ADR-005's runtime design. It does not itself close SEC-DOC-001.
+SEC-DOC-001 remains open until the required staging evidence is produced and
+explicit governance closure occurs.**
 
-The finding describes a residual risk — an allowed PDF may carry malicious
-content nothing inspects — and that risk survived the architectural replacement
-that removed its original control. Superseding an implementation retires the
+Two distinct things in ADR-010 can be misread as discharge, and neither is.
+
+**The supersession.** ADR-010 retires ADR-005's runtime scanning design. The
+finding describes a residual risk — an allowed PDF may carry malicious content
+nothing inspects — and that risk survived the architectural replacement that
+removed its original control. Superseding an implementation retires the
 implementation; it does not retire the risk the implementation existed to
 address. The current control is different from the one ADR-005 specified, and
 the finding is open against whatever control is actually in place.
+
+**The risk acceptance.** ADR-010 records that "this risk is accepted for the
+narrow MVP attachment scope". That sentence stands, unedited, and it is a real
+decision that was really made. But it is an **architectural decision statement,
+not a governance closure event**. An ADR is where a team records what it chose
+to build and what it chose to live with; closing a security finding is an act of
+release governance, performed by named approvers against named evidence. The two
+are different instruments, and one cannot perform the other's function. ADR-010
+saying the risk is accepted therefore tells you the architecture was chosen with
+this risk in view — not that the finding it belongs to has been discharged.
+
+**ADR-010 is not to be edited to say otherwise.** It survives intact as an
+Accepted record. The clarification lives here, in the governance record, which
+is where the status of a finding belongs.
 
 **ADR-005's asynchronous scanner, quarantine queue, retries, dead letters and
 scanner monitoring are superseded and are NOT required.** Nothing here asks for

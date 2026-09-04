@@ -13,8 +13,14 @@ through ADR-010.
 and remains a controlled-pilot blocker. A superseded implementation design is not
 a closed security finding: the residual risk the finding names survived the
 architectural replacement that removed its original control, so the finding is
-open against the control that replaced it. **ADR-010 is not closure evidence for
-it.** `SEC-DOC-001` closes only on staging evidence for the current attachment
+open against the control that replaced it.
+
+**Nor is ADR-010's acceptance of that residual risk a closure of it.** ADR-010
+accepts the residual risk of the replacement architecture and supersedes
+ADR-005's runtime design; it does not itself close the finding. Accepting a risk
+in an ADR is an architectural decision statement. Closing a finding is a
+governance event, performed by named approvers against named evidence. **ADR-010
+is not closure evidence for it.** `SEC-DOC-001` closes only on staging evidence for the current attachment
 control, as the applicable release-governance process requires, plus an explicit
 recorded closure by Security and the launch approver. The authoritative entry is
 in [Scale readiness](../architecture/scale-readiness.md).
@@ -29,8 +35,9 @@ validated findings keep the authority recorded for each in
 [Scale readiness](../architecture/scale-readiness.md), which is where their
 current status is settled rather than here. For `SEC-DOC-001` specifically, that
 authority currently requires: the finding is **open**, it blocks the controlled
-pilot, ADR-010's supersession of ADR-005's runtime design did not close it and is
-not closure evidence for it, and it closes only on staging evidence for the
+pilot, neither ADR-010's supersession of ADR-005's runtime design nor its
+acceptance of the replacement architecture's residual risk closed it or counts as
+closure evidence for it, and it closes only on staging evidence for the
 current attachment control plus an explicit recorded closure. General platform
 risks stay in the same document.
 
@@ -136,8 +143,10 @@ Post-pilot or GA hardening
 
 Current PDF header, MIME, size, and trailer checks are shallow and are not
 malware detection. External persistent uploads create a pre-pilot security
-obligation. Existing document-malware ADR and validation evidence remain
-authoritative. `SEC-DOC-001` is **open** and remains a controlled-pilot blocker.
+obligation. ADR-010 accepts the residual risk of the replacement architecture and
+supersedes ADR-005's runtime design; that acceptance is an architectural decision
+and not a governance closure. `SEC-DOC-001` is **open** and remains a
+controlled-pilot blocker.
 Rebuilding ADR-005's superseded managed scanner is **not** what closes it; it
 closes on staging evidence for the current attachment control, as release
 governance requires, plus an explicit recorded closure. General document

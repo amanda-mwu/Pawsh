@@ -65,5 +65,5 @@ The documentation commit containing this record is evidence-only. The tested run
 ## Open boundaries
 
 - `SEC-DB-001`: schema-owner runtime/RLS dependency remains open and is not disguised as a P1 pass.
-- `SEC-DOC-001`: **open**, Must Fix Before Controlled Pilot. ADR-010 superseded ADR-005's runtime scanning design and did not close the finding; a superseded implementation design is not a closed security finding, and the superseded scanner is not required. Closure needs staging evidence for the current attachment control, as release governance requires, plus an explicit recorded closure. See [the finding register](../architecture/scale-readiness.md).
+- `SEC-DOC-001`: **open**, Must Fix Before Controlled Pilot. ADR-010 accepts the residual risk of the replacement architecture and supersedes ADR-005's runtime design; neither act closes the finding, because a superseded implementation design is not a closed security finding and an accepted risk is not one either. The superseded scanner is not required. Closure needs staging evidence for the current attachment control, as release governance requires, plus an explicit recorded closure. See [the finding register](../architecture/scale-readiness.md).
 - No staging, pilot, or Controlled Pilot Ready classification is implied.

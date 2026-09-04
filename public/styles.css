@@ -2348,3 +2348,70 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
   .checkout-money{order:1;overflow:visible;border-left:0;border-bottom:1px solid var(--line)}
   .checkout-bill{order:2;overflow:visible}
 }
+
+/* ---------------------------------------------------------------------------
+   Client credit.
+
+   The tile is a fourth money figure beside Total and Outstanding, and it is deliberately NOT
+   `.owing`: credit is money the salon already owes this client, which is a normal state of an
+   account rather than a debt somebody is chasing, and red would read as a problem.
+
+   The ledger is a list rather than a table because it lives in a 560px drawer that becomes a
+   phone screen, and five columns there would be a horizontal scroller over money.
+
+   A PAIR IS TWO ROWS, NEVER ONE. A reversal and its redemption, or a correction and the entry it
+   corrects, each keep their own row and their own amount - the money really did move both times,
+   and merging them would hide a row the ledger holds. The left border and the back-reference
+   sentence are the relationship, following the receipt-refund block above.
+   --------------------------------------------------------------------------- */
+.profile-summary{grid-template-columns:repeat(4,minmax(0,1fr))}
+/* Four 24px currency figures in the profile's right column start truncating below this width. */
+@media(max-width:1100px){.profile-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
+/* Restated rather than inherited from the rule near the top of this stylesheet. These two rules
+   are appended after it and a media query carries no extra specificity, so without this the phone
+   column count would be decided by file order rather than by width. */
+@media(max-width:700px){.profile-summary{grid-template-columns:minmax(0,1fr)}}
+.summary-figure.credit{color:var(--brand)}
+.summary-tile-action{margin:2px 0 0}
+.summary-tile-action .text-button{padding:6px 0;font-size:11.5px}
+
+.credit-totals{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-2);margin:0 0 var(--space-2)}
+.credit-totals>div{display:grid;gap:2px;padding:9px 11px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--surface-2)}
+.credit-totals dt{color:var(--muted);font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase}
+.credit-totals dd{margin:0;font-size:17px;font-weight:600;font-variant-numeric:tabular-nums}
+.credit-totals .credit-total-figure{color:var(--brand)}
+.credit-totals-note{margin:0 0 var(--space-4);line-height:1.5}
+
+.credit-entries{display:grid;gap:0;margin:0;padding:0;list-style:none}
+.credit-entry{display:grid;gap:3px;padding:11px 0;border-top:1px solid var(--line)}
+.credit-entry:first-child{border-top:0}
+/* Both rows of a pair, whether they are adjacent or a month apart. */
+.credit-entry.is-paired{padding-left:11px;border-left:3px solid var(--info)}
+.credit-entry-line{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3)}
+.credit-entry-kind{font-size:13px;font-weight:600}
+.credit-amount{white-space:nowrap;font-size:14px;font-variant-numeric:tabular-nums}
+.credit-amount.is-add{color:var(--brand)}
+.credit-amount.is-take{color:var(--danger)}
+.credit-chip{margin-left:6px;padding:1px 7px;border-radius:999px;background:var(--info-tint);color:var(--info);font-size:10.5px;font-weight:700}
+.credit-entry-reason{margin:0;font-size:12.5px;line-height:1.45;white-space:pre-wrap}
+.credit-entry-meta{margin:0;color:var(--muted);font-size:11.5px;line-height:1.45}
+.credit-entry-action{margin:0}
+.credit-entry-action .text-button{padding:4px 0;font-size:11.5px}
+.credit-ledger-count{margin-right:auto;color:var(--muted);font-size:11.5px;font-weight:600}
+
+/* Direction is a choice, not a sign typed into a number field: typing 20 where -20 was meant
+   hands a client money, and the only fix for that is another entry. */
+.credit-direction{display:flex;margin-bottom:16px;border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden}
+.credit-direction button{flex:1;min-height:44px;border:0;border-right:1px solid var(--line);background:var(--paper);color:var(--ink);font-weight:700;font-size:13px}
+.credit-direction button:last-child{border-right:0}
+.credit-direction button[aria-pressed="true"]{background:var(--brand);color:var(--on-brand)}
+.credit-preview{margin:-8px 0 14px;font-variant-numeric:tabular-nums}
+.credit-preview.is-over{color:var(--danger);font-weight:700}
+.credit-reason-help{margin:-8px 0 14px;line-height:1.45}
+.credit-reason-count{margin-left:6px;font-variant-numeric:tabular-nums}
+.credit-reason-count.is-full{color:var(--danger);font-weight:700}
+.credit-correcting{margin:0 0 14px;padding:9px 11px;border-radius:var(--radius-sm);background:var(--surface-2);font-size:12.5px}
+
+/* Revealed only while credit is the chosen method, so it can afford to be tinted - it is never
+   sitting there inert. The same rule `.checkout-remainder` follows. */
+.checkout-credit-note{display:flex;align-items:center;gap:var(--space-2);margin:0;padding:7px 9px;border-radius:var(--radius-sm);background:var(--brand-tint);font-size:12.5px;font-weight:600;line-height:1.4}

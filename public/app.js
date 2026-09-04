@@ -132,6 +132,11 @@ function petName(record, fallback = "Unnamed pet") {
 function money(value = 0) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: state.me?.business?.currency || "USD" }).format(Number(value) / 100);
 }
+// Money that carries a direction. The sign is rendered as a prefix rather than handed to
+// Intl.NumberFormat, whose negative form is a hyphen in en-US and parentheses elsewhere - a
+// ledger has to read the same way in every currency the workspace can be set to.
+// U+2212 MINUS SIGN, matching the checkout disclosure's `−${money(...)}` summary value.
+function signedMoney(minor){return `${Number(minor)<0?"−":"+"}${money(Math.abs(Number(minor)))}`;}
 // Invoice statuses, in the operator's words. Mirrors `invoiceStatusLabels` in
 // packages/domain/src/enums.ts, which is the source of truth; this is the browser's copy because
 // app.js is served as a plain module with no bundler and cannot import from the workspace package.
@@ -141,6 +146,12 @@ function money(value = 0) {
 // about a refunded invoice that is also collectable.
 const INVOICE_STATUS_LABELS={draft:"Draft",open:"Open",partially_paid:"Partially paid",paid:"Paid",partially_refunded:"Partly refunded",refunded:"Refunded",void:"Void"};
 function invoiceStatusLabel(status){return INVOICE_STATUS_LABELS[status]||String(status||"").replaceAll("_"," ");}
+// Payment methods, in the operator's words. Mirrors `paymentMethodLabels` in
+// packages/domain/src/enums.ts, which is the source of truth; this is the browser's copy for the
+// same reason INVOICE_STATUS_LABELS is one. Without it a receipt prints the raw column, which
+// reads as lowercase `client credit` on the one method that has no configured row to name it.
+const PAYMENT_METHOD_LABELS={cash:"Cash",external_card:"Card",check:"Check",other:"Other",client_credit:"Client credit"};
+function paymentMethodLabel(method){return PAYMENT_METHOD_LABELS[method]||String(method||"").replaceAll("_"," ");}
 // Money that went back. Neither paid nor unpaid: calling it Paid hides the most important thing
 // that happened to the visit, and calling it Unpaid sends somebody to chase money the customer
 // already returned.
@@ -1105,13 +1116,28 @@ function checkoutMethodMarkup(co){
   // salon's methods because that is the one decision the operator is making, and choosing it hands
   // the tip to hardware that asks the customer directly.
   if(co.terminals.length)methodOptions.push([CHECKOUT_TERMINAL_METHOD,"Card terminal"]);
+  // Last, and NEVER the default. `index===0` still checks the first salon method: spending a
+  // client's balance is a decision, and a checkout that pre-selected it would drain accounts by
+  // inattention. Absent at null (no client named, or the read failed) and absent at zero, because
+  // an inert radio for a balance there is nothing to spend is furniture.
+  const offersCredit=checkoutOffersCredit(co);
+  if(offersCredit)methodOptions.push([CHECKOUT_CREDIT_METHOD,"Client credit"]);
   if(!methodOptions.length){
     return `<label class="wide">Method<select data-testid="field-method" name="method"><option value="" disabled selected>No payment method is enabled</option></select></label>`;
   }
   // Two to six read faster as chips at a counter than as a menu that has to be opened to be read.
-  // Past that the chips stop being scannable and the select is the better control.
-  if(methodOptions.length>6){
-    return select("method","Method",methodOptions,true,methodOptions[0][0]);
+  // Past that the chips stop being scannable and the select is the better control. The threshold
+  // moves by one only when credit is offered, so adding the option cannot be what costs credit its
+  // availability sub-label.
+  const chipLimit=offersCredit?7:6;
+  if(methodOptions.length>chipLimit){
+    // The figure survives the control change: a <select> option carries no sub-label, so it is
+    // folded into the option text and repeated under the control.
+    const options=methodOptions.map(([value,label])=>value===CHECKOUT_CREDIT_METHOD
+      ?[value,`${label} — ${money(co.creditAvailableMinor)} available`]
+      :[value,label]);
+    return select("method","Method",options,true,options[0][0])
+      +(offersCredit?`<p class="fine" data-testid="checkout-credit-available">Client credit: ${money(co.creditAvailableMinor)} available.</p>`:"");
   }
   const single=co.terminals.length===1?co.terminals[0]:null;
   return `<fieldset class="checkout-methods" data-testid="field-method"><legend>Method</legend>`
@@ -1120,6 +1146,9 @@ function checkoutMethodMarkup(co){
       +`<span>${escape(label)}`
       // One paired terminal is not a decision, so it is named rather than offered as a choice.
       +(single&&value===CHECKOUT_TERMINAL_METHOD?`<small data-testid="checkout-terminal-name">${escape(single.label)}</small>`:"")
+      // Inside the radio's own label, so it is part of the accessible name: "Client credit $45.00
+      // available".
+      +(value===CHECKOUT_CREDIT_METHOD?`<small data-testid="checkout-credit-available">${money(co.creditAvailableMinor)} available</small>`:"")
       +`</span></label>`).join("")
     +`</fieldset>`;
 }
@@ -1146,6 +1175,13 @@ function checkoutMoneyMarkup(co){
     +`</label>`
     +`<p class="fine" data-testid="checkout-coupon-pay-note" hidden>A coupon is priced when you check out, so this takes the full balance.</p>`
     +checkoutMethodMarkup(co)
+    // Revealed only while credit is the chosen method, so it can afford to be tinted - the same
+    // discipline `.checkout-remainder` follows. Nothing else about the ledger belongs on this
+    // surface: who granted it, when and why sit behind `payments.view`, which the cashier standing
+    // here may not hold.
+    +(checkoutOffersCredit(co)
+      ? `<p class="checkout-credit-note" data-testid="checkout-credit-note" hidden>${money(co.creditAvailableMinor)} on account. This settles the invoice from the client's balance — no money is collected.</p>`
+      : "")
     +device
   +`</div>`;
 }
@@ -1158,6 +1194,12 @@ function checkoutSurfaceMarkup(co){
     +`<p class="checkout-balance" role="status" aria-live="polite" data-testid="checkout-balance"></p>`
     +`<div class="surface-foot-actions">`
       +(receipt?`<button type="button" class="secondary compact" data-testid="checkout-print-receipt">Print Receipt</button>`:"")
+      // SETTLED ONLY. There is no completed money statement to show before that, and stacking
+      // level 3 over an unfinished checkout is a trap: level 2 holds a guard that would challenge
+      // the operator on the way out, from underneath a surface they are looking at.
+      +(mode==="settled"
+        ? `<button type="button" class="secondary compact" data-testid="checkout-ticket">Ticket</button>`
+        : "")
       +(mode==="settled"
         // Never "Take payment" on a zero balance. Returning to a screen still offering it is a
         // route to a double charge, whatever the reference does.
@@ -1192,8 +1234,28 @@ async function checkout(id) {
     terminals:checkoutTerminal.data?.available?checkoutTerminal.data.devices:[],
     // Never guessed. Without the server's figure a percentage would be an invented one, so the
     // presets stand down and say why instead.
-    base:null
+    base:null,
+    // What THIS client has on account. Read below, and deliberately not from the shared cache.
+    creditAvailableMinor:null
   };
+  /**
+   * The credit balance, read per customer on every open.
+   *
+   * NOT FROM `checkoutOptions.data`, AND NEVER WRITTEN BACK INTO IT. That cache is filled once, for
+   * the whole session, by a request that names no customer - it holds the salon's methods, tip
+   * presets, discounts and stacking mode, none of which are about anybody. `creditAvailableMinor`
+   * is per-customer, so reusing the cache would show one client's balance while checking out
+   * another, and populating it would poison every later checkout in the session.
+   *
+   * A failed read leaves it null and the option simply does not appear, matching this endpoint's
+   * existing silence about a configuration it could not read.
+   */
+  if(appointment.customerId){
+    try{
+      const scoped=await api(`/api/checkout/payment-options?customerId=${encodeURIComponent(appointment.customerId)}`);
+      co.creditAvailableMinor=typeof scoped?.creditAvailableMinor==="number"?scoped.creditAvailableMinor:null;
+    }catch{co.creditAvailableMinor=null;}
+  }
   const readBase=()=>{
     const subtotal=Number(co.appointment.servicesSubtotalMinor);
     co.base=Number.isFinite(subtotal)&&subtotal>=0?subtotal:null;
@@ -1296,10 +1358,24 @@ async function checkout(id) {
     if(couponNote)couponNote.hidden=!couponBlocks;
     if(payField)payField.required=!couponBlocks;
 
+    // Revealed only while credit is the chosen method, and toggled with the `hidden` property
+    // rather than a style, so it obeys the same `[hidden]{display:none!important}` rule everything
+    // else on this surface does.
+    const onCredit=readMethod()===CHECKOUT_CREDIT_METHOD;
+    const creditNote=dialog.querySelector('[data-testid="checkout-credit-note"]');
+    if(creditNote)creditNote.hidden=!onCredit;
+
     // Pre-filled with what is owed, and only once there is a figure to pre-fill it with. `base`
     // null means the server sent no subtotal, and a guess in this field would be a guess about
     // money: it stays empty and required instead.
-    if(payField&&due!==null&&!payField.dataset.touched)payField.value=(due/100).toFixed(2);
+    //
+    // A part payment from credit is legitimate - the redemption is keyed on the PAYMENT, not the
+    // invoice, precisely so several payments may settle one - so a balance smaller than the bill
+    // pre-fills to the balance and the rest is taken another way.
+    const prefill=onCredit&&checkoutOffersCredit(co)&&due!==null
+      ? Math.min(due,co.creditAvailableMinor)
+      : due;
+    if(payField&&prefill!==null&&!payField.dataset.touched)payField.value=(prefill/100).toFixed(2);
 
     const pay=payMinor();
     const over=due!==null&&pay!==null?pay-due:0;
@@ -1323,6 +1399,12 @@ async function checkout(id) {
       else parts.push(`Balance ${money(due)}`);
       if(couponBlocks)parts.push("the coupon comes off when you check out");
       else if(due!==null&&pay!==null&&pay<due)parts.push(`${money(due-pay)} will remain`);
+      // What is left ON ACCOUNT afterwards, which is a different figure from what is left owed.
+      // This line is already role="status" aria-live="polite", so it is announced when the method
+      // changes.
+      if(onCredit&&checkoutOffersCredit(co)&&pay!==null&&pay<=co.creditAvailableMinor){
+        parts.push(`${money(co.creditAvailableMinor-pay)} credit will remain`);
+      }
       balance.textContent=parts.join(" · ");
     }
   };
@@ -1418,8 +1500,11 @@ async function checkout(id) {
     }
     const mode=checkoutMode(co);
     const onTerminal=readMethod()===CHECKOUT_TERMINAL_METHOD;
-    const choice=onTerminal?null:co.choices.find(item=>String(item.value)===String(readMethod()));
-    if(!onTerminal&&!choice){
+    // The credit sentinel is tolerated exactly as the terminal one is: neither names a configured
+    // `payment_methods` row, so neither has a `choice` to look up.
+    const onCredit=readMethod()===CHECKOUT_CREDIT_METHOD;
+    const choice=onTerminal||onCredit?null:co.choices.find(item=>String(item.value)===String(readMethod()));
+    if(!onTerminal&&!onCredit&&!choice){
       setError(co.choices.length
         ?"Choose a payment method."
         :"No payment method is enabled. Enable one in Settings → Tax & payments.");
@@ -1435,6 +1520,13 @@ async function checkout(id) {
         setError(mode==="build"
           ? `That is ${money(pay-due)} more than the balance. Tick the remainder box to put it in the tip, or lower the amount.`
           : `Payment exceeds invoice balance by ${money(pay-due)}.`);
+        return;
+      }
+      // Refused here rather than discovered as a 409, which would have raised the invoice first on
+      // a build. The server re-reads the balance under a row lock and its answer still wins.
+      if(onCredit&&pay!==null&&pay>Number(co.creditAvailableMinor??0)){
+        setError(`That is more than the ${money(co.creditAvailableMinor??0)} this client has on account. `
+          +`Lower the amount, or take the rest another way.`);
         return;
       }
     }
@@ -1506,10 +1598,23 @@ async function checkout(id) {
         const full=!usesAmount||pay===null||due===null||pay>=due;
         const amountMinor=full?Number(invoice.balanceMinor):pay;
         try{
-          await financialMutation(`/api/invoices/${invoice.id}/payments`,`payment.record`,{
-            amountMinor,expectedBalanceMinor:Number(invoice.balanceMinor),method:choice.settlementType
+          const payment=await financialMutation(`/api/invoices/${invoice.id}/payments`,`payment.record`,{
+            amountMinor,expectedBalanceMinor:Number(invoice.balanceMinor),
+            // `client_credit` directly: there is no configured method row for it, so there is no
+            // settlement type to read off a choice that does not exist.
+            method:onCredit?"client_credit":choice.settlementType
           });
+          // What is LEFT on the account, from the payment's own response, so the screen neither
+          // guesses nor re-requests the options endpoint. Null on that field means the payment was
+          // not credit, and `co` is left alone.
+          if(typeof payment?.creditRemainingMinor==="number")co.creditAvailableMinor=payment.creditRemainingMinor;
         }catch(error){
+          // A race: somebody spent the balance while this screen was open. The route's own stated
+          // intent is to offer what is actually there, so the figure it sends back is taken.
+          if(error.status===409&&error.data?.code==="CREDIT_BALANCE_INSUFFICIENT"
+            &&typeof error.data.creditAvailableMinor==="number"){
+            co.creditAvailableMinor=error.data.creditAvailableMinor;
+          }
           // Only when this submit is what raised the invoice. Against one that was already there
           // the sentence would be inventing an event, and the server's own words are the whole
           // story: the balance moved under this screen.
@@ -1821,8 +1926,12 @@ function receiptBodyMarkup(receipt) {
           : inFlight
             ? ""
             : `<span class="fine" data-testid="refund-exhausted">Fully refunded</span>`)
-        :`<button type="button" class="text-button void-payment" data-payment-id="${payment.id}" data-payment-provider="">Void record</button>`;
-    return `<div><span>${escape(payment.provider==="square"?"card terminal":payment.method.replace("_"," "))} · ${escape(payment.status)}</span><strong>${money(payment.amountMinor)}</strong>${action}</div>`
+        // A credit payment has no provider, so it falls here - which is right: voiding is exactly
+        // how a mis-applied credit payment is undone, and the void route writes the
+        // `redemption_reversal` that puts the money back on the client's balance. The method
+        // travels on the button so the confirmation can say what will actually happen.
+        :`<button type="button" class="text-button void-payment" data-payment-id="${payment.id}" data-payment-provider="" data-payment-method="${escapeAttr(payment.method)}">Void record</button>`;
+    return `<div><span>${escape(payment.provider==="square"?"card terminal":paymentMethodLabel(payment.method))} · ${escape(payment.status)}</span><strong>${money(payment.amountMinor)}</strong>${action}</div>`
       +receiptRefundsFor(receipt,payment.id).map(receiptRefundRow).join("");
   }).join("");
 /**
@@ -1880,7 +1989,11 @@ function receiptDiscountLines(receipt,invoice){
 function bindReceiptActions(root,receipt){
   const invoice=receipt.invoice;
   root.querySelectorAll(".void-payment").forEach(button=>button.addEventListener("click",()=>
-    voidPayment(button.dataset.paymentId,invoice.id,button.dataset.paymentProvider)));
+    voidPayment(button.dataset.paymentId,invoice.id,button.dataset.paymentProvider,
+      button.dataset.paymentMethod,
+      // The amount comes off the receipt this binding was scoped to rather than off a fifth data
+      // attribute: the sentence a credit void has to say names the money going back.
+      Number(receipt.payments.find(payment=>payment.id===button.dataset.paymentId)?.amountMinor??0))));
   root.querySelectorAll(".refund-payment").forEach(button=>button.addEventListener("click",()=>runDetached(()=>openRefundDialog(
     invoice.id,receipt.payments.find(payment=>payment.id===button.dataset.paymentId)))));
   root.querySelectorAll(".refund-refresh").forEach(button=>button.addEventListener("click",()=>runDetached(()=>
@@ -2053,9 +2166,13 @@ async function refreshRefund(refundId,invoiceId){
   });
 }
 
-async function voidPayment(paymentId,invoiceId,provider) {
+async function voidPayment(paymentId,invoiceId,provider,method,amountMinor=0) {
   const reason=prompt("Reason for voiding this payment record:");
   if(!reason)return;
+  // A credit payment is the one case where voiding DOES move money - back onto the client's
+  // balance, as a `redemption_reversal` written in the void's own transaction - so the sentence
+  // says so rather than reassuring the operator that nothing was refunded.
+  const onCredit=method==="client_credit";
   // Voiding is a Pawsh bookkeeping act and has never moved money. It is now offered only for
   // payments Pawsh did not take through a processor - cash, a cheque, "other", a card keyed by
   // hand into somebody else's terminal - which is exactly the case it is right for: the salon
@@ -2064,13 +2181,17 @@ async function voidPayment(paymentId,invoiceId,provider) {
   // warning for a button the receipt no longer renders.
   const warning=provider
     ? "This payment was taken on a card terminal, so it has to be refunded rather than voided."
-    : "Void this Pawsh payment record? This does not refund external funds.";
+    : onCredit
+      ? `Void this credit payment? The ${money(amountMinor)} goes back to this client's credit balance.`
+      : "Void this Pawsh payment record? This does not refund external funds.";
   if(provider){toast(warning);return;}
   if(!confirm(warning))return;
   await runOnce(`void:${paymentId}`,async()=>{
     try{
       await financialMutation(`/api/payments/${paymentId}/void`,`payment.void`,{reason});
-      await reopenReceipt(invoiceId,"Payment record voided; no external refund was issued");
+      await reopenReceipt(invoiceId,onCredit
+        ?`Payment record voided; ${money(amountMinor)} returned to the client's credit balance.`
+        :"Payment record voided; no external refund was issued");
     }catch(error){toast(error.message);}
   });
 }
@@ -5324,6 +5445,22 @@ const CHECKOUT_FALLBACK_METHODS=[["cash","Cash"],["external_card","External card
 // settlement type and not a payment method id - it names a capture route, and the server decides
 // what the resulting payment settles as.
 const CHECKOUT_TERMINAL_METHOD="terminal-capture";
+// The sentinel for "settle this from what the client already has on account". A sentinel beside
+// the terminal's rather than a configured method id, because there is no `payment_methods` row for
+// credit and `payment_methods.settlement_type` is deliberately not widened to admit one - so the
+// payment body sends `client_credit` directly and `choice.settlementType` has nothing to read.
+const CHECKOUT_CREDIT_METHOD="client-credit";
+/**
+ * Whether this checkout may offer credit.
+ *
+ * THREE CAUSES, ONE OUTCOME, AND THEY ARE NOT COLLAPSED. `null` means no client was named or the
+ * read failed; `0` means this client has nothing. All three produce no option - there is nothing
+ * to offer in any of them - but the null is the same silence `ensureCheckoutPaymentOptions` keeps
+ * about a configuration it was not allowed to read, and it is not a claim that the balance is zero.
+ */
+function checkoutOffersCredit(co){
+  return typeof co.creditAvailableMinor==="number"&&co.creditAvailableMinor>0;
+}
 const TAXPAY_TIP_BASE_MISSING="The visit total has not loaded, so a percentage cannot be worked out. Enter the tip amount instead.";
 const taxPayState={tab:"method",data:null,error:null,loading:false,restoreFocus:null,feesProcessorId:null,terminalProcessorId:null};
 // Checkout's own, narrower read. `/api/settings/tax-payments` is gated on settings.manage and
@@ -10695,6 +10832,9 @@ function clientSalesSummaryMarkup(data){
       +`<p class="summary-detail">Sales figures need the payments permission.</p></article></div>`;
   }
   const counts=summary.statusCounts||{};
+  // Absent, not zeroed, for a viewer without `payments.view`: `summary` is null for them and the
+  // fallback above already returned, so nothing credit-shaped is reachable from here.
+  const credit=summary.credit;
   const line=(label,value,tone="")=>`<span class="${tone}">${escape(label)}: ${escape(String(value))}</span>`;
   return `<div class="profile-summary" data-testid="client-summary">`
     +`<article class="summary-tile"><p class="summary-label">Total</p>`
@@ -10708,11 +10848,436 @@ function clientSalesSummaryMarkup(data){
     +`<article class="summary-tile"><p class="summary-label">Outstanding</p>`
       +`<p class="summary-figure${summary.outstandingMinor?" owing":""}" data-testid="summary-outstanding">${money(summary.outstandingMinor)}</p>`
       +`<p class="summary-detail">${line("Unclosed appointments",summary.unclosedTotal,summary.unclosedTotal?"owing":"")}</p></article>`
+    // Third, so the three money tiles group together and Appointments stays last - which is the
+    // order the phone stack inherits. It renders at $0.00 like Outstanding does, because a tile is
+    // a standing question about the client rather than a fact about one event.
+    //
+    // NEVER `.owing`. Credit is money the salon already owes this client, which is a normal state
+    // of an account rather than a debt somebody is chasing, and red would read as a problem.
+    //
+    // "Added" is grants AND adjustments net, not grants alone, and "Used" is redemptions net of
+    // reversals - which is what makes Added − Used = Balance true on screen. Naming it "Granted"
+    // would be a claim about grants that the number does not support. The netting is explained
+    // once, in the ledger drawer's totals strip, where somebody is actually reconciling.
+    +(credit
+      ? `<article class="summary-tile" data-testid="client-credit-tile"><p class="summary-label">Credit</p>`
+        +`<p class="summary-figure${credit.balanceMinor>0?" credit":""}" data-testid="summary-credit">${money(credit.balanceMinor)}</p>`
+        +`<p class="summary-detail">${line("Added",money(credit.grantedMinor))}${line("Used",money(credit.usedMinor))}</p>`
+        +`<p class="summary-tile-action"><button type="button" class="text-button" aria-haspopup="dialog" data-testid="open-credit-ledger">`
+        +`${credit.entryTotal>0?`Credit ledger (${escape(String(credit.entryTotal))})`:"Credit ledger"}</button></p></article>`
+      : "")
     +`<article class="summary-tile"><p class="summary-label">Appointments</p>`
       +`<p class="summary-figure" data-testid="summary-appointments">${escape(String(summary.appointmentTotal))}</p>`
       +`<p class="summary-detail">${line("Completed",counts.completed)}${line("Scheduled",counts.scheduled)}`
       +`${line("Cancelled",counts.cancelled,counts.cancelled?"owing":"")}${line("No show",counts.noShow,counts.noShow?"owing":"")}</p></article>`
     +`</div>`;
+}
+
+/* ---------------------------------------------------------------------------
+   Client credit: the ledger drawer and the grant/adjust dialog.
+
+   AN APPEND-ONLY LEDGER, AND THE INTERFACE SAYS SO BY WHAT IT DOES NOT OFFER. The table refuses
+   `update` and `delete` at a trigger, so there is no pencil, no bin and no overflow menu on a row
+   anywhere below. The only correction affordance in the whole feature is "Correct this entry",
+   which opens the grant/adjust dialog pre-set to write a NEW compensating adjustment.
+
+   `balanceAfterMinor` IS THE SERVER'S NUMBER and is rendered, never accumulated here. The window
+   function runs over the client's whole ledger before the page is taken, so page three's running
+   balances are the same figures page one would have shown - which a browser adding up the rows it
+   was sent could not reproduce.
+
+   `canEdit` OFF `GET /api/customers/:id/credit` IS THE ONLY FLAG CONSULTED for the write
+   affordances. `customers.credit_edit` does not override `payments.view` on the server, so
+   `allowed("customers.credit_edit")` could offer a button whose write is refused.
+   --------------------------------------------------------------------------- */
+const CREDIT_LEDGER_PAGE_SIZE=50;
+const creditLedger={customerId:null,customerName:"",summary:null,entries:[],kinds:null,canEdit:false,
+  page:1,pendingPage:1,pageSize:CREDIT_LEDGER_PAGE_SIZE,total:0,paging:false,failed:false,restoreFocus:null};
+
+// The server's own copy of the database check constraint, named by `entryKinds` on the summary
+// read. Not hard-coded here: a fifth kind must not be able to exist in the table and render as raw
+// column text on screen.
+function creditKindLabel(kind){
+  const found=(creditLedger.kinds||[]).find(entry=>entry.value===kind);
+  return found?found.label:String(kind||"").replaceAll("_"," ");
+}
+// The `+` and `−` glyphs are unreliably announced, so every signed amount carries the direction as
+// words as well. `.visually-hidden`, never `.sr-only` - the latter has no rule in this stylesheet
+// and would render the phrase on screen.
+function creditAmountMarkup(minor){
+  const add=Number(minor)>=0;
+  return `<strong class="credit-amount ${add?"is-add":"is-take"}">${escape(signedMoney(minor))}`
+    +`<span class="visually-hidden"> ${add?"added to the balance":"taken off the balance"}</span></strong>`;
+}
+function creditInvoicePhrase(entry){
+  return entry.invoiceNumber?`invoice ${entry.invoiceNumber}`:"an invoice";
+}
+/**
+ * One ledger line.
+ *
+ * A PAIR IS TWO ROWS, NEVER ONE. A reversal and its redemption, or a correction and the entry it
+ * corrects, each keep their own row and their own amount - the money really did move both times -
+ * and the relationship is carried by the left border plus a back-reference sentence, following the
+ * receipt-refund block. Rows are rendered in the order the server sent them and are never
+ * re-sorted, merged or collapsed.
+ *
+ * `pairId` is NOT what decides the border: it is the payment id on every redemption, reversed or
+ * not, so a plain redemption would otherwise be drawn as half of a pair that does not exist. The
+ * relationship fields are what say there is a partner.
+ */
+function creditEntryMarkup(entry,onPage){
+  const paired=Boolean(entry.reversedAt||entry.reversesEntryId||entry.correctedAt||entry.correctsEntryId);
+  const chips=(entry.reversedAt?`<span class="credit-chip" data-testid="credit-chip-reversed">Returned</span>`:"")
+    +(entry.correctedAt?`<span class="credit-chip" data-testid="credit-chip-corrected">Corrected</span>`:"");
+  const meta=[formatPrefDateAndTime(new Date(entry.createdAt)),entry.createdByName||null,
+    `Balance after ${money(entry.balanceAfterMinor)}`];
+  if(entry.reversedAt)meta.push(`Returned on ${formatPrefDateAndTime(new Date(entry.reversedAt))}`);
+  if(entry.correctedAt)meta.push(`Corrected on ${formatPrefDateAndTime(new Date(entry.correctedAt))}`);
+  // A grant and an adjustment always carry a reason - the schema requires one in both directions.
+  // A redemption explains itself through the invoice it settled, and a reversal names what it gave
+  // back rather than repeating the invoice line.
+  const detail=entry.kind==="redemption_reversal"
+    ? `<p class="credit-entry-reason">Returns the credit applied to ${escape(creditInvoicePhrase(entry))}.</p>`
+    : entry.kind==="redemption"
+      ? `<p class="credit-entry-reason">${escape(entry.invoiceNumber?`Invoice ${entry.invoiceNumber}`:"An invoice")}</p>`
+      : entry.reason?`<p class="credit-entry-reason">${escape(entry.reason)}</p>`:"";
+  // Named only when the corrected entry is on the page being rendered. A second request to resolve
+  // one sentence is not worth it, and the shorter form is honest.
+  const target=entry.correctsEntryId?onPage.get(entry.correctsEntryId):null;
+  const correction=entry.correctsEntryId
+    ? `<p class="credit-entry-reason">${target
+        ? escape(`Corrects ${creditKindLabel(target.kind)} ${signedMoney(target.amountMinor)} of ${formatPrefDate(new Date(target.createdAt))}.`)
+        : "Corrects an earlier entry on this ledger."}</p>`
+    : "";
+  // A redemption is corrected by voiding its payment - the migration says so in as many words - so
+  // the row says where that lives rather than offering a second door to it from the profile.
+  const action=!creditLedger.canEdit?""
+    :entry.correctedAt?""
+    :(entry.kind==="grant"||entry.kind==="adjustment")
+      ? `<p class="credit-entry-action"><button type="button" class="text-button" aria-haspopup="dialog" data-testid="credit-correct-entry" data-credit-entry-id="${escapeAttr(entry.id)}">Correct this entry</button></p>`
+      : entry.kind==="redemption"&&!entry.reversedAt
+        ? `<p class="fine">${escape(entry.invoiceNumber
+            ?`To undo this, void the payment on invoice ${entry.invoiceNumber}.`
+            :"To undo this, void the payment it settled.")}</p>`
+        : "";
+  return `<li class="credit-entry${paired?" is-paired":""}" data-testid="credit-entry" data-credit-kind="${escapeAttr(entry.kind)}"`
+    +(paired&&entry.pairId?` data-credit-pair="${escapeAttr(entry.pairId)}"`:"")+`>`
+    +`<div class="credit-entry-line"><span class="credit-entry-kind">${escape(creditKindLabel(entry.kind))}${chips}</span>`
+    +creditAmountMarkup(entry.amountMinor)+`</div>`
+    +detail+correction
+    +`<p class="credit-entry-meta">${escape(meta.filter(Boolean).join(" · "))}</p>`
+    +action
+    +`</li>`;
+}
+function creditLedgerBodyMarkup(){
+  if(creditLedger.failed){
+    return `<p class="note-empty">This client's credit ledger could not be read. `
+      +`<button type="button" class="text-button" data-testid="credit-ledger-retry">Try again</button></p>`;
+  }
+  if(!creditLedger.summary)return `<p class="note-empty">Loading credit ledger…</p>`;
+  const {balanceMinor,grantedMinor,usedMinor}=creditLedger.summary;
+  const totals=`<dl class="credit-totals" data-testid="credit-totals">`
+    +`<div><dt>Balance</dt><dd class="credit-total-figure" data-testid="credit-total-balance">${money(balanceMinor)}</dd></div>`
+    +`<div><dt>Added</dt><dd data-testid="credit-total-added">${money(grantedMinor)}</dd></div>`
+    +`<div><dt>Used</dt><dd data-testid="credit-total-used">${money(usedMinor)}</dd></div></dl>`
+    // Where the netting is explained, once, in the place an operator is reconciling. Static copy:
+    // it does not appear or disappear with the data.
+    +`<p class="fine credit-totals-note">Added is grants and adjustments together. Used is credit applied to invoices, less anything returned from a voided payment. Added − Used = Balance.</p>`;
+  if(!creditLedger.entries.length&&!creditLedger.total){
+    return totals+`<p class="note-empty" data-testid="credit-ledger-empty">No credit has been added or spent for this client.</p>`;
+  }
+  const onPage=new Map(creditLedger.entries.map(entry=>[entry.id,entry]));
+  const pages=Math.max(1,Math.ceil(creditLedger.total/creditLedger.pageSize));
+  const page=Math.min(Math.max(1,creditLedger.page),pages);
+  return totals
+    +`<ul class="credit-entries">${creditLedger.entries.map(entry=>creditEntryMarkup(entry,onPage)).join("")}</ul>`
+    // At the bottom of the body rather than in the foot, which is already carrying three things at
+    // 560px.
+    +(creditLedger.total>creditLedger.pageSize
+      ? pagerNavMarkup({idPrefix:"credit-ledger",label:"Credit ledger pages",
+          inner:pagerPageButtons(page,pages,"data-credit-page")})
+      : "");
+}
+function creditLedgerCountText(){
+  // The page being fetched, not the one still on screen: this line is the announcement for paging,
+  // and naming the page the operator is leaving would be the one thing it must not say.
+  if(creditLedger.paging)return `Loading page ${creditLedger.pendingPage||creditLedger.page}…`;
+  if(!creditLedger.summary)return "";
+  if(!creditLedger.total)return "No entries";
+  const first=(creditLedger.page-1)*creditLedger.pageSize+1;
+  const last=Math.min(first+creditLedger.entries.length-1,creditLedger.total);
+  return `Showing ${first}–${last} of ${creditLedger.total} entries`;
+}
+function creditLedgerError(message){
+  const target=$("#credit-ledger-error");if(target)target.textContent=message||"";
+}
+function renderCreditLedger(){
+  const body=$("#credit-ledger-body");if(!body)return;
+  body.innerHTML=creditLedgerBodyMarkup();
+  const count=$("#credit-ledger-count");
+  if(count)count.textContent=creditLedgerCountText();
+  // Absent when this operator may not write, never disabled: a control that cannot be used is
+  // furniture, and the server's 403 remains the rule either way.
+  const slot=$("#credit-ledger-add-slot");
+  if(slot){
+    slot.innerHTML=creditLedger.canEdit&&creditLedger.summary&&!creditLedger.failed
+      ? `<button type="button" class="primary compact" aria-haspopup="dialog" data-testid="credit-add">Add credit</button>`
+      : "";
+    slot.querySelector('[data-testid="credit-add"]')?.addEventListener("click",()=>openCreditEntryDialog());
+  }
+  body.querySelector('[data-testid="credit-ledger-retry"]')?.addEventListener("click",()=>
+    runDetached(()=>loadCreditLedgerSummary()));
+  body.querySelectorAll('[data-testid="credit-correct-entry"]').forEach(button=>
+    button.addEventListener("click",()=>openCreditEntryDialog({
+      correcting:creditLedger.entries.find(entry=>entry.id===button.dataset.creditEntryId)||null
+    })));
+  const pages=Math.max(1,Math.ceil(creditLedger.total/creditLedger.pageSize));
+  const page=Math.min(Math.max(1,creditLedger.page),pages);
+  const prev=body.querySelector("#credit-ledger-prev"),next=body.querySelector("#credit-ledger-next");
+  if(prev){prev.disabled=creditLedger.paging||page<=1;prev.addEventListener("click",()=>runDetached(()=>loadCreditLedgerPage(page-1)));}
+  if(next){next.disabled=creditLedger.paging||page>=pages;next.addEventListener("click",()=>runDetached(()=>loadCreditLedgerPage(page+1)));}
+  body.querySelectorAll("[data-credit-page]").forEach(button=>{
+    button.disabled=creditLedger.paging;
+    button.addEventListener("click",()=>runDetached(()=>loadCreditLedgerPage(Number(button.dataset.creditPage))));
+  });
+}
+/**
+ * The summary read, which is also the only place the client asks the server whether this operator
+ * may write. It carries the totals, the opening slice, the kind labels and `canEdit`.
+ */
+async function loadCreditLedgerSummary(){
+  const customerId=creditLedger.customerId;if(!customerId)return;
+  creditLedger.failed=false;creditLedgerError("");
+  let summary;
+  try{summary=await api(`/api/customers/${encodeURIComponent(customerId)}/credit`);}
+  catch{
+    if(creditLedger.customerId!==customerId)return;
+    creditLedger.summary=null;creditLedger.entries=[];creditLedger.failed=true;creditLedger.paging=false;
+    renderCreditLedger();return;
+  }
+  if(creditLedger.customerId!==customerId)return;
+  creditLedger.summary={balanceMinor:Number(summary.balanceMinor||0),
+    grantedMinor:Number(summary.grantedMinor||0),usedMinor:Number(summary.usedMinor||0)};
+  creditLedger.kinds=Array.isArray(summary.entryKinds)?summary.entryKinds:null;
+  creditLedger.canEdit=Boolean(summary.canEdit);
+  creditLedger.entries=Array.isArray(summary.entries)?summary.entries:[];
+  creditLedger.total=Number(summary.entryTotal||0);
+  creditLedger.page=1;creditLedger.pendingPage=1;creditLedger.paging=false;
+  renderCreditLedger();
+  // The opening slice is the profile preview's ten rows, so page one is requested at the ledger's
+  // own page size immediately and REPLACES them rather than appending to them.
+  if(creditLedger.total>creditLedger.entries.length)await loadCreditLedgerPage(1);
+}
+async function loadCreditLedgerPage(page){
+  const customerId=creditLedger.customerId;if(!customerId)return;
+  creditLedger.pendingPage=page;creditLedger.paging=true;creditLedgerError("");renderCreditLedger();
+  let result;
+  try{
+    result=await api(`/api/customers/${encodeURIComponent(customerId)}/credit/entries`
+      +`?page=${encodeURIComponent(page)}&pageSize=${creditLedger.pageSize}`);
+  }catch(error){
+    if(creditLedger.customerId!==customerId)return;
+    // The page that worked stays on screen and the pager re-enables where it is: a read that failed
+    // is not a reason to empty a ledger somebody is reconciling against.
+    creditLedger.pendingPage=creditLedger.page;creditLedger.paging=false;renderCreditLedger();creditLedgerError(error.message);return;
+  }
+  if(creditLedger.customerId!==customerId)return;
+  creditLedger.entries=Array.isArray(result.items)?result.items:[];
+  creditLedger.total=Number(result.total||0);
+  creditLedger.page=Number(result.page||page);
+  creditLedger.pendingPage=creditLedger.page;
+  creditLedger.pageSize=Number(result.pageSize||creditLedger.pageSize);
+  creditLedger.paging=false;
+  renderCreditLedger();
+}
+async function openCreditLedger(customerId,customerName,trigger){
+  const dialog=$("#credit-ledger");if(!dialog)return;
+  Object.assign(creditLedger,{customerId,customerName:customerName||"",summary:null,entries:[],kinds:null,
+    canEdit:false,page:1,pendingPage:1,pageSize:CREDIT_LEDGER_PAGE_SIZE,total:0,paging:false,failed:false,
+    restoreFocus:trigger||null});
+  // The client is the heading; the eyebrow stays literal so it can be.
+  $("#credit-ledger-title").textContent=customerName||"Credit ledger";
+  creditLedgerError("");
+  renderCreditLedger();
+  if(!dialog.open)dialog.showModal();
+  dialog.querySelector('[data-testid="credit-ledger-close"]')?.focus();
+  await loadCreditLedgerSummary();
+}
+function setupCreditLedgerDrawer(){
+  const dialog=$("#credit-ledger");if(!dialog)return;
+  const close=()=>dialog.close();
+  dialog.querySelector('[data-testid="credit-ledger-close"]')?.addEventListener("click",close);
+  dialog.querySelector('[data-testid="credit-ledger-dismiss"]')?.addEventListener("click",close);
+  dialog.addEventListener("click",event=>{if(event.target===dialog)close();});
+  dialog.addEventListener("close",()=>{
+    // The profile may have been redrawn behind this drawer by a grant, which detaches the button
+    // that opened it - so the restore falls back to whatever is standing in its place.
+    const stored=creditLedger.restoreFocus;
+    const target=stored?.isConnected?stored:$('[data-testid="open-credit-ledger"]');
+    creditLedger.customerId=null;creditLedger.restoreFocus=null;
+    target?.focus?.();
+  });
+}
+/**
+ * Granting credit, adjusting a balance, and correcting an entry - all three in the shared dialog.
+ *
+ * OPENED ONLY FROM INSIDE THE LEDGER DRAWER, never from the profile tile. The server refuses a
+ * grant from anyone who cannot read the balance, on the stated ground that granting against a
+ * number you could not check is worse than not granting at all; the interface makes the same
+ * argument physically by putting the balance and the ledger on screen behind the dialog.
+ */
+function openCreditEntryDialog({correcting=null}={}){
+  if(!creditLedger.customerId||!creditLedger.canEdit)return;
+  const customerId=creditLedger.customerId,name=creditLedger.customerName||"this client";
+  const title=correcting?"Correct an entry":"Add credit";
+  const kindControl=correcting
+    ? `<p class="wide credit-correcting" data-testid="credit-correcting">Adjustment correcting `
+      +`<strong>${escape(`${creditKindLabel(correcting.kind)} ${signedMoney(correcting.amountMinor)}`)}</strong>`
+      +` of ${escape(formatPrefDate(new Date(correcting.createdAt)))}.</p>`
+    : `<fieldset class="wide compact-options credit-kind" data-testid="credit-kind"><legend>What is happening</legend>`
+      +`<label><input type="radio" name="kind" value="grant" checked data-testid="credit-kind-grant">`
+      +`<span>Add credit<small>Give this client money to spend at the till.</small></span></label>`
+      +`<label><input type="radio" name="kind" value="adjustment" data-testid="credit-kind-adjustment">`
+      +`<span>Adjust balance<small>Correct what is on the account, in either direction.</small></span></label></fieldset>`;
+  // A SIGNED NUMBER INPUT IS REFUSED DELIBERATELY: typing 20 where -20 was meant hands a client
+  // money, and the only fix for that is another entry. The direction is a separate, unmissable
+  // choice and the amount is always positive. A grant has one direction and the schema enforces it,
+  // so the control is absent there rather than pre-set.
+  const fields=kindControl
+    +`<div class="wide credit-direction" role="group" aria-label="Direction" data-testid="credit-direction"${correcting?"":" hidden"}>`
+      +`<button type="button" data-credit-direction="add" aria-pressed="true">Add to balance</button>`
+      +`<button type="button" data-credit-direction="take" aria-pressed="false">Take off balance</button></div>`
+    +`<label class="wide">Amount ($)`
+      +`<input data-testid="field-amountMinor" name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" required></label>`
+    +`<p class="wide fine credit-preview" data-testid="credit-preview" role="status"></p>`
+    +`<label class="wide">Reason<textarea data-testid="field-reason" name="reason" maxlength="500" required></textarea></label>`
+    +`<p class="wide fine credit-reason-help" data-testid="credit-reason-help"><span data-credit-reason-sentence></span>`
+      +` <span class="credit-reason-count" data-testid="credit-reason-count">0/500</span></p>`;
+
+  const host=()=>$("#modal-fields");
+  const readKind=()=>correcting?"adjustment"
+    :String(host()?.querySelector('input[name="kind"]:checked')?.value||"grant");
+  const readDirection=()=>String(host()?.querySelector('[data-credit-direction][aria-pressed="true"]')?.dataset.creditDirection||"add");
+  const readCents=()=>{
+    const value=Math.round(Number(host()?.querySelector('[data-testid="field-amountMinor"]')?.value||0)*100);
+    return Number.isFinite(value)?value:0;
+  };
+  const readAmountMinor=()=>{
+    const cents=readCents();
+    return readKind()==="adjustment"&&readDirection()==="take"?-cents:cents;
+  };
+  const balanceMinor=()=>Number(creditLedger.summary?.balanceMinor??0);
+  const overdraws=()=>balanceMinor()+readAmountMinor()<0;
+  const overdrawSentence=()=>`Balance after this: ${signedMoney(balanceMinor()+readAmountMinor())} — more than this client has.`;
+
+  const submit=async()=>{
+    const kind=readKind(),amountMinor=readAmountMinor();
+    const reason=String(host()?.querySelector('[data-testid="field-reason"]')?.value||"").trim();
+    if(!readCents())throw new Error("Enter an amount.");
+    // The server refuses a blank reason too; this only saves the round trip and the keystrokes.
+    if(!reason)throw new Error("Enter a reason.");
+    if(overdraws())throw new Error(overdrawSentence());
+    // Only for a deduction. Giving money is the recoverable direction, and a confirm on every grant
+    // would train the operator to dismiss the one that matters.
+    if(amountMinor<0&&!confirm(`Take ${money(Math.abs(amountMinor))} off ${name}'s credit balance? `
+      +`This cannot be edited or undone — a mistake is fixed by adding a matching entry. `
+      +`The balance will be ${money(balanceMinor()+amountMinor)}.`)){
+      // Refusing the confirmation must leave the dialog exactly as it was, and throwing is the only
+      // way back out of openModal's submit without closing it. The message is empty, so #modal-error
+      // stays blank rather than reporting a refusal the operator just made on purpose.
+      throw new Error("");
+    }
+    try{
+      await financialMutation(`/api/customers/${encodeURIComponent(customerId)}/credit`,"credit.adjust",{
+        kind,amountMinor,reason,...(correcting?{correctsEntryId:correcting.id}:{})
+      });
+    }catch(error){
+      if(error.status===409&&error.data?.code==="CREDIT_BALANCE_INSUFFICIENT"
+        &&typeof error.data.balanceMinor==="number"){
+        error.message=`${error.message} The balance is ${money(error.data.balanceMinor)}.`;
+        creditApplyKnownBalance(error.data.balanceMinor);
+      }
+      // The entry being corrected is not on this client, so what is behind the dialog is wrong.
+      if(error.status===404&&error.data?.code==="CREDIT_ENTRY_NOT_FOUND")runDetached(()=>loadCreditLedgerSummary());
+      throw error;
+    }
+    // The default toast would say "Add credit saved", which is not what happened when the operator
+    // took money off. `afterClose` re-reads BOTH: the tile's three figures move, and every running
+    // balance below the new row on the ledger has changed too.
+    return {afterClose:reloadCreditAndProfile,
+      message:amountMinor>0?`${money(amountMinor)} added to ${name}'s credit`
+                           :`${money(Math.abs(amountMinor))} taken off ${name}'s credit`};
+  };
+
+  openModal(title,fields,submit,{submitLabel:correcting?"Save correction":"Add credit"});
+  bindCreditEntryDialog({correcting,readKind,readDirection,readAmountMinor,balanceMinor,
+    overdraws,overdrawSentence});
+}
+function bindCreditEntryDialog({correcting,readKind,readDirection,readAmountMinor,
+  balanceMinor,overdraws,overdrawSentence}){
+  const host=$("#modal-fields");if(!host)return;
+  const amount=host.querySelector('[data-testid="field-amountMinor"]');
+  const reason=host.querySelector('[data-testid="field-reason"]');
+  const preview=host.querySelector('[data-testid="credit-preview"]');
+  const counter=host.querySelector('[data-testid="credit-reason-count"]');
+  const sentence=host.querySelector("[data-credit-reason-sentence]");
+  const direction=host.querySelector('[data-testid="credit-direction"]');
+  const sync=()=>{
+    const kind=readKind(),take=kind==="adjustment"&&readDirection()==="take";
+    if(direction)direction.hidden=kind!=="adjustment";
+    const after=balanceMinor()+readAmountMinor();
+    const over=overdraws();
+    if(preview){
+      preview.textContent=over?overdrawSentence():`Balance after this: ${money(after)}`;
+      preview.classList.toggle("is-over",over);
+    }
+    if(amount)amount.setAttribute("aria-invalid",over?"true":"false");
+    // The helper hardens with the direction: a deduction takes money off a client's account and is
+    // the more contestable half, so it asks for more than a note to self.
+    if(sentence)sentence.textContent=take
+      ?"Required. A deduction takes money off this client's account, so say why."
+      :"Required. This is the record a dispute lands on.";
+    if(counter){
+      const length=String(reason?.value||"").length;
+      counter.textContent=`${length}/500`;
+      counter.classList.toggle("is-full",length>=500);
+    }
+    const button=$('[data-testid="modal-submit"]');
+    if(button)button.textContent=correcting?"Save correction"
+      :kind==="grant"?"Add credit":take?"Take off balance":"Add to balance";
+  };
+  host.querySelectorAll('input[name="kind"]').forEach(input=>input.addEventListener("change",sync));
+  host.querySelectorAll("[data-credit-direction]").forEach(button=>button.addEventListener("click",()=>{
+    host.querySelectorAll("[data-credit-direction]").forEach(other=>
+      other.setAttribute("aria-pressed",String(other===button)));
+    sync();
+  }));
+  amount?.addEventListener("input",sync);
+  reason?.addEventListener("input",sync);
+  sync();
+}
+/**
+ * What the screen is corrected to when a 409 proves it stale.
+ *
+ * The balance moves at once because it is the number the server just contradicted. Added and Used
+ * are not in the refusal, so they - and therefore the identity the tile and the totals strip both
+ * assert - are brought back into agreement by a re-read rather than by arithmetic here.
+ */
+function creditApplyKnownBalance(balanceMinor){
+  if(creditLedger.summary)creditLedger.summary.balanceMinor=Number(balanceMinor);
+  const profile=state.clientProfile;
+  const credit=profile?.data?.summary?.credit;
+  if(credit&&profile.data.customer.id===creditLedger.customerId){
+    credit.balanceMinor=Number(balanceMinor);
+    renderClientProfile();
+  }
+  renderCreditLedger();
+  runDetached(()=>loadCreditLedgerSummary());
+}
+async function reloadCreditAndProfile(){
+  const customerId=creditLedger.customerId;
+  await loadCreditLedgerSummary();
+  if(state.clientProfile?.data?.customer?.id===customerId)await reloadClientProfile();
 }
 
 function clientPetsPanelMarkup(profile){
@@ -11024,6 +11589,10 @@ function renderClientProfile(){
   const content=$("#client-profile-content");
   content.innerHTML=left+right;
   content.querySelector(".profile-book-new").addEventListener("click",()=>{state.calendar.bookingCustomerId=customer.id;state.calendar.bookingPetId=pet?.id||null;actions["new-appointment"]();});
+  // The tile offers no write of its own: whether this operator may add credit is a question only
+  // the drawer's own read answers, so the button opens the ledger and nothing else.
+  content.querySelector('[data-testid="open-credit-ledger"]')?.addEventListener("click",event=>
+    runDetached(()=>openCreditLedger(customer.id,clientName(customer),event.currentTarget)));
   content.querySelector(".history-view-all")?.addEventListener("click",()=>runDetached(loadMoreClientHistory));
   content.querySelectorAll(".history-step").forEach(button=>button.addEventListener("click",()=>
     runDetached(()=>stepClientHistory(Number(button.dataset.historyStep)))));
@@ -11973,6 +12542,7 @@ setupBreedDrawer();
 setupStaffServicesDrawer();
 setupRoleEditorDrawer();
 setupCouponEditorDrawer();
+setupCreditLedgerDrawer();
 setupTerminalDrawer();
 setupTerminalCapture();
 bootstrap();

@@ -302,6 +302,23 @@
       <button type="submit" form="coupon-editor-form" class="primary compact" data-testid="coupon-editor-save">Save</button>
     </div>
   </dialog>
+  <!-- The client's credit ledger. A drawer rather than #modal because its body is a list to read
+       rather than a two-column form, and rather than #stacked-dialog because the grant/adjust
+       dialog has to be able to open over the top of this one. Nothing in it edits a row: the
+       ledger is append-only in the database and a correction is a NEW compensating entry. -->
+  <dialog id="credit-ledger" class="drawer" aria-labelledby="credit-ledger-title" data-testid="credit-ledger">
+    <div class="drawer-head">
+      <div><p class="eyebrow">Client credit</p><h3 id="credit-ledger-title">Credit ledger</h3></div>
+      <button type="button" class="close" data-testid="credit-ledger-close" aria-label="Close credit ledger">&#215;</button>
+    </div>
+    <div id="credit-ledger-body" class="drawer-body"></div>
+    <p id="credit-ledger-error" class="error drawer-status" role="alert" data-testid="credit-ledger-error"></p>
+    <div class="drawer-foot">
+      <span id="credit-ledger-count" class="credit-ledger-count" role="status" data-testid="credit-ledger-count"></span>
+      <button type="button" class="secondary compact" data-testid="credit-ledger-dismiss">Close</button>
+      <span id="credit-ledger-add-slot"></span>
+    </div>
+  </dialog>
   <!-- The appointment surface stack: three dedicated full-screen dialogs, opened with showModal()
        so the browser supplies the top layer, the backdrop, inertness of everything beneath,
        Escape-to-topmost, and focus containment. They are deliberately NOT the shared #modal,

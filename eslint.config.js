@@ -5,7 +5,10 @@ export default tseslint.config(
   // `apps/*/web-build/**` is the Expo web export. It is generated, it is already ignored by
   // `apps/mobile/.gitignore`, and it is a bundler's output rather than anybody's source, so
   // linting it only ever reports the bundle's own scaffolding as thousands of errors.
-  { ignores: ["dist/**", "coverage/**", "node_modules/**", ".playwright-browsers/**", "playwright-report/**", "test-results/**", "apps/*/.expo/**", "apps/*/dist/**", "apps/*/web-build/**"] },
+  // `.local/**` is the scratch directory `.gitignore` already excludes. It is where a throwaway
+  // probe script gets written while somebody is diagnosing something, and until it was listed
+  // here one of those would fail `npm run lint` for everybody who pulled nothing at all.
+  { ignores: ["dist/**", "coverage/**", "node_modules/**", ".local/**", ".playwright-browsers/**", "playwright-report/**", "test-results/**", "apps/*/.expo/**", "apps/*/dist/**", "apps/*/web-build/**"] },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {

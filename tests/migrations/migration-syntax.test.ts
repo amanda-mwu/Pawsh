@@ -25,9 +25,21 @@ describe("database migrations", () => {
     }
   });
 
+  /**
+   * WHAT THIS TEST MEANS, AND WHAT IT DOES NOT. Every assertion here is about the TEXT of one
+   * migration: it says that a particular file makes a particular edit, and it is the right shape
+   * for the many assertions below that are about a decision a specific migration took - the
+   * defaults it chose, the fold it refused to perform, the column it deliberately did not add.
+   *
+   * It is the WRONG shape for "the schema has X", and that difference was not hypothetical.
+   * `expect(0001).toContain("employee_appointment_no_overlap")` stood here for a long time and
+   * asserted nothing about the running schema: 0002 drops that constraint and replaces it with
+   * `employee_appointment_conflict_guard`, so the assertion passed against a database in which
+   * the object does not exist. Assertions of that kind now live in `migration-chain.test.ts`,
+   * which replays the whole chain and asks what survives it.
+   */
   it("contains release-critical constraints", async () => {
     const source = await readMigration("0001_initial.sql");
-    expect(source).toContain("employee_appointment_no_overlap");
     expect(source).toContain("prevent_last_owner_loss");
     expect(source).toContain("create policy tenant_isolation");
     expect(source).toContain("one_active_invoice_per_appointment");

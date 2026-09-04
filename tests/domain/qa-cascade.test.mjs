@@ -45,6 +45,28 @@ describe("cascading QA orchestrator", () => {
     expect(formatQaReport(report)).toContain("QA mode: quick");
   });
 
+  it("names the source it validated and does not present it as a statement about HEAD", async () => {
+    const dirty = { ...env, PAWSH_QA_SHA: "abcdef1234567890", PAWSH_QA_SOURCE_FINGERPRINT: "0123456789abcdef", PAWSH_QA_WORKING_TREE: "dirty" };
+    const report = await runQaCascade({ env: dirty, stageRunner: passRunner, persistState: false });
+    const text = formatQaReport(report);
+    expect(text).toContain("Source: 0123456789ab");
+    expect(text).toContain("uncommitted changes");
+    const clean = await runQaCascade({ env: { ...dirty, PAWSH_QA_WORKING_TREE: "clean" }, stageRunner: passRunner, persistState: false });
+    expect(formatQaReport(clean)).toContain("clean working tree");
+  });
+
+  it("reports a reused stage as reused rather than as one it ran", async () => {
+    const report = await runQaCascade({ env, stageRunner: passRunner, persistState: false, startAt: 2, reusedEvidence: { mode: "standard", sha: "same-sha", sourceFingerprint: "0123456789abcdef", buildFingerprint: "build-a" } });
+    const text = formatQaReport(report);
+    // A reused stage passed in an EARLIER run and was not executed here. Printing it the same way
+    // as a stage this run executed is how a resumed report came to be unreadable as a resume.
+    expect(text).toContain("static: passed (reused, not re-run)");
+    expect(text).toContain("source 0123456789ab");
+    expect(text).toContain("critical: passed (");
+    expect(report.results.find((stage) => stage.name === "static").reused).toBe(true);
+    expect(report.results.find((stage) => stage.name === "critical").reused).toBeUndefined();
+  });
+
   it("uses narrow single-worker isolation only for the local smoke stage", async () => {
     const commands = [];
     await runQaCascade({ env, stageRunner: async (stage) => { commands.push(stage.command); return { status: "passed" }; }, persistState: false });

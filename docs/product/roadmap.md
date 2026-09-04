@@ -122,6 +122,7 @@ document management is a separate post-pilot domain.
 | Managed document scanning | Controlled Pilot | P0/P1 per existing authority | Existing gate | Existing security evidence | Must remain blocking |
 | Receipt discount label | Controlled-pilot candidate or Post-Pilot | P2 | Not approved; Product approval required | No confirmed pilot blocker in repository evidence | Explicit scope approval required |
 | Reporting week start | Controlled-pilot candidate or Post-Pilot | P2 | Not approved; Product approval required | No confirmed pilot blocker in repository evidence | Evidence and scope approval required |
+| Client credit | Controlled-pilot candidate or Post-Pilot | P2 | Implemented; Product scope confirmation required for pilot entry | No confirmed pilot blocker in repository evidence | Explicit scope approval required |
 | Coupon domain | Post-Pilot | P2 | Not approved; Product and financial design approval required | No confirmed pilot blocker in repository evidence | Manual discount workaround |
 | General documents | Post-Pilot | P2 | Not approved; Product and Security approval required | No confirmed pilot blocker in repository evidence | Rabies workflow remains |
 | Notification routing | Post-Pilot | P2 | Not approved; Product approval required | No confirmed pilot blocker in repository evidence | Narrow approved exception only |
@@ -150,6 +151,10 @@ Document-domain ADR
 Independently scoped document capabilities
 
 Reporting week-start preference ── independent
+
+Client credit ── independent of the coupon domain. Credit settles an invoice as
+                 a payment; a discount changes what is owed. They land on
+                 opposite sides of the tax line and share no authority.
 
 Managed document scanning ── existing controlled-pilot security gate,
                              not a post-pilot document dependency
@@ -201,6 +206,41 @@ Managed document scanning ── existing controlled-pilot security gate,
   tenant isolation, consistent labels, keyboard use, and responsive display.
 - **Proposed release evidence:** `Reporting Period Preference Valid --
   CI/PostgreSQL/Browser`. No current gate change.
+
+### Client credit
+
+- **Foundation/gap:** migration 0050 adds `customer_credit_entries`, a signed
+  single-column ledger whose sum is the balance, with immutable rows, a grant
+  and adjust route behind `customers.credit_edit`, and redemption at checkout
+  behind `checkout.perform` alone. There is no stored balance column, no expiry,
+  and no sold or purchased credit.
+- **Disposition:** Controlled-pilot candidate or Post-Pilot, P2. Implemented; no
+  repository evidence confirms a pilot blocker, and Product scope confirmation
+  is required for pilot entry. The product boundaries are recorded in the header
+  of `migrations/0050_client_credit.sql` and in ADR-011.
+- **Scope:** one balance per client per business, granted or adjusted by staff,
+  spent at checkout as a `client_credit` payment that reduces the invoice
+  balance. Overdraft is refused under a customer row lock re-read inside the
+  payment transaction. Voiding a credit payment writes a compensating reversal
+  entry; a mistaken entry is corrected by a compensating adjustment that names
+  the row it corrects, never by an edit or a delete.
+- **Non-goals/decisions:** no gift cards or any purchased credit, which would
+  need an invoice of its own while `invoices.appointment_id` is `not null`; no
+  expiry, ageing, or sweeping of a balance; no configurable "store credit"
+  settlement method staff may pick freely, because that would let a redemption
+  be recorded without a ledger entry; no credit as a discount, which would
+  shrink the taxable base and under-collect tax on every redemption. Product
+  must decide whether a balance survives client offboarding and what a future
+  invoice-void route owes a redemption it cancels.
+- **Planning:** the balance is a sum over one client's entries and is bounded by
+  how much credit history one client accumulates; the running balance is
+  computed by the server on every ledger page so no client forms a second
+  opinion. Lock order is invoice then customer everywhere, so the two-lock
+  payment path cannot deadlock against the single-lock grant path. Tests must
+  race two real redemptions against one balance, prove the reversal on void, and
+  prove that a redemption and its payment agree.
+- **Proposed release evidence:** `Client Credit Valid --
+  CI/PostgreSQL/Browser/Financial Integrity`. No current gate change.
 
 ### Coupon domain and booking integration
 
@@ -314,6 +354,7 @@ General risks remain in [Scale readiness](../architecture/scale-readiness.md).
 |---|---|---|---|---|---|---|
 | Receipt history mutation, injection, or inconsistent channels | Misleading financial history or unsafe output | Invoice snapshots and escaping convention | Immutable bounded label and channel tests | Product, Security | Financial integrity/security | Disable editable labels; restore renderer; verify snapshots |
 | Wrong reporting boundaries or changed grouping | Reports disagree or misstate periods | Timezone-aware bounded helpers | Approved defaults, shared helper, inventory, boundary tests | Product | Reporting correctness; financial gate if applicable | Revert setting use; regenerate explicit ranges |
+| Credit overdraft, double redemption, or a ledger that disagrees with an invoice | Money spent twice, or a balance no entry accounts for | Customer row lock, signed single-column ledger, immutable entries, per-payment partial unique indexes | Balance re-read under the lock, reversal on void, concurrent-redemption race test, one money statement per invoice | Product, financial design, Security | Financial integrity | Stop credit redemption; reconcile entries against payments; correct by compensating adjustment |
 | Coupon double/cross-tenant use, rounding drift, races, silent invalidation | Incorrect financial effect | Tenant context, integer money, replay protection | Transactional checks, narrow locks, uniqueness, snapshots, audit | Product, financial design, Security | Financial integrity | Stop coupons; reconcile invoices and usage |
 | Document quarantine bypass, retention ambiguity, growth, or exposure | Malware/privacy incident or failed offboarding | Quarantine, authorization, immutable identity | Domain policy, scanning, quotas, audit, export/deletion contract | Product, Security, Privacy/Legal as applicable | Existing malware/tenant gates | Revoke, quarantine, preserve evidence, incident runbook |
 | Notification cross-tenant injection, fanout, duplicates, or deactivated delivery | Disclosure, duplicate messages, missed work | Tenant outbox and intent uniqueness | Scoped resolution, snapshots, limits, dedupe, deactivation policy | Product, Security, Operations | Tenant and duplicate-message gates | Disable rules; cancel intents; reconstruct evidence |

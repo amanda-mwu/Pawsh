@@ -6,6 +6,14 @@ memberships, gift cards, inventory, payroll, commissions, marketing campaigns,
 multi-location operations, routing, franchises, public APIs, advanced analytics,
 forecasting, schedule optimization, and AI features.
 
+Client credit is not a gift card and does not make one a goal. Credit is a
+balance the salon grants and the customer spends at the till; a gift card is
+credit that is bought, so it needs an invoice of its own, and
+`invoices.appointment_id` is `not null` today. Credit is recorded as a payment
+rather than a discount, and it neither expires nor appears as a settlement
+method staff may configure freely. Selling credit, expiring it, and offering it
+as a configurable payment method remain excluded.
+
 The schema remains location-aware and the application uses provider adapters and
 domain events where those choices keep later expansion practical. These extension
 points do not authorize building deferred workflows into the MVP.

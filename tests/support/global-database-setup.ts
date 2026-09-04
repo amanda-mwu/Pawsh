@@ -21,7 +21,7 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
     console.warn(`[pawsh] DATABASE TESTS INTENTIONALLY EXCLUDED (${mode.reason}). No database coverage in this run.`);
     return;
   }
-  const { start, reason, applied, release } = await provisionTestDatabase(mode);
+  const { start, reason, applied, release, ownership } = await provisionTestDatabase(mode);
   const schema = applied.length
     ? ` (applied ${applied.length} migration(s): ${applied.join(", ")})`
     : " (schema already current)";
@@ -37,6 +37,9 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
       ` via ${mode.source}${schema}`
     );
   }
+  // Naming the run makes a later refusal legible: the run that is blocked prints the runId of the
+  // run that is holding the lock, and this is where that id was announced.
+  console.info(`[pawsh] Database run lock held by run ${ownership.runId} (process ${ownership.pid}).`);
   // The run's exclusive claim is held until every suite has finished, not just until the schema
   // is in place - see `TestDatabaseProvisioning.release`.
   return release;

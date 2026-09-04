@@ -1,5 +1,9 @@
 import postgres from "postgres";
 import { applyMigrations } from "../../scripts/apply-migrations.js";
+import {
+  claimExclusiveRun, createRunOwnership, describeHolder, heartbeatIntervalMs,
+  lockPollIntervalMs, runLockName, type LockHolder, type RunLockGateway, type RunOwnership
+} from "./test-run-lock.js";
 
 export const databaseTestSwitch = "PAWSH_DATABASE_TESTS";
 export const explicitDatabaseUrlVariable = "PAWSH_TEST_DATABASE_URL";
@@ -126,6 +130,8 @@ export interface TestDatabaseProvisioning {
   start: "reset" | "reused";
   reason?: string;
   applied: string[];
+  /** Which run instance holds the lock, as recorded on the lock-holding session itself. */
+  ownership: RunOwnership;
   /**
    * Ends the run's exclusive claim on the isolated database. Call it once the suites are done.
    *
@@ -139,41 +145,91 @@ export interface TestDatabaseProvisioning {
 }
 
 /**
- * Serialises provisioning between concurrent runners.
+ * The gateway the claim protocol in `test-run-lock.ts` runs against.
  *
- * Taken on the MAINTENANCE database, not on the target. PostgreSQL advisory locks are scoped to
- * one database, and the target is a database this function may be about to drop - a lock held
- * inside it would be both unavailable when the database does not exist and destroyed by the drop.
+ * THE LOCK IS TAKEN ON THE MAINTENANCE DATABASE, NOT THE TARGET. PostgreSQL advisory locks are
+ * scoped to one database, and the target is a database this run may be about to drop - a lock
+ * held inside it would be unavailable before the database exists and destroyed along with it.
+ * That is also why `pg_stat_activity` below is read from the same connection: the holder's
+ * session is attached here too.
+ *
+ * THE LOCK IS ADDRESSED AS ITSELF, NOT LOOKED UP BY NAME. `pg_locks` splits a one-argument
+ * advisory key into `classid` (the high 32 bits) and `objid` (the low 32), so the holder is found
+ * by taking the same `hashtextextended` value apart the same way. Nothing else in this repository
+ * uses that key, so any session holding it is one of ours.
+ *
+ * THE TIMESTAMPS ARE COMPARED AS TEXT. `state_change` has microsecond resolution and a JavaScript
+ * `Date` has millisecond, so a fence that round-tripped it through one would silently never
+ * match - which would turn "refuse to kill a holder that came back to life" into "never able to
+ * reclaim anything at all".
  */
-const provisionLockName = "pawsh:test-migrations";
-
-/** How long a second run waits for the first to finish before saying so. */
-export const exclusiveRunWaitMs = 10 * 60_000;
-const exclusiveRunPollMs = 500;
+export function runLockGateway(admin: Maintenance): RunLockGateway {
+  const key = admin`hashtextextended(${runLockName},0)`;
+  return {
+    async tryAcquire() {
+      const [claimed] = await admin<{ locked: boolean }[]>`
+        select pg_try_advisory_lock(${key}) as locked
+      `;
+      return claimed?.locked === true;
+    },
+    async readHolder() {
+      const [holder] = await admin<LockHolder[]>`
+        with lock_key as (select ${key} as value)
+        select activity.pid as backend_pid, activity.application_name, activity.state,
+          (extract(epoch from (now() - greatest(activity.state_change, activity.query_start,
+            activity.backend_start))) * 1000)::float8 as idle_ms,
+          activity.backend_start::text as backend_start_text,
+          activity.state_change::text as state_change_text
+        from pg_locks lock
+        join pg_stat_activity activity on activity.pid = lock.pid, lock_key
+        where lock.locktype='advisory' and lock.granted and lock.objsubid=1
+          and lock.classid = ((lock_key.value >> 32) & 4294967295)::oid
+          and lock.objid = (lock_key.value & 4294967295)::oid
+        limit 1
+      `;
+      return holder ?? null;
+    },
+    async reclaim(holder) {
+      // Fenced on everything that could have changed since it was observed: the same backend
+      // (`backend_start` identifies the session, so a recycled pid is a different session), the
+      // same recorded owner, still idle, still not having done anything, and still holding this
+      // lock. A holder that woke up in between fails the fence and is left alone, which is what
+      // makes "one run cannot steal a live lock" true even under a race.
+      const [terminated] = await admin<{ ended: boolean }[]>`
+        with lock_key as (select ${key} as value)
+        select pg_terminate_backend(activity.pid) as ended
+        from pg_locks lock
+        join pg_stat_activity activity on activity.pid = lock.pid, lock_key
+        where lock.locktype='advisory' and lock.granted and lock.objsubid=1
+          and lock.classid = ((lock_key.value >> 32) & 4294967295)::oid
+          and lock.objid = (lock_key.value & 4294967295)::oid
+          and activity.pid = ${holder.backendPid}
+          and activity.backend_start::text = ${holder.backendStartText}
+          and activity.state_change::text = ${holder.stateChangeText}
+          and activity.state = 'idle'
+          and activity.application_name is not distinct from ${holder.applicationName}
+      `;
+      return terminated?.ended === true;
+    }
+  };
+}
 
 /**
- * Waits until this process is the only one entitled to the isolated database.
+ * Keeps proving the owner is alive.
  *
- * Polled with `pg_try_advisory_lock` rather than blocking in `pg_advisory_lock`, purely so the
- * wait can end with a sentence somebody can act on instead of a run that appears to hang.
+ * This is the whole liveness signal, and it is deliberately the cheapest possible statement on the
+ * connection that already holds the lock: running it moves `state_change`, which is the only thing
+ * a waiter on another machine can see. `unref` so a run that has finished its work is never held
+ * open by its own heartbeat.
  */
-async function claimExclusiveRun(admin: Maintenance): Promise<void> {
-  const deadline = Date.now() + exclusiveRunWaitMs;
-  for (;;) {
-    const [claimed] = await admin<{ locked: boolean }[]>`
-      select pg_try_advisory_lock(hashtextextended(${provisionLockName},0)) as locked
-    `;
-    if (claimed?.locked) return;
-    if (Date.now() >= deadline) {
-      throw new Error(
-        "Pawsh database tests could not start: another database run holds the isolated database.\n"
-        + "  Authoritative database runs are serialised because each one resets that database,\n"
-        + "  so starting a second would destroy the first run's schema and fixtures mid-suite.\n"
-        + "  Wait for the other run to finish, or stop it, and try again."
-      );
-    }
-    await new Promise((resolve) => { setTimeout(resolve, exclusiveRunPollMs); });
-  }
+function startHeartbeat(admin: Maintenance): () => void {
+  const timer = setInterval(() => {
+    // A failed heartbeat is not a reason to fail the run: if the connection has genuinely gone,
+    // the lock has gone with it and the next waiter is entitled to the database anyway.
+    void admin`select 1`.catch(() => {});
+  }, heartbeatIntervalMs);
+  timer.unref();
+  return () => { clearInterval(timer); };
 }
 
 function maintenanceUrl(url: string): string {
@@ -245,9 +301,38 @@ export async function provisionTestDatabase(
   env: NodeJS.ProcessEnv = process.env
 ): Promise<TestDatabaseProvisioning> {
   const start = resolveStart(mode, env);
-  const admin = postgres(maintenanceUrl(mode.url), { max: 1 });
+  const ownership = createRunOwnership();
+  // The ownership token IS the `application_name`, so the record exists exactly as long as the
+  // session that holds the lock and can never be left behind by it.
+  //  because  selects real columns rather than aliases, and the
+  // typed `LockHolder` it fills in would otherwise be an object of undefined fields that reads
+  // as "no owner recorded" for every holder.
+  const admin = postgres(maintenanceUrl(mode.url), {
+    max: 1, transform: postgres.camel, connection: { application_name: ownership.token }
+  });
+  let stopHeartbeat: (() => void) | null = null;
+  let releaseOnSignal: (() => void) | null = null;
+  const release = async (): Promise<void> => {
+    stopHeartbeat?.();
+    stopHeartbeat = null;
+    releaseOnSignal?.();
+    releaseOnSignal = null;
+    await admin.end();
+  };
   try {
-    await claimExclusiveRun(admin);
+    const claim = await claimExclusiveRun(runLockGateway(admin), {
+      onReclaim: (holder, reason) => {
+        console.warn(
+          `[pawsh] Reclaimed the database run lock from a dead owner: ${reason}.` +
+          ` It was ${describeHolder(holder)}.`
+        );
+      }
+    });
+    if (claim.reclaimed === null && claim.waitedMs > lockPollIntervalMs) {
+      console.info(`[pawsh] Waited ${Math.round(claim.waitedMs / 1000)}s for another database run to finish.`);
+    }
+    stopHeartbeat = startHeartbeat(admin);
+    releaseOnSignal = installSignalRelease(release);
     if (start.reset) await recreateDatabase(admin, mode.database);
     else await ensureDatabaseExists(admin, mode.database);
     const sql = postgres(mode.url, { max: 1 });
@@ -261,13 +346,41 @@ export async function provisionTestDatabase(
       start: start.reset ? "reset" : "reused",
       ...(start.reason === undefined ? {} : { reason: start.reason }),
       applied,
-      // Ending the connection releases the session-scoped advisory lock, which is also why an
-      // abandoned or crashed run cannot leave the claim stuck: the server drops it with the
-      // session.
-      release: () => admin.end()
+      ownership,
+      // Ending the connection releases the session-scoped advisory lock. That covers a clean exit
+      // and a crash that actually closes the socket; the heartbeat above is what covers the case
+      // it does not - a killed run whose connection survives it.
+      release
     };
   } catch (error) {
-    await admin.end();
+    await release();
     throw error;
   }
+}
+
+/**
+ * Gives back the lock on a handled termination, instead of leaving the server to notice.
+ *
+ * `SIGINT` and `SIGTERM` would close the socket on their own once Node exits, but only after the
+ * default handling gets there, and a run interrupted at the wrong moment is exactly when somebody
+ * is about to start another. The handler re-raises rather than swallowing, so Ctrl-C still means
+ * what it means. It cannot help with `SIGKILL` - nothing running in this process can - which is
+ * why the heartbeat exists rather than this.
+ */
+function installSignalRelease(release: () => Promise<void>): () => void {
+  const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
+  const handlers = new Map<NodeJS.Signals, () => void>();
+  const remove = (): void => {
+    for (const [signal, handler] of handlers) process.removeListener(signal, handler);
+    handlers.clear();
+  };
+  for (const signal of signals) {
+    const handler = (): void => {
+      remove();
+      void release().catch(() => {}).finally(() => { process.kill(process.pid, signal); });
+    };
+    handlers.set(signal, handler);
+    process.once(signal, handler);
+  }
+  return remove;
 }

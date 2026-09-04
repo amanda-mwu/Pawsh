@@ -220,7 +220,7 @@ export default function AppointmentScreen(): React.ReactElement {
                 <CareBlock label="Coat notes" text={view.coatNotes} />
               </>
             )}
-            <CareBlock label="Appointment notes" text={view.appointmentNotes} />
+            <CareBlock label="Appointment note" text={view.appointmentNotes} />
           </Section>
         ) : null}
 

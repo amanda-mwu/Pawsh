@@ -135,7 +135,7 @@ async function nailTrimId(api: APIRequestContext): Promise<string> {
   return service!.id;
 }
 
-/** Books a visit with a booking note, which `createAppointment` has no parameter for. */
+/** Books a visit with an appointment note, which `createAppointment` has no parameter for. */
 async function bookWithNote(
   api: APIRequestContext,
   tenant: TenantFixture,
@@ -306,13 +306,14 @@ test("the work sheet: one row per pet-service pair, and the three notes", async 
 
   // Three rows, in the reference's order, and the newest entry in each thread.
   const notes = ticket(page).getByTestId("ticket-notes");
-  await expect(column(notes, 1)).toHaveText(["Charlie (Pet)", "Emma Johnson (Client)", "Appointment Note"]);
+  await expect(column(notes, 1)).toHaveText(["Charlie (Pet)", "Emma Johnson (Client)", "Appointment note"]);
   await expect(column(notes, 2)).toHaveText([
     "One inch reverse, round head.",
     "Text before the dog is ready.",
     "Owner collecting at 4pm sharp."
   ]);
-  // Read-only wherever it appears: neither note thread has a writer on this surface.
+  // The Ticket is a document, not an editor: the appointment note is editable on the
+  // appointment surface, and neither note thread has a writer anywhere.
   await expect(ticket(page).locator("textarea")).toHaveCount(0);
 
   // The sheet is the sheet, on screen and on paper: one markup function, two hosts.
@@ -365,7 +366,7 @@ test("a future scheduled appointment gets a Ticket, and a note nobody has writte
     const notes = ticket(page).getByTestId("ticket-notes");
     await expect(notes.locator("tbody tr")).toHaveCount(3);
     await expect(column(notes, 1))
-      .toHaveText(["Charlie (Pet)", "Emma Johnson (Client)", "Appointment Note"]);
+      .toHaveText(["Charlie (Pet)", "Emma Johnson (Client)", "Appointment note"]);
     await expect(column(notes, 2)).toHaveText(["-", "-", "-"]);
 
     // No money and no permission footnote: a work sheet discloses nothing financial, so it renders

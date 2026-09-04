@@ -2206,11 +2206,36 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
   padding-top:var(--space-2);border-top:1px solid var(--line);
 }
 .appointment-service-total strong{font-variant-numeric:tabular-nums}
-/* States where money and notes live, rather than acts on them. Quieter than a block that
-   carries a control, because neither of these does. */
-.appointment-discount-row p,.appointment-note>p{margin:0;color:var(--muted);font-size:13px}
-.appointment-note>p[data-testid]{color:var(--ink)}
-.appointment-note .work-block-head+p{margin-bottom:var(--space-2)}
+/* The money row states where discounts live and acts on nothing, so it stays quiet. The note
+   block is TWO NOTES IN ONE CARD - the appointment note and the service note - and each is its
+   own `.appointment-note-part` so that either can be redrawn without disturbing what is typed in
+   the other. The parts are separated by a rule rather than by two cards: they are read together,
+   and two cards would say they belong to different sections of the visit. */
+.appointment-discount-row p,.appointment-note-part>p{margin:0;color:var(--muted);font-size:13px}
+.appointment-note-part>p[data-testid]{color:var(--ink);white-space:pre-wrap}
+.appointment-note{gap:0}
+.appointment-note-part{display:grid;gap:var(--space-2);padding:var(--space-3) 0}
+.appointment-note-part:first-child{padding-top:0}
+.appointment-note-part:last-child{padding-bottom:0}
+.appointment-note-part+.appointment-note-part{border-top:1px solid var(--line)}
+.appointment-note-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);justify-self:start}
+/* The refused save. Amber rather than red: nothing has gone wrong and nothing is lost - there
+   are two good values and the operator picks one. */
+.appointment-note-conflict{
+  display:grid;gap:var(--space-2);
+  padding:var(--space-3);border:1px solid var(--warning);
+  border-radius:var(--radius-md);background:var(--warning-tint);
+}
+.appointment-note-conflict p{margin:0}
+.appointment-note-conflict blockquote{
+  margin:0;padding:var(--space-2) var(--space-3);
+  border-left:3px solid var(--line);background:var(--paper);
+  font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere;
+}
+/* Both note rules above out-specify a bare `.error`, so the refused save would otherwise be drawn
+   in the note's own reading colour. Matched at the same weight and stated after them, because
+   those rules are what give the two notes their colour and reordering would cost that. */
+.appointment-note-part>p.error{min-height:0;margin:0;color:var(--danger)}
 .surface-note-field{margin:0}
 .surface-note-field textarea{width:100%;min-height:96px}
 

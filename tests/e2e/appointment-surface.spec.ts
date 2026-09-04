@@ -241,8 +241,12 @@ test("a terminal appointment offers only what still means something", async ({
   // A cancelled visit still has a work sheet. Nothing on it asserts the visit happened, and an
   // operator reprinting the sheet for a cancellation they are chasing is an ordinary thing to do.
   await expect(page.getByTestId("appointment-ticket-print")).toBeVisible();
-  // Nothing can be written to a cancelled appointment, so the note is text rather than a field.
+  // The SERVICE note is closed on a cancelled visit - it is written while a dog is on the table
+  // - so it is text rather than a field. The APPOINTMENT note is a different field with no
+  // status window: an owner can still correct what the client asked for on a visit that never
+  // happened, so its Edit control is here and its textarea appears once it is pressed.
   await expect(page.getByTestId("appointment-note").locator("textarea")).toHaveCount(0);
+  await expect(page.getByTestId("appointment-note-edit")).toBeVisible();
 
   await page.getByTestId("appointment-close").click();
   await expect(detail(page)).toBeHidden();

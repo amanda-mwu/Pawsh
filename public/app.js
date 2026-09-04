@@ -505,7 +505,7 @@ function appointmentBadge(item){
 // Pet care notes plus the appointment's own note. Empty means the card renders no notes button at
 // all: a button that opens an empty panel is worse than no button.
 function appointmentNoteEntries(item){
-  return [["Safety alert",item.safetyAlerts],["Behavior",item.behaviorNotes],["Medical",item.medicalNotes],["Grooming preferences",item.groomingPreferences],["Coat notes",item.coatNotes],["Appointment notes",item.notes]].filter(([,value])=>typeof value==="string"&&value.trim().length>0);
+  return [["Safety alert",item.safetyAlerts],["Behavior",item.behaviorNotes],["Medical",item.medicalNotes],["Grooming preferences",item.groomingPreferences],["Coat notes",item.coatNotes],["Appointment note",item.notes]].filter(([,value])=>typeof value==="string"&&value.trim().length>0);
 }
 function appointmentPresentation(item){
   const start=new Date(item.startAt),end=new Date(item.endAt),zone=item.schedulingTimezone||schedulingZone(),formatTime=value=>formatPrefTime(value,zone),serviceSnapshots=item.services||[],services=serviceSnapshots.map(service=>service.name),groomers=(item.groomers||[]).map(groomer=>groomer.displayName),prices=serviceSnapshots.map(service=>service.priceMinor).filter(value=>value!==null&&value!==undefined);
@@ -656,6 +656,17 @@ function openAppointmentNotes(id,origin=null){
   const close=$("#modal .modal-head .close");close.setAttribute("aria-label","Close notes");close.focus();
 }
 function calendarAppointmentById(id){return state.appointments.find(appointment=>appointment.id===id)||state.calendar.monthAppointments.find(appointment=>appointment.id===id);}
+// The other direction: a row the server has just handed back, written into the caches the calendar
+// draws from. The week and the month hold separate arrays and an appointment can be in both, so
+// both are corrected. renderAppointments() is guarded the way every other out-of-band redraw of
+// the grid in this file is - a workspace that has not opened the calendar has nothing to redraw.
+function applyCalendarAppointment(row){
+  for(const list of [state.appointments,state.calendar.monthAppointments]){
+    const index=list.findIndex(entry=>entry.id===row.id);
+    if(index>=0)list[index]=row;
+  }
+  try{renderAppointments();}catch{/* the calendar is not mounted; nothing to redraw */}
+}
 function appointmentHost(target){return target.closest?.("[data-appointment-id]");}
 // == Calendar drag-to-move ==
 // Pointer events, not HTML5 drag-and-drop: the grid needs a movement threshold (so a press that
@@ -906,7 +917,7 @@ async function advanceAppointment(id, status, actionButton) {
   const next = {scheduled:"checked_in",checked_in:"in_service",in_service:"completed"}[status];
   if (status === "scheduled" || status === "checked_in") {
     return openModal(status === "scheduled" ? "Check in appointment" : "Start service",
-      safetyContext(appointment)+(status === "checked_in" ? field("operationalNotes","Service notes","text","",true) : ""),
+      safetyContext(appointment)+(status === "checked_in" ? field("operationalNotes","Service note","text","",true) : ""),
       async (form) => {
         try {
           if (status === "checked_in") {
@@ -3580,7 +3591,7 @@ function renderBookingDetailPane() {
     disambiguationField()+
     `<div class="pricing-preview" role="status" aria-live="polite" data-testid="booking-price-status">Choose a pet and service to calculate pricing.</div>`+
     `<p role="status" aria-live="polite" data-testid="booking-rabies-status">Choose a pet and appointment time to evaluate rabies information.</p>`+
-    field("notes","Appointment notes","text","",true);
+    field("notes","Appointment note","text","",true);
   bindBookingDetail();
   updateBookingRabiesPreview();updateBookingPricePreview();
 }
@@ -12051,29 +12062,90 @@ function printAppointment(item){
 }
 
 /**
- * Two notes, two different write rules, so they are not presented as one field.
+ * Two notes, two audiences, two write rules, so they are not presented as one field.
  *
- * `notes` is the booking note taken when the appointment was made, and Pawsh exposes NO endpoint
- * that updates it, so it is read-only wherever it appears. `operationalNotes` is the service note,
- * and PATCH /api/appointments/:id/operations accepts it only while the appointment is checked in
- * or in service, under `operations.perform_service`. Outside that window a textarea would be a
- * control whose save the server refuses, so it is not drawn.
+ * `notes` IS THE APPOINTMENT NOTE - what the client asked for when the visit was booked, and the
+ * typo somebody notices four weeks later. `PATCH /api/appointments/:id` writes it under
+ * `appointments.edit` with NO status and NO invoice precondition, because a completed, invoiced,
+ * fully paid visit whose note misspells the dog's name has to be correctable in place rather than
+ * by cancelling and rebooking. So the editor below is offered in every status, and it is a
+ * DISCLOSURE rather than a standing textarea: this surface is read far more often than it is
+ * written, and a note that is usually right should read as text.
+ *
+ * `operationalNotes` IS THE SERVICE NOTE, written while the dog is on the table.
+ * `PATCH /api/appointments/:id/operations` accepts it only while the appointment is checked in or
+ * in service, under `operations.perform_service`. Outside that window a textarea would be a
+ * control whose save the server refuses, so it is not drawn - and it keeps the footer Save it has
+ * always had. Two saves that can be on screen at once must not be ambiguous about what they
+ * write, which is why the appointment note carries its own Save inside its own part of the block
+ * and never borrows the footer's.
  */
+function appointmentRecordNoteMarkup(surface){
+  const {item,permissions:can,note}=surface;
+  const head=`<div class="work-block-head"><h3>Appointment note</h3>`
+    +(can.editAppointmentNote&&!note.open
+      ? `<button type="button" class="secondary compact" data-testid="appointment-note-edit">`
+        +`${item.notes?"Edit":"Add"}</button>`
+      : "")
+    +`</div>`;
+  if(!note.open){
+    return head+(item.notes
+      ? `<p data-testid="appointment-booking-note">${escape(item.notes)}</p>`
+      : `<p class="note-empty">No appointment note.</p>`);
+  }
+  // The value the operator is holding, not the value on the row: a redraw underneath a half-typed
+  // correction - a closing modal, a reload after a transition - must not retype the field.
+  const draft=note.draft??item.notes??"";
+  // `note.conflict` is the row as it stands NOW, re-read after the server refused the version this
+  // editor opened with. NOTHING IS MERGED: the operator is shown what is saved while still holding
+  // what they typed, and chooses between the two.
+  const conflict=note.conflict
+    ? `<div class="appointment-note-conflict" data-testid="appointment-note-conflict" role="alert">`
+      +`<p><strong>This note was changed somewhere else.</strong> Nothing you typed has been saved.</p>`
+      +`<p class="fine">Saved now:</p>`
+      +(note.conflict.notes
+        ? `<blockquote data-testid="appointment-note-conflict-current">${escape(note.conflict.notes)}</blockquote>`
+        : `<p class="note-empty" data-testid="appointment-note-conflict-current">No appointment note.</p>`)
+      +`<div class="appointment-note-actions">`
+        +`<button type="button" class="primary compact" data-testid="appointment-note-conflict-keep">Keep my version</button>`
+        +`<button type="button" class="secondary compact" data-testid="appointment-note-conflict-take">Use the saved note</button>`
+      +`</div></div>`
+    : "";
+  const error=note.error
+    ? `<p class="error" data-testid="appointment-note-error" role="alert">${escape(note.error)}</p>`
+    : "";
+  return head
+    +`<label class="surface-note-field"><span class="visually-hidden">Appointment note</span>`
+      +`<textarea data-testid="appointment-note-record-input" name="appointmentNotes" rows="4"`
+      +` maxlength="5000" placeholder="What the client asked for, and anything the front desk needs to remember."`
+      +`${note.saving?" disabled":""}>${escape(draft)}</textarea></label>`
+    +conflict+error
+    // While a refusal is on screen the plain Save is WITHDRAWN, not repeated: "Keep my version"
+    // inside the panel is the same write, and two buttons that do one thing is exactly the
+    // ambiguity a conflict is the worst moment to introduce.
+    +`<div class="appointment-note-actions">`
+      +(note.conflict
+        ? ""
+        : `<button type="button" class="primary compact" data-testid="appointment-note-save"${note.saving?" disabled":""}>Save</button>`)
+      +`<button type="button" class="secondary compact" data-testid="appointment-note-cancel"${note.saving?" disabled":""}>Cancel</button>`
+    +`</div>`;
+}
+
 function appointmentNotesBlockMarkup(surface){
   const {item,permissions:can}=surface;
-  const booking=item.notes
-    ? `<p data-testid="appointment-booking-note">${escape(item.notes)}</p>`
-    : `<p class="note-empty">No booking note.</p>`;
   const service=can.editNote
-    ? `<label class="surface-note-field"><span class="visually-hidden">Service notes</span>`
+    ? `<label class="surface-note-field"><span class="visually-hidden">Service note</span>`
       +`<textarea data-testid="appointment-note-input" name="operationalNotes" rows="4" maxlength="10000"`
       +` placeholder="What happened during this visit.">${escape(item.operationalNotes||"")}</textarea></label>`
     : item.operationalNotes
       ? `<p data-testid="appointment-service-note">${escape(item.operationalNotes)}</p>`
       : `<p class="note-empty">No service note.</p>`;
   return `<div class="work-block appointment-note" data-testid="appointment-note">`
-    +`<div class="work-block-head"><h3>Booking note</h3></div>${booking}`
-    +`<div class="work-block-head"><h3>Service notes</h3></div>${service}</div>`;
+    +`<div class="appointment-note-part" data-testid="appointment-record-note">`
+      +appointmentRecordNoteMarkup(surface)+`</div>`
+    +`<div class="appointment-note-part">`
+      +`<div class="work-block-head"><h3>Service note</h3></div>${service}</div>`
+  +`</div>`;
 }
 
 function appointmentSurfaceMarkup(surface){
@@ -12218,7 +12290,13 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
   const surface={
     item,model:appointmentPresentation(item),
     activity:{items:null,failed:false},photos:{data:null,failed:false},cards:{data:null,failed:false},
-    client:{loaded:false,failed:false},permissions:null
+    client:{loaded:false,failed:false},permissions:null,
+    // The appointment note's editor, held on the surface rather than in the DOM so a redraw
+    // underneath it - a closing modal, a reload after a transition - restores what the operator
+    // was typing instead of retyping the field from the row. `baseVersion` is the version of the
+    // row THIS EDITOR OPENED WITH and is what every save sends: refreshing `surface.item` while
+    // somebody is mid-correction must not quietly re-aim the write at a newer row.
+    note:{open:false,draft:null,baseVersion:null,conflict:null,error:null,saving:false}
   };
   const level=replacing?open:{
     id:"appointment-detail",dialog,restoreFocus:source,
@@ -12255,8 +12333,110 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
       // a client that declines to draw it. Only a completed visit has a Ticket: before completion
       // the working record IS this surface.
       ticket:status==="completed",
-      editNote:["checked_in","in_service"].includes(status)&&allowed("operations.perform_service")
+      editNote:["checked_in","in_service"].includes(status)&&allowed("operations.perform_service"),
+      // The APPOINTMENT note, which is a different field with a different permission and no
+      // status window at all. `readOnly` above is about the visit no longer moving; a note that
+      // records what the client asked for is corrected long after the visit has settled, and
+      // `PATCH /api/appointments/:id` accepts it in every status including completed and
+      // invoiced. So this is gated on the permission and on nothing else.
+      editAppointmentNote:allowed("appointments.edit")
     };
+  };
+
+  /**
+   * The appointment note redraws ITS OWN PART OF THE BLOCK, never the surface.
+   *
+   * A full draw() rebuilds `dialog.innerHTML`, which would throw away a half-written SERVICE note
+   * sitting in the textarea beside this one - so opening, cancelling, failing and saving all go
+   * through here instead. Same reason drawPhotos() and drawCards() exist.
+   */
+  const drawRecordNote=(focus=null)=>{
+    if(stale())return;
+    const host=dialog.querySelector('[data-testid="appointment-record-note"]');
+    if(!host)return;
+    host.innerHTML=appointmentRecordNoteMarkup(surface);
+    bindRecordNote();
+    const target=focus&&host.querySelector(`[data-testid="${focus}"]`);
+    if(!target)return;
+    target.focus();
+    // Correcting a note means adding to what is there far more often than replacing it, so the
+    // caret lands after the existing text rather than selecting it.
+    if(target.tagName==="TEXTAREA")target.setSelectionRange(target.value.length,target.value.length);
+  };
+
+  /**
+   * A stale save is REFUSED AND SHOWN, never merged.
+   *
+   * `version` is the one this editor opened with, so a note somebody else corrected while this box
+   * was open comes back 409 rather than being overwritten. The row is then re-read and presented
+   * beside what the operator is still holding, and they choose: keep theirs, or take the saved one
+   * into the box and go on from it. Nothing is combined, and nothing is discarded for them.
+   */
+  const saveRecordNote=async()=>{
+    const note=surface.note;
+    note.saving=true;note.error=null;note.conflict=null;
+    drawRecordNote();
+    const value=String(note.draft??"");
+    try{
+      // Emptied means CLEARED - `null` - and whitespace alone is emptied. Anything else is sent
+      // exactly as typed, because the server does not trim and a note whose leading spaces were
+      // eaten on the way back would not be the note the booking form wrote.
+      const updated=await api(`/api/appointments/${id}`,{method:"PATCH",body:JSON.stringify({
+        notes:value.trim()===""?null:value,version:note.baseVersion??surface.item.version})});
+      if(stale())return;
+      // 200 IS THE WHOLE CALENDAR ROW - the same projection GET /api/appointments/:id serves - so
+      // the surface is re-seated on it rather than having one field patched into the old one.
+      surface.item=updated;
+      surface.model=appointmentPresentation(surface.item);
+      surface.note={open:false,draft:null,baseVersion:null,conflict:null,error:null,saving:false};
+      drawRecordNote("appointment-note-edit");
+      applyCalendarAppointment(updated);
+      toast("Appointment note saved");
+    }catch(error){
+      if(stale())return;
+      note.saving=false;
+      if(error.status!==409){note.error=error.message;drawRecordNote("appointment-note-record-input");return;}
+      const current=await api(`/api/appointments/${id}`).catch(()=>null);
+      if(stale())return;
+      if(current){
+        surface.item=current;
+        surface.model=appointmentPresentation(surface.item);
+        applyCalendarAppointment(current);
+        note.baseVersion=current.version;
+        note.conflict={notes:current.notes??null};
+        drawRecordNote("appointment-note-conflict-keep");
+      }else{
+        note.error=`${error.message} The saved note could not be read - try again.`;
+        drawRecordNote("appointment-note-record-input");
+      }
+    }
+  };
+
+  const bindRecordNote=()=>{
+    const host=dialog.querySelector('[data-testid="appointment-record-note"]');
+    if(!host)return;
+    const on=(testid,handler)=>host.querySelector(`[data-testid="${testid}"]`)?.addEventListener("click",handler);
+    on("appointment-note-edit",()=>{
+      // `draft` is seeded here rather than left null so that a 409's re-read cannot become the
+      // value in the box: once this editor is open, the box holds the operator's text and only
+      // the operator's text.
+      surface.note={open:true,draft:surface.item.notes??"",baseVersion:surface.item.version,
+        conflict:null,error:null,saving:false};
+      drawRecordNote("appointment-note-record-input");
+    });
+    on("appointment-note-cancel",()=>{
+      surface.note={open:false,draft:null,baseVersion:null,conflict:null,error:null,saving:false};
+      drawRecordNote("appointment-note-edit");
+    });
+    on("appointment-note-save",()=>runDetached(saveRecordNote));
+    on("appointment-note-conflict-keep",()=>runDetached(saveRecordNote));
+    on("appointment-note-conflict-take",()=>{
+      surface.note.draft=surface.note.conflict?.notes??"";
+      surface.note.conflict=null;
+      drawRecordNote("appointment-note-record-input");
+    });
+    host.querySelector('[data-testid="appointment-note-record-input"]')
+      ?.addEventListener("input",event=>{surface.note.draft=event.target.value;});
   };
 
   const drawRail=()=>{
@@ -12407,6 +12587,10 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
       // leaves the appointment exactly as it was, and the redraw says so.
       on(testid,()=>runDetached(async()=>{await terminalAppointment(id,status);await reload();}));
     }
+    bindRecordNote();
+    // The FOOTER Save writes the SERVICE note and only the service note. The appointment note has
+    // its own Save inside its own block, because this one is not drawn at all outside the check-in
+    // window while the appointment note is editable in every status.
     const save=dialog.querySelector('[data-testid="appointment-save"]');
     save?.addEventListener("click",()=>runDetached(async()=>{
       const field=dialog.querySelector('[data-testid="appointment-note-input"]');
@@ -12416,7 +12600,7 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
         const updated=await api(`/api/appointments/${id}/operations`,{method:"PATCH",
           body:JSON.stringify({operationalNotes:field.value.trim()||null,version:surface.item.version})});
         surface.item.version=updated.version;
-        toast("Service notes saved");
+        toast("Service note saved");
         await refresh();
         await reload();
       }catch(error){toast(error.message);if(save.isConnected)save.disabled=false;}
@@ -12617,9 +12801,14 @@ function ticketServicesMarkup(model){
  * Three notes, always three rows.
  *
  * The pet's and the client's are the newest entry in each note thread; the third is the
- * appointment's own booking note. NEVER A TEXTAREA: the note threads have no writer on this
- * surface and `PATCH /api/appointments/:id/operations` writes the service note rather than the
- * booking note, so an editor here would be a control the server has no route for.
+ * appointment's own note, read straight off the live projection - so a correction saved on the
+ * appointment surface is on the next sheet printed without anything here changing.
+ *
+ * STILL NEVER A TEXTAREA, but no longer for want of a route. `PATCH /api/appointments/:id` will
+ * now write the appointment note and the appointment surface offers it; the Ticket declines it
+ * because THE TICKET IS A DOCUMENT. It is the sheet that gets printed and clipped to the run, and
+ * a document that could be edited from the page it is printed from is a document nobody can trust
+ * they are holding a copy of. The note threads have no writer here for the same reason.
  *
  * THE ROWS ARE PRESENT EVEN WHEN EMPTY. "Nobody has written a note about this pet" is a fact the
  * groomer needs, and a table that silently drops the row leaves them unable to tell it from a
@@ -12634,7 +12823,7 @@ function ticketNotesMarkup(item,model,notes){
       +`<thead><tr><th>Item</th><th>Latest Note</th></tr></thead><tbody>`
       +row("ticket-note-pet",`${petName({petName:model.petName})} (Pet)`,ticketNoteCell(notes.pet))
       +row("ticket-note-client",`${model.customerName} (Client)`,ticketNoteCell(notes.client))
-      +row("ticket-note-appointment","Appointment Note",item.notes||TICKET_EMPTY)
+      +row("ticket-note-appointment","Appointment note",item.notes||TICKET_EMPTY)
     +`</tbody></table></div>`
   +`</section>`;
 }

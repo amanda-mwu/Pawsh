@@ -629,7 +629,12 @@ describeDatabase("D1 scheduling regression", () => {
     expect(claimed.statusCode).toBe(201);
     const [rollbackCounts]=await db<{appointments:number;replays:number}[]>`
       select
-        (select count(*)::integer from appointments where business_id=${businessId} and scheduled_local_start=${rollbackPayload.localStart}) appointments,
+        (select count(*)::integer from appointments where business_id=${businessId}
+          -- Compared through ::text::timestamp, never as a bare bind. postgres.js serialises
+          -- anything bound to a timestamp parameter through new Date(x).toISOString(), so a
+          -- zone-less string would be shifted by the TEST HOST's offset and this count would be
+          -- zero on every machine that is not UTC. See tests/database/appointment-local-wall-clock.
+          and scheduled_local_start=(${rollbackPayload.localStart}::text)::timestamp) appointments,
         (select count(*)::integer from scheduling_request_replays where business_id=${businessId} and idempotency_key=${rollbackKey}) replays
     `;
     expect(rollbackCounts).toEqual({appointments:1,replays:1});

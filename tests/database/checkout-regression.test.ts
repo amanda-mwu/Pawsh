@@ -37,7 +37,8 @@ describeDatabase("D4 checkout, stale state, and error paths",()=>{
       select ${businessId},${locationId},${customerId},${petId},${employeeId},
         ${`2034-04-${String(startHour).padStart(2,"0")}T16:00:00.000Z`}::timestamptz,
         ${`2034-04-${String(startHour).padStart(2,"0")}T17:00:00.000Z`}::timestamptz,'America/Los_Angeles',
-        ${`2034-04-${String(startHour).padStart(2,"0")}T09:00:00`},-420,'completed',user_id,user_id
+        ${`2034-04-${String(startHour).padStart(2,"0")}T16:00:00.000Z`}::timestamptz
+          at time zone 'America/Los_Angeles',-420,'completed',user_id,user_id
       from business_memberships where business_id=${businessId} and is_owner returning id
     `;
     if(withService)await db`

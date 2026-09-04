@@ -51,13 +51,13 @@ describeDatabase("partial payment and the receipt's salon identity", () => {
   async function completedAppointment(): Promise<string> {
     const start = `2034-07-${String(day).padStart(2, "0")}T16:00:00.000Z`;
     const end = `2034-07-${String(day).padStart(2, "0")}T17:00:00.000Z`;
-    const local = `2034-07-${String(day).padStart(2, "0")}T09:00:00`;
     day += 1;
     const [appointment] = await db<{ id: string }[]>`
       insert into appointments(business_id,location_id,customer_id,pet_id,employee_id,start_at,end_at,
         scheduling_timezone,scheduled_local_start,scheduled_utc_offset_minutes,status,created_by,updated_by)
       select ${businessId},${locationId},${customerId},${petId},${employeeId},
-        ${start}::timestamptz,${end}::timestamptz,'America/Los_Angeles',${local},-420,'completed',user_id,user_id
+        ${start}::timestamptz,${end}::timestamptz,'America/Los_Angeles',
+        ${start}::timestamptz at time zone 'America/Los_Angeles',-420,'completed',user_id,user_id
       from business_memberships where business_id=${businessId} and is_owner returning id
     `;
     await db`

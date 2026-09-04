@@ -96,7 +96,8 @@ describeDatabase("discounts and coupons", () => {
       select ${businessId},${locationId},${input.client?.customerId ?? customerId},
         ${input.client?.petId ?? petId},${employeeId},
         ${input.startAtUtc}::timestamptz,${endAtUtc}::timestamptz,${input.timezone},
-        ${input.localStart},${input.utcOffsetMinutes},'completed',user_id,user_id
+        ${input.startAtUtc}::timestamptz at time zone ${input.timezone},
+        ${input.utcOffsetMinutes},'completed',user_id,user_id
       from business_memberships where business_id=${businessId} and is_owner returning id
     `;
     await db`

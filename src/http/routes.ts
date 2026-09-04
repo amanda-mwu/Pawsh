@@ -590,7 +590,28 @@ async function roleRows(
  */
 function appointmentCalendarRows(db: Database, scope: SqlFragment) {
   return db`
-    select a.*, c.first_name, c.last_name, c.phone as customer_phone, p.name as pet_name, p.breed, p.safety_alerts,
+    select a.*,
+      -- scheduled_local_start OVERRIDES THE ONE a.* JUST SELECTED, and it is a string rather
+      -- than a timestamp. Two reasons, and both are about the driver rather than the data.
+      --
+      -- The column is "timestamp without time zone", so postgres.js parses it with new Date(x),
+      -- which reads a zone-less string in the API HOST's timezone. a.* therefore hands the
+      -- client an INSTANT that moves with the machine the server happens to run on: a 10:00
+      -- booking read on a Pacific host serialises as 2026-09-11T17:00:00.000Z. The mobile app
+      -- reads this field as a wall clock (apps/mobile/src/features/appointments/time.ts - Hermes
+      -- cannot be trusted with named timezones) and its parser takes the leading
+      -- YYYY-MM-DDTHH:mm of whatever it is given, so it would print 17:00 for a 10:00 groom.
+      -- POST /api/appointments already answers with the wall-clock string, so a.* also made the
+      -- create response and the read disagree about the same field.
+      --
+      -- Derived from start_at and the appointment's OWN scheduling_timezone rather than read
+      -- from the stored column, so the projection states the same wall clock on every host even
+      -- if the denormalised column is ever wrong again. to_char keeps it text end to end, which
+      -- is the only form the driver cannot reinterpret. The stored column stays authoritative
+      -- for the indexed local-date range scans in GET /api/appointments.
+      to_char(a.start_at at time zone a.scheduling_timezone,'YYYY-MM-DD"T"HH24:MI')
+        as scheduled_local_start,
+      c.first_name, c.last_name, c.phone as customer_phone, p.name as pet_name, p.breed, p.safety_alerts,
       p.behavior_notes, p.medical_notes, p.grooming_preferences, p.coat_notes,
       p.vaccination_expires_on,p.rabies_verification_status,p.rabies_verification_method,
       case
@@ -5072,7 +5093,8 @@ export function registerRoutes(
       insert into blocked_times (business_id,employee_id,location_id,start_at,end_at,scheduling_timezone,
         scheduled_local_start,scheduled_local_end,reason,created_by)
       values (${context.businessId},${input.employeeId},${input.locationId},${start.instant},${end.instant},${start.timeZone},
-        ${input.localStart},${input.localEnd},${input.reason},${context.userId}) returning *
+        ${start.instant}::timestamptz at time zone ${start.timeZone},
+        ${end.instant}::timestamptz at time zone ${start.timeZone},${input.reason},${context.userId}) returning *
     `;
     return reply.code(201).send(created);
   });
@@ -9156,7 +9178,8 @@ export function registerRoutes(
            notes, availability_overridden, conflict_overridden, created_by, updated_by)
         values
           (${appointmentId}, ${context.businessId}, ${input.locationId}, ${input.customerId}, ${input.petId},
-           ${primaryEmployeeId}, ${startAt}, ${endAt}, ${resolved.timeZone},${input.localStart},${resolved.offsetMinutes},${resolved.disambiguation},${input.notes ?? null},
+           ${primaryEmployeeId}, ${startAt}, ${endAt}, ${resolved.timeZone},
+           ${startAt}::timestamptz at time zone ${resolved.timeZone},${resolved.offsetMinutes},${resolved.disambiguation},${input.notes ?? null},
            ${input.availabilityOverride}, ${overrideApplied}, ${context.userId}, ${context.userId})
         returning *
       `;
@@ -9498,7 +9521,8 @@ export function registerRoutes(
       await tx`delete from appointment_employees where business_id=${context.businessId} and appointment_id=${id}`;
       const [updated] = await tx<{id:string;version:number}[]>`
         update appointments set employee_id=${primaryEmployeeId},start_at=${startAt},end_at=${endAt},
-          scheduling_timezone=${resolved.timeZone},scheduled_local_start=${input.localStart},
+          scheduling_timezone=${resolved.timeZone},
+          scheduled_local_start=${startAt}::timestamptz at time zone ${resolved.timeZone},
           scheduled_utc_offset_minutes=${resolved.offsetMinutes},scheduled_disambiguation=${resolved.disambiguation},
           availability_overridden=${input.availabilityOverride},
           conflict_overridden=${overrideApplied},version=version+1,

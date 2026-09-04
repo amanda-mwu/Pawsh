@@ -1,3 +1,38 @@
+/**
+ * Wall-clock time, resolved against a salon's timezone rather than the machine's.
+ *
+ * Everything here is host-independent on purpose: `Intl.DateTimeFormat` with an explicit
+ * `timeZone` and `Date.UTC` arithmetic, never `new Date("2026-09-11T12:30")`, which reads a
+ * zone-less string in whatever timezone the Node process happens to be running in.
+ *
+ * ------------------------------------------------------------------------------------------
+ * HOW A LOCAL WALL CLOCK IS PERSISTED. Read this before writing `scheduled_local_start` or any
+ * other `timestamp without time zone` column.
+ *
+ * The instant (`start_at`, `timestamptz`) is the authority. The naive column beside it is a
+ * DERIVED denormalisation that exists so the calendar can range-scan on a local date, and it
+ * must be derived IN SQL from the instant and the row's own `scheduling_timezone`:
+ *
+ *     scheduled_local_start = ${startAt}::timestamptz at time zone ${resolved.timeZone}
+ *
+ * NEVER by binding the operator's local string straight into the column. postgres.js keys its
+ * serializers on the parameter type the SERVER describes, and 1082/1114/1184 all resolve to
+ * `x => (x instanceof Date ? x : new Date(x)).toISOString()` - so a bare `${input.localStart}`
+ * landing in a `timestamp` column is parsed as a local time on the API HOST and stored as the
+ * UTC clock. On a Pacific host a 12:30 booking persisted as 19:30. The bug is invisible on a
+ * UTC host, which is why it survived: `start_at` stayed correct and the calendar, which reads
+ * `start_at at time zone scheduling_timezone`, went on rendering the right time over a wrong row.
+ *
+ * `(${value}::text)::timestamp` is the other safe form - the explicit `::text` makes the server
+ * describe the parameter as text, so the string reaches Postgres unconverted and Postgres parses
+ * it. `completeSchedulingRequest` uses that one; `scripts/seed-qa.ts` uses it too. Deriving from
+ * the instant is preferred where the instant is at hand, because it leaves one source of truth
+ * instead of two that can disagree.
+ *
+ * `0051_local_wall_clock_integrity.sql` holds both columns to that rule in the database.
+ * ------------------------------------------------------------------------------------------
+ */
+
 const LOCAL_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
 const LOCAL_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 

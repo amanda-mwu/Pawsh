@@ -98,7 +98,7 @@ describeDatabase("client credit", () => {
       select ${businessId},${locationId},${client?.customerId ?? customerId},
         ${client?.petId ?? petId},${employeeId},
         ${startAtUtc}::timestamptz,${endAtUtc}::timestamptz,'America/Los_Angeles',
-        ${`2035-05-${day}T09:00`},-420,'completed',user_id,user_id
+        ${startAtUtc}::timestamptz at time zone 'America/Los_Angeles',-420,'completed',user_id,user_id
       from business_memberships where business_id=${businessId} and is_owner returning id
     `;
     await db`

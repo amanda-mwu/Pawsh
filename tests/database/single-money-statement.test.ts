@@ -101,7 +101,9 @@ describeDatabase("single money statement", () => {
       select ${businessId},${locationId},${client?.customerId ?? customerId},
         ${client?.petId ?? petId},${employeeId},
         ${startAtUtc}::timestamptz,${endAtUtc}::timestamptz,'America/Los_Angeles',
-        ${`2036-03-${day}T09:00`},-420,'completed',user_id,user_id
+        ${startAtUtc}::timestamptz at time zone 'America/Los_Angeles',
+        extract(epoch from ((${startAtUtc}::timestamptz at time zone 'America/Los_Angeles')
+          -(${startAtUtc}::timestamptz at time zone 'UTC')))/60,'completed',user_id,user_id
       from business_memberships where business_id=${businessId} and is_owner returning id
     `;
     await db`

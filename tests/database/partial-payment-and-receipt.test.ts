@@ -17,7 +17,7 @@ import { createDatabase, type Database } from "../../src/db/client.js";
  * `PAYMENT_EXCEEDS_CURRENT_BALANCE` rather than a 409 about concurrency. Those are here.
  *
  * The receipt's salon identity is in the same file because it needs the same invoice, and
- * because a Ticket header and a Pay control are two halves of one screen.
+ * because the receipt header and the Pay control are two halves of one screen.
  */
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -223,8 +223,14 @@ describeDatabase("partial payment and the receipt's salon identity", () => {
     expect(afterTheFact.json().code).toBe("PAYMENT_EXCEEDS_CURRENT_BALANCE");
   });
 
-  it("carries the salon's name, phone and email on the receipt", async () => {
-    // Written through Settings -> Business, which is the only writer of these two columns and
+  it("carries the salon's name, phone, email and address on the receipt", async () => {
+    // An invoice from BEFORE anything is written, because the null case is the one a header has
+    // to survive: a salon that has not filled the form in gets null on every one of these and the
+    // header simply omits the line.
+    const unfilled = (await receipt((await openInvoice()).id)).json().invoice;
+    expect(unfilled.locationAddress).toBeNull();
+
+    // Written through Settings -> Business, which is the only writer of these columns and
     // therefore the only thing that makes them safe to render.
     const [current] = await db<{
       currency: string; taxRateBasisPoints: number; reminderLeadMinutes: number; locationVersion: number;
@@ -233,10 +239,11 @@ describeDatabase("partial payment and the receipt's salon identity", () => {
       from businesses b join locations l on l.business_id=b.id and l.active
       where b.id=${businessId}
     `;
+    const address = "918 Alder Street, Suite 4, Portland OR 97204";
     const saved = await app.inject({
       method: "PUT", url: "/api/business/settings", headers: { cookie: ownerCookie },
       payload: {
-        name: "Payment Salon", phone: "555-0199", email: "front-desk@payment.test",
+        name: "Payment Salon", phone: "555-0199", email: "front-desk@payment.test", address,
         timezone: "America/Los_Angeles", currency: current!.currency,
         taxRateBasisPoints: Number(current!.taxRateBasisPoints),
         reminderLeadMinutes: Number(current!.reminderLeadMinutes),
@@ -252,17 +259,18 @@ describeDatabase("partial payment and the receipt's salon identity", () => {
     expect(header.businessEmail).toBe("front-desk@payment.test");
     expect(header.currency).toBe(current!.currency);
 
-    // `locations.address` IS DELIBERATELY ABSENT and this asserts the absence rather than leaving
-    // it to be noticed. The column exists, but nothing in the product writes it - the create path
-    // inserts (business_id, name, timezone), `businessSettingsSchema` has no address field, and
-    // the settings route's `update locations set` touches only name and timezone. The only writer
-    // in the repository is `scripts/seed-qa.ts`, which is the trap: an address line built on this
-    // would render in QA and be blank for every real salon. Adding it needs the settings form
-    // first, and this assertion is what will fail to remind whoever does it.
-    expect(header).not.toHaveProperty("locationAddress");
+    // `locations.address` IS ON THE HEADER NOW, and the assertion here used to be its absence.
+    // That absence was right while nothing in the product wrote the column and the only writer was
+    // `scripts/seed-qa.ts` - an address line built on it would have rendered in QA and been blank
+    // for every real salon. The Business settings workspace closed all three gaps that comment
+    // named: `businessSettingsSchema` carries `address`, the settings route writes it, and the
+    // form has the field. So this asserts the value a salon actually typed, read back from the row
+    // rather than from the payload that set it, and the receipt is checked against the row rather
+    // than against itself.
+    expect(header.locationAddress).toBe(address);
     const [location] = await db<{ address: string | null }[]>`
       select address from locations where business_id=${businessId} and active
     `;
-    expect(location!.address).toBeNull();
+    expect(location!.address).toBe(address);
   });
 });

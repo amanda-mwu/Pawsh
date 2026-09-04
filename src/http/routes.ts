@@ -10112,21 +10112,32 @@ export function registerRoutes(
      * settings form in has them, and one that has not gets null and the header simply omits the
      * line. `reportCardView` above already surfaces the same two fields for the same reason.
      *
-     * `locations.address` IS DELIBERATELY NOT HERE. The column exists and `GET /api/locations`
-     * selects it, but NOTHING IN THE PRODUCT WRITES IT: the create path inserts
-     * `(business_id, name, timezone)`, `businessSettingsSchema` has no address field, and the
-     * settings route's `update locations set` touches only name and timezone. The only writer in
-     * the repository is `scripts/seed-qa.ts`. So the address is null for every business that has
-     * ever existed outside QA - and populated in QA, which is the trap: a receipt header built
-     * against this field would look correct in every test and be blank for every real salon.
-     * Adding it needs the settings form first (a field on `businessSettingsSchema`, a column in
-     * that route's `update locations set`, and an input on the form); it is one more line here
-     * afterwards.
+     * `location_address` NOW MEETS THAT SAME TEST, WHICH IS WHY IT IS FINALLY HERE. It did not
+     * until the Business settings workspace shipped, and the comment that used to stand in this
+     * place said so: nothing in the product wrote the column, the only writer anywhere was
+     * `scripts/seed-qa.ts`, and a header built on it would have looked right in every test and
+     * been blank for every real salon. All three things that comment asked for now exist -
+     * `address` on `businessSettingsSchema`, the column in the `update locations set` in
+     * `PUT /api/business/settings`, and the field on the form - so what a receipt prints is the
+     * line that salon typed. Migration 0046 bounds it to the same one-free-text-line shape a
+     * client's address has. It stays nullable and that is not a gap: a salon that has not filled
+     * it in gets null and the header omits the line, exactly as it does for the phone and the
+     * email.
+     *
+     * IT IS THE INVOICE'S OWN APPOINTMENT'S LOCATION, NOT THE SESSION'S ACTIVE ONE. A receipt is
+     * a document about one visit, so the address on it has to be a fact about that visit rather
+     * than about whoever happens to be reprinting it. Both joins are on the composite keys the
+     * foreign keys already guarantee, so each matches exactly one row and the invoice row cannot
+     * quietly multiply - which a join on `locations.active` could, the day the partial unique
+     * index behind `one_active_location_per_business` stops being the whole story.
      */
     const [invoice] = await db`
       select i.*, b.name as business_name, b.phone as business_phone, b.email as business_email,
+        l.address as location_address,
         b.currency, c.first_name, c.last_name
       from invoices i join businesses b on b.id=i.business_id join customers c on c.id=i.customer_id
+        join appointments a on a.business_id=i.business_id and a.id=i.appointment_id
+        join locations l on l.business_id=i.business_id and l.id=a.location_id
       where i.business_id=${context.businessId} and i.id=${id}
     `;
     if (!invoice) return reply.code(404).send({ error: "Invoice not found" });

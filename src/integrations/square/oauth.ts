@@ -290,26 +290,63 @@ export interface SquareWorkerDependencies {
 }
 
 /**
- * Refreshes every connection that is due, and is safe to run on every worker tick.
+ * One tick's total refresh budget, and the share of it a connection that is not already failing
+ * can always take.
+ *
+ * THIS TABLE HAS NO RESTING STATE, WHICH IS WHY THE RESERVE MATTERS MORE HERE THAN ANYWHERE ELSE.
+ * A webhook event dead-letters after `maxWebhookAttempts` and a swept checkout becomes
+ * `needs_review`; both stop being claimed. A connection Square keeps refusing to refresh for a
+ * reason that is not revocation has nowhere to come to rest: `status` is `connected`,
+ * `next_refresh_at` is pushed out by at most six hours, and the row is claimed again forever.
+ * The set of such rows only grows, so a budget handed out purely in schedule order is a budget an
+ * unbounded backlog can occupy - and the row it delays is a connection whose access token dies in
+ * thirty days if nothing refreshes it.
+ *
+ * `refresh_attempts = 0` is exactly "this connection is not in a failure cycle": every successful
+ * refresh resets it to zero and every failure leaves it above zero. Reserving half the budget for
+ * those rows gives a healthy due connection a claim on the first tick after it comes due,
+ * independently of how many broken connections exist. The remaining budget is claimed in schedule
+ * order, `next_refresh_at`, which is the column `square_connection_refresh_due` is built on and
+ * which every claim pushes forward - so the broken rows drain among themselves in a bounded,
+ * fair order rather than one subset monopolising the lane.
+ *
+ * THE LANES CANNOT CLAIM THE SAME ROW. The healthy lane runs first and its own UPDATE moves the
+ * rows it took to `now() + 15 minutes`, which puts them outside `next_refresh_at <= now()`. That
+ * is the same fence that already stops two consecutive ticks claiming one row.
+ */
+export const connectionRefreshBatch = 10;
+export const connectionRefreshHealthyReserve = 5;
+
+interface ClaimedConnection {
+  id: string;
+  businessId: string;
+  refreshToken: string;
+  squareMerchantId: string;
+  refreshAttempts: number;
+}
+
+/**
+ * Takes one lane's worth of due connections.
  *
  * Claimed with `for update skip locked` so two application instances running the same tick take
  * different rows rather than the same one twice. The claim itself moves `next_refresh_at`
  * forward and increments `refresh_attempts`, so a crash between claiming and finishing costs a
  * short delay rather than a hot loop against Square.
  */
-export async function refreshDueConnections(
+async function claimDueConnections(
   db: Database,
-  dependencies: SquareWorkerDependencies
-): Promise<number> {
-  const due = await db<{
-    id: string; businessId: string; refreshToken: string; squareMerchantId: string;
-    refreshAttempts: number;
-  }[]>`
+  input: { environment: SquareEnvironment; lane: "healthy" | "due"; limit: number }
+): Promise<ClaimedConnection[]> {
+  if (input.limit <= 0) return [];
+  const restriction = input.lane === "healthy" ? db`and due.refresh_attempts = 0` : db`and true`;
+  return db<ClaimedConnection[]>`
     with claim as (
-      select id from square_connections
-      where status='connected' and environment=${dependencies.environment}
-        and next_refresh_at <= now()
-      order by next_refresh_at for update skip locked limit 10
+      select due.id from square_connections due
+      where due.status='connected' and due.environment=${input.environment}
+        and due.next_refresh_at <= now()
+        ${restriction}
+      order by due.next_refresh_at, due.id
+      for update skip locked limit ${input.limit}
     )
     update square_connections connection set
       refresh_attempts=connection.refresh_attempts+1,
@@ -318,6 +355,30 @@ export async function refreshDueConnections(
     returning connection.id, connection.business_id, connection.refresh_token,
       connection.square_merchant_id, connection.refresh_attempts
   `;
+}
+
+/**
+ * Refreshes every connection that is due, and is safe to run on every worker tick.
+ *
+ * The budget is claimed in two passes - see `connectionRefreshBatch` - so that connections stuck
+ * in a failure cycle cannot occupy the whole tick and let a healthy connection's token expire.
+ * Nothing below the claim knows which lane a row came from, and the return value is still the
+ * number of connections this tick actually refreshed.
+ */
+export async function refreshDueConnections(
+  db: Database,
+  dependencies: SquareWorkerDependencies
+): Promise<number> {
+  const healthy = await claimDueConnections(db, {
+    environment: dependencies.environment,
+    lane: "healthy",
+    limit: connectionRefreshHealthyReserve
+  });
+  const due = healthy.concat(await claimDueConnections(db, {
+    environment: dependencies.environment,
+    lane: "due",
+    limit: connectionRefreshBatch - healthy.length
+  }));
   let refreshed = 0;
   for (const connection of due) {
     try {
@@ -362,11 +423,18 @@ export async function refreshDueConnections(
         });
         continue;
       }
+      // The exponent is clamped, and the clamp changes no schedule this backoff has ever
+      // produced: `least(interval '6 hours', ...)` already wins from the eighth attempt onward,
+      // and 2^12 is far past that. It exists because `refresh_attempts` on this table has no
+      // ceiling - nothing dead-letters a connection - so it really does keep counting. Around
+      // three hundred attempts, which a six-hourly retry reaches in a matter of months,
+      // `power(2, n)` exceeds what an interval can hold and PostgreSQL raises rather than
+      // multiplying, which would abort the whole worker tick from inside its error handler.
       await db`
         update square_connections set
           last_refresh_error=${String(error)},
           next_refresh_at=now() + least(interval '6 hours',
-            interval '5 minutes' * power(2, ${connection.refreshAttempts})),
+            interval '5 minutes' * power(2, least(${connection.refreshAttempts}, 12))),
           updated_at=now()
         where id=${connection.id}
       `;

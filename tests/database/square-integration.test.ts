@@ -706,9 +706,16 @@ describeDatabase("Square Terminal integration", () => {
     });
     await db`update square_connections set next_refresh_at=now()-interval '1 minute' where business_id=${business}`;
 
+    // EXACTLY one, which is the strict pair of the `.toBe(0)` at the end of this test. Every
+    // connection is created by `storeConnection`, which schedules the next refresh seven days
+    // out, and the line above is the only thing in the whole suite that makes one due before
+    // this point - so a tick that refreshes anything else is a tick that reached a row it had no
+    // business reaching. This read `toBeGreaterThanOrEqual(1)` for as long as the test database
+    // was never cleaned between runs, when previous runs' due connections were genuinely there
+    // to be found.
     expect(await refreshDueConnections(db, {
       client: square.client, keyring, environment: "sandbox"
-    })).toBeGreaterThanOrEqual(1);
+    })).toBe(1);
 
     const [row] = await db<{
       accessToken: string; refreshToken: string; refreshedAt: Date; nextRefreshAt: Date;

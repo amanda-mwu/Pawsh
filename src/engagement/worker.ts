@@ -243,38 +243,96 @@ export async function processOutbox(db: Database): Promise<number> {
   return events.length;
 }
 
-export async function deliverNotifications(
+/**
+ * One tick's total send budget, and the share of it a first attempt can always take.
+ *
+ * `order by scheduled_occurrence` ALONE IS NOT A TOTAL ORDER, AND THAT IS THE DEFECT. Almost
+ * every intent in this table is written with `scheduled_occurrence` of `now()` - the rabies
+ * pair, the appointment confirmation and cancellation, the workspace access request, the
+ * password reset, the agreement request, the report card - and rows written in one transaction
+ * share one transaction timestamp exactly. Once more than `notificationDeliveryBatch` of them are
+ * eligible, WHICH ones the tick claims is decided by whatever order the executor happens to
+ * return equal keys in, and nothing about that is stable between two runs of the same query. A
+ * particular intent therefore had no progress guarantee at all inside a burst: it could be
+ * skipped over indefinitely while its tied peers were delivered around it. The intermittent
+ * failure in the rabies suite was exactly this - two intents that mattered, thirty-four tied
+ * peers, and a twenty-five row window whose membership was a coin toss.
+ *
+ * THE ORDER IS NOW TOTAL, AND ITS MIDDLE KEY IS THE ONE THE CLAIM ACTUALLY MOVES.
+ * `scheduled_occurrence` stays the leading key because it is a PRODUCT fact - when the
+ * notification is due to go out, computed from the appointment for a reminder - and it is also
+ * part of `unique_appointment_notification`, so it is not a retry schedule and must never be
+ * rewritten as one. `updated_at` is what the claim advances, so within a tie it demotes a row
+ * that has just been attempted below the peers that have not: every tied row is claimed before
+ * any of them is claimed twice. `id` last makes the order total, which is what removes the
+ * arbitrariness rather than merely reducing it. All three columns are the ones
+ * `notification_delivery_claim` is already built on - this claim finally plans the way 0001 said
+ * it would.
+ *
+ * AND A RESERVE, FOR THE SAME REASON THE SQUARE DRAINS HAVE ONE. Ordering makes the wait bounded;
+ * it does not make it short. A backlog of intents that are failing and being retried is claimed
+ * ahead of anything created since, and while `attempts<5` does eventually retire each of them,
+ * the number of ticks that takes grows with the size of the backlog. `attempts = 0` is exactly
+ * "nothing has tried to send this yet", so reserving part of the budget for those rows gives a
+ * newly created notification a claim on the first tick after it is due, whatever is queued in
+ * front of it.
+ *
+ * THE LANES CANNOT CLAIM THE SAME ROW, for two independent reasons rather than one: the reserve's
+ * own UPDATE moves the row to `attempts = 1`, which leaves the reserve's predicate, and to
+ * `status='sending'` with `updated_at=now()`, which leaves the eligible set entirely for the next
+ * ten minutes. That is the same fence that already stopped two consecutive ticks claiming one
+ * row, and it is what keeps this a change of ORDER and BUDGET only - no intent is sent twice, no
+ * intent is dropped, `attempts<5` still retires one for good, and `cancelled`, `suppressed` and
+ * `sent` remain as invisible to the claim as they have always been.
+ */
+export const notificationDeliveryBatch = 25;
+export const notificationFirstAttemptReserve = 10;
+
+interface ClaimedNotificationIntent {
+  id: string;
+  businessId: string;
+  destination: string | null;
+  notificationType: string;
+  attempts: number;
+  encryptedBody: string | null;
+  startAt: Date | null;
+  timezone: string | null;
+  businessName: string | null;
+  petName: string | null;
+  customerName: string | null;
+  expirationDate: string | null;
+  businessPhone: string | null;
+  businessEmail: string | null;
+  dateFormat: string | null;
+  hourFormat: string | null;
+  customerNotificationStatus: string | null;
+}
+
+/**
+ * Takes one lane's worth of due intents.
+ *
+ * One function rather than two near-identical queries: the lanes differ only in which rows they
+ * may see, and the claim itself - `for update skip locked`, the move to `sending`, the attempt
+ * increment, and the long list of columns the message bodies are rendered from - is the part
+ * that must never drift between them.
+ */
+async function claimNotificationIntents(
   db: Database,
-  provider: EmailProvider,
-  decryptBody?: (value: string) => string
-): Promise<number> {
-  const intents = await db<{
-    id: string;
-    businessId: string;
-    destination: string | null;
-    notificationType: string;
-    attempts: number;
-    encryptedBody: string | null;
-    startAt: Date | null;
-    timezone: string | null;
-    businessName: string | null;
-    petName: string | null;
-    customerName: string | null;
-    expirationDate: string | null;
-    businessPhone: string | null;
-    businessEmail: string | null;
-    dateFormat: string | null;
-    hourFormat: string | null;
-    customerNotificationStatus: string | null;
-  }[]>`
+  input: { lane: "first-attempt" | "due"; limit: number }
+): Promise<ClaimedNotificationIntent[]> {
+  if (input.limit <= 0) return [];
+  const restriction = input.lane === "first-attempt" ? db`and due.attempts=0` : db`and true`;
+  return db<ClaimedNotificationIntent[]>`
     with claim as (
-      select id from notification_intents
+      select due.id from notification_intents due
       where (
-          status in ('pending','failed')
-          or (status='sending' and updated_at<now()-interval '10 minutes')
+          due.status in ('pending','failed')
+          or (due.status='sending' and due.updated_at<now()-interval '10 minutes')
         )
-        and scheduled_occurrence<=now() and attempts<5
-      order by scheduled_occurrence for update skip locked limit 25
+        and due.scheduled_occurrence<=now() and due.attempts<5
+        ${restriction}
+      order by due.scheduled_occurrence, due.updated_at, due.id
+      for update skip locked limit ${input.limit}
     )
     update notification_intents intent set
       status='sending',attempts=intent.attempts+1,updated_at=now()
@@ -299,6 +357,27 @@ export async function deliverNotifications(
           and customer_intent.notification_type='rabies_expiration_customer'
         order by customer_intent.created_at desc limit 1) as customer_notification_status
   `;
+}
+
+/**
+ * Sends what is due, and records what happened to each attempt.
+ *
+ * The tick's budget is claimed in two passes - see `notificationDeliveryBatch` - so that a
+ * backlog of retrying intents cannot hold up one that has just become due. Nothing below the
+ * claim knows which lane a row came from, and the return value is still the number of intents
+ * this tick claimed.
+ */
+export async function deliverNotifications(
+  db: Database,
+  provider: EmailProvider,
+  decryptBody?: (value: string) => string
+): Promise<number> {
+  const first = await claimNotificationIntents(db, {
+    lane: "first-attempt", limit: notificationFirstAttemptReserve
+  });
+  const intents = first.concat(await claimNotificationIntents(db, {
+    lane: "due", limit: notificationDeliveryBatch - first.length
+  }));
   for (const intent of intents) {
     const attempt = intent.attempts;
     try {

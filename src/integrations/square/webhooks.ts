@@ -69,6 +69,41 @@ export const squareSignatureHeader = "x-square-hmacsha256-signature";
  */
 export const maxWebhookAttempts = 12;
 
+/**
+ * One tick's total claim budget, and the share of it a first attempt can always take.
+ *
+ * WHY THE BUDGET IS SPLIT AT ALL. A single `order by received_at ... limit 25` claim is a
+ * priority queue keyed on arrival, and arrival never changes. A row that has been attempted
+ * eleven times still sorts ahead of an event that arrived a second ago, so once more than
+ * `webhookClaimBatch` retryable rows exist the newest event is not reached until enough of the
+ * backlog has died. That is a payment.updated notification a salon is waiting on, held behind
+ * events that are failing precisely because nothing about them is going to change.
+ *
+ * TWO LANES, AND THE PROPERTY EACH ONE CARRIES.
+ *
+ * The arrivals lane claims only `attempts = 0` - events nothing has looked at yet - and is
+ * capped at `webhookArrivalReserve`. Its guarantee is unconditional and does not depend on how
+ * large the backlog is: a current event is claimed on the first tick after it lands, because no
+ * retried row is eligible to compete for that reserve.
+ *
+ * The general lane claims whatever is due in SCHEDULE order - `next_attempt_at`, which is also
+ * the column `square_webhook_pending` is built on, so the claim finally plans the way 0036 says
+ * it should. Schedule order is what makes the wait bounded rather than merely shorter: every
+ * claim moves the row's `next_attempt_at` into the future, so a row that has been attempted can
+ * no longer outrank a row that was due before it. For any due row R the set of rows that can be
+ * claimed ahead of R is finite and each member leaves it after one claim, so R is claimed within
+ * a bounded number of ticks. Arrival order has no such property because a claim does not change
+ * `received_at`.
+ *
+ * THE LANES CANNOT CLAIM THE SAME ROW. The arrivals lane runs first and its own UPDATE moves
+ * every row it took to `now() + 10 minutes`, which puts them outside `next_attempt_at <= now()`.
+ * That is the same fence that already stops two consecutive ticks claiming one row, not a new
+ * mechanism, and it holds for the general lane whether it runs on this connection or another
+ * instance's.
+ */
+export const webhookClaimBatch = 25;
+export const webhookArrivalReserve = 10;
+
 /** The types this integration acts on. Everything else is recorded and marked processed as a no-op. */
 export const handledEventTypes = [
   "oauth.authorization.revoked", "device.code.paired",
@@ -158,30 +193,54 @@ export type WebhookDisposition =
   | { disposition: "retry"; reason: string }
   | { disposition: "parked"; reason: string; businessIds?: string[] };
 
+interface ClaimedWebhookEvent {
+  id: string;
+  eventId: string;
+  merchantId: string;
+  eventType: string;
+  payloadText: string;
+  attempts: number;
+}
+
 /**
- * Acts on received events, claimed exactly as `processOutbox` claims outbox rows.
+ * Takes one lane's worth of due events, exactly as `processOutbox` claims outbox rows.
  *
- * Everything here is idempotent, because Square's retries and our own reprocessing both make
- * "this event again" ordinary. Failures record the reason and back off; they do not abandon the
- * row, because an event we could not process is a thing somebody has to be able to find.
+ * One function rather than two near-identical queries: the two lanes differ only in which rows
+ * they may see and in what order, and the claim itself - `for update skip locked`, the attempt
+ * increment, the ten-minute fence, the columns returned - is the part that must never drift
+ * between them. `failWebhookEvent` exists for the same reason.
+ *
+ * The concurrency argument is unchanged from the single-claim version. `for update skip locked`
+ * inside the CTE means two instances on the same tick take disjoint rows rather than the same row
+ * twice; the UPDATE increments `attempts` and pushes `next_attempt_at` out before any handler
+ * runs, so a crash between claiming and finishing costs one backoff interval rather than a hot
+ * loop against Square.
  */
-export async function processSquareWebhooks(
+async function claimWebhookEvents(
   db: Database,
-  dependencies: SquareWorkerDependencies
-): Promise<number> {
+  input: { lane: "arrivals" | "due"; limit: number }
+): Promise<ClaimedWebhookEvent[]> {
+  if (input.limit <= 0) return [];
+  const arrivals = input.lane === "arrivals";
+  // The arrivals lane is defined by "nothing has looked at this yet", which is `attempts = 0` and
+  // not a time window: an event that arrived an hour ago and has never been claimed is still a
+  // first attempt, and a clock-based reserve would quietly stop being a reserve during an outage.
+  const restriction = arrivals ? db`and pending.attempts = 0` : db`and true`;
+  const ordering = arrivals
+    ? db`order by pending.received_at, pending.id`
+    : db`order by pending.next_attempt_at, pending.received_at, pending.id`;
   // `payload::text`, not `payload`. The database client is configured with `postgres.camel`,
   // which camel-cases the keys of a jsonb value on the way out as well as column names - a
   // stored `device_code` comes back as `deviceCode`, and the schemas that parse Square's own
   // vocabulary would stop matching. Reading the document as text and parsing it here returns
   // exactly the bytes the receiver stored.
-  const events = await db<{
-    id: string; eventId: string; merchantId: string; eventType: string;
-    payloadText: string; attempts: number;
-  }[]>`
+  return db<ClaimedWebhookEvent[]>`
     with claim as (
-      select id from square_webhook_events
-      where processed_at is null and next_attempt_at <= now()
-      order by received_at for update skip locked limit 25
+      select pending.id from square_webhook_events pending
+      where pending.processed_at is null and pending.next_attempt_at <= now()
+        ${restriction}
+      ${ordering}
+      for update skip locked limit ${input.limit}
     )
     update square_webhook_events event set
       attempts=event.attempts+1,
@@ -190,6 +249,28 @@ export async function processSquareWebhooks(
     returning event.id, event.event_id, event.merchant_id, event.event_type,
       event.payload::text as payload_text, event.attempts
   `;
+}
+
+/**
+ * Acts on received events, claimed exactly as `processOutbox` claims outbox rows.
+ *
+ * Everything here is idempotent, because Square's retries and our own reprocessing both make
+ * "this event again" ordinary. Failures record the reason and back off; they do not abandon the
+ * row, because an event we could not process is a thing somebody has to be able to find.
+ *
+ * The tick's budget is claimed in two passes - see `webhookClaimBatch` - so that a backlog of
+ * retryable events cannot hold up an event that arrived a moment ago. Both passes return rows
+ * the handler treats identically; nothing below this line knows which lane a row came from, and
+ * the return value is still the number of rows this tick claimed.
+ */
+export async function processSquareWebhooks(
+  db: Database,
+  dependencies: SquareWorkerDependencies
+): Promise<number> {
+  const arrivals = await claimWebhookEvents(db, { lane: "arrivals", limit: webhookArrivalReserve });
+  const events = arrivals.concat(await claimWebhookEvents(db, {
+    lane: "due", limit: webhookClaimBatch - arrivals.length
+  }));
   for (const event of events) {
     try {
       const outcome = await applyWebhookEvent(db, {

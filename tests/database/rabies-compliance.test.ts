@@ -67,7 +67,26 @@ describeDatabase("rabies appointment compliance",()=>{
       {notificationType:"rabies_expiration_customer",status:"pending",recipientKind:"customer"},
       {notificationType:"rabies_expiration_staff",status:"pending",recipientKind:"staff"}
     ]);
-    await deliverNotifications(db,provider);await deliverNotifications(db,provider);
+    // `deliverNotifications` is a GLOBAL, cross-tenant drain and it sends the oldest-due
+    // notification first, which is correct and is not negotiable: a salon's reminder from an hour
+    // ago outranks one created a second ago. These two intents are therefore the NEWEST thing in
+    // the queue, and how many passes it takes to reach them is a fact about the rest of the run -
+    // every other suite that leaves an undelivered intent behind adds one. Two fixed passes only
+    // ever worked while the queue happened to be shallower than fifty, and which of two tied rows
+    // went first used to be arbitrary, so this read as an intermittent failure rather than as the
+    // coupling it is. Drain until these two have left the queue, THEN take the extra pass: the
+    // duplicate check this test exists for is that the extra pass sends nothing a second time.
+    const stillQueued=async()=>{
+      const [row]=await db<{count:number}[]>`select count(*)::int count from notification_intents
+        where business_id=${businessId} and appointment_id=${appointmentId}
+          and notification_type like 'rabies_%' and status in ('pending','failed')`;
+      return row!.count;
+    };
+    for(let pass=0;pass<20 && await stillQueued()>0;pass+=1) {
+      expect(await deliverNotifications(db,provider),`pass ${pass} claimed nothing`).toBeGreaterThan(0);
+    }
+    expect(await stillQueued()).toBe(0);
+    await deliverNotifications(db,provider);
     const rabiesMessages=messages.filter(message=>/rabies/i.test(message.subject));
     expect(rabiesMessages).toHaveLength(2);
     expect(rabiesMessages.find(message=>message.subject.includes("Updated rabies"))?.text)

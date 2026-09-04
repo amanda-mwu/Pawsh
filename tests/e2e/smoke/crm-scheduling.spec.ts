@@ -47,5 +47,10 @@ test("@smoke scheduling rejects overlap and blocked time but permits adjacency",
     localEnd:`${tenant.anchor}T14:00`,expectedLocationVersion:tenant.locationVersion,reason:"Smoke blocked time"
   }});
   await createAt("13:00");
-  await expect(page.locator("#booking-error")).toContainText("explicit override");
+  // The refusal names WHICH restriction stopped it. It used to be one 400 reading "outside
+  // employee availability; an explicit override is required" for a blocked time, a groomer's
+  // hours, the salon's hours and a per-date unavailability alike; those are four different things
+  // to go and fix, so they are four codes and four sentences now. This one is `TIME_BLOCKED`.
+  await expect(page.locator("#booking-error"))
+    .toContainText(`has time blocked out during that time on ${tenant.anchor}`);
 });

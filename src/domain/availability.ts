@@ -28,10 +28,15 @@
  *     produced, exactly as it subtracts from a weekday default.
  *
  * FAIL-OPEN, DELIBERATELY. An employee with zero working-hours rows is unrestricted, and a
- * location with zero business-hours rows is unbounded. This mirrors `groomersAvailable` in the
- * booking path, where both branches are load-bearing: a live location today has no
- * `business_hours` rows at all, and closing either branch would silently stop it taking bookings.
- * "No hours configured" means "not configured", not "closed".
+ * location with zero business-hours rows is unbounded. Both branches are load-bearing in the
+ * booking path this now backs: a live location today has no `business_hours` rows at all, and
+ * closing either branch would silently stop it taking bookings. "No hours configured" means
+ * "not configured", not "closed".
+ *
+ * WHO CALLS THIS. `refuseStaffAvailability` in `src/http/routes.ts`, which is the only staff
+ * availability verdict `POST /api/appointments` and `PATCH /api/appointments/:id/schedule` take.
+ * The SQL predicate that used to answer that question separately is gone; there is one set of
+ * rules and it is written here.
  *
  * Times are wall-clock minutes from local midnight in the LOCATION's timezone. They are never
  * instants: 09:00 is 09:00 on both sides of a daylight-saving transition, and converting a weekly
@@ -96,6 +101,15 @@ export interface EffectiveAvailability {
   reason: AvailabilityReason | null;
   /** Sorted, disjoint, and non-empty exactly when `available`. */
   periods: readonly DayPeriod[];
+  /**
+   * What steps 2 and 3 produced, BEFORE the location bound and before the blocks. Reported so a
+   * caller asking "why does this particular booking not fit" can be answered without the caller
+   * re-deriving any of the six steps: see `refuseWindow`. Empty whenever `available` is false,
+   * because an unavailable day already carries its own reason.
+   */
+  staffPeriods: readonly DayPeriod[];
+  /** The same, after step 4's intersection and before step 5's subtraction. */
+  boundedPeriods: readonly DayPeriod[];
   appointmentLimit: number;
   /** True when the employee has no working-hours rows at all, and so is unrestricted. */
   staffUnrestricted: boolean;
@@ -214,7 +228,10 @@ function unavailable(
   appointmentLimit: number,
   flags: { staffUnrestricted: boolean; locationUnbounded: boolean }
 ): EffectiveAvailability {
-  return { available: false, reason, periods: [], appointmentLimit, ...flags };
+  return {
+    available: false, reason, periods: [], staffPeriods: [], boundedPeriods: [],
+    appointmentLimit, ...flags
+  };
 }
 
 export function resolveEffectiveAvailability(inputs: AvailabilityInputs): EffectiveAvailability {
@@ -258,23 +275,25 @@ export function resolveEffectiveAvailability(inputs: AvailabilityInputs): Effect
 
   // Step 4. A location with no rows at all bounds nothing; one with rows but none for this
   // weekday is shut that weekday, and the intersection is correctly empty.
-  let periods = staffPeriods;
+  let boundedPeriods = staffPeriods;
   if (!locationUnbounded) {
     const salonToday = inputs.locationBusinessHours.filter((period) => period.weekday === inputs.weekday);
     if (!salonToday.length) return unavailable("outside_business_hours", appointmentLimit, flags);
-    periods = intersect(periods, salonToday.map((period) => ({
+    boundedPeriods = intersect(boundedPeriods, salonToday.map((period) => ({
       startMinute: clockMinutes(period.startTime),
       endMinute: clockMinutes(period.endTime)
     })));
-    if (!periods.length) return unavailable("outside_business_hours", appointmentLimit, flags);
+    if (!boundedPeriods.length) return unavailable("outside_business_hours", appointmentLimit, flags);
   }
 
   // Step 5. Subtractive only. A blocked interval survives a per-date override, because the
   // override describes the groomer's hours while the block describes time already spoken for.
-  periods = subtract(periods, inputs.blocked);
+  const periods = subtract(boundedPeriods, inputs.blocked);
   if (!periods.length) return unavailable("fully_blocked", appointmentLimit, flags);
 
-  return { available: true, reason: null, periods, appointmentLimit, ...flags };
+  return {
+    available: true, reason: null, periods, staffPeriods, boundedPeriods, appointmentLimit, ...flags
+  };
 }
 
 /**
@@ -292,10 +311,69 @@ export const availabilityRefusalCodes: Record<AvailabilityReason, string> = {
   fully_blocked: "TIME_BLOCKED"
 };
 
+function covers(periods: readonly DayPeriod[], window: DayPeriod): boolean {
+  return periods.some(
+    (period) => window.startMinute >= period.startMinute && window.endMinute <= period.endMinute
+  );
+}
+
 /** Whether a booking window fits entirely inside one resolved availability period. */
 export function coversWindow(availability: EffectiveAvailability, window: DayPeriod): boolean {
   if (!availability.available) return false;
-  return availability.periods.some(
-    (period) => window.startMinute >= period.startMinute && window.endMinute <= period.endMinute
-  );
+  return covers(availability.periods, window);
+}
+
+/**
+ * Why one specific booking window is refused, or null when it is not.
+ *
+ * `coversWindow` answers yes or no; a booking route has to tell an operator WHICH of the five
+ * restrictions it walked into, and the five read very differently on the screen. Deriving that
+ * outside this module would mean a second copy of the precedence, which is the exact duplication
+ * the file exists to prevent - so the attribution lives here, reading the stage-by-stage sets the
+ * resolver already computed rather than re-resolving anything.
+ *
+ * A whole-day verdict is reported as it stands: a closed salon or a `working = false` date is a
+ * fact about the day, not about the window. Otherwise the window is tested against each stage in
+ * precedence order, and the FIRST stage that does not contain it is the answer. Order matters:
+ * a 20:00 booking on a day whose salon shuts at 18:00 and whose groomer finishes at 17:00 is
+ * outside the groomer's hours first, and saying "the salon is closed then" would send an operator
+ * to edit the wrong grid.
+ *
+ * `fully_blocked` is the residual, and its wire code (`TIME_BLOCKED`) is the accurate one: the
+ * window survived the staff hours and the salon hours, so the only thing left that can have
+ * removed it is step 5. Note that the reason names a PARTIAL overlap here as readily as a day
+ * blocked end to end - a block that clips one minute of the window still refuses it.
+ */
+export function refuseWindow(
+  availability: EffectiveAvailability,
+  window: DayPeriod
+): AvailabilityReason | null {
+  if (!availability.available) return availability.reason;
+  if (covers(availability.periods, window)) return null;
+  if (!covers(availability.staffPeriods, window)) return "outside_staff_hours";
+  if (!covers(availability.boundedPeriods, window)) return "outside_business_hours";
+  return "fully_blocked";
+}
+
+/**
+ * Whether `availabilityOverride` - "book them anyway" - may bypass this refusal.
+ *
+ * TWO REASONS ARE NOT BYPASSABLE, and they are not the same kind of not-bypassable.
+ *
+ *   `location_closed`    a fact about the PREMISES. Step 1 is terminal, and someone with the
+ *                        override permission is making a judgement about a groomer's hours, which
+ *                        cannot make an unstaffed building open.
+ *   `date_override_off`  a fact about THIS EMPLOYEE ON THIS DATE, stated explicitly by whoever
+ *                        wrote the `employee_date_availability` row. It outranks an ordinary-hours
+ *                        override because it is not an ordinary-hours restriction: the weekday
+ *                        grid says what someone usually does, and this says they are not there
+ *                        that day. Pawsh has no capability that forces past it, deliberately - an
+ *                        emergency override of an explicit date-level unavailability is a separate
+ *                        design, not a flag reused.
+ *
+ * The remaining three are exactly what the override has always been able to bypass, so a workspace
+ * with no `employee_date_availability` rows behaves as it did before this was wired in.
+ */
+export function availabilityOverrideMayBypass(reason: AvailabilityReason): boolean {
+  return reason !== "location_closed" && reason !== "date_override_off";
 }

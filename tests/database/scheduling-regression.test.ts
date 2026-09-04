@@ -475,7 +475,12 @@ describeDatabase("D1 scheduling regression", () => {
       }
     });
     expect(hours.statusCode).toBe(204);
-    expect((await create(ownerCookie, employeeA, "2032-01-14T16:59:00.000Z")).statusCode).toBe(400);
+    // 16:59Z is 08:59 in the salon's own clock - one minute before the shift starts. The refusal
+    // names WHICH boundary stopped it, which is the whole point of the four codes: this one is the
+    // groomer's hours, and the blocked-time case below is not.
+    const beforeShift = await create(ownerCookie, employeeA, "2032-01-14T16:59:00.000Z");
+    expect(beforeShift.statusCode, beforeShift.body).toBe(409);
+    expect(beforeShift.json().code).toBe("OUTSIDE_STAFF_HOURS");
     expect((await create(ownerCookie, employeeA, "2032-01-14T17:00:00.000Z")).statusCode).toBe(201);
     expect((await create(ownerCookie, employeeA, "2032-01-15T00:00:00.000Z")).statusCode).toBe(201);
 
@@ -490,7 +495,11 @@ describeDatabase("D1 scheduling regression", () => {
       }
     });
     expect(blocked.statusCode).toBe(201);
-    expect((await create(ownerCookie, employeeA, "2032-01-15T20:00:00.000Z")).statusCode).toBe(400);
+    // 20:00Z is 12:00 locally, inside the shift and inside the block. Same status as the case
+    // above and a DIFFERENT code, so the two are no longer indistinguishable to a caller.
+    const onBlock = await create(ownerCookie, employeeA, "2032-01-15T20:00:00.000Z");
+    expect(onBlock.statusCode, onBlock.body).toBe(409);
+    expect(onBlock.json().code).toBe("TIME_BLOCKED");
     const overridden = await create(ownerCookie, employeeA, "2032-01-15T20:00:00.000Z", {
       availabilityOverride: true,
       overrideReason: "Owner-approved blocked-time exception"

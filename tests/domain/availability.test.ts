@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   MINUTES_PER_DAY,
+  availabilityOverrideMayBypass,
+  availabilityRefusalCodes,
   clockMinutes,
   coversWindow,
   dayPeriodForInstants,
+  refuseWindow,
   resolveEffectiveAvailability,
   type AvailabilityInputs,
+  type AvailabilityReason,
   type DateOverride,
   type WeekdayPeriod
 } from "../../src/domain/availability.js";
@@ -424,6 +428,104 @@ describe("daylight-saving boundaries", () => {
     expect(result.periods).toEqual([
       { startMinute: 0, endMinute: 60 },
       { startMinute: 120, endMinute: MINUTES_PER_DAY }
+    ]);
+  });
+});
+
+/**
+ * Which of the five refusals a SPECIFIC window walks into, and which of them "book them anyway"
+ * may bypass.
+ *
+ * `coversWindow` answers yes or no. The booking routes have to answer a fifth question on top of
+ * the four the resolver already answers - WHICH restriction refused this - because the four codes
+ * go to four different screens, and because one of them outranks the override while three do not.
+ */
+describe("refuseWindow attributes a refusal to the restriction that caused it", () => {
+  const morning = { startMinute: 10 * 60, endMinute: 11 * 60 };
+
+  const reasonFor = (overrides: Partial<AvailabilityInputs>, window = morning) =>
+    refuseWindow(resolveEffectiveAvailability(inputs(overrides)), window);
+
+  it("reports nothing for a window that fits", () => {
+    expect(reasonFor({})).toBeNull();
+  });
+
+  it("passes a whole-day verdict straight through rather than re-deriving it", () => {
+    // A closed salon and a day off are facts about the DAY. The window is irrelevant to both, so
+    // the same answer comes back for a window that would otherwise have fitted perfectly.
+    expect(reasonFor({ locationClosed: true })).toBe("location_closed");
+    expect(reasonFor({
+      dateOverride: { working: false, startTime: null, endTime: null, appointmentLimit: 1 }
+    })).toBe("date_override_off");
+  });
+
+  it("names the groomer's hours before the salon's when both would refuse", () => {
+    // 20:00 is past a 17:00 groomer AND past an 18:00 salon. Answering "the salon is closed then"
+    // would send an operator to edit the wrong grid, so precedence order decides.
+    const reason = reasonFor({}, { startMinute: 20 * 60, endMinute: 21 * 60 });
+    expect(reason).toBe("outside_staff_hours");
+  });
+
+  it("names the salon's hours when only the salon refuses", () => {
+    // The groomer works 09:00-17:00; the salon opens at 11:00. A 10:00 booking is inside the
+    // groomer's day and outside the shop's.
+    expect(reasonFor({
+      locationBusinessHours: [{ weekday: TUESDAY, startTime: "11:00", endTime: "18:00" }]
+    })).toBe("outside_business_hours");
+  });
+
+  it("names the block when the window survived both grids", () => {
+    // Whole-window, and one-minute-clipped, both refuse: a block that removes any part of the
+    // window removes the window.
+    expect(reasonFor({ blocked: [{ startMinute: 10 * 60, endMinute: 11 * 60 }] })).toBe("fully_blocked");
+    expect(reasonFor({ blocked: [{ startMinute: 10 * 60 + 59, endMinute: 11 * 60 }] })).toBe("fully_blocked");
+    // A block that merely abuts the window does not touch it - the intervals are half-open.
+    expect(reasonFor({ blocked: [{ startMinute: 11 * 60, endMinute: 12 * 60 }] })).toBeNull();
+  });
+
+  it("still reports the block when a per-date override supplied the hours", () => {
+    // The documented trap, asserted through the refusal rather than only through the periods: an
+    // override describes the groomer's hours and says nothing about time already spoken for.
+    expect(reasonFor({
+      dateOverride: workingOverride,
+      blocked: [{ startMinute: 13 * 60, endMinute: 14 * 60 }]
+    }, { startMinute: 13 * 60, endMinute: 14 * 60 })).toBe("fully_blocked");
+  });
+
+  it("gives every reason a wire code, and every code a distinct one", () => {
+    const codes = Object.values(availabilityRefusalCodes);
+    expect(new Set(codes).size).toBe(codes.length);
+    expect(availabilityRefusalCodes).toEqual({
+      location_closed: "LOCATION_CLOSED",
+      date_override_off: "STAFF_DATE_UNAVAILABLE",
+      outside_staff_hours: "OUTSIDE_STAFF_HOURS",
+      outside_business_hours: "OUTSIDE_BUSINESS_HOURS",
+      fully_blocked: "TIME_BLOCKED"
+    });
+  });
+});
+
+describe("what an availability override may and may not bypass", () => {
+  it("bypasses the three ordinary scheduling-hour restrictions", () => {
+    // Exactly the set the single boolean predicate this replaced allowed it to bypass, so a
+    // workspace with no per-date rows behaves as it did before the domain authority was wired in.
+    for (const reason of ["outside_staff_hours", "outside_business_hours", "fully_blocked"] as const) {
+      expect(availabilityOverrideMayBypass(reason), reason).toBe(true);
+    }
+  });
+
+  it("never bypasses a closed salon or an explicit date-level unavailability", () => {
+    // Two different kinds of no. The first is about the premises; the second is somebody having
+    // stated, for this employee and this date, that they are not there. Neither is an
+    // ordinary-hours judgement, which is all the override is.
+    expect(availabilityOverrideMayBypass("location_closed")).toBe(false);
+    expect(availabilityOverrideMayBypass("date_override_off")).toBe(false);
+  });
+
+  it("classifies every reason the resolver can emit, with no default branch to hide a new one", () => {
+    const reasons = Object.keys(availabilityRefusalCodes) as AvailabilityReason[];
+    expect(reasons.filter(availabilityOverrideMayBypass)).toEqual([
+      "outside_staff_hours", "outside_business_hours", "fully_blocked"
     ]);
   });
 });

@@ -57,7 +57,10 @@ import {
   cardProcessorCreateSchema,cardProcessorUpdateSchema,cardProcessorFeeSchema,
   cardProcessorTerminalSchema
 } from "./schemas.js";
-import { availabilityRefusalCodes } from "../domain/availability.js";
+import {
+  availabilityOverrideMayBypass, availabilityRefusalCodes, dayPeriodForInstants, refuseWindow,
+  resolveEffectiveAvailability, type AvailabilityReason, type DayPeriod
+} from "../domain/availability.js";
 import { sealSecret } from "../security/secrets.js";
 import { hashPassword, validateNewPassword, verifyPassword } from "../security/passwords.js";
 import { AuthAbuseProtector } from "../security/auth-abuse.js";
@@ -886,6 +889,62 @@ async function applyLegacyCustomerNote(
   return true;
 }
 
+/**
+ * Bridges the legacy single-field `customers.address` write path onto the address list, which is
+ * the source of truth. Migration 0025 moved every existing address into `customer_addresses` and
+ * left `customers.address` as a trigger-maintained mirror of the primary, on the stated invariant
+ * that the two "cannot drift, because only one of them is ever written by hand".
+ *
+ * `PUT /api/customers/:id` was the second hand. It wrote `address=${input.address ?? null}` on
+ * every save while the Basic info form has never sent an address field - addresses have their own
+ * panel - so renaming a client emptied the mirror, and an address genuinely sent through this
+ * field was overwritten again by the trigger the next time the panel was touched.
+ *
+ * The rule is `applyLegacyCustomerNote`'s, for the same reason: an absent value leaves the list
+ * untouched, an explicit empty value removes the address the legacy field represents, and any
+ * other value edits that address in place. Removing the primary promotes the next one, exactly as
+ * `DELETE /api/customers/:id/addresses/:childId` does, rather than leaving a client with several
+ * addresses on file and no answer to "where do we go?". Returns whether the list changed.
+ */
+async function applyLegacyCustomerAddress(
+  tx: Transaction,
+  input: { businessId: string; customerId: string; actorId: string; value: string | null | undefined }
+): Promise<boolean> {
+  if (input.value === undefined) return false;
+  const line = (input.value ?? "").trim();
+  const [primary] = await tx<{ id: string; address: string }[]>`
+    select id,address from customer_addresses
+    where business_id=${input.businessId} and customer_id=${input.customerId} and is_primary
+    limit 1
+  `;
+  if (!line) {
+    if (!primary) return false;
+    await tx`delete from customer_addresses where business_id=${input.businessId} and id=${primary.id}`;
+    await tx`
+      update customer_addresses set is_primary=true,updated_at=now()
+      where business_id=${input.businessId} and id=(
+        select id from customer_addresses
+        where business_id=${input.businessId} and customer_id=${input.customerId}
+        order by created_at,id limit 1
+      )
+    `;
+    return true;
+  }
+  if (!primary) {
+    await tx`
+      insert into customer_addresses (business_id, customer_id, address, is_primary, created_by)
+      values (${input.businessId}, ${input.customerId}, ${line}, true, ${input.actorId})
+    `;
+    return true;
+  }
+  if (primary.address === line) return false;
+  await tx`
+    update customer_addresses set address=${line},updated_at=now()
+    where business_id=${input.businessId} and id=${primary.id}
+  `;
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Client agreements
 // ---------------------------------------------------------------------------
@@ -1256,28 +1315,167 @@ async function ensureGroomersOfferServices(
   }
 }
 
-async function groomersAvailable(
-  tx:Transaction,input:{businessId:string;locationId:string;employeeIds:readonly string[];startAt:Date;endAt:Date}
-):Promise<boolean>{
-  const [result]=await tx<{available:boolean}[]>`
-    select bool_and(
-      (not exists(select 1 from employee_working_hours wh where wh.business_id=${input.businessId} and wh.employee_id=employee.id)
-       or exists(select 1 from employee_working_hours wh join locations location on location.id=${input.locationId}
-         where wh.business_id=${input.businessId} and wh.employee_id=employee.id
-           and wh.weekday=extract(dow from (${input.startAt}::timestamptz at time zone location.timezone))
-           and (${input.startAt}::timestamptz at time zone location.timezone)::time>=wh.start_time
-           and (${input.endAt}::timestamptz at time zone location.timezone)::time<=wh.end_time))
-      and not exists(select 1 from blocked_times blocked where blocked.business_id=${input.businessId}
-        and blocked.employee_id=employee.id and tstzrange(blocked.start_at,blocked.end_at,'[)') && tstzrange(${input.startAt},${input.endAt},'[)'))
-    ) and (not exists(select 1 from business_hours where location_id=${input.locationId}) or exists(
-      select 1 from business_hours hours join locations location on location.id=hours.location_id
-      where hours.business_id=${input.businessId} and hours.location_id=${input.locationId}
-        and hours.weekday=extract(dow from (${input.startAt}::timestamptz at time zone location.timezone))
-        and (${input.startAt}::timestamptz at time zone location.timezone)::time>=hours.start_time
-        and (${input.endAt}::timestamptz at time zone location.timezone)::time<=hours.end_time)) as available
-    from employees employee where employee.business_id=${input.businessId} and employee.id in ${tx(input.employeeIds as string[])}
+/** One groomer's refusal, named so the reply can say which groomer and which rule. */
+interface StaffAvailabilityRefusal {
+  employeeId: string;
+  employeeName: string;
+  /** The calendar date at the LOCATION, which is the frame every rule below is stated in. */
+  localDate: string;
+  reason: AvailabilityReason;
+}
+
+/**
+ * The staff-availability verdict for a booking, taken from the one place the rules are written.
+ *
+ * THIS LOADS ROWS AND DECIDES NOTHING. Every ordering question - does a per-date row replace the
+ * weekday default or merge with it, does a closure outrank an override, does an override clear a
+ * blocked time, where does the appointment limit come from - is answered by
+ * `resolveEffectiveAvailability` in `src/domain/availability.ts`, which is where the six-step
+ * contract is stated and tested. Restating any of it here would be the second copy that let the
+ * two disagree in the first place.
+ *
+ * WHAT THIS REPLACED, AND WHAT CHANGED WITH IT. A single SQL predicate used to answer "is every
+ * groomer available" as one boolean. It never read `employee_date_availability` at all, so step 2
+ * of the contract - the step 0027 states as a rule of the schema - was enforced nowhere, and the
+ * four refusals below could not be told apart from each other. Two behaviours move as a result,
+ * both deliberately:
+ *
+ *   * A `working = false` per-date row now refuses the booking. It did not before.
+ *   * Blocked times are now compared in the LOCAL WALL CLOCK, via `dayPeriodForInstants`, rather
+ *     than as raw `tstzrange` instant overlap. The two agree on every ordinary day. They differ on
+ *     a fall-back date, where an hour-long absence whose two ends read as the same wall time would
+ *     collapse to nothing: `dayPeriodForInstants` falls back to the elapsed duration and therefore
+ *     over-subtracts the repeated hour. That refuses a few more bookings on one day a year, in the
+ *     safe direction - the alternative is handing out an hour a groomer is not there for.
+ *
+ * TIMEZONE. Everything is derived from the authoritative instants (`startAt`, `endAt`) and the
+ * location's scheduling timezone. `localDateForInstant` and `dayPeriodForInstants` are the only
+ * two conversions, both from `src/domain/*`, and neither parses a zone-less string. The weekday
+ * comes from `Date.UTC` arithmetic on the already-resolved local date, which is calendar
+ * arithmetic with no zone in it - the same form `shiftLocalDate` uses.
+ */
+async function refuseStaffAvailability(
+  tx: Transaction,
+  input: {
+    businessId: string; locationId: string; timeZone: string;
+    employeeIds: readonly string[]; startAt: Date; endAt: Date; locationClosed: boolean;
+  }
+): Promise<StaffAvailabilityRefusal | null> {
+  const localDate = localDateForInstant(input.startAt, input.timeZone);
+  const [year, month, day] = localDate.split("-").map(Number) as [number, number, number];
+  const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+  // The booked window as wall-clock minutes of that local day. An appointment may not cross local
+  // midnight (refused before this point), so the start's date is the only one it can occupy.
+  const window = dayPeriodForInstants({ startAt: input.startAt, endAt: input.endAt }, localDate, input.timeZone);
+  if (!window) return null;
+  const employeeIds = input.employeeIds as string[];
+  const employees = await tx<{ id: string; displayName: string }[]>`
+    select id,display_name from employees
+    where business_id=${input.businessId} and id in ${tx(employeeIds)}
   `;
-  return Boolean(result?.available);
+  // EVERY weekday row, not just this weekday's: the empty set is what distinguishes "does not work
+  // Tuesdays" from "has no schedule configured", and only the full set can tell them apart.
+  const staffHours = await tx<{
+    employeeId: string; weekday: number; startTime: string; endTime: string; appointmentLimit: number;
+  }[]>`
+    select employee_id,weekday,start_time,end_time,appointment_limit
+    from employee_working_hours
+    where business_id=${input.businessId} and employee_id in ${tx(employeeIds)}
+  `;
+  const dateRows = await tx<{
+    employeeId: string; working: boolean; startTime: string | null; endTime: string | null;
+    appointmentLimit: number;
+  }[]>`
+    select employee_id,working,start_time,end_time,appointment_limit
+    from employee_date_availability
+    where business_id=${input.businessId} and employee_id in ${tx(employeeIds)}
+      and local_date=${localDate}::date
+  `;
+  const locationBusinessHours = await tx<{ weekday: number; startTime: string; endTime: string }[]>`
+    select weekday,start_time,end_time from business_hours
+    where business_id=${input.businessId} and location_id=${input.locationId}
+  `;
+  // Widened by two days at each end rather than matched to the day exactly. A local day's bounds
+  // are themselves a wall-clock question, and `dayPeriodForInstants` is the module that answers it;
+  // this only has to fetch a superset small enough to hand over, and it clamps or discards each
+  // range itself. The bound keeps the read from being the whole table.
+  const blocked = await tx<{ employeeId: string; startAt: Date; endAt: Date }[]>`
+    select employee_id,start_at,end_at from blocked_times
+    where business_id=${input.businessId} and employee_id in ${tx(employeeIds)}
+      and tstzrange(start_at,end_at,'[)') && tstzrange(
+        ${input.startAt}::timestamptz - interval '2 days',
+        ${input.endAt}::timestamptz + interval '2 days','[)')
+  `;
+  for (const employeeId of input.employeeIds) {
+    const availability = resolveEffectiveAvailability({
+      weekday,
+      locationClosed: input.locationClosed,
+      dateOverride: dateRows.find((row) => row.employeeId === employeeId) ?? null,
+      staffWeekdayHours: staffHours.filter((row) => row.employeeId === employeeId),
+      locationBusinessHours,
+      blocked: blocked
+        .filter((row) => row.employeeId === employeeId)
+        .map((row) => dayPeriodForInstants(row, localDate, input.timeZone))
+        .filter((period): period is DayPeriod => period !== null)
+    });
+    const reason = refuseWindow(availability, window);
+    if (!reason) continue;
+    return {
+      employeeId, localDate, reason,
+      employeeName: employees.find((row) => row.id === employeeId)?.displayName ?? "That groomer"
+    };
+  }
+  return null;
+}
+
+/**
+ * The operator-readable half of each refusal, keyed by the reason the domain authority reported.
+ *
+ * Five refusals that used to be one 400 carrying the sentence "Requested time is outside employee
+ * availability". Which grid an operator has to go and edit is different for every one of them, and
+ * a single message could not say.
+ */
+const staffAvailabilityMessages: Record<AvailabilityReason, (refusal: StaffAvailabilityRefusal) => string> = {
+  location_closed: (refusal) => `The salon is closed on ${refusal.localDate}.`,
+  date_override_off: (refusal) =>
+    `${refusal.employeeName} is marked unavailable on ${refusal.localDate}. `
+    + "That is a date-specific unavailability, and an availability override cannot bypass it.",
+  outside_staff_hours: (refusal) =>
+    `${refusal.employeeName} does not work at that time on ${refusal.localDate}.`,
+  outside_business_hours: (refusal) =>
+    `The salon is not open at that time on ${refusal.localDate}.`,
+  fully_blocked: (refusal) =>
+    `${refusal.employeeName} has time blocked out during that time on ${refusal.localDate}.`
+};
+
+/**
+ * 409 for all five, with the reason's own code.
+ *
+ * 409 rather than the 400 the old bare `Error` fell through to, and rather than a 500: nothing
+ * about the request is malformed, and nothing failed. The requested time conflicts with state the
+ * server holds, which is what 409 means and what `LOCATION_CLOSED` and `SCHEDULING_CONFLICT` -
+ * the two refusals this sits between - already answer with.
+ *
+ * `canOverride` mirrors `SCHEDULING_CONFLICT`'s field of the same name so a client can offer the
+ * override control only where it would actually work. It is false whenever the reason is one no
+ * override may bypass, EVEN FOR AN OWNER, because the answer is about the rule and not about the
+ * caller's permissions.
+ */
+function staffAvailabilityError(
+  refusal: StaffAvailabilityRefusal,
+  callerMayOverride: boolean
+): SchedulingRequestError {
+  return new SchedulingRequestError(
+    409,
+    availabilityRefusalCodes[refusal.reason],
+    staffAvailabilityMessages[refusal.reason](refusal),
+    {
+      employeeId: refusal.employeeId,
+      employeeName: refusal.employeeName,
+      localDate: refusal.localDate,
+      canOverride: callerMayOverride && availabilityOverrideMayBypass(refusal.reason)
+    }
+  );
 }
 
 /**
@@ -3124,11 +3322,11 @@ export function registerRoutes(
       // it touches, so this is only what the row held beforehand.
       const [before] = await tx<Record<string, unknown>[]>`
         select phone,email,currency,website,business_type,date_format,hour_format,weight_unit,
-          appointment_lock,coupon_stacking,upcoming_appointment_count,
+          appointment_lock,upcoming_appointment_count,
           default_service_frequency_weeks,social_facebook,social_google,social_yelp
         from businesses where id=${context.businessId}
       `;
-      // The six preferences that cannot be null. Omitted leaves the column alone; there is no
+      // The five preferences that cannot be null. Omitted leaves the column alone; there is no
       // clearing a weight unit. `coalesce` is exact for these because the parsed value is either a
       // member of the tuple or `undefined`, never null, so a null in the coalesce can only mean
       // "the caller did not send it".
@@ -3145,7 +3343,6 @@ export function registerRoutes(
           hour_format=coalesce(${input.hourFormat ?? null}, hour_format),
           weight_unit=coalesce(${input.weightUnit ?? null}, weight_unit),
           appointment_lock=coalesce(${input.appointmentLock ?? null}, appointment_lock),
-          coupon_stacking=coalesce(${input.couponStacking ?? null}, coupon_stacking),
           -- Null is a VALUE here (it means All), not an absence, so this cannot use coalesce:
           -- the case is what keeps "set it to All" apart from "do not touch it".
           upcoming_appointment_count=case when ${input.upcomingAppointmentCount !== undefined}
@@ -3199,7 +3396,6 @@ export function registerRoutes(
         ["hourFormat", input.hourFormat, before?.hourFormat],
         ["weightUnit", input.weightUnit, before?.weightUnit],
         ["appointmentLock", input.appointmentLock, before?.appointmentLock],
-        ["couponStacking", input.couponStacking, before?.couponStacking],
         ["upcomingAppointmentCount", input.upcomingAppointmentCount, before?.upcomingAppointmentCount],
         ["defaultServiceFrequencyWeeks", input.defaultServiceFrequencyWeeks, before?.defaultServiceFrequencyWeeks],
         ["socialFacebook", input.socialFacebook, before?.socialFacebook],
@@ -4223,10 +4419,30 @@ export function registerRoutes(
     `;
   });
 
+  /**
+   * Approving a request is OWNER-ONLY, on top of `team.manage`.
+   *
+   * This route creates a membership, or an invitation that becomes one, at a role the CALLER
+   * names - which is every bit the membership grant that `POST /api/members/invitations` is, and
+   * that route has always answered a non-owner with 403. This one did not. `team.manage` alone
+   * let a Manager admit a person of their choosing at a role of their choosing, including a role
+   * carrying `settings.manage` or `team.manage` itself, which is the same privilege escalation
+   * the explicit owner checks on the role routes exist to stop - only routed through a second
+   * account instead of the manager's own. The comment above `POST /api/roles` says these checks
+   * are repeated per route "so that no future route can quietly be added to this group without
+   * it"; this route was added to the group without it.
+   *
+   * Enforced HERE, in the backend, and not by hiding the button: `team.manage` is what puts the
+   * pending list on the screen, and a manager who can see the list can call this endpoint.
+   *
+   * `POST .../reject` is deliberately left on `team.manage`. Refusing a request grants nothing
+   * and is the review work `team.manage` names; only the granting half is ownership.
+   */
   app.post("/api/workspace-access-requests/:id/approve",{
     preHandler:[authenticate,requirePermission("team.manage")]
   },async(request,reply)=>{
     const context=auth(request);const {id}=idParams.parse(request.params);
+    if(!context.isOwner)return reply.code(403).send({error:"Only an Owner can approve workspace access"});
     // The role is now named by the approver. This endpoint used to grant the Groomer preset
     // silently - a decision nobody made, taken on behalf of an owner who was only told they were
     // approving somebody. That invisible grant is the thing roles exist to end.
@@ -4681,15 +4897,20 @@ export function registerRoutes(
   /**
    * Refuses a link to a workspace account the operator may not link this employee to.
    *
-   * THE FOREIGN KEY DOES NOT DO THIS. `employees_membership_id_fkey` references
-   * `business_memberships(id)` alone, not `(business_id, id)` — it is one of the few references
-   * to a tenant-scoped table in this schema that is not tenant-qualified — and referential
-   * integrity checks are not subject to row-level security. Without this check, a `team.manage`
-   * session that learned another salon's membership id could attach it to one of its own
-   * employees, and every attribution join would then resolve that salon's staff name into this
-   * one's report cards. The check is here rather than in the schema because 0040 adds no table
-   * and rewriting a foreign key on a live `employees` table is a heavier change than the hole
-   * warrants; the API is the only writer.
+   * THE FOREIGN KEY NOW DOES HALF OF IT, AND DID NONE OF IT UNTIL 0052.
+   * `employees_membership_id_fkey` referenced `business_memberships(id)` alone, not
+   * `(business_id, id)` — one of the few references to a tenant-scoped table in this schema that
+   * was not tenant-qualified — and referential integrity checks are not subject to row-level
+   * security. A `team.manage` session that learned another salon's membership id could attach it
+   * to one of its own employees, and every attribution join would then resolve that salon's staff
+   * name into this one's report cards. 0052 replaced it with `employee_membership_tenant` on
+   * `(business_id, membership_id)`, so the cross-tenant link is now refused by the database.
+   *
+   * THIS CHECK STAYS, and is not made redundant by that. It turns what is now a constraint
+   * violation into a coded 4xx the picker can act on rather than a 500, and it enforces two
+   * things a foreign key cannot: the membership must still be ACTIVE, and the account behind it
+   * must not be platform-disabled. The schema proves whose membership it is; only this can say
+   * whether it is an account worth attributing work to.
    *
    * `unique (business_id, membership_id)` already makes the link one-to-one, so a claimed
    * membership is refused with a code the picker can act on rather than a bare 409 from the
@@ -5352,8 +5573,8 @@ export function registerRoutes(
         values
           (${context.businessId}, ${input.firstName ?? null}, ${input.lastName ?? null}, ${input.phone ?? null},
            ${normalizePhone(input.phone)}, ${input.email ?? null},
-           ${input.email ? normalizeEmail(input.email) : null}, ${input.address ?? null},
-           ${input.preferredContactMethod}, ${input.emailAllowed},
+           ${input.email ? normalizeEmail(input.email) : null}, null,
+           ${input.preferredContactMethod ?? "email"}, ${input.emailAllowed ?? true},
            (select business.default_service_frequency_weeks from businesses business
              where business.id=${context.businessId}),
            ${context.userId}, ${context.userId})
@@ -5365,11 +5586,19 @@ export function registerRoutes(
         businessId: context.businessId, customerId: created.id,
         actorId: context.userId, value: input.notes
       });
+      // `address` is written through the address list for the same reason, and the insert above
+      // seeds the mirror column as null rather than by hand. Writing the column directly created
+      // a client whose card showed an address the Addresses panel did not have, and the first
+      // address anybody added there became the primary and silently replaced it.
+      const addressWritten = await applyLegacyCustomerAddress(tx, {
+        businessId: context.businessId, customerId: created.id,
+        actorId: context.userId, value: input.address
+      });
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "customer.create",
         resourceType: "customer", resourceId: created.id, eventType: "CustomerCreated"
       });
-      if (!noteWritten) return created;
+      if (!noteWritten && !addressWritten) return created;
       const [stored] = await tx<(Record<string, unknown> & { id: string })[]>`
         select * from customers where business_id=${context.businessId} and id=${created.id}
       `;
@@ -5399,9 +5628,10 @@ export function registerRoutes(
     const context = auth(request);
     const { id } = idParams.parse(request.params);
     const input = body(customerSchema, request.body);
-    // Transactional because the legacy `notes` field now writes through the note thread: the
-    // thread edit and the customer edit must land (or fail) together, and the thread edit runs
-    // first so the mirror trigger has already refreshed `notes` by the time this returns it.
+    // Transactional because the legacy `notes` and `address` fields now write through the note
+    // thread and the address list: those edits and the customer edit must land (or fail)
+    // together, and they run first so the mirror triggers have already refreshed `notes` and
+    // `address` by the time this returns the row.
     const updated = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
       const [existing] = await tx<{ id: string }[]>`
@@ -5413,12 +5643,32 @@ export function registerRoutes(
         businessId: context.businessId, customerId: id,
         actorId: context.userId, value: input.notes
       });
+      // `address` writes through the address list for the same reason `notes` writes through the
+      // note thread: the column is 0025's mirror of the primary address, and this handler must not
+      // be the second hand writing it. The trigger has refreshed the column by the time the
+      // update below returns the row.
+      await applyLegacyCustomerAddress(tx, {
+        businessId: context.businessId, customerId: id,
+        actorId: context.userId, value: input.address
+      });
+      // A MERGE, not a replace. Every field here is optional, and an OMITTED field is not an
+      // instruction to clear one - see `customerSchema`. The `case when <sent> then <value> else
+      // <column> end` form is the one `PUT /api/business/settings` and `PATCH /api/employees/:id`
+      // already use for exactly this, and it is what keeps "clear the phone number" apart from
+      // "this form does not have a phone field". The normalized search columns move in lockstep
+      // with the values they are derived from, inside the same `case`, so the directory can never
+      // be searchable by a number the record no longer holds.
       const [row] = await tx<(Record<string, unknown> & { id: string })[]>`
-        update customers set first_name=${input.firstName ?? null},last_name=${input.lastName ?? null},
-          phone=${input.phone ?? null},normalized_phone=${normalizePhone(input.phone)},
-          email=${input.email ?? null},normalized_email=${input.email ? normalizeEmail(input.email) : null},
-          address=${input.address ?? null},preferred_contact_method=${input.preferredContactMethod},
-          email_allowed=${input.emailAllowed},
+        update customers set
+          first_name=case when ${input.firstName !== undefined} then ${input.firstName ?? null}::text else first_name end,
+          last_name=case when ${input.lastName !== undefined} then ${input.lastName ?? null}::text else last_name end,
+          phone=case when ${input.phone !== undefined} then ${input.phone ?? null}::text else phone end,
+          normalized_phone=case when ${input.phone !== undefined} then ${normalizePhone(input.phone) ?? null}::text else normalized_phone end,
+          email=case when ${input.email !== undefined} then ${input.email ?? null}::text else email end,
+          normalized_email=case when ${input.email !== undefined}
+            then ${input.email ? normalizeEmail(input.email) : null}::text else normalized_email end,
+          preferred_contact_method=coalesce(${input.preferredContactMethod ?? null}::text, preferred_contact_method),
+          email_allowed=coalesce(${input.emailAllowed ?? null}::boolean, email_allowed),
           updated_by=${context.userId},updated_at=now()
         where business_id=${context.businessId} and id=${id} and archived_at is null returning *
       `;
@@ -9164,12 +9414,42 @@ export function registerRoutes(
       }
       const overrideApplied = conflicts.length > 0 && input.overrideConflict && overrideAuthorized;
       if (overrideApplied) await permitConflictOverride(tx, appointmentId);
-      const everyGroomerAvailable=await groomersAvailable(tx,{businessId:context.businessId,locationId:input.locationId,employeeIds,startAt,endAt});
-      if (!everyGroomerAvailable && !input.availabilityOverride) {
-        throw new Error("Requested time is outside employee availability; an explicit override is required");
+      // `locationClosed: false` is a FACT here, not an assumption: step 1 is terminal and ran
+      // above, throwing `LOCATION_CLOSED` if the shop was shut, so the resolver cannot be reached
+      // on a closed date. It is passed rather than omitted because the six-step contract takes it
+      // as an input and this route does not get to decide which steps apply.
+      const callerMayOverrideAvailability = context.isOwner || context.permissions.includes("appointments.edit");
+      const refusal = await refuseStaffAvailability(tx, {
+        businessId: context.businessId, locationId: input.locationId, timeZone: resolved.timeZone,
+        employeeIds, startAt, endAt, locationClosed: false
+      });
+      // An `availabilityOverride` is a judgement about a groomer's ORDINARY hours, so it bypasses
+      // exactly the three refusals it always could. `availabilityOverrideMayBypass` holds the list
+      // and the reasoning; the one addition here - an explicit `working = false` on this date -
+      // is not an ordinary-hours restriction and is not bypassable by it.
+      if (refusal && !(input.availabilityOverride && availabilityOverrideMayBypass(refusal.reason))) {
+        throw staffAvailabilityError(refusal, callerMayOverrideAvailability);
       }
-      if (input.availabilityOverride && !context.isOwner && !context.permissions.includes("appointments.edit")) {
-        throw new Error("Availability override is not authorized");
+      // Booking a groomer outside the hours they work needs `appointments.edit` ON TOP OF the
+      // `appointments.create` this route's preHandler already required, because it is an edit to
+      // the schedule somebody else authored - the availability grid.
+      //
+      // Its pair, `PATCH /api/appointments/:id/schedule`, carries NO inline check and does not
+      // need one: `requirePermission(p)` is `can(auth, p)`, which is
+      // `auth.isOwner || auth.permissions.includes(p)` - this predicate exactly - and that route's
+      // preHandler already names `appointments.edit` for the whole route. The asymmetry is in
+      // where the check sits, not in what is enforced, and
+      // `tests/database/appointment-override-authority.test.ts` pins both from the outside so it
+      // stays that way if either preHandler is changed.
+      //
+      // The refusal is a 403 carrying `PERMISSION_DENIED`, the same status and the same body shape
+      // the conflict override a few lines above answers a caller who lacks ITS permission with. It
+      // was a bare `Error`, which the handler renders as a 400 - a status that says the request was
+      // malformed, sent to a caller whose request was fine and who simply is not allowed to make
+      // it. The sibling route answers the same sentence from `requirePermission`, which sends
+      // `{ error }` without a code because it never reaches this handler at all.
+      if (input.availabilityOverride && !callerMayOverrideAvailability) {
+        throw new SchedulingRequestError(403,"PERMISSION_DENIED","Missing permission: appointments.edit");
       }
       const [appointment] = await tx<{ id: string;version:number }[]>`
         insert into appointments
@@ -9600,10 +9880,24 @@ export function registerRoutes(
       }
       const overrideApplied = conflicts.length > 0 && input.overrideConflict && overrideAuthorized;
       if (overrideApplied) await permitConflictOverride(tx, id);
-      const everyGroomerAvailable=await groomersAvailable(tx,{businessId:context.businessId,locationId:current.locationId,employeeIds,startAt,endAt});
-      if (!everyGroomerAvailable && !input.availabilityOverride) {
-        throw new Error("Requested time is outside employee availability; an explicit override is required");
+      // Identical to the create path, including which refusals an override may bypass and which it
+      // may not. `locationClosed: false` is settled by the terminal closure check above.
+      const refusal = await refuseStaffAvailability(tx, {
+        businessId: context.businessId, locationId: current.locationId, timeZone: resolved.timeZone,
+        employeeIds, startAt, endAt, locationClosed: false
+      });
+      if (refusal && !(input.availabilityOverride && availabilityOverrideMayBypass(refusal.reason))) {
+        // This route's preHandler already required `appointments.edit`, which IS the availability
+        // override's permission, so a caller who got this far may always use it.
+        throw staffAvailabilityError(refusal, true);
       }
+      // No inline authorization check on `availabilityOverride` here, DELIBERATELY, and not by
+      // omission. This route's preHandler is `requirePermission("appointments.edit")`, which is
+      // `can(auth, "appointments.edit")` - `auth.isOwner || auth.permissions.includes(...)`, the
+      // identical predicate `POST /api/appointments` applies inline at its own override. That
+      // route must repeat it because its preHandler names `appointments.create` instead; this one
+      // enforces it for the whole route, before the body is even parsed. Repeating it here would
+      // be a second copy of a check that cannot fail.
       await tx`delete from appointment_employees where business_id=${context.businessId} and appointment_id=${id}`;
       const [updated] = await tx<{id:string;version:number}[]>`
         update appointments set employee_id=${primaryEmployeeId},start_at=${startAt},end_at=${endAt},

@@ -231,7 +231,12 @@ describeDatabase("canonical Pawsh workflow", () => {
     const unavailable = await app.inject({
       method: "POST", url: "/api/appointments", headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() }, payload: outsidePayload
     });
-    expect(unavailable.statusCode).toBe(400);
+    // 22:00 against 09:00-17:00 hours. 409 with a NAMED reason, where this used to be a bare 400
+    // reading "outside employee availability" - one sentence for a groomer's hours, the salon's
+    // hours, a blocked time and a per-date unavailability alike. `canOverride` is what the
+    // override attempt immediately below relies on.
+    expect(unavailable.statusCode, unavailable.body).toBe(409);
+    expect(unavailable.json()).toMatchObject({ code: "OUTSIDE_STAFF_HOURS", canOverride: true });
     const overridden = await app.inject({
       method: "POST", url: "/api/appointments", headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
       payload: { ...outsidePayload, availabilityOverride: true, overrideReason: "Owner-approved after-hours request" }

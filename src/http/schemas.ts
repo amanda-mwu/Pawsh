@@ -8,7 +8,7 @@ import {cardProcessorProviders,configurableSettlementTypes,paymentMethods,staffC
 import {discountApplyScopes,discountKinds,discountStackingModes} from "@pawsh/domain";
 import {groomerPaletteSize} from "@pawsh/domain";
 import {isSupportedCurrency,supportedCurrencies} from "@pawsh/domain";
-import {appointmentLockModes,businessTypes,couponStackingModes,dateFormats,hourFormats,weightUnits,upcomingAppointmentCountMax} from "@pawsh/domain";
+import {appointmentLockModes,businessTypes,dateFormats,hourFormats,weightUnits,upcomingAppointmentCountMax} from "@pawsh/domain";
 
 export const idParams = z.object({ id: z.string().uuid() });
 export const locationParams = z.object({ locationId: z.string().uuid() });
@@ -193,14 +193,45 @@ export const memberRoleSchema = z.object({
   roleId: z.string().uuid()
 }).strict();
 
+/**
+ * A client record, shared by `POST /api/customers` (a create) and `PUT /api/customers/:id`
+ * (a MERGE over the stored record).
+ *
+ * ABSENCE IS DISTINCT FROM AN EXPLICIT VALUE, exactly as `businessSettingsSchema` and
+ * `employeeUpdateSchema` already say for the same class of defect. `address` was `nullish()`
+ * while the update handler wrote `address=${input.address ?? null}` unconditionally, and the
+ * Basic info form has never sent an address field - it lives in its own panel - so every save
+ * of a client's name emptied the address column. That column is the mirror migration 0025
+ * maintains over `customer_addresses`, on the stated invariant that "only one of them is ever
+ * written by hand"; the update handler was the second hand.
+ *
+ *   firstName omitted             -> the stored name is left exactly as it is
+ *   firstName: null or ""         -> the operator is clearing the name, on purpose
+ *   lastName / phone / email      -> the same pair, field for field
+ *   address omitted               -> the stored address is left exactly as it is
+ *   address: null or ""           -> the operator is clearing the address, on purpose
+ *   preferredContactMethod omitted-> the stored preference is left exactly as it is
+ *   emailAllowed omitted          -> the stored switch is left exactly as it is
+ *   notes omitted / ""            -> already handled this way by `applyLegacyCustomerNote`
+ *
+ * The two enum/boolean fields carry NO `.default()` for that reason: a default turns an absent
+ * field into a value, which is the same silent write in a quieter form - omitting
+ * `preferredContactMethod` reset every client to email, and omitting `emailAllowed` re-enabled
+ * marketing email for a client who had opted out. `POST` names its own create-time fallbacks
+ * where they belong, in the insert.
+ *
+ * The "at least a name, a phone number, or an email" rule stays a check on the PAYLOAD rather
+ * than on the merged result. That is the stricter of the two readings and the one every existing
+ * caller already satisfies, so preserving it cannot break a client that works today.
+ */
 export const customerSchema = z.object({
   firstName: z.preprocess(blankToNull, z.string().trim().min(1).max(80).nullish()),
   lastName: z.preprocess(blankToNull, z.string().trim().min(1).max(80).nullish()),
   phone: z.preprocess(blankToNull, z.string().trim().max(40).nullish()),
   email: z.preprocess(blankToNull, z.string().email().max(320).nullish()),
   address: z.string().trim().max(500).nullish(),
-  preferredContactMethod: z.enum(["email", "phone", "none"]).default("email"),
-  emailAllowed: z.boolean().default(true),
+  preferredContactMethod: z.enum(["email", "phone", "none"]).optional(),
+  emailAllowed: z.boolean().optional(),
   notes: z.string().max(5000).nullish()
 }).superRefine((value, context) => {
   if (!value.firstName && !value.lastName && !value.phone && !value.email) {
@@ -957,7 +988,7 @@ const businessLink = z.preprocess(
  * with a default, so a value always exists, and the form presents a select with no empty option.
  * Requiredness that would 400 an existing client is not requiredness, it is an outage.
  *
- * WHICH FIELDS MAY BE CLEARED, AND WHICH MAY NOT. The six enum-valued preferences are `not null`
+ * WHICH FIELDS MAY BE CLEARED, AND WHICH MAY NOT. The five enum-valued preferences are `not null`
  * columns over closed sets: there is no "no weight unit". They accept a value or nothing, never
  * null. `website` and the three social links are nullable text and follow the contact-field rule -
  * omitted preserves, null or blank clears.
@@ -972,9 +1003,18 @@ const businessLink = z.preprocess(
  * because it is the default that seeds that column on a new client. A business default outside the
  * range of the column it fills would be a setting that saves and then fails on use.
  *
- * `couponStacking` and `upcomingAppointmentCount` have NO CONSUMER TODAY and that is deliberate,
- * not an omission - see `preferences.ts`. `appointmentLock` likewise stores and returns with no
- * enforcement anywhere, pending a ruling on what it should actually refuse.
+ * `couponStacking` IS NO LONGER A FIELD HERE. It was, and its note said it had no consumer today
+ * and that this was deliberate. That stopped being true when 0048 shipped coupons and discounts
+ * against `businesses.discount_stacking_mode` - a SECOND column carrying the same three-valued
+ * rule, and the only one any bill has ever been calculated from. Two settings for one rule is one
+ * setting too many when only one of them moves money, so `coupon_stacking` was dropped in 0053 and
+ * the surviving authority is `discountStackingSchema` / `PUT /api/settings/discount-stacking`,
+ * which is gated on `settings.discounts` rather than on `settings.manage`. This schema is not
+ * `.strict()`, so a client still sending the old field is ignored rather than refused.
+ *
+ * `upcomingAppointmentCount` still has NO CONSUMER TODAY and that one is genuinely deliberate -
+ * see `preferences.ts`. `appointmentLock` likewise stores and returns with no enforcement
+ * anywhere, pending a ruling on what it should actually refuse.
  */
 export const businessSettingsSchema = z.object({
   name: z.string().trim().min(2).max(120),
@@ -991,7 +1031,6 @@ export const businessSettingsSchema = z.object({
   hourFormat: z.enum(hourFormats).optional(),
   weightUnit: z.enum(weightUnits).optional(),
   appointmentLock: z.enum(appointmentLockModes).optional(),
-  couponStacking: z.enum(couponStackingModes).optional(),
   upcomingAppointmentCount: z.preprocess(
     (value) => (typeof value === "string" && value.trim().toLowerCase() === "all" ? null : value),
     z.number().int().min(1).max(upcomingAppointmentCountMax).nullable().optional()

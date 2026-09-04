@@ -1,4 +1,4 @@
-import { appointmentAction, createAppointment, test, expect, login } from "./fixtures/tenant.js";
+import { appointmentAction, createAppointment, prepareReceipt, test, expect, login } from "./fixtures/tenant.js";
 import { expectNoDocumentOverflow } from "./helpers/responsive.js";
 import type { Page } from "@playwright/test";
 
@@ -741,4 +741,116 @@ test("a move refused by a lock this tab had not seen explains itself and redraws
     .toHaveText("Appointments are locked from being moved. A manager can unlock this in Settings → Business.");
   // A refused move writes nothing, so the appointment is still where it was.
   await expect(page.locator('[name="startAt"]')).toHaveValue(`${tenant.anchor}T13:00`);
+});
+
+/**
+ * The currency lock, from the operator's side.
+ *
+ * `businesses.currency` is not a label - it is the denomination every stored amount is READ in.
+ * `invoices`, `payments` and `customer_credit_entries` hold bare minor units, so moving this
+ * column after money has been recorded relabels a year of takings without converting a penny. The
+ * server refuses that with `CURRENCY_LOCKED_BY_FINANCIAL_HISTORY` once an invoice, a payment, a
+ * refund or a credit entry exists, and the screen's whole job here is to say so.
+ *
+ * Nothing below stubs the route. The rule is an existence query over four tables and the server is
+ * its only authority; a mocked 409 would prove the client can render a sentence, not that the
+ * sentence an operator will actually meet is this one. So each case builds the history it needs
+ * through the real endpoints first.
+ *
+ * The picker is deliberately NOT disabled ahead of the attempt, and these tests hold that line:
+ * a greyed control with no explanation is the failure this refusal was written to replace.
+ */
+test("a currency the workspace's financial history has pinned is refused, and nothing in the save lands",async({page,request,tenant})=>{
+  // A real invoice and a real payment, taken the way a salon takes them.
+  await prepareReceipt(request,tenant);
+  await login(page,tenant.ownerEmail);
+  await openBusiness(page);
+
+  const currency=page.getByTestId("business-currency");
+  // Enabled, and offering every code. The operator gets to attempt the change and be told why.
+  await expect(currency).toBeEnabled();
+  await expect(currency).toHaveValue("USD");
+
+  // The currency AND an unrelated field, in one payload, because that is what the form posts and
+  // because a partial write here is the outcome the operator must never be left guessing about.
+  await page.getByTestId("business-name").fill(`Relabelled Salon ${tenant.runId}`);
+  await currency.selectOption("EUR");
+  await expect(page.getByTestId("business-currency-sample")).toContainText("€");
+
+  const refusal=page.waitForResponse(response=>
+    response.url().endsWith("/api/business/settings") && response.request().method()==="PUT");
+  await page.getByTestId("business-save").click();
+  expect((await refusal).status()).toBe(409);
+
+  // The server's own sentence, naming the currency the history is recorded in. It is not restated
+  // in the client, so this is the prose the server sent.
+  const error=page.getByTestId("business-error");
+  await expect(error).toContainText("This workspace has financial history recorded in USD.");
+  await expect(error).toContainText("relabel those amounts rather than convert them");
+  // And the whole-payload half of it, because the rename went nowhere either.
+  await expect(error).toContainText("Nothing else on this form was saved either");
+  // Announced rather than merely drawn: focus lands on the control that moved back, so the
+  // reason has to reach a screen reader on its own.
+  await expect(error).toHaveAttribute("role","alert");
+  await expect(currency).toBeFocused();
+
+  // The screen stops claiming a change that did not happen: the picker is back on the stored code
+  // and the sample line beneath it no longer promises prices in a currency no invoice will carry.
+  await expect(currency).toHaveValue("USD");
+  await expect(page.getByTestId("business-currency-sample")).toContainText("$");
+  await expect(page.getByTestId("business-currency-sample")).not.toContainText("€");
+  // Nothing the operator typed is discarded - the rename is still on screen, and still unsent.
+  await expect(page.getByTestId("business-name")).toHaveValue(`Relabelled Salon ${tenant.runId}`);
+  await expect(page.getByTestId("business-status")).toHaveText("Unsaved changes.");
+  await expect(page.locator("#toast")).not.toContainText("Business settings saved");
+  // The header still carries the stored name, so the rename was not applied optimistically either.
+  await expect(page.locator("#account-role")).toContainText("PW Smoke");
+
+  // The demonstration that the refusal was total: read the record back from the server.
+  await page.reload();
+  await openBusiness(page);
+  await expect(page.getByTestId("business-currency")).toHaveValue("USD");
+  await expect(page.getByTestId("business-name")).toHaveValue(/PW Smoke/);
+  await expect(page.getByTestId("business-name")).not.toHaveValue(`Relabelled Salon ${tenant.runId}`);
+});
+
+test("a workspace with no financial history still chooses its own currency",async({page,tenant})=>{
+  // The seeded catalog is priced and the fixture's services are priced, and neither is financial
+  // history. A workspace that had never taken money would otherwise find this setting frozen
+  // before its owner had seen a single screen.
+  await login(page,tenant.ownerEmail);
+  await openBusiness(page);
+
+  await page.getByTestId("business-currency").selectOption("EUR");
+  await page.getByTestId("business-save").click();
+  await expect(page.getByTestId("business-status")).toHaveText("Business settings saved.");
+  await expect(page.getByTestId("business-error")).toHaveText("");
+
+  await page.reload();
+  await openBusiness(page);
+  await expect(page.getByTestId("business-currency")).toHaveValue("EUR");
+  await expect(page.getByTestId("business-currency-sample")).toContainText("€");
+});
+
+test("an unrelated setting still saves on a workspace whose currency is locked",async({page,request,tenant})=>{
+  // The case the lock must not break. The form posts the whole record, and an operator with a
+  // year of invoices behind them still has to be able to correct a phone number. The payload
+  // carries the currency only when this form moved it, so an untouched picker sends nothing to be
+  // refused - and the previous test is what stops that becoming a way to hide a real refusal.
+  await prepareReceipt(request,tenant);
+  await login(page,tenant.ownerEmail);
+  await openBusiness(page);
+
+  await page.getByTestId("business-phone").fill("626-555-0177");
+  const saved=page.waitForResponse(response=>
+    response.url().endsWith("/api/business/settings") && response.request().method()==="PUT");
+  await page.getByTestId("business-save").click();
+  expect((await saved).status()).toBe(200);
+  await expect(page.getByTestId("business-status")).toHaveText("Business settings saved.");
+  await expect(page.getByTestId("business-error")).toHaveText("");
+
+  await page.reload();
+  await openBusiness(page);
+  await expect(page.getByTestId("business-phone")).toHaveValue("626-555-0177");
+  await expect(page.getByTestId("business-currency")).toHaveValue("USD");
 });

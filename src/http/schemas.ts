@@ -930,6 +930,13 @@ const currencyCode = z.string().trim().length(3)
  *   address: null or ""  -> the operator is clearing the address line, on purpose
  *   currency omitted     -> the stored currency is left exactly as it is
  *
+ * A SENT CURRENCY IS NOT NECESSARILY AN ACCEPTED ONE. The handler refuses a currency that
+ * DIFFERS from the stored one once the workspace has any financial history - an invoice, a
+ * payment including a voided one, a refund, or a client credit entry - with
+ * `CURRENCY_LOCKED_BY_FINANCIAL_HISTORY` and a 409. Resending the currency unchanged is always
+ * accepted, which is what keeps this form's whole-record save working after the first invoice.
+ * The rule is not expressible here because it depends on stored rows rather than on the payload.
+ *
  * This mirrors `employeeUpdateSchema`, which carries the same treatment for the same reason after
  * the same class of defect. `name`, `timezone`, `taxRateBasisPoints`, `reminderLeadMinutes` and
  * `locationVersion` stay REQUIRED: every existing caller sends all five, `timezone` drives the

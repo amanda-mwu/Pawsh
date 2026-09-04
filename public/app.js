@@ -9257,7 +9257,7 @@ function businessInfoMarkup(){
     :`<input type="text" name="timezone" data-business-field="timezone" data-testid="business-timezone" maxlength="80" autocomplete="off" value="${escapeAttr(draft.timezone)}"${businessInvalidAttrs("timezone")}>`;
   const foot=`<div class="business-form-foot">`
     +`<p class="business-form-status" role="status" data-testid="business-status">${escape(businessInfoStatusText())}</p>`
-    +`<p class="error" data-testid="business-error">${businessState.error?escape(businessState.error):""}</p>`
+    +`<p class="error" role="alert" data-testid="business-error">${businessState.error?escape(businessState.error):""}</p>`
     +(businessState.stale?`<button type="button" class="secondary compact" data-business-reload data-testid="business-reload">Reload saved values</button>`:"")
     +`<button type="submit" class="primary compact" data-testid="business-save"${businessInfoDirty()&&!businessState.saving?"":" disabled"}>${businessState.saving?"Saving…":"Save changes"}</button>`
     +`</div>`;
@@ -9494,9 +9494,30 @@ function businessSubmitInfo(){
   }
   runDetached(businessSaveInfo);
 }
+/**
+ * Put the currency picker back to what the server actually holds, after a refusal.
+ *
+ * The stored code is re-read rather than parsed out of the refusal's message. The message is
+ * prose written for the operator and will be reworded; `businesses.currency` is a fact, and
+ * `/api/me` is where this form reads it from every other time. Only the picker is reset - the
+ * rest of the draft is the operator's unsaved typing, and the STALE branch's rule holds here too:
+ * nothing typed is discarded without them asking for it.
+ *
+ * A failed re-read is not worth surfacing over the refusal that caused it. `state.me` still holds
+ * the record this form was drawn from, and the save wrote NOTHING, so the currency in it is still
+ * the stored one - which makes falling through to it correct rather than merely tolerable.
+ */
+async function businessRestoreStoredCurrency(){
+  try{
+    state.me=await api("/api/me");
+    renderAccountIdentity();
+  }catch{/* keep the record already in hand; the refused save changed nothing behind it */}
+  businessDraft().currency=businessStoredValues().currency;
+}
 async function businessSaveInfo(){
   if(businessState.saving)return;
   businessState.saving=true;businessState.error=null;businessState.status="";
+  let currencyRefused=false;
   renderBusiness();
   try{
     await api("/api/business/settings",{method:"PUT",body:JSON.stringify(businessSettingsPayload())});
@@ -9513,17 +9534,47 @@ async function businessSaveInfo(){
     businessState.status="Business settings saved.";
     toast("Business settings saved");
   }catch(error){
-    if(error.status===409&&error.data?.code==="STALE_LOCATION_SETTINGS"){
+    // BRANCHED ON THE CODE, NOT THE STATUS. This route answers 409 for two unrelated things - a
+    // `locationVersion` that has moved on, and a currency the workspace's financial history has
+    // pinned - and they need opposite handling. A branch on the status alone would tell an
+    // operator whose currency was refused to reload and try again, which would refuse again.
+    const code=error.status===409?error.data?.code:null;
+    if(code==="STALE_LOCATION_SETTINGS"){
       // Nothing the operator typed is discarded without them pressing the button below.
       businessState.stale=true;
       businessState.error="Business settings were changed somewhere else while this form was open. Reload the saved values and make the change again.";
+    }else if(code==="CURRENCY_LOCKED_BY_FINANCIAL_HISTORY"){
+      // THE SERVER'S OWN SENTENCE. It names the currency the history is recorded in and says why
+      // the change is refused, and the rule that produced it lives on the server, so nothing here
+      // restates it - not the list of tables, not the threshold, and not a guess made before the
+      // save about whether this workspace is locked. The picker stays enabled: a greyed control
+      // with no explanation is the thing this refusal exists to replace.
+      businessState.error=error.message;
+      // The screen was claiming a currency the workspace is not on. Putting the picker back is
+      // what stops the next save resending it, and what stops the sample line beneath it
+      // promising prices in a currency no invoice will ever be written in.
+      await businessRestoreStoredCurrency();
+      // The refusal is ABOUT the currency, but the write was refused WHOLE: the rename or the tax
+      // rate posted in the same payload went nowhere either. The foot's "Unsaved changes." says
+      // as much, and this says it in words, because an operator who reads only the server's
+      // sentence would otherwise leave believing the rest of the form had landed.
+      if(businessInfoDirty()){
+        businessState.error+=" Nothing else on this form was saved either — those changes are still here, unsent.";
+      }
+      currencyRefused=true;
     }else{
       businessState.error=error.message;
     }
   }finally{
     businessState.saving=false;
     renderBusiness();
-    $(`#business-root [data-testid="business-save"]`)?.focus();
+    // Back to the button that was pressed - except after the currency refusal, where putting the
+    // picker back can leave the form clean and therefore disable that button. Focus would then
+    // fall to <body>, away from both the control that moved under the operator and the reason it
+    // moved, so it goes to the picker instead.
+    (currencyRefused
+      ?$(`#business-root [data-business-field="currency"]`)
+      :$(`#business-root [data-testid="business-save"]`))?.focus();
   }
 }
 async function businessReloadSaved(){

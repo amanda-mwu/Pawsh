@@ -3326,6 +3326,60 @@ export function registerRoutes(
           default_service_frequency_weeks,social_facebook,social_google,social_yelp
         from businesses where id=${context.businessId}
       `;
+      /**
+       * THE CURRENCY LOCK. `businesses.currency` may move only while this workspace has no
+       * currency-bearing financial history. Once such history exists the currency is immutable.
+       *
+       * WHY, PRECISELY. Almost nothing in Pawsh snapshots the currency it was recorded in.
+       * `invoices`, `invoice_items`, `payments` and `customer_credit_entries` all store bare
+       * minor units and are LABELLED at read time from this one column; only
+       * `square_terminal_checkouts.currency` (0036) and `payment_refunds.currency` (0038) carry
+       * their own. So a workspace that has taken $4,000 in USD and then saves EUR here has
+       * converted nothing - every historical amount silently re-reads as euros with not one
+       * integer touched, and the invoice, the receipt and the year's takings now disagree with
+       * what the customer actually paid. Refusing the save is the only thing that keeps those
+       * amounts meaning what they meant. Nothing here converts or rewrites a historical row.
+       *
+       * THE THRESHOLD IS HISTORICAL EXISTENCE, NOT CURRENT STATE, and that distinction is the
+       * point rather than an implementation detail. A voided payment still happened and its
+       * receipt still went out denominated in the old currency; a credit ledger that grants $50
+       * and claws $50 back still has two lines an operator can be asked about. So this asks only
+       * whether the ROW HAS EVER EXISTED - no status filter, no balance, no sum, no
+       * `where not voided`. A "unless it was voided" exception must not be added here.
+       *
+       * PRICED SERVICES DO NOT LOCK IT. The catalog is CONFIGURATION, not a financial record,
+       * and `provisionBusinessCatalog` (`src/domain/catalog-seed.ts`) inserts priced services at
+       * signup - counting them would lock every workspace's currency before the operator had
+       * seen a single screen. The same holds for a fixed-value coupon or discount that has never been
+       * applied to anything: the moment one reaches money there is an invoice, and the invoice
+       * is what locks.
+       *
+       * SAVING THE SAME CURRENCY STAYS ALLOWED FOREVER. The Business settings form posts the
+       * whole record, so every unrelated save - a rename, a tax rate - resends the currency it
+       * read. Refusing on presence rather than on CHANGE would make the screen unusable the day
+       * the first invoice is written.
+       *
+       * Every arm is scoped to this business. It is an existence query, and an unscoped one
+       * would let any workspace on the server freeze this one's currency.
+       */
+      const storedCurrency = typeof before?.currency === "string" ? before.currency : "";
+      if (input.currency !== undefined && storedCurrency && input.currency !== storedCurrency) {
+        const [financialHistory] = await tx<{ locked: boolean }[]>`
+          select exists(select 1 from invoices where business_id=${context.businessId})
+              or exists(select 1 from payments where business_id=${context.businessId})
+              or exists(select 1 from payment_refunds where business_id=${context.businessId})
+              or exists(select 1 from customer_credit_entries where business_id=${context.businessId})
+            as locked
+        `;
+        if (financialHistory?.locked) {
+          return reply.code(409).send({
+            code: "CURRENCY_LOCKED_BY_FINANCIAL_HISTORY",
+            error: `This workspace has financial history recorded in ${storedCurrency}. `
+              + "Changing the currency would relabel those amounts rather than convert them, "
+              + "so it can no longer be changed."
+          });
+        }
+      }
       // The five preferences that cannot be null. Omitted leaves the column alone; there is no
       // clearing a weight unit. `coalesce` is exact for these because the parsed value is either a
       // member of the tuple or `undefined`, never null, so a null in the coalesce can only mean

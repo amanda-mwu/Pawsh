@@ -7,6 +7,7 @@ import {
   type TenantFixture
 } from "./fixtures/tenant.js";
 import { openCheckout, chooseMethod, checkoutSurface } from "./helpers/checkout.js";
+import { observePrinting } from "./helpers/print.js";
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 
 /**
@@ -16,8 +17,12 @@ import type { APIRequestContext, Locator, Page } from "@playwright/test";
  * no balance and no invoice status, at any stage of any visit — so it has no money states to
  * cover, no `payments.view` gate to exercise, and no completion gate either: the sheet is most
  * useful before the visit, so a future scheduled appointment has one exactly as a finished one
- * does. What these specs cover is the sheet itself: the salon and visit head, one services row
- * per pet-service pair, and three note rows whose empty case is a dash.
+ * does. EVERY ENTRY POINT AGREES ON THAT — the detail header's print icon, the detail footer's
+ * Ticket button and the Check Out footer's — and the spec below on a future appointment is what
+ * holds them to it. EXPOSING A TICKET MUST NOT EXPOSE A RECEIPT: it needs no completion, no
+ * invoice and no payment, and it reads no receipt endpoint to find that out. What these specs
+ * cover is the sheet itself: the salon and visit head, one services row per pet-service pair, and
+ * three note rows whose empty case is a dash.
  *
  * THE SINGLE MONEY STATEMENT INVARIANT IS STILL GUARDED HERE, and the first spec is where. Every
  * money value the product shows about an invoice is a value `GET /api/invoices/:id/receipt`
@@ -30,27 +35,6 @@ import type { APIRequestContext, Locator, Page } from "@playwright/test";
 
 const ticket = (page: Page): Locator => page.getByTestId("ticket-surface");
 const detail = (page: Page): Locator => page.getByTestId("appointment-detail-surface");
-
-/**
- * Print, made observable.
- *
- * `printTicket` and `printReceipt` append a `.print-root` to <body>, call `print()` and remove the
- * root 1000ms later. Neither of those is something a browser test can wait on, so the dialog is
- * stubbed out and the root is kept: `Element.prototype.remove` is neutered FOR PRINT ROOTS ONLY,
- * which leaves every other removal in the client — the checkout's withdrawn controls, the terminal
- * device select — working exactly as it does in production. Nothing about how the root is BUILT is
- * touched, which is the part under test.
- */
-async function observePrinting(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    Object.defineProperty(window, "print", { value: () => {}, writable: true });
-    const remove = Element.prototype.remove;
-    Element.prototype.remove = function (this: Element) {
-      if (this.classList?.contains("print-root")) return;
-      remove.call(this);
-    };
-  });
-}
 
 /**
  * One receipt's money statement, as text, from whichever host it is rendered into.
@@ -351,9 +335,17 @@ test("a future scheduled appointment gets a Ticket, and a note nobody has writte
     await login(page, tenant.ownerEmail);
     await openDetail(page, appointment.id);
     await expect(page.getByTestId("appointment-status")).toHaveText("scheduled");
-    // No completion gate on the sheet, and no footer churn either: the header icon is the entry
-    // point at every stage, and the footer's own Ticket button is still a settled-visit control.
-    await expect(page.getByTestId("appointment-ticket")).toHaveCount(0);
+    // NO COMPLETION GATE, ON EITHER ENTRY POINT. Both are offered on a visit that has not
+    // happened yet, and both open the same level — the inconsistency this replaces was the footer
+    // button alone being gated on `completed` while the icon beside it was not.
+    await expect(page.getByTestId("appointment-ticket-print")).toBeVisible();
+    await expect(page.getByTestId("appointment-ticket")).toBeVisible();
+    await page.getByTestId("appointment-ticket").click();
+    await expect(ticket(page)).toBeVisible();
+    // One level, not two: the shared `runOnce` key means the icon and the button cannot both open
+    // one. Closing and reopening from the other entry point lands on the same sheet.
+    await page.keyboard.press("Escape");
+    await expect(ticket(page)).toBeHidden();
     await page.getByTestId("appointment-ticket-print").click();
     await expect(ticket(page)).toBeVisible();
 

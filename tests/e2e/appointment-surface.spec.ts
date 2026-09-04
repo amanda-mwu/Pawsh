@@ -68,11 +68,13 @@ test("the surface is its own dialog, and the checkout and ticket levels stand re
   // Levels 2 and 3 exist from the first render so the primitive has somewhere to push to, and a
   // SCHEDULED appointment opens neither on arrival. Check Out is offered only once the visit is
   // completed, so its footer button is absent here — but the Ticket is a printable work sheet
-  // rather than a record of what happened, so its entry point is the header's print icon and it
-  // is offered at every stage. `tests/e2e/ticket-surface.spec.ts` is where level 3 is driven open.
+  // rather than a record of what happened, so BOTH of its entry points are offered at every
+  // stage. They used to disagree: the header icon opened on a scheduled visit while the footer
+  // button was gated on `completed`, so the sheet vanished from exactly the appointment somebody
+  // wanted it for. `tests/e2e/ticket-surface.spec.ts` is where level 3 is driven open.
   await expect(page.getByTestId("checkout-surface")).toBeHidden();
   await expect(page.getByTestId("ticket-surface")).toBeHidden();
-  await expect(page.getByTestId("appointment-ticket")).toHaveCount(0);
+  await expect(page.getByTestId("appointment-ticket")).toBeVisible();
   await expect(page.getByTestId("appointment-ticket-print")).toBeVisible();
 
   await expect(page.getByTestId("appointment-reference"))
@@ -230,17 +232,18 @@ test("a terminal appointment offers only what still means something", async ({
     "appointment-take-payment",
     "appointment-save",
     "appointment-groomer-edit",
-    "appointment-adjust-services",
-    // The footer's own Ticket button is a settled-visit control and a cancelled visit never
-    // settles, so Close keeps the primary slot it gives up on a completed appointment. The
-    // header's print icon is a different thing and is still there: see below.
-    "appointment-ticket"
+    "appointment-adjust-services"
   ]) {
     await expect(page.getByTestId(control), control).toHaveCount(0);
   }
-  // A cancelled visit still has a work sheet. Nothing on it asserts the visit happened, and an
-  // operator reprinting the sheet for a cancellation they are chasing is an ordinary thing to do.
+  // A cancelled visit still has a work sheet, from BOTH entry points. Nothing on the sheet asserts
+  // the visit happened, and an operator reprinting it for a cancellation they are chasing is an
+  // ordinary thing to do. What the state still decides is the PRIMARY SLOT and nothing else: there
+  // is nothing to come to a cancelled appointment for, so Close keeps it.
   await expect(page.getByTestId("appointment-ticket-print")).toBeVisible();
+  await expect(page.getByTestId("appointment-ticket")).toBeVisible();
+  await expect(page.getByTestId("appointment-ticket")).toHaveClass(/secondary/);
+  await expect(page.getByTestId("appointment-close")).toHaveClass(/primary/);
   // The SERVICE note is closed on a cancelled visit - it is written while a dog is on the table
   // - so it is text rather than a field. The APPOINTMENT note is a different field with no
   // status window: an owner can still correct what the client asked for on a visit that never

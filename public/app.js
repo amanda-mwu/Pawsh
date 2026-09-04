@@ -1,9 +1,78 @@
+// The one thing this file does NOT re-implement. `money.js` is served beside it and holds the
+// browser's copy of the domain's `formatMinor`, so the web has a single definition of how an
+// amount of money is written down and a test can load exactly the code the browser runs.
+import { formatMinor, currencySymbolFor } from "./money.js";
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const inviteToken = new URLSearchParams(location.search).get("invite");
 const resetToken = new URLSearchParams(location.search).get("reset");
-const state = { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:20}, pets: [], dogBreeds: [], petTypes: [], breedsByType:{}, employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointments:[],selectedGroomerIds:null,pendingGroomerIds:null,filterInitialized:false,displayMode:"calendar",view:"week",bookingPreset:null,bookingGroomerId:null,bookingCustomerId:null,bookingPetId:null,opened:false,preferences:null}, clientProfile:null,clientProfileReturnView:"customers", messageClientId:null, reportMode:"charts",reminders:{type:"appointment_reminder",items:[],supported:true}, members: [], accessRequests:[], workspaces:[], locations: [], reports: null, login: false };
+/**
+ * Everything this session has fetched, in one object.
+ *
+ * BUILT BY A FACTORY, so that ending a session can put it back the way it started. A hand-written
+ * list of fields to clear falls behind the next field somebody adds, and almost every field here
+ * holds rows belonging to one business - clients, pets, the breed catalog, the calendar's month.
+ */
+function emptyState() {
+  return { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:20}, pets: [], dogBreeds: [], petTypes: [], breedsByType:{}, employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointments:[],selectedGroomerIds:null,pendingGroomerIds:null,filterInitialized:false,displayMode:"calendar",view:"week",bookingPreset:null,bookingGroomerId:null,bookingCustomerId:null,bookingPetId:null,opened:false,preferences:null}, clientProfile:null,clientProfileReturnView:"customers", messageClientId:null, reportMode:"charts",reminders:{type:"appointment_reminder",items:[],supported:true}, members: [], accessRequests:[], workspaces:[], locations: [], reports: null, login: false };
+}
+const state = emptyState();
 const pendingActions = new Set();
+/* ---------------------------------------------------------------------------
+   BUSINESS-SCOPED CACHES, AND THE ONE PLACE THAT EMPTIES THEM.
+
+   A browser tab outlives a session. Sign out at the front desk, sign in as a different salon, and
+   every module singleton registered below is still holding the previous salon's rows - so
+   `ensureCheckoutPaymentOptions` short-circuits on a cache it filled for somebody else and the new
+   operator is shown another business's payment methods and discounts. THAT IS TENANT DATA
+   EXPOSURE, not a stale screen. The only reason it was survivable elsewhere is that switching
+   workspace through the profile picker does a full `location.reload()` and therefore throws the
+   whole heap away; signing out and signing back in never leaves the page.
+
+   Each cache is declared through `tenantCache`, which keeps its BUILDER rather than a copy of its
+   fields. Resetting rebuilds from that builder, so a field added to a cache tomorrow is cleared
+   without anybody remembering to add it to a list - which is the failure mode this replaces.
+
+   Register here only what belongs to ONE BUSINESS. Application constants, DOM handles, one-time
+   listener guards and preferences already keyed by account and business id stay out: clearing
+   those either costs the operator something they were right to keep, or double-binds a listener.
+   --------------------------------------------------------------------------- */
+const tenantCaches = [];
+function tenantCache(build) {
+  const cache = build();
+  tenantCaches.push({ cache, build });
+  return cache;
+}
+/**
+ * Forgets everything the previous session fetched, before the next one renders.
+ *
+ * Called from `settleUnauthenticated` (sign-out, a 401, any session that ended) and from the top
+ * of `bootstrap` (sign-in, and every re-entry into the authenticated shell). Two call sites rather
+ * than one because the two events are not the same: a session can end without another beginning,
+ * and - through an invitation accepted in a tab that was already signed in - another can begin
+ * without the first having visibly ended.
+ *
+ * `state.login` SURVIVES. It is which half of the auth form is on screen, not tenant data, and
+ * resetting it would flip somebody who just signed out back to "Create your salon".
+ */
+function resetTenantState() {
+  // Before `terminalCapture` is rebuilt, or the handle to the running poll goes with it and the
+  // poll goes on 401ing against a session that has ended.
+  stopTerminalCapturePoll();
+  const login = state.login;
+  for (const key of Object.keys(state)) delete state[key];
+  Object.assign(state, emptyState(), { login });
+  for (const entry of tenantCaches) {
+    for (const key of Object.keys(entry.cache)) delete entry.cache[key];
+    Object.assign(entry.cache, entry.build());
+  }
+  // The three that are not registered plain objects. `businessState` goes through the Business
+  // workspace's own reset rather than a builder, because that function is already the authority on
+  // what an untouched Business screen looks like.
+  resetBusinessWorkspace();
+  petCoatColors = [];
+  dismissedAgreementBanners.clear();
+}
 let customerSearchSequence = 0;
 let calendarDetailOrigin = null;
 
@@ -53,10 +122,11 @@ function settleUnauthenticated() {
   // a session that actually ended empties the form: a wrong password has to leave the address the
   // person just typed in place, or correcting it would mean retyping both fields.
   const sessionEnded=state.me!==null||!$("#app-view").hidden;
-  state.me=null;
-  state.locations=[];
+  // EVERY BUSINESS-SCOPED CACHE, not just `state.me`. See `resetTenantState`: signing out and
+  // signing in again is the one route between two businesses that does not reload the page, so
+  // anything this session fetched has to be dropped here or the next session inherits it.
+  resetTenantState();
   closeLocationMenu();
-  state.calendar.preferences=null;state.calendar.filterInitialized=false;state.calendar.selectedGroomerIds=null;
   $("#app-view").hidden=true;
   $("#auth-view").hidden=false;
   // Every open dialog, not just #modal. A dialog opened with showModal() makes the rest of the
@@ -64,8 +134,8 @@ function settleUnauthenticated() {
   // the login form and blocks it outright - and its poll would go on 401ing every couple of
   // seconds behind it. Closing them all is also what keeps a new sign-in from landing behind a
   // dialog belonging to the session that just ended. close() is called directly rather than
-  // through the capture dialog's own guard: this is teardown, and there is nobody to ask.
-  stopTerminalCapturePoll();
+  // through the capture dialog's own guard: this is teardown, and there is nobody to ask. The
+  // terminal poll behind such a dialog was already stopped by `resetTenantState` above.
   $$("dialog").forEach((dialog) => { if (dialog.open) dialog.close(); });
   // The appointment stack's bookkeeping goes with its dialogs. Closing them directly leaves the
   // levels behind, and the next sign-in would find a stack claiming to be open over an empty
@@ -129,8 +199,21 @@ function petName(record, fallback = "Unnamed pet") {
   return name || fallback;
 }
 
+// The currency this workspace bills in, read once so every formatter agrees on the fallback.
+function businessCurrency(){return state.me?.business?.currency||"USD";}
+/**
+ * An integer minor-unit amount, written the way this workspace spells money.
+ *
+ * DELEGATES TO THE DOMAIN'S POLICY rather than restating it. `formatMinor` pins two fraction
+ * digits; left to itself `Intl` follows CLDR's display convention and rounds fifteen supported
+ * currencies to whole units, which is how the same invoice came to read "COP 100" in the browser
+ * and "COP 99.99" on the phone. See `public/money.js` for the whole of it.
+ *
+ * Presentation only. The value handed in is the exact integer the server sent and nothing here
+ * rounds, totals or otherwise touches it.
+ */
 function money(value = 0) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: state.me?.business?.currency || "USD" }).format(Number(value) / 100);
+  return formatMinor(value, businessCurrency());
 }
 // Money that carries a direction. The sign is rendered as a prefix rather than handed to
 // Intl.NumberFormat, whose negative form is a hyphen in en-US and parentheses elsewhere - a
@@ -156,6 +239,43 @@ function paymentMethodLabel(method){return PAYMENT_METHOD_LABELS[method]||String
 // that happened to the visit, and calling it Unpaid sends somebody to chase money the customer
 // already returned.
 function invoiceRefunded(status){return status==="refunded"||status==="partially_refunded";}
+/* ---------------------------------------------------------------------------
+   TICKET, INVOICE, PAYMENT, RECEIPT - FOUR DOCUMENTS, AND ONLY ONE OF THEM IS EVIDENCE.
+
+     Ticket   the CRM document for the visit: who, which pet, which services, what to do.
+     Invoice  a financial obligation. It exists the moment the visit is billed and it can owe
+              money for as long as nobody pays it.
+     Payment  a settlement against an invoice.
+     Receipt  EVIDENCE OF A RECORDED PAYMENT.
+
+   The printable financial page was titled `Receipt #1042` and its button offered from the moment
+   an invoice existed, so a client could be handed "Receipt #1042 / Balance $135.60 / No payment
+   recorded". That artifact is an Invoice, and calling it a Receipt is a claim about money that
+   nobody made.
+
+   The two predicates below are the ONE definition of which document is on screen, asked in the two
+   forms the client has it available: off the receipt payload, which carries the payment rows, and
+   off an invoice status alone, which is all a history row has. THE MONEY STATEMENT ITSELF IS
+   SHARED - `receiptBodyMarkup` renders both - because shared financial authority is required.
+   Shared document IDENTITY is not, and that is what these decide.
+   --------------------------------------------------------------------------- */
+// A payment is 'recorded' or 'voided' (`payment_status`, migrations/0001_initial.sql). A voided
+// record settled nothing, so an invoice whose only payment was voided is an Invoice again. A
+// refunded payment is still a recorded settlement - the money moved twice, and the receipt shows
+// both movements - so a refund does not take the Receipt away.
+function receiptHasPayment(receipt){
+  return (receipt?.payments||[]).some(payment=>payment.status==="recorded");
+}
+// The same question of a row that carries only `invoices.status`. `open` and `draft` are the two
+// that owe everything and have collected nothing; a void invoice never collected either.
+const INVOICE_STATUSES_WITH_PAYMENT=new Set(["partially_paid","paid","partially_refunded","refunded"]);
+function invoiceStatusHasPayment(status){return INVOICE_STATUSES_WITH_PAYMENT.has(String(status||""));}
+// What the printable financial page is called, and it is never "Receipt" without a payment behind
+// it. The number is the invoice number in both cases: an Invoice and the Receipt that eventually
+// evidences it are the same obligation, and renumbering them would break every reconciliation.
+function financialDocumentTitle(receipt){
+  return `${receiptHasPayment(receipt)?"Receipt":"Invoice"} #${receipt.invoice.invoiceNumber}`;
+}
 function toast(message) {
   $("#toast").textContent = message; $("#toast").classList.add("show");
   setTimeout(() => $("#toast").classList.remove("show"), 2200);
@@ -192,6 +312,17 @@ function rolesBackendPresent(){return Boolean(state.me)&&"role" in state.me;}
 function firstPermittedView(){
   return $$("#primary-navigation [data-view]").find(button=>!button.hidden)?.dataset.view||null;
 }
+/**
+ * The dashboard's one gate, consulted by the nav button AND by the prefetch that fills it.
+ *
+ * `GET /api/dashboard` requires `dashboard.view` - migration 0043 split it off `reports.view`
+ * deliberately, so a receptionist can see the day's takings without being given the reports. The
+ * prefetch asked for `reports.view` instead, which handed exactly that role a visible Dashboard
+ * button over an empty screen. A VISIBLE DESTINATION HAS TO BE A LOADABLE ONE, and the way to
+ * guarantee that is for one predicate to decide both - never by widening the permission until the
+ * mismatch stops showing.
+ */
+function canViewDashboard(){return rolesBackendPresent()?allowed("dashboard.view"):true;}
 function applyDashboardNavGate(){
   const dashboard=$('[data-testid="nav-dashboard"]');
   if(!dashboard)return;
@@ -254,6 +385,10 @@ function openSettingsForPath({history="replace"}={}){
   });
 }
 async function bootstrap() {
+  // BEFORE THE FIRST READ, not after it. This is the door every sign-in comes through, so a
+  // session that replaces another - a different salon on the same shared machine - must not find
+  // the previous one's clients, breeds, discounts or payment methods still cached behind it.
+  resetTenantState();
   try {
     state.me = await api("/api/me");
     $("#salon-name")?.replaceChildren(state.me.business.name);
@@ -270,7 +405,7 @@ async function refresh() {
   const owner = state.me.isOwner;
   const safe = (permission) => owner || allowed.has(permission);
   const requests = [
-    safe("reports.view") ? api("/api/dashboard") : {},
+    canViewDashboard() ? api("/api/dashboard") : {},
     safe("customers.view") ? api("/api/customers?paged=true&page=1&pageSize=20") : {items:[],total:0,page:1,pageSize:20},
     state.pets,
     api("/api/employees"), api("/api/services"),
@@ -1004,10 +1139,13 @@ function appointmentLifecycleValues(item,activity){
 
 // A .print-root appended to <body>, which the print stylesheet is the only thing that shows -
 // the one printing mechanism the product has.
-function printReceipt(receipt){
+//
+// IT NAMES ITSELF FROM THE PAYMENTS ON IT. The body is the same money statement either way; the
+// heading is the part that makes a claim, and on an invoice nobody has paid it has to say Invoice.
+function printFinancialDocument(receipt){
   const root=document.createElement("section");
   root.className="print-root";
-  root.innerHTML=`<h1>Receipt #${escape(receipt.invoice.invoiceNumber)}</h1>${receiptBodyMarkup(receipt)}`;
+  root.innerHTML=`<h1>${escape(financialDocumentTitle(receipt))}</h1>${receiptBodyMarkup(receipt)}`;
   document.body.append(root);
   globalThis.print();
   setTimeout(()=>root.remove(),1000);
@@ -1204,13 +1342,20 @@ function checkoutSurfaceMarkup(co){
   const foot=`<footer class="surface-foot">`
     +`<p class="checkout-balance" role="status" aria-live="polite" data-testid="checkout-balance"></p>`
     +`<div class="surface-foot-actions">`
-      +(receipt?`<button type="button" class="secondary compact" data-testid="checkout-print-receipt">Print Receipt</button>`:"")
-      // SETTLED ONLY. There is no completed money statement to show before that, and stacking
-      // level 3 over an unfinished checkout is a trap: level 2 holds a guard that would challenge
-      // the operator on the way out, from underneath a surface they are looking at.
-      +(mode==="settled"
-        ? `<button type="button" class="secondary compact" data-testid="checkout-ticket">Ticket</button>`
-        : "")
+      // A RECEIPT ONLY ONCE SOMETHING HAS BEEN PAID. Before that the same page is an Invoice and
+      // says so, under its own test id, so that "no Print Receipt on an unpaid invoice" is a
+      // thing a test can assert rather than a label somebody has to read.
+      +(receipt?(receiptHasPayment(receipt)
+        ? `<button type="button" class="secondary compact" data-testid="checkout-print-receipt">Print Receipt</button>`
+        : `<button type="button" class="secondary compact" data-testid="checkout-print-invoice">Print Invoice</button>`):"")
+      // EVERY MODE, matching the appointment surface's own Ticket button and the header icon. The
+      // Ticket is a work sheet that carries no money, so gating it on a settled bill was gating a
+      // CRM document on a payment - the same conflation this screen's Print Receipt button had.
+      // The old note here warned that stacking level 3 over an unfinished checkout is a trap
+      // because level 2 holds a dirty guard; that guard fires when the CHECKOUT level is popped,
+      // which is after the Ticket above it has already closed, and `confirm()` is a browser-level
+      // dialog in any case.
+      +`<button type="button" class="secondary compact" data-testid="checkout-ticket">Ticket</button>`
       +(mode==="settled"
         // Never "Take payment" on a zero balance. Returning to a screen still offering it is a
         // route to a double charge, whatever the reference does.
@@ -1452,9 +1597,12 @@ async function checkout(id) {
   const bind=()=>{
     dialog.querySelector("[data-surface-close]")?.addEventListener("click",()=>runDetached(()=>popStackLevel()));
     dialog.querySelector('[data-testid="checkout-done"]')?.addEventListener("click",()=>runDetached(()=>popStackLevel()));
-    dialog.querySelector('[data-testid="checkout-print-receipt"]')?.addEventListener("click",()=>{
-      if(co.receipt)printReceipt(co.receipt);
-    });
+    // One handler, both labels: which document gets printed is decided inside
+    // `printFinancialDocument`, off the payments, so the two buttons cannot disagree with the page.
+    dialog.querySelectorAll('[data-testid="checkout-print-receipt"],[data-testid="checkout-print-invoice"]')
+      .forEach(button=>button.addEventListener("click",()=>{
+        if(co.receipt)printFinancialDocument(co.receipt);
+      }));
     // NO RECEIPT IS HANDED UP. The Ticket is a work sheet and carries no money at all, so the
     // receipt this surface is holding is not its business; the bill stays here, on the screen that
     // took the payment.
@@ -1915,6 +2063,11 @@ function receiptRefundRow(refund){
  * ONE BODY, TWO HOSTS. The modal shows it, and so does a settled Check Out - because a settled
  * checkout IS the receipt, and rendering a second, thinner version of it beside the real one is
  * how the two drift. `bindReceiptActions` binds whichever copy is on screen.
+ *
+ * THE BODY IS SHARED; THE DOCUMENT'S NAME IS NOT. This is the money statement of an invoice, and
+ * an invoice with nothing paid against it has one too - "No payment recorded" below is exactly
+ * that case. What the page is CALLED is decided by `financialDocumentTitle`, off the payments, and
+ * never here.
  */
 function receiptBodyMarkup(receipt) {
   const invoice=receipt.invoice;
@@ -2016,8 +2169,10 @@ function bindReceiptActions(root,receipt){
     refreshRefund(button.dataset.refundId,invoice.id))));
 }
 
-function showReceipt(receipt){
-  openModal(`Receipt #${receipt.invoice.invoiceNumber}`,receiptBodyMarkup(receipt),async()=>{});
+// The same page in a dialog, titled by the same rule. An unpaid invoice opened from a client's
+// transaction history is headed "Invoice #1042", not "Receipt #1042".
+function showFinancialDocument(receipt){
+  openModal(financialDocumentTitle(receipt),receiptBodyMarkup(receipt),async()=>{});
   bindReceiptActions($("#modal-fields"),receipt);
 }
 
@@ -2037,7 +2192,7 @@ async function reopenReceipt(invoiceId,message){
   }
   $("#modal").close();
   if(message)toast(message);
-  setTimeout(()=>showReceipt(receipt),50);
+  setTimeout(()=>showFinancialDocument(receipt),50);
   if(state.me)runDetached(()=>refresh());
 }
 
@@ -2682,7 +2837,7 @@ async function deactivate(type,id) {
 // rarely one address and one phone number: there is the house and the second home, the owner
 // and the partner and the dog walker who actually does the pick-up.
 // ---------------------------------------------------------------------------
-const clientEditState={customerId:null,customer:null,addresses:[],contacts:[],automatedMessagesSupported:false};
+const clientEditState=tenantCache(()=>({customerId:null,customer:null,addresses:[],contacts:[],automatedMessagesSupported:false}));
 
 function clientBasicSectionMarkup(customer){
   const contactOptions=["email","phone","none"].map(value=>
@@ -2918,13 +3073,13 @@ async function showCustomerHistory(id) {
     const combined=[...(historyData.upcoming?.items||[]),...(historyData.history?.items||[])]
       .sort((left,right)=>new Date(right.startAt)-new Date(left.startAt));
     const appointments=combined.map(item=>`<div><span>${escape(formatPrefDate(new Date(item.startAt),item.schedulingTimezone||schedulingZone()))} / ${escape(petName({petName:item.petName}))}</span><strong>${escape(item.status.replace("_"," "))}</strong></div>`).join("")||"<p>No appointments yet.</p>";
-    const invoices=historyData.invoices.map(item=>`<div><span>Invoice ${escape(item.invoiceNumber)}</span><span><strong>${money(item.totalMinor)} / ${escape(invoiceStatusLabel(item.status))}</strong><button type="button" class="text-button history-receipt" data-invoice-id="${item.id}">Receipt</button></span></div>`).join("")||`<p>${allowed("payments.view")?"No invoices yet.":"Financial history requires payment access."}</p>`;
+    const invoices=historyData.invoices.map(item=>`<div><span>Invoice ${escape(item.invoiceNumber)}</span><span><strong>${money(item.totalMinor)} / ${escape(invoiceStatusLabel(item.status))}</strong><button type="button" class="text-button history-receipt" data-invoice-id="${item.id}">${invoiceStatusHasPayment(item.status)?"Receipt":"Invoice"}</button></span></div>`).join("")||`<p>${allowed("payments.view")?"No invoices yet.":"Financial history requires payment access."}</p>`;
     const petDocuments=allowed("pets.care.view")?historyData.pets.map(pet=>`<div><span>${escape(petName(pet))}${pet.archivedAt?" (archived)":""}</span><button type="button" class="text-button history-pet-documents" data-pet-id="${pet.id}">Documents</button></div>`).join(""):"";
     openModal(`${clientName(historyData.customer)} history`,`<div class="wide history-list">${petDocuments?`<h4>Pet Care documents</h4>${petDocuments}`:""}<h4>Appointments</h4>${appointments}<h4>Transactions</h4>${invoices}</div>`,async()=>{});
     $$(".history-pet-documents").forEach(button=>button.addEventListener("click",()=>showPetDocuments(button.dataset.petId)));
     $$(".history-receipt").forEach(button=>button.addEventListener("click",async()=>{
       const receipt=await api(`/api/invoices/${button.dataset.invoiceId}/receipt`);
-      $("#modal").close();setTimeout(()=>showReceipt(receipt),50);
+      $("#modal").close();setTimeout(()=>showFinancialDocument(receipt),50);
     }));
   }catch(error){toast(error.message);}
 }
@@ -4118,7 +4273,7 @@ function petOptionsBody(){
 // Everything here is scoped to the BUSINESS - the customer account - not to the location the
 // session happens to be working at, so a breed added here is available at every location that
 // account operates.
-const breedDrawerState={petTypeId:null,breeds:[],query:"",showInactive:false};
+const breedDrawerState=tenantCache(()=>({petTypeId:null,breeds:[],query:"",showInactive:false}));
 function breedDrawerRow(breed){
   // Only a breed this account created can be renamed or removed. A shared Pawsh breed is the
   // same row for every tenant, so offering a pencil there would promise something the server
@@ -4270,7 +4425,7 @@ function bindSettingsGoto(root){
 // account link and the service restriction. The two operational controls act on their own: Active
 // is a state transition, and Available services is a list edited in a drawer.
 // ---------------------------------------------------------------------------
-const staffState={selectedId:null,draft:null,activeError:null,unavailableOpen:false,drawer:null};
+const staffState=tenantCache(()=>({selectedId:null,draft:null,activeError:null,unavailableOpen:false,drawer:null}));
 // Reactivating is refusable: revoking a member disables the membership rather than deleting it,
 // and deactivating an employee does not let go of it, so link → deactivate → revoke → reactivate
 // would otherwise hand a revoked account back its attribution. The server refuses that with one
@@ -4828,7 +4983,7 @@ const AVAILABILITY_PLACEHOLDERS={
   week:"Setting a groomer's hours for one specific week is not yet available. Default working hours apply to every week, and a one-off change is still made on the appointment itself.",
   calendar:"A month-at-a-glance view of who is working is not yet available. Default working hours are the source of truth for now, and the Calendar shows what is actually booked."
 };
-const availabilityState={tab:"default",hours:null,overrides:null,hoursError:null,hoursLoading:false,closures:null,closuresError:null,closuresLoading:false,closureLocationId:null,month:null,focusCell:null,focusDate:null,restoreFocus:false};
+const availabilityState=tenantCache(()=>({tab:"default",hours:null,overrides:null,hoursError:null,hoursLoading:false,closures:null,closuresError:null,closuresLoading:false,closureLocationId:null,month:null,focusCell:null,focusDate:null,restoreFocus:false}));
 let availabilityEditorTeardown=null;
 // Seven columns of times do not survive a phone, so below this width the same data renders as a
 // stacked per-groomer list and the editor becomes the shared dialog. The query is read at render
@@ -5478,11 +5633,11 @@ function checkoutOffersCredit(co){
   return typeof co.creditAvailableMinor==="number"&&co.creditAvailableMinor>0;
 }
 const TAXPAY_TIP_BASE_MISSING="The visit total has not loaded, so a percentage cannot be worked out. Enter the tip amount instead.";
-const taxPayState={tab:"method",data:null,error:null,loading:false,restoreFocus:null,feesProcessorId:null,terminalProcessorId:null};
+const taxPayState=tenantCache(()=>({tab:"method",data:null,error:null,loading:false,restoreFocus:null,feesProcessorId:null,terminalProcessorId:null}));
 // Checkout's own, narrower read. `/api/settings/tax-payments` is gated on settings.manage and
 // stays that way; a cashier holds checkout.perform instead, so the method list and the tip
 // presets come from an endpoint scoped to that and carrying nothing else.
-const checkoutOptions={data:null,unavailable:false};
+const checkoutOptions=tenantCache(()=>({data:null,unavailable:false}));
 let terminalDrawerOrigin=null;
 const PENCIL_ICON=`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16v4Z"/><path d="M14 6l4 4"/></svg>`;
 const TRASH_ICON=`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 7V5h4v2M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/></svg>`;
@@ -6099,11 +6254,11 @@ function setupTerminalDrawer(){
  * couple of seconds and nothing at Square. Reaching Square is recovery, and it happens only when a
  * person presses the button that says so.
  */
-const squareState={data:null,loading:false,error:null,locations:null};
+const squareState=tenantCache(()=>({data:null,loading:false,error:null,locations:null}));
 // Checkout's own narrow read of which terminals it may use, cached like the payment options and
 // dropped whenever settings change so a terminal paired in another tab shows up.
-const checkoutTerminal={data:null,unavailable:false};
-const terminalCapture={checkoutId:null,invoiceId:null,deviceLabel:"",data:null,timer:null,polls:0};
+const checkoutTerminal=tenantCache(()=>({data:null,unavailable:false}));
+const terminalCapture=tenantCache(()=>({checkoutId:null,invoiceId:null,deviceLabel:"",data:null,timer:null,polls:0}));
 // Roughly five minutes of two-and-a-half-second polls. A customer who has not tapped by then is
 // not going to be rescued by another poll, and the modal says so rather than spinning forever.
 const TERMINAL_CAPTURE_MAX_POLLS=120;
@@ -6497,7 +6652,7 @@ function setupTerminalCapture(){
     const invoiceId=terminalCapture.invoiceId;if(!invoiceId)return;
     const receipt=await api(`/api/invoices/${invoiceId}/receipt`);
     dialog.close();
-    setTimeout(()=>showReceipt(receipt),50);
+    setTimeout(()=>showFinancialDocument(receipt),50);
   }));
 }
 
@@ -6617,10 +6772,10 @@ const STACKING_OPTION_LABELS={
 const DISCOUNT_HINT_ORDINARY="Comes off the appointment's subtotal, before tax.";
 const DISCOUNT_HINT_FREE="This makes the appointment free.";
 
-const discountsState={
+const discountsState=tenantCache(()=>({
   tab:"discount",data:null,error:null,loading:false,restoreFocus:null,
   discountPage:1,couponPage:1,editor:null
-};
+}));
 
 async function loadDiscounts(){
   discountsState.loading=true;discountsState.error=null;
@@ -6681,8 +6836,7 @@ function discountPerPetReason(){
  * while `money()` beside it was right.
  */
 function currencySymbol(){
-  return new Intl.NumberFormat("en-US",{style:"currency",currency:state.me?.business?.currency||"USD"})
-    .formatToParts(0).find(part=>part.type==="currency")?.value||"$";
+  return currencySymbolFor(businessCurrency());
 }
 function discountValueText(row){
   return row.kind==="percentage"?`${taxPayPercent(row.rateBasisPoints)}%`:money(row.amountMinor);
@@ -7601,10 +7755,10 @@ const ROLE_ACCESS_GROUP_IDS = new Set(["dashboard", "payroll", "sales"]);
 const ROLE_TABS = [["roles", "Roles"], ["login-control", "Login Control (only for web)"]];
 const MEMBER_STATUS_LABELS = { active: "Active", invited: "Invited", disabled: "Removed", suspended: "Suspended", revoked: "Removed" };
 
-const rolesState = {
+const rolesState = tenantCache(() => ({
   tab: "roles", roles: null, catalog: null, loading: false, error: null,
   invitations: [], invitationsUnavailable: false, editor: null, restoreFocus: null
-};
+}));
 
 function rolesManaged(){return allowed("team.manage");}
 function roleCatalogGroups(){return Array.isArray(rolesState.catalog?.groups)?rolesState.catalog.groups:[];}
@@ -7714,6 +7868,24 @@ function roleAssignable(){return rolesOrdered().filter(role=>role.enabled!==fals
 // write is Owner-only on the server, on top of team.manage. A manager reads this screen and does
 // not edit it, so the controls say so rather than issuing requests that come back 403.
 function rolesEditable(){return Boolean(state.me?.isOwner);}
+/**
+ * Whether this operator may APPROVE a workspace access request. Owner only.
+ *
+ * Approving admits an account AT A ROLE OF THE APPROVER'S CHOOSING, which is precisely the
+ * escalation every other membership write is Owner-only to prevent - a manager who could approve
+ * could approve somebody into a role holding more than the manager does. The server enforces
+ * `isOwner` on the approve route now, on top of `team.manage`, so a button offered to anybody else
+ * is a button that comes back 403.
+ *
+ * REJECTING IS DELIBERATELY NOT NARROWED, and stays on `team.manage` with the panel itself.
+ * Refusing a request grants nothing, so a manager can still clear the queue; the panel goes on
+ * listing what is pending for them, because a request they can see and decline is more useful than
+ * one hidden from them entirely.
+ *
+ * Expressed as `state.me?.isOwner`, the same way `rolesEditable` above expresses it, rather than as
+ * a permission: ownership is not something a role can grant.
+ */
+function accessRequestApprovable(){return Boolean(state.me?.isOwner);}
 
 async function loadRoles(){
   rolesState.loading=true;rolesState.error=null;
@@ -7926,11 +8098,21 @@ function rolesPeopleMarkup(){
 }
 function rolesAccessRequestsMarkup(){
   const requests=(state.accessRequests||[]).filter(request=>request.status==="pending");
+  const approvable=accessRequestApprovable();
   const rows=requests.map(request=>`<div data-testid="access-request-row" data-access-request="${escapeAttr(request.id)}">`
     +`<span><strong>${escape(request.requesterName)}</strong><small>${escape(request.requesterEmail)} · ${escape(formatPrefDate(new Date(request.createdAt)))}</small></span>`
-    +`<span><button type="button" class="text-button" data-access-approve="${escapeAttr(request.id)}" data-testid="access-request-approve">Approve</button> `
+    +`<span>`
+    // Absent rather than disabled, the precedent the Invite button and every role write on this
+    // screen already set: a disabled Approve would say the capability is merely switched off,
+    // when what is true is that it belongs to the Owner.
+    +(approvable?`<button type="button" class="text-button" data-access-approve="${escapeAttr(request.id)}" data-testid="access-request-approve">Approve</button> `:"")
     +`<button type="button" class="text-button danger" data-access-reject="${escapeAttr(request.id)}" data-testid="access-request-reject">Reject</button></span></div>`).join("");
-  return `<h4>Pending access requests</h4><div class="simple-list" data-testid="roles-access-requests">${rows||`<p class="empty">No pending requests.</p>`}</div>`;
+  // Said once, under the list, rather than on every row. A manager reading this needs to know who
+  // to ask, not to be told the same thing four times.
+  const ownerNote=!approvable&&requests.length
+    ? `<p class="fine settings-note" data-testid="access-request-owner-only">Only an Owner can approve a request. You can reject one.</p>`
+    : "";
+  return `<h4>Pending access requests</h4><div class="simple-list" data-testid="roles-access-requests">${rows||`<p class="empty">No pending requests.</p>`}</div>${ownerNote}`;
 }
 function rolesPanelBodyMarkup(){
   if(rolesState.error)return rolesErrorMarkup();
@@ -8777,11 +8959,18 @@ const BUSINESS_DATE_FORMATS=[["MM/DD/YYYY","MM/DD/YYYY"],["DD/MM/YYYY","DD/MM/YY
 const BUSINESS_HOUR_FORMATS=[["12","12 Hours"],["24","24 Hours"]];
 const BUSINESS_WEIGHT_UNITS=[["lb","Lb"],["kg","Kg"]];
 const BUSINESS_APPOINTMENT_LOCKS=[["enabled","Enable Lock"],["disabled","Disable Lock"]];
-const BUSINESS_COUPON_STACKING=[
-  ["single","One coupon/discount per appt."],
-  ["amount_first","Apply Amount First"],
-  ["percentage_first","Apply Percentage First"]
-];
+// `couponStacking` USED TO BE HERE, and it is deliberately not any more. Two columns carried the
+// same three-valued rule: `discount_stacking_mode`, which every discount calculation reads and
+// which really does decide whether two discounts come to $72 or $70, and `coupon_stacking`, which
+// had no money consumers at all - the route that wrote it read it back only to name it in the
+// audit entry. The screen rendered the second one under "How to apply multiple coupons" beside a
+// note saying the choice would take effect when coupons shipped. Coupons shipped. An operator who
+// set this control changed nothing about any bill and was told it worked.
+//
+// THE SURVIVING CONTROL IS THE DISCOUNTS SCREEN'S, which writes `discount_stacking_mode` through
+// `PUT /api/settings/discount-stacking`. Exactly one control in the product may represent this
+// rule, and it is the one attached to the authority that governs the money. That also moves the
+// permission: stacking is `settings.discounts` now, not `settings.manage`.
 // `null` is the value **All**, not "unset", so the select carries `All` as a literal. The schema
 // takes it case-insensitively and returns it as null, which is why the option's value can be
 // posted straight through without a second representation to keep in step.
@@ -8791,7 +8980,7 @@ const BUSINESS_UPCOMING_COUNTS=[["All","All"],...Array.from({length:20},(unused,
 const BUSINESS_ENUM_FIELDS=[
   ["businessType",BUSINESS_TYPES],["dateFormat",BUSINESS_DATE_FORMATS],
   ["hourFormat",BUSINESS_HOUR_FORMATS],["weightUnit",BUSINESS_WEIGHT_UNITS],
-  ["appointmentLock",BUSINESS_APPOINTMENT_LOCKS],["couponStacking",BUSINESS_COUPON_STACKING]
+  ["appointmentLock",BUSINESS_APPOINTMENT_LOCKS]
 ];
 // Every nullable free-text column, in one list, because the merge rule treats them identically:
 // omitted preserves, blank clears, a value stores.
@@ -8857,10 +9046,11 @@ function businessCurrencyOptions(){
   if(stored&&!list.includes(stored))list.push(stored);
   return list;
 }
+// Through `formatMinor`, because this line is a PROMISE ABOUT HOW PRICES WILL READ and had to be
+// made by the formatter that will read them. Formatting 1234.56 independently claimed "COP 1,235"
+// for a workspace whose invoices go on saying "COP 1,234.56".
 function businessCurrencySample(code){
-  try{
-    return `Prices read ${new Intl.NumberFormat("en-US",{style:"currency",currency:code}).format(1234.56)}.`;
-  }catch{return `Prices read 1,234.56 ${code}.`;}
+  return `Prices read ${formatMinor(123456,code)}.`;
 }
 function businessTimeZoneList(){
   try{return typeof Intl.supportedValuesOf==="function"?Intl.supportedValuesOf("timeZone"):[];}
@@ -9125,10 +9315,6 @@ function businessInfoMarkup(){
         +businessSelectField("appointmentLock","Lock date/time for appointments",BUSINESS_APPOINTMENT_LOCKS,{
           testId:"business-appointment-lock",
           hint:"Enable Lock stops appointments being moved: nobody can change when one starts or who is assigned to it, and drag-to-reschedule leaves the calendar. Everything else stays editable, new appointments can still be booked, and the lock applies to owners too."})
-        +businessSelectField("couponStacking","How to apply multiple coupons",BUSINESS_COUPON_STACKING,{
-          testId:"business-coupon-stacking",
-          note:businessPendingNote("business-note-coupon-stacking",
-            "Pawsh has no coupons or discounts. The choice is stored now and takes effect when they ship.")})
         +`<label>Timezone${timezoneControl}`
           +`<span class="field-hint" data-testid="business-timezone-now">${escape(businessTimeZoneNow(draft.timezone))}</span>`
           +businessFieldErrorMarkup("timezone")
@@ -9803,7 +9989,7 @@ const PET_GENDERS=["Male","Female"];
 const PET_FIXED_STATUSES=[["spayed","Spayed (female)"],["neutered","Neutered (male)"],["intact","Intact"]];
 let petCoatColors=[];
 
-const petProfileState={petId:null,pet:null,notes:[],photos:null,vaccinations:null,failed:false};
+const petProfileState=tenantCache(()=>({petId:null,pet:null,notes:[],photos:null,vaccinations:null,failed:false}));
 
 function petAvatarMarkup(pet,photos){
   const avatarId=photos?.avatarPhotoId||null;
@@ -10907,8 +11093,8 @@ function clientSalesSummaryMarkup(data){
    `allowed("customers.credit_edit")` could offer a button whose write is refused.
    --------------------------------------------------------------------------- */
 const CREDIT_LEDGER_PAGE_SIZE=50;
-const creditLedger={customerId:null,customerName:"",summary:null,entries:[],kinds:null,canEdit:false,
-  page:1,pendingPage:1,pageSize:CREDIT_LEDGER_PAGE_SIZE,total:0,paging:false,failed:false,restoreFocus:null};
+const creditLedger=tenantCache(()=>({customerId:null,customerName:"",summary:null,entries:[],kinds:null,canEdit:false,
+  page:1,pendingPage:1,pageSize:CREDIT_LEDGER_PAGE_SIZE,total:0,paging:false,failed:false,restoreFocus:null}));
 
 // The server's own copy of the database check constraint, named by `entryKinds` on the summary
 // read. Not hard-coded here: a fifth kind must not be able to exist in the table and render as raw
@@ -10918,8 +11104,10 @@ function creditKindLabel(kind){
   return found?found.label:String(kind||"").replaceAll("_"," ");
 }
 // The `+` and `−` glyphs are unreliably announced, so every signed amount carries the direction as
-// words as well. `.visually-hidden`, never `.sr-only` - the latter has no rule in this stylesheet
-// and would render the phrase on screen.
+// words as well. `.visually-hidden` is the class the main stylesheet defines and the one this file
+// uses throughout; `.sr-only` is defined too, in `pricing.css` (linked from `index.html`), so both
+// hide correctly. Keeping to one of them here is consistency, not a workaround - and neither rule
+// may be deleted on the belief that nothing uses it.
 function creditAmountMarkup(minor){
   const add=Number(minor)>=0;
   return `<strong class="credit-amount ${add?"is-add":"is-take"}">${escape(signedMoney(minor))}`
@@ -12239,18 +12427,18 @@ function appointmentSurfaceMarkup(surface){
   +`</div></div>`;
 
   const print=`<button type="button" class="secondary compact" data-testid="appointment-print">Print</button>`;
-  // Level 3. On a settled visit CLOSE GIVES UP THE PRIMARY SLOT: opening the Ticket is what the
-  // operator came to a completed appointment for, and dismissal is not. A cancelled or no-show
-  // visit has no Ticket, so Close keeps the slot there.
-  const ticket=can.ticket
-    ? `<button type="button" class="${can.readOnly?"primary":"secondary"} compact" data-testid="appointment-ticket">Ticket</button>`
-    : "";
+  // Level 3, AND IT IS OFFERED IN EVERY STATE - the same rule the header's print icon has always
+  // applied. What changes with the state is only which control gets the primary slot: on a
+  // completed visit CLOSE GIVES UP THE PRIMARY SLOT, because opening the Ticket is what the
+  // operator came for and dismissal is not, while on a cancelled or no-show visit there is nothing
+  // to come for and Close keeps it.
+  const ticket=`<button type="button" class="${can.readOnly&&can.ticketPrimary?"primary":"secondary"} compact" data-testid="appointment-ticket">Ticket</button>`;
   const foot=can.readOnly
     // Nothing on this appointment can move any more, so the footer offers the things that still
     // mean something rather than a row of controls the server would refuse.
     ? `<footer class="surface-foot"><div class="surface-foot-actions"></div>`
       +`<div class="surface-foot-actions">${print}`
-      +`<button type="button" class="${can.ticket?"secondary":"primary"} compact" data-testid="appointment-close">Close</button>`
+      +`<button type="button" class="${can.ticketPrimary?"secondary":"primary"} compact" data-testid="appointment-close">Close</button>`
       +ticket+`</div></footer>`
     : `<footer class="surface-foot"><div class="surface-foot-actions">`
         +(can.cancel?`<button type="button" class="secondary compact destructive" data-testid="appointment-cancel">Cancel</button>`:"")
@@ -12328,11 +12516,20 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
       checkout:status==="completed"&&!invoiced&&allowed("checkout.perform"),
       cancel:status==="scheduled"&&allowed("appointments.cancel"),
       bookAgain:allowed("appointments.create"),
-      // No permission gate. The visit half of the Ticket is what this operator is already reading
-      // one level down, and the money half is gated by the endpoint that serves it rather than by
-      // a client that declines to draw it. Only a completed visit has a Ticket: before completion
-      // the working record IS this surface.
-      ticket:status==="completed",
+      // NOT DERIVED AT ALL ANY MORE, and that is the point. The Ticket is the CRM document for the
+      // visit - who, which pet, which services - so it needs no completion, no invoice and no
+      // payment, and ADR-011's amendment says any state. The sheet is most useful BEFORE the
+      // visit, printed and clipped to the run. This used to read `status==="completed"` while the
+      // header's print icon beside it was ungated and `openTicket`'s own comment said in capitals
+      // that there was no completion gate; three entry points, three rules, and the footer button
+      // vanishing from exactly the appointment an operator wanted the sheet for.
+      //
+      // No permission gate either. The Ticket carries no money at all and never reads
+      // `GET /api/invoices/:id/receipt`, so EXPOSING A TICKET DOES NOT EXPOSE A RECEIPT.
+      //
+      // `ticketPrimary` is presentation and nothing else: which of Ticket and Close is the footer's
+      // primary button on a read-only surface. It decides no availability.
+      ticketPrimary:status==="completed",
       editNote:["checked_in","in_service"].includes(status)&&allowed("operations.perform_service"),
       // The APPOINTMENT note, which is a different field with a different permission and no
       // status window at all. `readOnly` above is about the visit no longer moving; a note that

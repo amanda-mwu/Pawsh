@@ -719,6 +719,40 @@ test("approving an access request names the role it grants",async({ page,request
     .toBe("Front desk");
 });
 
+test("a manager may reject an access request but not approve one",async({ page,request,tenant })=>{
+  // APPROVING ADMITS AN ACCOUNT AT A ROLE OF THE APPROVER'S CHOOSING. That is the escalation every
+  // other membership write is Owner-only to prevent, and the server enforces `isOwner` on the
+  // approve route regardless of `team.manage`. The panel used to be gated on `team.manage` alone,
+  // so a manager was shown an Approve button that came back 403.
+  await createRole(request,"Front desk",["calendar.view","customers.view"]);
+  const manager=await createMember(request,`request-manager+${tenant.runId}@pawsh-test.example`,
+    ["team.manage","settings.manage","calendar.view","customers.view"]);
+  const raised=await request.post("/api/workspace-access-requests",{ data:{
+    requesterName:"Dana Applicant", requesterEmail:`applicant+${tenant.runId}@pawsh-test.example`,
+    workspaceName:`PW Smoke ${tenant.runId}`, workspaceAdminEmail:tenant.ownerEmail
+  }});
+  expect(raised.ok(),await raised.text()).toBeTruthy();
+
+  await login(page,manager.email);
+  await openRoles(page);
+
+  // REJECTING GRANTS NOTHING, so it is not narrowed: the manager can still see what is pending and
+  // clear it. Hiding the panel from them would be a different decision and is not this one.
+  const pending=page.getByTestId("access-request-row");
+  await expect(pending).toContainText("Dana Applicant");
+  await expect(pending.getByTestId("access-request-reject")).toBeVisible();
+  await expect(pending.getByTestId("access-request-approve")).toHaveCount(0);
+  await expect(page.getByTestId("access-request-owner-only"))
+    .toHaveText("Only an Owner can approve a request. You can reject one.");
+
+  await pending.getByTestId("access-request-reject").click();
+  await page.getByTestId("stacked-dialog-confirm").click();
+  await expect(page.getByTestId("roles-access-requests")).toContainText("No pending requests");
+  // And the note goes with the queue: it exists to explain a control that is missing beside
+  // something, not to stand alone under an empty list.
+  await expect(page.getByTestId("access-request-owner-only")).toHaveCount(0);
+});
+
 test("a built-in role keeps its identity but can be retired and brought back",async({ page,request,tenant })=>{
   // A built-in role is a Pawsh system template. Its NAME is its identity, so rename and delete are
   // refused - with codes, server-side - but it is not permanently on: switching it off is the

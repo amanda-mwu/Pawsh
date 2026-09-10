@@ -1,11 +1,287 @@
 # ADR-011: The appointment Ticket, the invoice and the receipt
 
-Status: Amended 2026-09-03. The unification of the Ticket and the receipt
-recorded here is overruled by Product; it describes a product Pawsh does not
-have. The client-credit decisions, the money statement's server authority, and a
-narrowed Single Money Statement invariant stand. The overruled record is
-retained below in full, unedited, because the way it went wrong is worth
-reading.
+Status: Amended 2026-09-09, over the amendment of 2026-09-08.
+
+The 2026-09-03 amendment overruled the unification of the Ticket and the
+receipt; that stands. The 2026-09-08 amendment settled the naming and gating
+question the 2026-09-03 text explicitly left open, and in settling it superseded
+the rule the product had been running: that a financial page is called Invoice
+until something is paid and Receipt afterwards; that stands too. The 2026-09-09
+amendment settles what a Receipt is about when an invoice was satisfied by more
+than one tender, which the 2026-09-08 text deliberately left open. All earlier
+records are retained below, marked rather than rewritten.
+
+## The rule, as of 2026-09-09
+
+> Payment changes an Invoice's settlement state, not its document identity. A
+> paid Invoice remains an Invoice. Ticket remains an operational work document.
+> Pawsh has one completed settlement per Invoice for MVP; that settlement may
+> contain multiple tender components. A Receipt is evidence of that completed
+> settlement.
+
+The invariant in full:
+
+- **One Invoice per appointment.** Unchanged, and already enforced by
+  `one_active_invoice_per_appointment`.
+- **One completed settlement per Invoice.** The checkout event that satisfies
+  the invoice happens once.
+- **A settlement may use multiple tender components.** $92.01 on a card is one
+  settlement of one component. $40 of client credit and $52.01 on a card is one
+  settlement of two. $20 in cash and $72.01 on a card is one settlement of two.
+
+### Multiple payment rows are components, and are not constrained
+
+A tender component is a row in `payments`, so a settlement composed of two
+instruments is two rows. What this amendment changes is not the data but the
+claim the documents make about it: those rows are components of one settlement
+and are never presented to the customer as independent checkout events.
+
+**No constraint is placed on the number of payment rows per invoice**, and this
+amendment carries no migration: no uniqueness constraint on
+`payments(invoice_id)`, no receipt table, no enum rebuild. The approved
+invariant is representable in the schema that already exists.
+
+The reason no constraint was added belongs in the record, because the shorter
+rule is tempting and wrong. A client's credit balance is almost never exactly
+the invoice total, so one payment row per invoice would either strand every
+credit smaller than a groom or force credit through the discount path, which
+under-collects tax. Split tender at the counter would go with it, and it has no
+name in the codebase to search for - it is the emergent consequence of Check Out
+reopening while a balance stands, so a constraint would have removed it
+silently. One settlement is the product rule. One row is not.
+
+### Deliberate partial payment is not an MVP workflow
+
+Normal checkout satisfies the invoice completely. An operator cannot
+intentionally collect $40 against a $100 invoice and finish checkout with $60
+outstanding. An outstanding balance is an intermediate state inside one
+settlement - the remainder still to be tendered - and never a terminal checkout
+outcome.
+
+The `partially_paid` enum value is retained for compatibility, for history and
+for that intermediate state. It is not rebuilt out of the type, and it is not
+offered as a way to end a checkout.
+
+### The Receipt states the tender composition of one settlement
+
+`Payment 1 of 2` and `Payment 2 of 2` are **withdrawn**. They presented one
+settlement as two customer events. In their place the Receipt identifies each
+tender component with its method, its amount, when it was received where that
+applies, and the provider, provider payment id and external reference **only
+when the row actually carries them**. The absent-processor rule from 2026-09-08
+stands unchanged: nothing is fabricated to fill a gap.
+
+**The aggregate line reads "Total settled", not "Total paid".** A settlement
+that includes client credit collected less money than it settled, and an
+aggregate calling that sum "paid" claims money changed hands that did not. The
+Invoice still shows `Paid` as its settlement status, which is a statement about
+the obligation rather than about a till.
+
+**Refunds keep their attribution to the tender component they came from.** A
+refund is against a payment, and a Receipt that flattens refunds into a single
+aggregate line loses which instrument the money went back to. Where the
+rendering cannot truthfully make that association, the projection is what gets
+fixed; reconciliation arithmetic is not invented to cover it.
+
+### Reaffirmed rather than changed
+
+- **Client credit is a payment and never a discount.** `calculateInvoice` taxes
+  `subtotal - discount`, so routing credit through the discount path
+  under-collects tax on every redemption, permanently, on real money. The rule
+  under "What else stands" below is unchanged, and is restated here because a
+  rule phrased "one settlement" invites exactly that mistake. Credit consumes
+  only the amount needed and any remainder stays on the client's balance; credit
+  is never stranded merely because it cannot cover the whole invoice.
+- **A refund leaves the invoice balance unchanged.** Deliberate, and not touched
+  by this amendment.
+- **The Ticket is untouched, again.** It carries no money, gains no settlement
+  meaning, and is never the implementation behind Print Receipt.
+
+### The Receipt is reachable from history, not only from the live checkout
+
+The 2026-09-08 record scoped the two print controls to the Check Out footer,
+which left the Receipt reachable only during the session that took the payment.
+It is now also on the Invoice document dialog: `invoice-print-invoice` in every
+state, and `invoice-print-receipt` only on a completed settlement — **absent
+rather than disabled**, because an unsettled invoice has no Receipt to disable.
+A settled visit reopened from a client's transaction history weeks later can
+therefore reprint both documents. The history row itself still reads `Invoice`
+and opens the Invoice, which is unchanged from 2026-09-08.
+
+One property follows from this and is stated deliberately rather than left to be
+discovered: **the Receipt is reconstructed from live state and is never
+persisted.** Reprinting a settled visit's Receipt later can differ from the paper
+printed on the day — a subsequent refund adds a line, and a void of the only
+component withdraws the document. The Receipt is a claim about the settlement as
+it now stands; the Invoice is the history host and prints in every state,
+voided components included.
+
+### Settlement integrity: a component composed against a moved balance
+
+A settlement's components are recorded one at a time against a balance the
+previous component moved, so the request carries `expectedBalanceMinor` and the
+route holds the invoice row with `for update` while it decides. That check was
+previously reachable **only when the tender exceeded the balance**, so two
+operators working from the same stale figure could each record a component that
+happened to fit, and neither was warned.
+
+The staleness check is now independent of the amount: a component whose expected
+balance no longer matches the locked balance is refused with 409
+`STALE_FINANCIAL_STATE` whether its amount is under, equal to or over that stale
+figure, and the response carries the current `balanceMinor` so the surface can
+correct itself in place rather than stranding the operator on a figure that has
+moved. A *fresh* over-tender is a different fault — the operator's own number is
+too big, not a race — and keeps its 400 `PAYMENT_EXCEEDS_CURRENT_BALANCE`. The
+losing racer is refused, never merged: there is no last-write-wins path into a
+settlement.
+
+### What the Receipt says about a component that collected no money
+
+A client-credit component carries its own sentence — that it was settled from
+the client's account balance and no money was collected — beneath its amount.
+The aggregate line already refuses to call the total "paid"; this says the same
+thing at the component that makes it true, so a Receipt showing credit is
+truthful line by line and not merely in its total.
+
+## The rule, as of 2026-09-08
+
+> Payment changes an Invoice's settlement state, not its document identity. A
+> paid Invoice remains an Invoice. A Receipt is separate evidence of a recorded
+> payment. Ticket remains an operational work document and is never used as
+> Receipt.
+
+### What this supersedes
+
+The client had ONE printable financial page and gave it two names. It was headed
+`Invoice #1042` while nothing had been paid and `Receipt #1042` from the first
+payment onward, and the Check Out footer offered exactly one print control:
+Print Receipt once paid, Print Invoice until then. Two things were wrong with
+that, and they are separate faults.
+
+- **A paid Invoice was retitled.** The same document a client was handed as a
+  bill came back after settlement as "Receipt", claiming to evidence a payment
+  it does not describe — it describes the obligation. Nothing about the artifact
+  changed; only the balance did.
+- **The bill became unprintable.** Because the two controls were alternatives, a
+  single payment against a $101.60 invoice removed the operator's only way to
+  print that invoice — at exactly the moment a client is most likely to ask for
+  it. A partially paid invoice still owes money and still has a bill.
+
+  **Note, 2026-09-09:** the conclusion stands - the Invoice is printable in
+  every state, permanently. The premise is restated: an invoice with a balance
+  outstanding is mid settlement rather than deliberately part-paid, because
+  finishing a checkout with money outstanding is no longer an MVP workflow.
+
+### What replaces it
+
+- **Two renderers, two titles.** `receiptBodyMarkup` is the Invoice's body, and
+  it is titled `Invoice #N` in every settlement state by `invoiceDocumentTitle`.
+  `paymentReceiptMarkup` is the Receipt, titled `Receipt #N` by
+  `paymentReceiptTitle`. Neither renderer asks what has been paid in order to
+  decide which document it is; the caller decides, because the caller is the
+  control the operator pressed. There is no longer a function that names a
+  financial page from its payments.
+- **Print Invoice in every state; Print Receipt beside it.** The two Check Out
+  controls are built by two independent conditions — the Invoice's asks only
+  whether an invoice exists, the Receipt's asks whether anything has been paid —
+  so unpaid shows `[Print Invoice]` and paid or partially paid shows
+  `[Print Invoice] [Print Receipt]`. They are never alternatives.
+
+  **Amended 2026-09-09: the independence stands; the Receipt's condition
+  tightens.** Two controls built by two independent conditions, never
+  alternatives, is the part that matters and it is unchanged. But a Receipt
+  evidences a *completed* settlement, so the Receipt's condition is no longer
+  "anything has been paid": an invoice still carrying a balance is mid
+  settlement and has no Receipt yet.
+- **A Receipt requires a recorded payment, and that is now enforced twice.**
+  *(Amended 2026-09-09: two gates, each asked twice. `receiptHasPayment` refuses
+  an invoice with no recorded component — including the zero-total invoice,
+  which is created `paid` with no payment row at all — and
+  `receiptBalanceOutstanding` refuses one that is still mid settlement. Both are
+  asked to offer the control and asked again at the renderer, and neither is
+  derivable from the other.)*
+  `receiptHasPayment` decides whether the button exists, and
+  `printPaymentReceipt` asks it again before drawing anything, so no route
+  produces a document claiming a payment nobody made. A voided payment settled
+  nothing and is not on the Receipt at all; the void is a correction and
+  corrections are history, which is on the Invoice.
+- **The Receipt states the payments and nothing that belongs to the bill.**
+  Salon identity header, the client, then one block per recorded payment
+  carrying Pawsh's own payment reference, the method, the amount, when it was
+  received, and the processor's provider, payment id and reference **only when
+  the row actually has them**. A cash or manually keyed card payment has no
+  processor fields, and those lines are then absent rather than empty: a label
+  with nothing after it still implies a card processor was involved. Beyond the
+  payments it states Total paid always, Refunded only when money has gone back,
+  and the balance only while something is still owed. It states no subtotal,
+  discount, tax, tip or invoice total, because those are the Invoice's.
+
+  **Amended 2026-09-09 in two places.** "One block per recorded payment,"
+  numbered as a series, is withdrawn: the blocks are the tender components of
+  one settlement and are presented as its composition. "Total paid always"
+  becomes **Total settled**, because an aggregate including client credit that
+  says "paid" claims money was collected that never was. Everything else in this
+  bullet - the absent-processor rule in both directions, and the exclusion of
+  subtotal, discount, tax, tip and invoice total - stands unchanged.
+- **The Receipt is numbered by the invoice it evidences.** Pawsh has no receipt
+  series and no column for one, so `Receipt #N` carries the invoice number.
+  Inventing an identifier nothing reconciles against would be worse than sharing
+  one.
+- **The client's transaction history opens the Invoice.** The row's control read
+  "Receipt" once anything had been paid and opened the retitled page; it reads
+  "Invoice" in every status now, and the terminal capture dialog's own control
+  says "View invoice" for the same reason.
+- **The Ticket is untouched by all of this.** It is not the implementation
+  behind Print Receipt, it gains no payment identity and no settlement meaning,
+  and a paid appointment does not turn a work sheet into a financial document.
+  `printPaymentReceipt` renders `paymentReceiptMarkup` and nothing else.
+
+### Left open
+
+**Settled 2026-09-09. The paragraph below is the 2026-09-08 text, retained.**
+The question it declines to take is answered by the amendment above: a Receipt
+is about the **settlement**, not about a payment, so there is nothing for an
+operator to choose between. A settlement's several tenders are its components,
+not a series. The numbered blocks this paragraph authorises are withdrawn, and
+its premise that "Pawsh takes partial payments" is superseded by the rule that
+deliberate partial payment is not an MVP workflow.
+
+**Which payment a Receipt is about when there are several.** An invoice can
+carry more than one payment — Pawsh takes partial payments — and there is one
+Print Receipt control, which does not ask. The document therefore evidences a
+clearly defined set: every recorded payment against that invoice, each kept as
+its own numbered block with its own reference, amount, method and time. No
+payment is fused into another and no row on it is a sum pretending to be a
+settlement. Whether an operator should instead be able to print a receipt for
+one chosen payment is a product decision and is deliberately not taken here.
+
+### Where it is held
+
+**Added 2026-09-09.** `tests/ui/payment-receipt.test.ts` was rewritten to
+execute the client's own functions against a recording document stub rather than
+grep its source: the four behaviours that had been pinned by whitespace-exact
+source literals — a paymentless invoice producing no Receipt, a settled invoice
+still offering Print Invoice, Print Receipt standing beside it as an independent
+control, and Print Receipt never rendering the Ticket — are now each proven to
+fail under a real mutation of `public/app.js`. The same file holds split tender
+as one Receipt of several components, the absence of any `Payment N of M`
+wording, credit counting toward Total settled without a claim that money was
+collected, refund attribution inside the component it reversed, and the reprint
+of both documents from transaction history.
+`tests/database/checkout-regression.test.ts` holds the settlement-integrity
+half: a stale expected balance refused under, equal to and over, a fresh one
+accepted, and two concurrent components resolving to one recorded row and one
+409. `tests/e2e/checkout-surface.spec.ts` holds the surface's refusal to read as
+a finished checkout while money is still owed.
+
+The 2026-09-08 record, unchanged:
+
+`tests/ui/payment-receipt.test.ts` holds the renderer's truthfulness rules
+against fixtures, including the absent-processor case in both directions.
+`tests/e2e/invoice-receipt-identity.spec.ts` walks the settlement ladder in a
+browser. `tests/database/tender-amount-and-receipt.test.ts` holds the payload
+half — that the nullable processor columns come back null for a manual payment
+and verbatim when they carry something.
 
 ## Three documents, and they are three
 
@@ -31,6 +307,18 @@ Two rules follow from that and are the practical content of this distinction:
 - **A Receipt requires a recorded payment.** An invoice with a full balance
   outstanding has produced no receipt, because nothing has been received. An
   invoice is raised by checkout; a receipt is earned by a payment.
+
+  **Superseded 2026-09-08: the gap named here is closed, and the way it was
+  first closed was itself wrong.** *(Amended 2026-09-09: closed in one half
+  only. The client history button no longer says "Receipt" on every invoice
+  row. The endpoint half stands open — `GET /api/invoices/:id/receipt` still
+  carries that name while serving both financial documents, and is cited under
+  its wrong name throughout this record. It is a naming debt, not a behavioural
+  one, and it is not fixed here.)* The paragraph below is the 2026-09-03 text.
+  Its description of the defect is accurate and its deferral is what the
+  2026-09-08 amendment above takes up. The intermediate fix — one page renamed
+  from Invoice to Receipt by its payments — is superseded: a paid Invoice
+  remains an Invoice, and the Receipt is a separate document.
 
   **The surfaces do not enforce this yet, and that is a known gap rather than a
   contradiction of the rule.** The endpoint is named `/receipt` but returns the
@@ -125,7 +413,18 @@ re-formats an invoice figure.
 What has hosts is **the invoice's money statement**, not "the receipt" — the
 distinction matters, because the receipt is one of the documents that hosts the
 statement rather than the thing being hosted. The statement has three hosts: the
-settled Check Out panel, the receipt modal, and the print root. Those three must
+settled Check Out panel, the receipt modal, and the print root.
+
+**Amended 2026-09-08.** The count is unchanged and so are the three hosts; what
+changed is which artifacts they are. All three are the INVOICE's: the settled
+Check Out panel, the dialog that `showInvoiceDocument` opens, and the print root
+that Print Invoice appends. The Receipt is **not** a fourth host and never
+became one — it states no subtotal, discount, tax, tip or invoice total, so
+there is no invoice figure on it to drift. The sentence above that calls the
+receipt "one of the documents that hosts the statement" describes the
+single-page arrangement that no longer exists.
+
+Those three must
 agree character for character for every money test id on them — subtotal, each
 discount step and the discount total, tax, tip, total, balance, refunded, and
 every payment row — and the browser assertion stays a comparison between hosts
@@ -188,9 +487,11 @@ reason a surface is ever outside this rule.
   included: the three preconditions the stale comment named — `address` in
   `businessSettingsSchema`, a route that writes it, a form input — are all met,
   so the address joins the header and the comment is corrected rather than left
-  to mislead. It serves the receipt's own printed header. The Ticket takes its
-  identity block from `state.me.business`, which `GET /api/me` already returns
-  whole with the active location's address.
+  to mislead. It serves the printed header of both financial documents — the
+  Invoice and, since 2026-09-08, the Receipt — through one `salonIdentityMarkup`
+  call each, differing only in test id. The Ticket takes its identity block from
+  `state.me.business`, which `GET /api/me` already returns whole with the active
+  location's address.
 - The Ticket is read-only, and it is read-only by choice rather than by
   necessity. The reason first recorded here has since expired: the record said
   an editor on the Ticket would be a textarea whose save the server answers with

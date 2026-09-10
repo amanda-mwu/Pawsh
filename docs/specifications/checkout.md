@@ -15,5 +15,8 @@ payment cannot exceed the remaining balance.
 Manual payments record money collected outside Pawsh as cash, external card,
 check, or other. An incorrect record is corrected with an audited void/reversal;
 Pawsh does not label that action a refund. Invoice state follows its balance:
-`open`, `partially_paid`, or `paid`. Operational appointment state remains
+`open`, `partially_paid`, or `paid`. One settlement satisfies an invoice and may
+use several tender components, so `partially_paid` is the intermediate state
+while the remaining components are still being taken. It is retained for
+compatibility and history and is not offered as a way to end a checkout. Operational appointment state remains
 independent from invoice and payment state.

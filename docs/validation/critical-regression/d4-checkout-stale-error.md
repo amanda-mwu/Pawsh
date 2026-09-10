@@ -13,7 +13,7 @@ commit cannot contain its own hash.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Invoice creation and snapshots | Yes | Yes | Yes | `checkout.perform` | `invoice.create` | `InvoiceCreated` | Validated |
 | Discount / type / configured tax / tip | Yes | Yes | Yes | `checkout.perform`; `discounts.apply` for discount | Invoice audit | Invoice event | Validated |
-| Manual and partial payment | Yes | Yes | Yes | `checkout.perform` | `payment.record` | `PaymentRecorded` | Validated |
+| Manual payment, including multi-component (split) tender | Yes | Yes | Yes | `checkout.perform` | `payment.record` | `PaymentRecorded` | Validated |
 | Manual payment void | Yes | Yes | Yes | `checkout.perform` | `payment.void` | N/A | Validated |
 | Receipt retrieval | Yes | Yes | Yes | `payments.view` | N/A | N/A | Validated |
 | Refund, correction, write-off | No | No | No | N/A | N/A | N/A | Deferred |
@@ -33,10 +33,15 @@ rate/result, tip, total, and calculation version 1. A compatible different-key
 request ensures the invoice exists; incompatible intent returns 409
 `INVOICE_ALREADY_EXISTS` without changing it.
 
-Manual payments may be partial and `externalReference` is descriptive metadata.
-Invoice-row locking permits independent payments that fit the remaining balance
-and rejects a race-induced excess with 409 `STALE_FINANCIAL_STATE`. A fresh
-excess returns 400 `PAYMENT_EXCEEDS_CURRENT_BALANCE`. Voiding preserves the
+A tender component may be smaller than the balance and `externalReference` is
+descriptive metadata. One settlement satisfies an invoice; it is not complete
+until nothing is owed, and deliberate partial payment is not an MVP workflow.
+Invoice-row locking serializes the components of one settlement. A component
+whose `expectedBalanceMinor` no longer matches the locked balance is refused
+with 409 `STALE_FINANCIAL_STATE` — whether its amount is under, equal to or over
+that stale balance — and the response carries the current `balanceMinor` so the
+surface can correct itself. A fresh excess returns 400
+`PAYMENT_EXCEEDS_CURRENT_BALANCE`. Voiding preserves the
 original record, changes effective paid amount once, and emits no outbox event.
 
 ## Idempotency and failures

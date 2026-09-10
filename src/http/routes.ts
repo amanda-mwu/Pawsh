@@ -11565,7 +11565,46 @@ export function registerRoutes(
     // split is a Pawsh decision the operator was shown before confirming, so it has to still be
     // there afterwards.
     const [items, payments, refundRows, discountRows] = await Promise.all([
-      db`select * from invoice_items where business_id=${context.businessId} and invoice_id=${id} order by line_position,id`,
+      /**
+       * WHOSE PET EACH LINE IS FOR, read through the line's own source service rather than off
+       * the invoice's appointment.
+       *
+       * The Receipt itemises the purchase and names the pet "where applicable", and applicable is
+       * decided per line. `source_appointment_service_id` is the only thing an invoice line
+       * carries that knows which service produced it, and `appointment_services` is the only row
+       * that can be walked back to a pet - the line itself has no pet and no pet id, and its
+       * `description` is the service name snapshot alone, so there is nothing on the row to read
+       * this off. A line with no source - a manual line, or one whose service has since been
+       * replaced - gets `petName: null` from the left joins and the Receipt prints no pet for it.
+       *
+       * IT IS DELIBERATELY NOT READ OFF `i.appointment_id`, which is already joined above and
+       * carries a pet. Taking it from there would stamp the visit's pet onto every line including
+       * the ones that never came from a service, which is a claim the line does not make. Read
+       * this way, the pet a line names is the pet of the service that produced THAT line.
+       *
+       * NO ROW CAN MULTIPLY AND NO FIGURE CAN MOVE. Each hop matches at most one row -
+       * `appointment_services (business_id, id)` (0052), `appointments (business_id, id)` and
+       * `pets (business_id, customer_id, id)` are each unique - so this is the same set of
+       * `invoice_items` rows in the same order it has always been, carrying one extra descriptive
+       * column and no arithmetic of any kind.
+       *
+       * EVERY HOP IS TENANT-QUALIFIED. The chain is anchored at
+       * `ii.business_id = context.businessId` and each join carries `business_id` forward from the
+       * relation before it, so all four rows are provably in the caller's business. The composite
+       * keys are the ones the foreign keys already declare - 0052 is what made the first hop
+       * expressible at all - and there is no bare `id` join anywhere in it for another salon's row
+       * to arrive through.
+       */
+      db`select ii.*, p.name as pet_name
+           from invoice_items ii
+             left join appointment_services asvc
+               on asvc.business_id=ii.business_id and asvc.id=ii.source_appointment_service_id
+             left join appointments a
+               on a.business_id=asvc.business_id and a.id=asvc.appointment_id
+             left join pets p
+               on p.business_id=a.business_id and p.customer_id=a.customer_id and p.id=a.pet_id
+           where ii.business_id=${context.businessId} and ii.invoice_id=${id}
+           order by ii.line_position,ii.id`,
       db`select * from payments where business_id=${context.businessId} and invoice_id=${id} order by recorded_at,id`,
       db<{
         id: string; paymentId: string; amountMinor: number; tipRefundedMinor: number;

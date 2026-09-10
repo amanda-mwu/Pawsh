@@ -399,7 +399,7 @@ test("a mixed group marks its own rows, and narrowing the sheet puts every badge
 
   const appointment=await openGroup(page,"appointment");
   await expect(appointment.getByTestId("role-group-note"))
-    .toContainText("8 of these 20 are marked");
+    .toContainText("6 of these 20 are marked");
   // Marked per row here, because only some of them are.
   await expect(page.locator('[data-role-permission-row="appointments.view_all_staff"] .pref-unenforced'))
     .toHaveCount(1);
@@ -426,16 +426,18 @@ test("hiding what Pawsh has not built names the groups that went, and keeps thei
   await expect(hide).not.toBeChecked();   // off on arrival, always
   await hide.check();
 
-  // 53, not 55. Two keys have graduated out of `unenforcedPermissions` since the taxonomy landed,
+  // 51, not 55. FOUR keys have graduated out of `unenforcedPermissions` since the taxonomy landed,
   // and each one moves BOTH figures by one in opposite directions: `settings.discounts` the day
-  // Settings -> Coupons & discounts became a real route family, and `customers.credit_edit` the
-  // day client credit became a real ledger and that key alone started gating the creation of money
-  // the salon owes. The total of 78 never moves - nothing was added, a switch changed sides.
+  // Settings -> Coupons & discounts became a real route family; `customers.credit_edit` the day
+  // client credit became a real ledger and that key alone started gating the creation of money the
+  // salon owes; and `calendar.blocks_create` with `calendar.blocks_edit` together, the day blocking
+  // time out stopped riding `appointments.edit` and took the switch reserved for it in 0045. The
+  // total of 78 never moves - nothing was added, switches changed sides.
   //
   // These two figures are read from a BUILD of `packages/domain`. If they pass when you expected
   // them to fail, restart the server first - see the note at the top of this file.
-  await expect(page.getByTestId("role-filter-count")).toContainText("25 of 78 permissions");
-  await expect(page.getByTestId("role-filter-count")).toContainText("53 not built yet, hidden");
+  await expect(page.getByTestId("role-filter-count")).toContainText("27 of 78 permissions");
+  await expect(page.getByTestId("role-filter-count")).toContainText("51 not built yet, hidden");
   // The wholly unbuilt groups are gone from the sheet - and named underneath it.
   await expect(group(page,"cash-drawer")).toHaveCount(0);
   const note=page.getByTestId("role-hidden-note");

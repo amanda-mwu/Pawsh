@@ -315,7 +315,7 @@ test("a balance smaller than the bill is offered as a part payment, and more tha
     await chooseMethod(page, "Client credit");
     await expect(page.getByTestId("field-pay")).toHaveValue("40.00");
     await expect(page.getByTestId("checkout-balance"))
-      .toHaveText("Balance $92.01 · $52.01 will remain · $0.00 credit will remain");
+      .toHaveText("Balance $92.01 · $52.01 still to settle · $0.00 credit will remain");
 
     await page.getByTestId("field-pay").fill("60.00");
     await page.getByTestId("checkout-submit").click();

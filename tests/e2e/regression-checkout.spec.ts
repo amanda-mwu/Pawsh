@@ -147,7 +147,10 @@ test("@regression-checkout a settled checkout offers the receipt's own correctio
   // Never "Take payment" against a zero balance: coming back to that is a route to a double charge.
   await expect(page.getByTestId("checkout-submit")).toHaveCount(0);
   await expect(page.getByTestId("checkout-done")).toBeVisible();
+  // BOTH, not one or the other. A settled bill is still a bill and still prints as an Invoice;
+  // the Receipt joins it because money has now actually been taken.
   await expect(page.getByTestId("checkout-print-receipt")).toBeVisible();
+  await expect(page.getByTestId("checkout-print-invoice")).toBeVisible();
 
   // Voiding asks for a reason and then confirms, so one handler answers both in order.
   const answer=(dialog:Dialog)=>dialog.accept(dialog.type()==="prompt"?"Keyed the wrong amount":"");

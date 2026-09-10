@@ -101,14 +101,17 @@ test("a workspace billing in a CLDR zero-decimal currency keeps its minor units 
 
     await login(page, tenant.ownerEmail);
 
-    // ---- Host 1: the receipt modal, off the client's own transaction history ----------------
+    // ---- Host 1: the invoice modal, off the client's own transaction history ----------------
     await page.getByTestId("nav-customers").click();
     const customer = page.getByTestId("customer-card").filter({ hasText: "Emma Johnson" });
     await customer.getByTestId("client-row-actions").click();
     await customer.getByTestId("client-appointment-history").click();
     const modal = page.getByTestId("modal");
-    await modal.getByRole("button", { name: "Receipt" }).click();
-    await expect(page.locator("#modal-title")).toHaveText(`Receipt #${invoice.invoiceNumber}`);
+    // THE ROW OPENS AN INVOICE, PAID OR NOT. Payment changes an invoice's settlement state, not
+    // its document identity, so this control is named "Invoice" in every state and the page it
+    // opens is headed `Invoice #N` even though this invoice is settled in full below.
+    await modal.getByRole("button", { name: "Invoice" }).click();
+    await expect(page.locator("#modal-title")).toHaveText(`Invoice #${invoice.invoiceNumber}`);
 
     // CHARACTER FOR CHARACTER. Unpinned, `Intl` wrote "COP 85", "COP 7" and "COP 102" for three of
     // these — the tax and the total off by the subunit the invoice is actually stored in.
@@ -136,9 +139,34 @@ test("a workspace billing in a CLDR zero-decimal currency keeps its minor units 
     await expect(page.getByTestId("checkout-balance")).toHaveText(`Balance COP${NB}0.00`);
     expect(await moneyCells(surface)).toEqual(inModal);
 
-    await surface.getByTestId("checkout-print-receipt").click();
+    // The Invoice print root is the statement's third host. Print Receipt sits beside it on this
+    // settled panel and renders the payment evidence instead, which states no subtotal, tax or
+    // invoice total and so is not a host for these cells.
+    await surface.getByTestId("checkout-print-invoice").click();
     const printed = await moneyCells(page.locator(".print-root"));
     expect(printed).toEqual(inModal);
+    await clearPrintRoots(page);
+
+    // ---- Host 4: THE RECEIPT, the one document the client keeps ------------------------------
+    //
+    // Its figures are ITS OWN — the settlement's total and each tender component's amount — and
+    // none of them appears on the statement asserted above, so `moneyCells` cannot see them and
+    // the Invoice's coverage says nothing whatever about them. Unpinned, this is where a peso
+    // workspace hands over "COP 102" for a settlement of 10160 minor units.
+    await surface.getByTestId("checkout-print-receipt").click();
+    const receiptDoc = page.locator(".print-root").getByTestId("payment-receipt");
+    await expect(receiptDoc).toHaveCount(1);
+    await expect(receiptDoc.getByTestId("payment-receipt-total-settled"))
+      .toContainText(`COP${NB}101.60`);
+    const tenders = receiptDoc.getByTestId("payment-receipt-tender");
+    await expect(tenders).toHaveCount(2);
+    await expect(tenders.nth(0)).toContainText(`COP${NB}40.00`);
+    await expect(tenders.nth(1)).toContainText(`COP${NB}61.60`);
+    // And NOT ONE figure on it rounded to a whole unit.
+    const onPaper = (await receiptDoc.textContent()) ?? "";
+    const figures = onPaper.match(/-?COP\u00A0[\d,]+(?:\.\d+)?/gu) ?? [];
+    expect(figures.length, onPaper).toBeGreaterThan(0);
+    for (const figure of figures) expect(figure, onPaper).toMatch(TWO_DECIMALS);
     await clearPrintRoots(page);
   });
 

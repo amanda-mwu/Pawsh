@@ -1,5 +1,6 @@
 import { createAppointment, expect, login, test } from "./fixtures/tenant.js";
 import { chooseBookingClient, chooseBookingPet, openSlotAction } from "./helpers/booking.js";
+import { dragAppointmentToSlot, prefLocalDate } from "./helpers/calendar.js";
 
 test("@regression-calendar-time keeps Los Angeles scheduling intent in a New York browser", async ({browser,request,tenant}) => {
   const localStart=`${tenant.anchor}T09:00`;
@@ -153,4 +154,112 @@ test("@cross-browser @regression-calendar-time renders groomer day lanes and pre
   // contributes no services.
   await expect(page.locator('#booking-dialog select[name="employeeId"]')).toHaveValue(secondEmployee.id);
   await expect(page.locator(`#booking-dialog input[name="serviceIds"][value="${tenant.serviceId}"]`)).not.toBeChecked();
+});
+
+/**
+ * Dragging a card is a proposal, not a commit.
+ *
+ * A drop used to apply the moment the pointer came up. On a dense grid that made a mis-aimed drag
+ * an appointment already in the wrong place, and putting it back was a SECOND move - through a
+ * dialog, past the server, refusable in its own right. The confirmation asks about every drop, not
+ * only about an occupied slot, because the mistake it catches is aiming, and an empty slot is where
+ * a mis-aimed drop lands.
+ */
+test("@regression-calendar-time confirms a dragged move and leaves the card alone on Cancel",async({page,request,tenant})=>{
+  const appointment=await createAppointment(request,tenant,{localStart:`${tenant.anchor}T09:00`});
+  await login(page,tenant.ownerEmail);
+  await page.getByTestId("nav-calendar").click();
+  await page.waitForLoadState("networkidle");
+
+  // Every schedule call, so "no request until OK" is a fact about the network rather than about
+  // what happens to be drawn.
+  const scheduleCalls:string[]=[];
+  await page.route("**/api/appointments/*/schedule",async route=>{
+    scheduleCalls.push(route.request().method());
+    await route.continue();
+  });
+
+  const card=page.locator(`.week-appointment[data-appointment-id="${appointment.id}"]`);
+  await expect(card.locator("time")).toContainText("9:00");
+  const confirm=page.getByTestId("stacked-dialog");
+
+  await dragAppointmentToSlot(page,{appointmentId:appointment.id,slot:`${tenant.anchor}T11:00`,groomerId:tenant.employeeId});
+  await expect(confirm).toBeVisible();
+  await expect(confirm.getByRole("heading",{name:"Re-schedule appointment"})).toBeVisible();
+  await expect(page.getByTestId("reschedule-confirm-question"))
+    .toHaveText(`Reschedule appointment to ${prefLocalDate(tenant.anchor)} 11:00 AM?`);
+  // Nothing has been asked of the server. The question is the whole of what the drop did.
+  expect(scheduleCalls).toEqual([]);
+
+  await confirm.getByTestId("stacked-dialog-dismiss").click();
+  await expect(confirm).toBeHidden();
+  expect(scheduleCalls).toEqual([]);
+  // Cancelling is not an undo, because nothing moved: the card is still in its own slot, and it is
+  // still there after a reload, which is the only version of that claim the server can back.
+  await expect(card.locator("time")).toContainText("9:00");
+  await page.reload();
+  await page.getByTestId("nav-calendar").click();
+  await page.waitForLoadState("networkidle");
+  await expect(page.locator(`.week-appointment[data-appointment-id="${appointment.id}"] time`)).toContainText("9:00");
+
+  // Escape is the same answer through the keyboard, and the dialog has to be holding focus for it
+  // to be the dialog that hears it.
+  await dragAppointmentToSlot(page,{appointmentId:appointment.id,slot:`${tenant.anchor}T11:00`,groomerId:tenant.employeeId});
+  await expect(confirm).toBeVisible();
+  await expect(confirm).toContainText("Reschedule appointment to");
+  await page.keyboard.press("Escape");
+  await expect(confirm).toBeHidden();
+  expect(scheduleCalls).toEqual([]);
+  await expect(page.locator(`.week-appointment[data-appointment-id="${appointment.id}"] time`)).toContainText("9:00");
+
+  // OK is where the move happens, and it is the move that was always there: one PATCH, the
+  // calendar reloaded from what the server did, and the toast naming where the card landed.
+  await dragAppointmentToSlot(page,{appointmentId:appointment.id,slot:`${tenant.anchor}T11:00`,groomerId:tenant.employeeId});
+  await expect(confirm).toBeVisible();
+  await confirm.getByTestId("stacked-dialog-confirm").click();
+  await expect(confirm).toBeHidden();
+  await expect(page.locator("#toast")).toContainText("Charlie moved to");
+  await expect(page.locator(`.week-appointment[data-appointment-id="${appointment.id}"] time`)).toContainText("11:00");
+  expect(scheduleCalls).toEqual(["PATCH"]);
+
+  await page.reload();
+  await page.getByTestId("nav-calendar").click();
+  await page.waitForLoadState("networkidle");
+  await expect(page.locator(`.week-appointment[data-appointment-id="${appointment.id}"] time`)).toContainText("11:00");
+});
+
+/**
+ * The confirmation is a gate in front of the request, not a second answer to a conflict.
+ *
+ * Pawsh keeps ONE conflict path: a refused move reopens the Move dialog on the slot the drop aimed
+ * at, so an overridable overlap keeps its "Move anyway" and an availability refusal is corrected
+ * where it was attempted. Confirming must land on that same path, which also means the
+ * confirmation has to be off the top layer before the Move dialog opens over it.
+ */
+test("@regression-calendar-time still reaches Move anyway after the drop is confirmed",async({page,request,tenant})=>{
+  await createAppointment(request,tenant,{
+    localStart:`${tenant.anchor}T11:00`,customerId:tenant.rockyCustomerId,petId:tenant.rockyPetId
+  });
+  const movable=await createAppointment(request,tenant,{localStart:`${tenant.anchor}T09:00`});
+  await login(page,tenant.ownerEmail);
+  await page.getByTestId("nav-calendar").click();
+  await page.waitForLoadState("networkidle");
+
+  // A slot already covered by another card is still a legal target - the server is the one that
+  // gets to answer with the conflict.
+  await dragAppointmentToSlot(page,{appointmentId:movable.id,slot:`${tenant.anchor}T11:00`,groomerId:tenant.employeeId});
+  const confirm=page.getByTestId("stacked-dialog");
+  await expect(confirm).toBeVisible();
+  await confirm.getByTestId("stacked-dialog-confirm").click();
+  await expect(confirm).toBeHidden();
+
+  // The refusal opens the Move dialog on the target the drop aimed at, exactly as it did before the
+  // confirmation existed.
+  await expect(page.getByTestId("modal")).toBeVisible();
+  await expect(page.getByTestId("modal").getByRole("heading",{name:"Move appointment"})).toBeVisible();
+  await expect(page.getByTestId("field-startAt")).toHaveValue(`${tenant.anchor}T11:00`);
+  await expect(page.getByTestId("confirm-conflict-override")).toHaveText("Move anyway");
+  await page.getByTestId("confirm-conflict-override").click();
+  await expect(page.getByTestId("modal")).toBeHidden();
+  await expect(page.getByTestId("conflict-override")).toHaveCount(1);
 });

@@ -79,6 +79,21 @@ test("@responsive calendar booking remains usable and persistent",async({page,te
     customerId:tenant.customerId,petId:tenant.petId,employeeId:tenant.employeeId,
     startAt:`${tenant.anchor}T09:00`
   });
+  // PRESSING BOOK IS NOT THE BOOKING LANDING. On success the client awaits the create, then a full
+  // `refresh()` - fourteen reads - then closes this dialog, and only THEN moves the calendar onto
+  // the booked date through a detached `selectCalendarDate`. The booked Monday is a week away from
+  // today's grid, so "Charlie" cannot appear until that last step runs.
+  //
+  // Waiting for the dialog to go takes the server round-trip out of the assertion below, which was
+  // otherwise budgeting its ordinary five seconds for the whole chain. On a shared server ten
+  // minutes into the suite that does not fit: the grid was still on the CURRENT week, and the run's
+  // request evidence carried no 4xx for the create - the booking had been accepted, the client had
+  // simply not finished reacting to it. The timeout here suits a multi-request mutation; the
+  // assertion that follows keeps the ordinary budget for the thing it actually asserts.
+  //
+  // NOT MOVED INTO `submitBooking`: `availability.spec.ts` and `smoke/crm-scheduling.spec.ts` book
+  // through the same helper expecting a REFUSAL, which leaves this dialog open carrying the reason.
+  await expect(page.getByTestId("booking-dialog")).toBeHidden({ timeout: 15_000 });
   await expect(page.getByTestId("calendar-list")).toContainText("Charlie");
 
   await page.reload();

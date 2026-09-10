@@ -1,5 +1,6 @@
 import { test, expect, login, completeAppointment, createMember } from "./fixtures/tenant.js";
 import { openCheckout, openAdjustment, chooseMethod, checkoutSurface } from "./helpers/checkout.js";
+import { calendarRedraw } from "./helpers/calendar.js";
 import type { APIRequestContext } from "@playwright/test";
 
 /**
@@ -63,14 +64,24 @@ test("a part payment is taken for what was typed, and the balance says what is l
   await openCheckout(page, appointment.id);
 
   await page.getByTestId("field-pay").fill("40.00");
-  // Said while the operator is still deciding, not discovered on the receipt.
-  await expect(page.getByTestId("checkout-balance")).toHaveText("Balance $92.01 · $52.01 will remain");
+  // Said while the operator is still deciding, not discovered on the receipt — and said as WORK
+  // STILL TO DO rather than as a leftover, because a component smaller than the balance leaves a
+  // settlement unfinished rather than completing a smaller one.
+  await expect(page.getByTestId("checkout-balance"))
+    .toHaveText("Balance $92.01 · $52.01 still to settle");
   await chooseMethod(page, "Cash");
   await page.getByTestId("checkout-submit").click();
 
-  // Not settled: there is still money owed, so the screen is still collecting it.
+  // Not settled: there is still money owed, so the screen is still collecting it — and it SAYS
+  // so, rather than leaving a smaller balance as the only evidence that anything happened.
   await expect(page.getByTestId("checkout-balance")).toHaveText("Balance $52.01");
+  await expect(page.getByTestId("checkout-settlement-progress"))
+    .toHaveText("Settlement in progress · $40.00 recorded · $52.01 still to settle");
   await expect(page.getByTestId("checkout-submit")).toBeVisible();
+  // NOT A FINISHED CHECKOUT. `Done` is the control that ends this screen and it is not offered
+  // while the invoice is owing; nor is the Receipt, which evidences a settlement that completed.
+  await expect(page.getByTestId("checkout-done")).toHaveCount(0);
+  await expect(page.getByTestId("checkout-print-receipt")).toHaveCount(0);
   await expect(page.getByTestId("checkout-frozen")).toContainText("already raised");
   const partial = await invoiceFor(request, appointment.id);
   expect(partial.invoice.status).toBe("partially_paid");
@@ -82,6 +93,8 @@ test("a part payment is taken for what was typed, and the balance says what is l
   await page.getByTestId("checkout-submit").click();
   await expect(checkoutSurface(page).getByTestId("receipt")).toContainText("Balance$0.00");
   await expect(page.getByTestId("checkout-done")).toBeVisible();
+  // The settlement finished, so the sentence about it being unfinished goes.
+  await expect(page.getByTestId("checkout-settlement-progress")).toHaveCount(0);
   const closed = await invoiceFor(request, appointment.id);
   expect(closed.invoice.status).toBe("paid");
   expect(closed.payments.map((payment) => payment.amountMinor)).toEqual([4000, 5201]);
@@ -169,8 +182,13 @@ test("leaving a checkout with money entered asks first, and leaving an untouched
   // Reading the bill and opening a disclosure cost nothing to abandon. A confirm here would be a
   // confirm on almost every dismissal, which is how an operator learns to click through them.
   await openAdjustment(page, "tip");
+  // ARMED BEFORE THE CLOSE, because closing schedules a detached `refresh()` that rebuilds the
+  // grid. Reopening without waiting for that redraw opens the action menu into a subtree that is
+  // discarded a few milliseconds later, and the menu does not come back. See `calendarRedraw`.
+  const redrawn = await calendarRedraw(page, appointment.id);
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("checkout-surface")).toBeHidden();
+  await redrawn();
 
   await openCheckout(page, appointment.id);
   await (await openAdjustment(page, "tip")).getByTestId("field-tip").fill("5");
@@ -188,6 +206,45 @@ test("leaving a checkout with money entered asks first, and leaving an untouched
   await expect(page.getByTestId("checkout-surface")).toBeHidden();
   expect(asked[0]).toContain("Nothing has been charged");
 });
+
+/**
+ * WALKING AWAY FROM A SETTLEMENT THAT STARTED IS THE ONE WAY TO END A CHECKOUT WITH MONEY OWING.
+ *
+ * A tender component smaller than the balance is legitimate — split tender and partial client
+ * credit are exactly that — so recording one is never blocked. Closing the surface afterwards is
+ * a different act: nothing typed is at stake, the components already landed, and what is at stake
+ * is an invoice left owing. The question is therefore asked about the invoice, and it names the
+ * figure rather than asking a generic "are you sure".
+ */
+test("closing a checkout with a settlement in progress asks about the money, not the form",
+  async ({ page, request, tenant }) => {
+    const appointment = await completeAppointment(request, tenant);
+    await login(page, tenant.ownerEmail);
+    await page.getByTestId("nav-calendar").click();
+    await page.waitForLoadState("networkidle");
+    await openCheckout(page, appointment.id);
+
+    await page.getByTestId("field-pay").fill("40.00");
+    await chooseMethod(page, "Cash");
+    await page.getByTestId("checkout-submit").click();
+    await expect(page.getByTestId("checkout-balance")).toHaveText("Balance $52.01");
+
+    // Playwright dismisses an unhandled confirm, which is the operator answering "no".
+    await page.getByTestId("checkout-surface").locator("[data-surface-close]").click();
+    await expect(page.getByTestId("checkout-surface")).toBeVisible();
+
+    const asked: string[] = [];
+    page.once("dialog", async (dialog) => {
+      asked.push(dialog.message());
+      await dialog.accept();
+    });
+    await page.getByTestId("checkout-surface").locator("[data-surface-close]").click();
+    await expect(page.getByTestId("checkout-surface")).toBeHidden();
+    // The sentence is about the invoice, and it carries the figure: "nothing has been charged" —
+    // the other guard's words — would be false here and is not what was asked.
+    expect(asked[0]).toContain("$52.01 of this invoice is still to settle");
+    expect(asked[0]).not.toContain("Nothing has been charged");
+  });
 
 test("a cashier who cannot grant money off keeps the coupon box and loses the amount", async ({
   page,

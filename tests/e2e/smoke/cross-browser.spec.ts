@@ -79,7 +79,7 @@ test("@cross-browser completed checkout receipt renders prepared totals",async({
   const customer=page.getByTestId("customer-card").filter({hasText:"Emma Johnson"});
   await customer.getByTestId("client-row-actions").click();
   await customer.getByTestId("client-appointment-history").click();
-  await page.getByRole("button",{name:"Receipt"}).click();
+  await page.getByRole("button",{name:"Invoice"}).click();
 
   const receipt=page.getByTestId("receipt");
   await expect(receipt).toContainText("Subtotal$85.00");

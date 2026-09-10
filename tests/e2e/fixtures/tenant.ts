@@ -63,7 +63,13 @@ function requireDisposableMode(): void {
 
 export async function createTenant(api: APIRequestContext, label: string): Promise<TenantFixture> {
   requireDisposableMode();
-  const runId = `pw-${Date.now()}-${label.replace(/\W+/g,"-").slice(0,18)}-${crypto.randomUUID().slice(0,6)}`;
+  // LOWERCASED, because the run id ends up inside `ownerEmail` and the server normalises every
+  // address it stores: `POST /api/auth/signup` writes `normalizeEmail(input.email)` - a trim and a
+  // lowercase - into `businesses.email`, which is the address the Invoice and Receipt letterheads
+  // render. A test title carrying a capital, "an Invoice stays an Invoice", therefore built a
+  // fixture whose `ownerEmail` no workspace would ever echo back, and any spec asserting the
+  // printed address failed on the case alone.
+  const runId = `pw-${Date.now()}-${label.replace(/\W+/g,"-").slice(0,18).toLowerCase()}-${crypto.randomUUID().slice(0,6)}`;
   const ownerEmail = `owner+${runId}@pawsh-test.example`;
   const signup = await json<{ businessId:string;locationId:string;membershipId:string }>(await api.post("/api/auth/signup",{
     data:{email:ownerEmail,password,businessName:`PW Smoke ${runId}`,timezone:"America/Los_Angeles"}

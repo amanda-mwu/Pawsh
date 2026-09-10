@@ -8,7 +8,7 @@ main{padding:42px 4.5vw;min-width:0}header{display:flex;justify-content:space-be
 dialog{border:0;border-radius:18px;padding:0;width:min(650px,calc(100vw - 30px));max-height:calc(100dvh - 20px);overflow:auto;box-shadow:var(--shadow);background:var(--paper)}dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(3px)}#modal-form{padding:28px}.modal-head,.modal-actions{display:flex;justify-content:space-between;align-items:start}.close{border:0;background:none;font-size:25px;color:var(--muted);min-width:44px;min-height:44px}.modal-actions{justify-content:flex-end;gap:10px;margin-top:20px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.form-grid .wide,.form-grid .breed-hint,.form-grid .breed-other-field{grid-column:1/-1}#toast{position:fixed;right:24px;bottom:24px;background:var(--tooltip);color:#fff;padding:12px 18px;border-radius:9px;opacity:0;transform:translateY(10px);transition:.2s;pointer-events:none}#toast.show{opacity:1;transform:none}
 #modal-error span{display:block;margin-bottom:10px}.conflict-override{display:block;color:#9a6410;font-weight:700}
 .permission-grid{border:1px solid var(--line);border-radius:10px;padding:15px;display:grid;grid-template-columns:1fr 1fr;gap:8px 15px}.permission-grid legend{font-weight:700;padding:0 6px}.permission-grid label{display:flex;align-items:center;gap:7px;margin:0;font-weight:500}.permission-grid input{width:auto}
-.card-actions{display:flex;gap:14px;border-top:1px solid var(--line);margin-top:14px;padding-top:8px}.pet-links{display:flex;flex-wrap:wrap;gap:5px;color:var(--muted)}.receipt>div{display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid var(--line)}.receipt-total{font-size:18px}
+.card-actions{display:flex;gap:14px;border-top:1px solid var(--line);margin-top:14px;padding-top:8px}.pet-links{display:flex;flex-wrap:wrap;gap:5px;color:var(--muted)}.receipt>div,.payment-receipt>div,.payment-receipt-record>div{display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid var(--line)}.receipt-total{font-size:18px}
 /* == refunds on a receipt ==
    A refund is a line UNDER the payment it came out of, indented and quieter, because the payment
    is still the fact - the customer's card really was charged that amount - and the refund is what
@@ -113,7 +113,11 @@ header>.header-services{margin-left:auto;min-height:40px;padding:8px 14px;border
 .empty-workspace{display:grid;place-items:center;align-content:center;min-height:360px;padding:32px;text-align:center}.empty-workspace h3,.empty-workspace p{margin:4px}.empty-workspace p{max-width:560px;color:var(--muted)}.empty-icon{display:grid;place-items:center;width:48px;height:48px;margin-bottom:8px;border-radius:50%;background:var(--mint);font-size:24px}
 .messages-workspace{display:grid;grid-template-columns:270px minmax(320px,1fr) 280px;min-height:calc(100vh - 145px);border:1px solid var(--line);border-radius:14px;background:var(--paper);overflow:hidden}.message-list-pane,.message-context{position:static;width:auto;height:auto;padding:16px;border-right:1px solid var(--line);background:#f1f3f1;overflow:auto}.message-context{border-right:0;border-left:1px solid var(--line);background:var(--paper)}.message-list-pane h3{margin:2px 0 12px}.message-filters{display:flex;gap:4px;overflow:auto;margin:10px 0}.message-filters button,.report-mode button,.profile-tabs button{min-height:36px;padding:6px 9px;border:1px solid var(--line);background:var(--paper);font-size:11px;font-weight:700}.message-filters button[aria-pressed=true],.report-mode button[aria-pressed=true],.profile-tabs button[aria-selected=true]{background:var(--brand);color:var(--on-brand)}.message-client-list{display:grid}.message-client{display:flex;width:100%;min-height:58px;padding:9px;border:0;border-bottom:1px solid var(--line);background:transparent;text-align:left}.message-client:hover,.message-client:focus-visible,.message-client.active{background:var(--mint)}.message-client span{display:grid;gap:3px}.message-client small{color:var(--muted)}.message-thread{display:grid;grid-template-rows:auto 1fr auto;min-width:0}.message-thread>header,.message-thread>footer{padding:14px 18px;border-bottom:1px solid var(--line)}.message-thread>footer{display:grid;grid-template-columns:1fr auto;gap:8px;border-top:1px solid var(--line);border-bottom:0}.message-thread textarea{min-height:64px}.message-client-link{color:var(--ink);font-size:17px;font-weight:800}.message-disabled-state{display:grid;place-items:center;align-content:center;padding:28px;text-align:center;color:var(--muted)}.context-pet{display:grid;width:100%;min-height:50px;margin:6px 0;padding:8px;border:1px solid var(--line);border-radius:8px;background:#fff;text-align:left}.context-pet span{color:var(--muted);font-size:11px}
 .client-profile-workspace{display:grid;grid-template-columns:minmax(280px,36%) minmax(0,1fr);min-height:calc(100vh - 150px);border:1px solid var(--line);border-radius:14px;background:var(--paper);overflow:hidden}.client-profile-left,.client-profile-right{padding:24px;overflow:auto}.client-profile-left{border-right:1px solid var(--line);background:#f1f3f1}.profile-facts{display:grid;gap:8px}.profile-facts div{display:grid;gap:2px}.profile-facts dt{color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase}.profile-facts dd{margin:0}.profile-tabs{display:flex;margin:20px 0 10px}.profile-pets,.profile-appointment-list{display:grid;gap:6px}.profile-appointment-row{display:grid;width:100%;min-height:58px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;text-align:left}.profile-appointment-row.active{border-color:var(--ink);box-shadow:inset 3px 0 var(--ink)}.profile-appointment-row{grid-template-columns:1fr auto;align-items:center;min-height:44px}.profile-appointment-row strong{text-transform:capitalize}
-.report-mode{display:flex}.report-mode button:first-child{border-radius:8px 0 0 8px}.report-mode button:last-child{border-radius:0 8px 8px 0}.report-filters{display:flex;align-items:end;gap:10px;margin-bottom:14px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--paper)}.report-filters label{display:grid;gap:4px;font-size:11px;font-weight:700}.report-table-wrap{overflow:auto;border:1px solid var(--line);border-radius:10px}
+.report-mode{display:flex}.report-mode button:first-child{border-radius:8px 0 0 8px}.report-mode button:last-child{border-radius:0 8px 8px 0}.report-filters{display:flex;align-items:start;gap:10px;margin-bottom:14px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--paper)}.report-filters label{display:grid;gap:4px;margin:0;font-size:11px;font-weight:700}.report-table-wrap{overflow:auto;border:1px solid var(--line);border-radius:10px}
+/* The filter row is top-aligned so the groomer picker, which is taller than a single input, hangs
+   below the others instead of pushing From and Range down. Apply is offset onto the control row by
+   the 11px caption line plus the label's own 4px gap. */
+.report-filters>button{margin-top:19px}
 @media(max-width:1000px){.messages-workspace{grid-template-columns:240px 1fr}.message-context{grid-column:1/-1;border-top:1px solid var(--line);border-left:0}.client-profile-workspace{grid-template-columns:1fr 1.4fr}}
 /* Messages shows the client profile's own summary column, so the shared section drops the framing
    it needs as a profile pane and takes the padding of the context pane it sits in. The pane is
@@ -122,7 +126,7 @@ header>.header-services{margin-left:auto;min-height:40px;padding:8px 14px;border
 #message-client-context{background:var(--paper)}
 #message-client-context .client-profile-left{padding:0;border-right:0;background:transparent;overflow:visible}
 #message-client-context .context-actions{margin-top:14px}
-@media(max-width:700px){.messages-workspace,.client-profile-workspace{display:block;min-height:0}.message-list-pane,.message-thread,.message-context,.client-profile-left,.client-profile-right{min-height:0;max-height:none;border:0;border-bottom:1px solid var(--line)}.message-thread{min-height:420px}.report-filters{align-items:stretch;flex-direction:column}.header-icon-button{width:40px;height:40px}.client-profile-left,.client-profile-right{padding:16px}}
+@media(max-width:700px){.messages-workspace,.client-profile-workspace{display:block;min-height:0}.message-list-pane,.message-thread,.message-context,.client-profile-left,.client-profile-right{min-height:0;max-height:none;border:0;border-bottom:1px solid var(--line)}.message-thread{min-height:420px}.report-filters{align-items:stretch;flex-direction:column}.report-filters>button{margin-top:0}.header-icon-button{width:40px;height:40px}.client-profile-left,.client-profile-right{padding:16px}}
 
 /* Client and reminder operations. */
 .client-identity{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:12px;margin:14px 0}.client-identity h2,.client-identity p{margin:0}.client-avatar,.pet-avatar{display:grid;place-items:center;width:48px;height:48px;border-radius:50%;background:var(--ink);color:#fff;font-family:var(--font-sans);font-size:22px}.profile-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:18px}.profile-summary>div{display:grid;gap:3px;padding:12px;border:1px solid var(--line);border-radius:9px;background:#f1f3f1}.profile-summary span{color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase}.profile-summary strong{font-size:20px}.profile-invoices{margin-top:18px}.profile-invoices>div{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-top:1px solid var(--line);font-size:12px}.pet-profile-modal{display:grid;grid-template-columns:auto 1fr;gap:12px}.pet-profile-modal h3,.pet-profile-modal p{margin:0}.pet-profile-facts{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:8px 0}.pet-profile-facts div{padding:9px;border:1px solid var(--line);border-radius:8px}.pet-profile-facts dt{color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase}.pet-profile-facts dd{margin:3px 0 0;white-space:pre-wrap}
@@ -297,19 +301,23 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 
 /* Groomer identity colour. Hues are lightness-separated so they stay
    distinguishable under deuteranopia/protanopia, and every surface that uses
-   one also shows the groomer's name - colour is never the only channel. */
-[data-groomer-slot="0"]{--g:var(--groomer-1);--g-tint:var(--groomer-1-tint)}
-[data-groomer-slot="1"]{--g:var(--groomer-2);--g-tint:var(--groomer-2-tint)}
-[data-groomer-slot="2"]{--g:var(--groomer-3);--g-tint:var(--groomer-3-tint)}
-[data-groomer-slot="3"]{--g:var(--groomer-4);--g-tint:var(--groomer-4-tint)}
-[data-groomer-slot="4"]{--g:var(--groomer-5);--g-tint:var(--groomer-5-tint)}
+   one also shows the groomer's name - colour is never the only channel.
+   ONE PALETTE, TWO ATTRIBUTES. `data-block-slot` is a blocked time's own colour and
+   `data-groomer-slot` is a person's; they name different things and must not be
+   confused in markup, but they resolve to the same ten tokens, so they share the
+   rules that define them rather than growing a second set to drift from. */
+[data-groomer-slot="0"],[data-block-slot="0"]{--g:var(--groomer-1);--g-tint:var(--groomer-1-tint)}
+[data-groomer-slot="1"],[data-block-slot="1"]{--g:var(--groomer-2);--g-tint:var(--groomer-2-tint)}
+[data-groomer-slot="2"],[data-block-slot="2"]{--g:var(--groomer-3);--g-tint:var(--groomer-3-tint)}
+[data-groomer-slot="3"],[data-block-slot="3"]{--g:var(--groomer-4);--g-tint:var(--groomer-4-tint)}
+[data-groomer-slot="4"],[data-block-slot="4"]{--g:var(--groomer-5);--g-tint:var(--groomer-5-tint)}
 /* Slots 5-9 are reachable only by an explicit choice in Settings -> Staff. The hash still
    returns 0-4, so no calendar that has never opened that screen changes colour. */
-[data-groomer-slot="5"]{--g:var(--groomer-6);--g-tint:var(--groomer-6-tint)}
-[data-groomer-slot="6"]{--g:var(--groomer-7);--g-tint:var(--groomer-7-tint)}
-[data-groomer-slot="7"]{--g:var(--groomer-8);--g-tint:var(--groomer-8-tint)}
-[data-groomer-slot="8"]{--g:var(--groomer-9);--g-tint:var(--groomer-9-tint)}
-[data-groomer-slot="9"]{--g:var(--groomer-10);--g-tint:var(--groomer-10-tint)}
+[data-groomer-slot="5"],[data-block-slot="5"]{--g:var(--groomer-6);--g-tint:var(--groomer-6-tint)}
+[data-groomer-slot="6"],[data-block-slot="6"]{--g:var(--groomer-7);--g-tint:var(--groomer-7-tint)}
+[data-groomer-slot="7"],[data-block-slot="7"]{--g:var(--groomer-8);--g-tint:var(--groomer-8-tint)}
+[data-groomer-slot="8"],[data-block-slot="8"]{--g:var(--groomer-9);--g-tint:var(--groomer-9-tint)}
+[data-groomer-slot="9"],[data-block-slot="9"]{--g:var(--groomer-10);--g-tint:var(--groomer-10-tint)}
 /* Lightly tinted block with a stronger edge, never a saturated fill. */
 .week-appointment[data-groomer-slot]{background:var(--g-tint);border-left-color:var(--g)}
 .week-groomer-head[data-groomer-slot],.day-groomer[data-groomer-slot]{box-shadow:inset 0 -3px 0 var(--g)}
@@ -2341,6 +2349,18 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
   background:var(--brand-tint);font-size:12.5px;font-weight:600;
 }
 .checkout-remainder input{width:16px;height:16px;min-height:0;margin:0;accent-color:var(--brand)}
+/* A SETTLEMENT IN PROGRESS, SAID BEFORE THE OPERATOR DECIDES THEY ARE FINISHED. Warning-toned
+   rather than brand-toned: this is not a feature of the screen, it is an unfinished obligation,
+   and the one thing on the surface that must not read as a completed outcome. --warning on
+   --warning-tint measures above AA at this weight, and the figure carries the emphasis because
+   the figure is what the operator is deciding about. */
+.checkout-settlement-progress{
+  display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin:0;
+  padding:8px 10px;border-radius:var(--radius-sm);
+  background:var(--warning-tint);color:var(--warning);
+  font-size:12.5px;font-weight:600;line-height:1.4;
+}
+.checkout-settlement-progress strong{font-variant-numeric:tabular-nums}
 /* A chip row, not a select. Six or fewer options; above that checkout renders the shared
    <select> instead and none of this applies. */
 .checkout-methods{display:grid;gap:var(--space-2);margin:0;padding:0;border:0;min-width:0}
@@ -2385,8 +2405,10 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
    ways - a grey ground, one centred sheet on it, and two plain tables. New tokens: none. New
    component families: none.
 
-   NOTHING HERE STYLES `.receipt`. The receipt is a different document and it stays in Check Out,
-   so this block has no money rules to write and no identity lines to suppress. */
+   NOTHING HERE STYLES `.receipt`. The financial documents are different documents with their own
+   rules further down, so this block has no money rules to write and no identity lines to
+   suppress. (They are no longer Check Out's alone - both also print from the invoice dialog -
+   but nothing here depended on where they were reached from.) */
 
 /* A thin bar carrying the reference and the dismissal, and nothing else. */
 .ticket-head{padding-block:var(--space-3)}
@@ -2417,15 +2439,52 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
   display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1fr);
   gap:var(--space-3) var(--space-5);align-items:start;
 }
-.ticket-salon,.ticket-visit{display:grid;gap:3px;min-width:0}
+/* `.salon-identity` is the SHARED block: the Ticket's head and the Receipt's head are one
+   renderer, so they are one set of rules too. Only the Ticket pairs it with a visit column. */
+.salon-identity,.ticket-visit{display:grid;gap:3px;min-width:0}
 .ticket-visit{justify-items:end;text-align:right}
-.ticket-business{margin:0;font:600 15px/1.35 var(--font-sans)}
+.salon-identity-name{margin:0;font:600 15px/1.35 var(--font-sans)}
 /* FULL-INK VALUES, NOT MUTED ONES. This is a printed sheet and the head is the address block on
    it, so the label and the value are separated by weight alone - setting the value back in grey
    would make every fact on the sheet secondary to its own caption, and grey is the first thing a
    laser printer loses. */
-.ticket-salon-line,.ticket-visit p{margin:0;font-size:12.5px;line-height:1.6}
-.ticket-salon-line span,.ticket-visit span{font-weight:600}
+.salon-identity-line,.ticket-visit p{margin:0;font-size:12.5px;line-height:1.6}
+.salon-identity-line span,.ticket-visit span{font-weight:600}
+/* On the receipt the block is a HEAD, not a money row, and it says so in its tag: `.receipt>div`
+   is the statement's own row rule - a flex line with a rule above it - and a <header> is simply
+   not one of those rows. That is also what keeps a money-row sweep honest, because anything
+   walking the statement's div children is walking money and nothing else. */
+/* `overflow-wrap` restated because the Ticket's copy inherits it from `.ticket-doc` and the
+   Receipt has no such ancestor: the modal and the settled Check Out panel are both narrow on a
+   phone, and a long address or email must wrap rather than push the statement sideways. */
+.receipt>.salon-identity,.payment-receipt>.salon-identity{padding:0 0 4px;overflow-wrap:anywhere}
+
+/* == The Receipt's tender composition ==
+   One settlement, several tender components, and the composition line is the one a reader scans
+   down: method on the left, amount on the right, weighted so the identifying detail beneath it
+   (reference, time, processor fields) reads as detail rather than as more of the list. It
+   inherits the row geometry from `.payment-receipt-record>div` at the top of this file, so only
+   the emphasis is set here. */
+.payment-receipt-tender{font-size:15px}
+.payment-receipt-tender strong{font-variant-numeric:tabular-nums}
+/* Said on the component that no money was collected for it. Muted, because it qualifies the line
+   above rather than competing with it, and `.print-root .fine` already sizes it for paper. */
+.payment-receipt-record>.fine{margin:6px 0 0;color:var(--muted);font-size:12px;line-height:1.4}
+/* Money going back OUT of this component, attributed to it rather than summed away. The same
+   left rail the Invoice's refund rows carry, so a refund looks like a refund on both documents. */
+.payment-receipt-refund{
+  padding-left:13px;border-top:0;border-left:3px solid var(--info);
+  color:var(--info);font-size:12.5px;
+}
+.payment-receipt-refund strong{font-variant-numeric:tabular-nums}
+
+/* The print controls under an Invoice opened away from Check Out. A row, separated from the
+   statement above it, so the two documents are offered as two controls rather than folded into
+   the money. */
+.document-actions{
+  display:flex;flex-wrap:wrap;gap:var(--space-2);
+  margin-top:14px;padding-top:12px;border-top:1px solid var(--line);
+}
 
 .ticket-section{display:grid;gap:var(--space-2)}
 .ticket-section>h3{margin:0;font:600 13px/1.35 var(--font-sans)}
@@ -2484,11 +2543,23 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
    dialogs, so anything whose meaning depended on a fill would silently lose it. The table header
    row therefore stops relying on its tint and takes a rule under it instead.
 
-   The `.print-root` rules below are the RECEIPT's, which prints from Check Out and from the
-   receipt modal. They change colour, border colour, font-size and break behaviour only. They set
-   no `text-transform`, no `content`, no `font-variant-numeric` and no `letter-spacing` inside
-   `.receipt`, and they hide no element carrying a figure - the only hides are two controls. That
-   is what keeps the printed figures character-identical to the ones on screen. */
+   The `.print-root` rules below are the two FINANCIAL documents': the Invoice, which is the same
+   statement the invoice dialog shows and is printable in every settlement state, and the Receipt,
+   which is available once the settlement is COMPLETE - a recorded component AND nothing still
+   owed. Both print from the Check Out footer and from the invoice dialog; neither is Check Out's
+   alone. They change colour, border colour, font-size and break
+   behaviour only. They set no `text-transform`, no `content`, no `font-variant-numeric` and no
+   `letter-spacing` inside `.receipt` or `.payment-receipt`, and they hide no element carrying a
+   figure - the only hides are two controls. That is what keeps the printed figures
+   character-identical to the ones on screen.
+
+   Neither financial document is selected by a root class of its own. The Invoice's root carries
+   only `.print-root`; the Receipt's also carries `.print-payment-receipt`, which is a
+   DOCUMENT-IDENTITY marker and has no rule here on purpose - it is what tells the two apart in the
+   DOM, since `printFinancialRoot` builds them the same way. Receipt-only paper rules hang off
+   `.payment-receipt-record` and `.payment-receipt-refund` instead: narrower, and they travel with
+   the markup. `.print-ticket` below is the exception - it is both marker and style hook, because
+   the Ticket's screen frame has to come off on paper. */
 @media print{
   /* Page size is the printer's - US Letter or A4 - so the layout declares neither. */
   @page{size:auto;margin:14mm}
@@ -2509,7 +2580,10 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
   /* Keep a short section whole, and never split a row across a page break. */
   .print-ticket .ticket-section{break-inside:avoid;page-break-inside:avoid}
   .print-ticket .ticket-table tr{break-inside:avoid;page-break-inside:avoid}
-  .print-root .receipt>div{break-inside:avoid;page-break-inside:avoid}
+  .print-root .receipt>div,.print-root .receipt>.salon-identity{break-inside:avoid;page-break-inside:avoid}
+  /* One payment is one block of facts and is never split across a page: half a payment on the
+     second sheet is half a piece of evidence. */
+  .print-root .payment-receipt-record{break-inside:avoid;page-break-inside:avoid}
 
   /* Controls, not figures. Hiding them cannot change a number. `refund-exhausted` is a FACT and
      is not in this list: it prints. */
@@ -2522,10 +2596,16 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
     border:1px solid #666;background:transparent!important;color:#111!important;
   }
   .print-root .receipt>.receipt-refund{border-left-color:#666!important}
+  /* The Receipt's own refund rows, for the same reason: on paper the rail is structure, not a
+     hue, and the figure beside it must not depend on colour to read as money going back. */
+  .print-root .payment-receipt-refund{border-left-color:#666!important;color:#111!important}
   .print-root .receipt-refund.is-failed .receipt-refund-amount{text-decoration:line-through}
 
   .print-ticket .ticket-doc-reference{font-size:13pt}
-  .print-ticket .ticket-business{font-size:12pt}
+  /* `.print-root`, not `.print-ticket`: the same head prints at the top of the Invoice and of
+     the Receipt, and it has to read as a header there rather than as the first line of the body
+     under it. */
+  .print-root .salon-identity-name{font-size:12pt}
   .print-ticket h3{font-size:11pt}
   .print-root .fine{font-size:9pt}
 }
@@ -2596,3 +2676,182 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
 /* Revealed only while credit is the chosen method, so it can afford to be tinted - it is never
    sitting there inert. The same rule `.checkout-remainder` follows. */
 .checkout-credit-note{display:flex;align-items:center;gap:var(--space-2);margin:0;padding:7px 9px;border-radius:var(--radius-sm);background:var(--brand-tint);font-size:12.5px;font-weight:600;line-height:1.4}
+
+/* == Blocked time on the calendar ==
+   DISTINGUISHED BY ANATOMY, NOT BY HUE. Colour on this grid means which groomer, so a tinted band
+   would read as somebody's appointment. A block is instead a hatched tint - the same
+   repeating-linear-gradient geometry as `.week-slot.closed`, so "nothing can be booked here" looks
+   the same whether the salon is shut or the groomer is at lunch - bordered 1px all round where an
+   appointment carries its 4px left rail. Below the cards in z-order: an appointment painted over a
+   block still reads as the appointment. The band opens the Block Time dialog now, but it is still
+   not a card: it is not draggable and not a drop target, and the click arrives through the nested
+   button rather than through the region. */
+.calendar-block{z-index:1;align-self:stretch;margin:2px 4px;padding:0;border:1px solid #9aa39d;border-radius:6px;background:repeating-linear-gradient(135deg,#eceeec,#eceeec 5px,#d4dad5 5px,#d4dad5 10px);color:var(--ink);overflow:hidden}
+/* The one tab stop and the one activation target, filling the region so the whole band is the
+   click it looks like. Transparent, so the hatch above shows through unchanged. */
+.calendar-block-open{display:block;width:100%;height:100%;min-height:0;padding:2px 5px;border:0;border-radius:5px;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.calendar-block-open:focus-visible{outline:3px solid rgba(179,38,30,.55);outline-offset:-3px}
+/* Two lines at 30-minute density, clipped rather than wrapped away: the range leads, so a clipped
+   band still says when it is, and the hover carries the whole of it. */
+.calendar-block-label{display:block;overflow:hidden;font-size:10px;font-weight:700;line-height:1.25;letter-spacing:-.01em;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.calendar-block:hover,.calendar-block:focus-within{border-color:var(--muted)}
+/* An operator's colour, spent ENTIRELY ON CHROME. --g paints the border and --g-tint replaces the
+   pale half of the hatch; the darker stripe and the 1px all-round border stay, so a coloured block
+   is still unmistakably a block rather than a card. The label is never recoloured: Amber, Teal and
+   Steel blue all measure under 4.5:1 as text on their own tint, so text here stays --ink whatever
+   colour the band carries. */
+.calendar-block[data-block-slot]{border-color:var(--g);background:repeating-linear-gradient(135deg,var(--g-tint),var(--g-tint) 5px,#d4dad5 5px,#d4dad5 10px)}
+/* TWO BLOCKS AT THE SAME TIME ARE TWO BANDS, NOT ONE.
+   `blockedTimeColumnLayout` hands each band the lane it was given and the number of lanes its
+   cluster needs; this divides the column by that count. It is deliberately NOT `.week-appointment
+   .overlap`'s fixed 14px inset: that inset buys a second card one visible edge and buys a third
+   nothing at all, and a stack of blocks has no ceiling. Equal lanes keep every band's own label
+   readable from its own left edge, which is what makes each one findable rather than merely
+   present. The 8px is `.calendar-block`'s own 4px gutters, restated here because the margin
+   shorthand above no longer sets the left one. */
+.calendar-block[data-block-lanes]{width:calc((100% - 8px)/var(--block-lanes) - 2px);margin-left:calc(4px + var(--block-lane)*(100% - 8px)/var(--block-lanes));margin-right:0;justify-self:start}
+/* The label loses its second line long before the band loses its edges, so a stacked band leads
+   with the hour and clips the note rather than wrapping into an unreadable column of characters.
+   The hover preview and the accessible name still carry the whole of it. */
+.calendar-block[data-block-lanes] .calendar-block-label{overflow-wrap:normal;word-break:keep-all}
+.calendar-block[data-block-lanes] .calendar-block-open{padding:2px 3px}
+
+/* == The Block Time dialog ==
+   The shared right-hand `.drawer` anatomy - head, one scrolling body, pinned foot - because a
+   block's history is unbounded and Update, Delete and Cancel must not scroll away below it. */
+.blocked-time-body{display:grid;gap:var(--space-4);align-content:start}
+.blocked-time-fields{display:grid;gap:0}
+.blocked-time-fields label{margin-bottom:14px}
+/* Date, Start and End read as one fact and are laid out as one row; they stack under 420px so
+   three native pickers never fight for the same 100px. */
+.blocked-time-schedule{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) minmax(0,1fr);gap:var(--space-3)}
+.blocked-time-schedule label,.blocked-time-schedule .time-picker-field{margin-bottom:0}
+@media(max-width:420px){.blocked-time-schedule{grid-template-columns:minmax(0,1fr)}}
+
+/* == The Block Time clock ==
+   Amanda's reference: three scrolling columns - hour, minute, AM/PM - the current value
+   highlighted, a visible scrollbar on the hour, and an OK that commits. BLOCK TIME ONLY; every
+   other time input in the product is still the browser's own control.
+   The field keeps the same anatomy a `<label>` gives it - caption above, control below, 16px under
+   it - because it IS still a field. What is added is a 44px clock beside the input and a popover
+   hung off the wrapper, and the wrapper is what carries `position:relative`. */
+.time-picker-field{position:relative;display:grid;gap:7px;min-width:0;margin-bottom:16px;font-size:13px;font-weight:600}
+.form-grid .time-picker-field.wide{grid-column:1/-1}
+.time-picker-control{display:flex;align-items:stretch;gap:var(--space-2);min-width:0}
+.time-picker-control input{flex:1;min-width:0}
+/* 44px square, which is the tested target contract rather than a rounding of the 36px icon token:
+   it sits beside a native input the operator may be aiming at with a thumb. */
+.time-picker-trigger{display:grid;place-items:center;flex:0 0 44px;width:44px;min-height:44px;padding:0;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--muted)}
+.time-picker-trigger svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.time-picker-trigger:hover:not(:disabled),.time-picker-trigger[aria-expanded="true"]{border-color:var(--brand);background:var(--brand-tint);color:var(--brand)}
+.time-picker-trigger:focus-visible{outline:3px solid rgba(179,38,30,.55);outline-offset:1px}
+.time-picker-trigger:disabled{background:var(--surface-2)}
+/* Flipped and aligned by `positionTimePicker` against the dialog it is inside, so a popover on the
+   End field opens leftwards instead of pushing a horizontal scrollbar into the drawer body. */
+/* 252px is three 44px targets plus their gaps, padding and borders with room to spare, and it is
+   stated against the VIEWPORT rather than against the field: an absolutely positioned box resolves
+   a percentage against its positioned ancestor, which here is a 152px column of the drawer's
+   three-field schedule row - so `100%` would have squeezed the three columns to 42px and quietly
+   broken the target contract on the one control that most needs it. */
+.time-picker-popover{position:absolute;z-index:40;min-width:min(252px,calc(100vw - 32px));max-width:calc(100vw - 32px);padding:var(--space-2);border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--paper);box-shadow:0 10px 26px rgba(32,37,34,.22)}
+.time-picker-popover[data-time-picker-drop="up"]{bottom:100%;margin-bottom:var(--space-1)}
+.time-picker-popover:not([data-time-picker-drop="up"]){top:100%}
+.time-picker-popover[data-time-picker-align="right"]{right:0;left:auto}
+.time-picker-popover:not([data-time-picker-align="right"]){left:0;right:auto}
+.time-picker-columns{display:flex;align-items:start;gap:var(--space-2)}
+.time-picker-column{display:grid;flex:1;gap:var(--space-1);min-width:0}
+.time-picker-column-name{color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.06em;text-align:center;text-transform:uppercase}
+/* FOUR AND A HALF ROWS, WHICH IS THE SCROLL AFFORDANCE THAT DOES NOT DEPEND ON THE PLATFORM.
+   The reference leans on a visible scrollbar, and the styled one below is drawn wherever the
+   browser draws a classic scrollbar at all - but macOS, and Chromium in some configurations, use
+   an overlay bar that is invisible until something scrolls. A half-clipped fifth row says "there
+   is more below this" in every one of those cases, so the column is never a list that merely looks
+   short. */
+.time-picker-options{display:grid;gap:2px;max-height:206px;padding:2px;overflow-y:scroll;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface-2)}
+/* `overflow-y:scroll` and the webkit pseudo-elements, and deliberately NOT `scrollbar-width` -
+   setting that standard property makes Chromium ignore these rules and fall back to an overlay bar
+   that appears only while scrolling. The scrollbar IS the affordance here: it is what tells the
+   operator the column has more hours below the four on screen. */
+.time-picker-options::-webkit-scrollbar{width:8px}
+.time-picker-options::-webkit-scrollbar-thumb{border-radius:4px;background:#9aa39d}
+.time-picker-options::-webkit-scrollbar-track{border-radius:4px;background:#dfe3df}
+.time-picker-options:focus-visible{outline:3px solid rgba(179,38,30,.55);outline-offset:1px}
+.time-picker-option{min-width:44px;min-height:44px;padding:0 var(--space-2);border:0;border-radius:var(--radius-sm);background:transparent;color:var(--ink);font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
+.time-picker-option:hover{background:var(--brand-tint)}
+.time-picker-option[aria-selected="true"]{background:var(--brand);color:var(--on-brand)}
+/* The one control that commits, at the same 44px the options it commits are drawn at - it is the
+   end of a pointer gesture that has just been aiming at 44px rows. */
+.time-picker-foot{display:flex;justify-content:flex-end;margin-top:var(--space-2)}
+.time-picker-ok{min-width:64px;min-height:44px}
+/* The salon's own reading of the three fields above. Muted, because it restates rather than adds -
+   but present, because the native pickers render in the browser's locale and this does not. */
+.blocked-time-when{margin:10px 0 16px;padding:8px 11px;border-radius:var(--radius-sm);background:var(--surface-2);color:var(--ink);font-size:12.5px;font-weight:600;font-variant-numeric:tabular-nums}
+/* Why a control is read-only, in the place the control is. */
+.blocked-time-locked{margin:0 0 14px;padding:9px 11px;border-radius:var(--radius-sm);background:var(--warning-tint);color:var(--warning);font-weight:600}
+/* The unset swatch. `.staff-swatch.is-auto` hatches with --g-tint because a groomer with no chosen
+   colour still HAS one from the hash; a block with no colour has none, so this previews what the
+   band actually looks like unpainted - the same two greys `.calendar-block` is drawn in. */
+.staff-swatch.is-none .staff-swatch-dot{border-color:#9aa39d;background:repeating-linear-gradient(135deg,#eceeec 0 4px,#d4dad5 4px 8px)}
+.blocked-time-colours{margin-bottom:var(--space-4)}
+.blocked-time-repeat{min-width:0;margin:0;padding:0;border:0}
+.blocked-time-repeat legend{padding:0;font-size:13px;font-weight:600}
+.blocked-time-repeat-options{display:flex;flex-wrap:wrap;gap:var(--space-4);margin-top:var(--space-2)}
+.blocked-time-repeat-option{display:flex;align-items:center;gap:7px;min-height:44px;margin:0;font-weight:600}
+.blocked-time-repeat-option input{width:18px;height:18px;padding:0;accent-color:var(--brand)}
+/* Disabled, not hidden, and it looks disabled rather than absent - the explanation underneath is
+   what the greying is there to send the reader to. */
+.blocked-time-repeat-option.is-unavailable{color:var(--muted);cursor:not-allowed}
+.blocked-time-foot{align-items:center}
+.blocked-time-foot-gap{flex:1}
+/* Destructive, but not shouting: red text on the neutral secondary shell, the same weight the
+   calendar's own Cancel appointment action carries. */
+.blocked-time-delete:not(:disabled){color:var(--danger);border-color:var(--danger-line)}
+.blocked-time-delete:not(:disabled):hover{background:var(--danger-tint)}
+.blocked-time-activity{padding-top:var(--space-4);border-top:1px solid var(--line)}
+.blocked-time-activity h4{margin:0 0 var(--space-3)}
+.blocked-time-events{display:grid;gap:var(--space-3);margin:0;padding:0;list-style:none}
+/* A left rail per entry, and the rail is the channel that separates observed from reconstructed. */
+.blocked-time-event{padding:2px 0 2px 12px;border-left:3px solid var(--line)}
+.blocked-time-event-head{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);margin:0 0 2px;font-size:13px}
+.blocked-time-event-meta{margin:0 0 6px;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+.blocked-time-event-fields{display:grid;gap:3px;margin:0;font-size:12.5px}
+.blocked-time-event-fields div{display:flex;flex-wrap:wrap;gap:6px}
+.blocked-time-event-fields dt{color:var(--muted);font-weight:700}
+.blocked-time-event-fields dd{margin:0}
+.blocked-time-event-from{color:var(--muted);text-decoration:line-through}
+.blocked-time-event .fine{margin:0}
+/* RECONSTRUCTED, AND SAYING SO IN TWO CHANNELS. `derived: true` means this entry was rebuilt at
+   read time from `created_by`/`created_at` rather than read from the audit log, and a reader has to
+   be able to tell the two apart. The dashed rail is the glance; the tag is the word. Neither is
+   colour alone, and the entry's own sentence says where it came from. */
+.blocked-time-event.is-derived{border-left-style:dashed;border-left-color:var(--muted)}
+.blocked-time-event-tag{padding:1px 7px;border:1px dashed var(--muted);border-radius:999px;color:var(--muted);font-size:10.5px;font-weight:700;letter-spacing:.03em;text-transform:uppercase}
+
+/* ONE EYE, INSIDE THE FIELD, AND THE SAME ONE THE MOBILE APP DRAWS.
+   `apps/mobile/app/login.tsx` is the reference: the control sits inside the field's border, its
+   glyph is small but its target is a full 44 square, and its accessible name says what pressing it
+   will do. The web has to match, because an operator who learns the eye on the phone has to find
+   the same thing on the laptop.
+
+   THE OVERLAY IS A GRID CELL, NOT A MARGIN TRICK. Label and button share cell 1/1, so the button
+   aligns to the bottom of the label's box - which is the input's bottom edge, since the label's
+   own margin moves out to the wrapper. Anchoring it any other way would depend on whether the
+   wrapper's parent collapses margins, and `#auth-form` and `.profile-form` disagree about that. */
+.password-field{display:grid;margin-bottom:16px}
+.password-field>label{grid-area:1/1;margin:0}
+/* Room for the button, so a long password does not run underneath it. */
+.password-field>label input{padding-right:52px}
+.profile-form .password-field{margin-bottom:0}
+.password-reveal{grid-area:1/1;align-self:end;justify-self:end;display:grid;place-items:center;width:44px;height:44px;margin-right:3px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--muted)}
+.password-reveal svg{display:block;width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.password-reveal:hover{color:var(--ink)}
+/* Inset, because the default 3px offset would draw the ring on top of the field's own border. */
+.password-reveal:focus-visible{outline:3px solid var(--coral);outline-offset:-2px}
+/* THE GLYPH IS DRIVEN BY `aria-pressed`, so what a sighted operator sees and what a screen reader
+   is told cannot drift apart: there is one piece of state and both read it. */
+.password-reveal .reveal-eye-off{display:none}
+.password-reveal[aria-pressed="true"] .reveal-eye{display:none}
+.password-reveal[aria-pressed="true"] .reveal-eye-off{display:block}
+/* NEVER TWO EYES. Edge draws a reveal control of its own inside every password field; Chrome does
+   not. Suppressing it leaves exactly one affordance in every browser, and it is ours. */
+input[type="password"]::-ms-reveal,input[type="password"]::-ms-clear{display:none}

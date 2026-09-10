@@ -1,5 +1,6 @@
 import { appointmentAction, createAppointment, prepareReceipt, test, expect, login } from "./fixtures/tenant.js";
 import { expectNoDocumentOverflow } from "./helpers/responsive.js";
+import { dragAppointmentToSlot, prefLocalDate } from "./helpers/calendar.js";
 import type { Page } from "@playwright/test";
 
 /**
@@ -586,7 +587,8 @@ test("choosing kilograms re-captions the price bands and the pet weights togethe
   await expect(page.locator("body")).not.toContainText(/\d+ lb\b/);
 });
 
-test("choosing DD/MM/YYYY and 24 Hours changes what the operator reads",async({page,tenant})=>{
+test("choosing DD/MM/YYYY and 24 Hours changes what the operator reads",async({page,request,tenant})=>{
+  const appointment=await createAppointment(request,tenant,{localStart:`${tenant.anchor}T09:00`});
   await login(page,tenant.ownerEmail);
   await openBusiness(page);
   await page.getByTestId("business-date-format").selectOption("DD/MM/YYYY");
@@ -605,6 +607,16 @@ test("choosing DD/MM/YYYY and 24 Hours changes what the operator reads",async({p
   await expect(page.locator("#calendar-range")).toHaveText(/^[A-Z][a-z]+day, \d{2}\/\d{2}\/\d{4}$/);
   // The time axis is on the 24-hour clock, so no meridiem survives anywhere on the grid.
   await expect(page.getByTestId("calendar-list")).not.toContainText(/\d\s?[AP]M/);
+
+  // The drop confirmation is a date and a clock time the operator has to recognise, so it reads
+  // through the same two settings rather than through whatever the browser is set to. Both are
+  // legible in one sentence: "07/09/2026" is the field order, and a bare "11:00" is the hour
+  // format. Cancel, because this test is about what the dialog says and not about moving anything.
+  await dragAppointmentToSlot(page,{appointmentId:appointment.id,slot:`${tenant.anchor}T11:00`,groomerId:tenant.employeeId});
+  await expect(page.getByTestId("reschedule-confirm-question"))
+    .toHaveText(`Reschedule appointment to ${prefLocalDate(tenant.anchor,"DD/MM/YYYY")} 11:00?`);
+  await page.getByTestId("stacked-dialog-dismiss").click();
+  await expect(page.getByTestId("stacked-dialog")).toBeHidden();
 
   // And back the other way, so the assertion above is about the setting rather than the locale
   // this browser happens to run under.

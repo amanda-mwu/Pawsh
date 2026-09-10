@@ -187,10 +187,15 @@ test("one invoice, three hosts, one money statement — and the Ticket is not on
   // The operator's words, not the raw column. `client credit` is what the receipt used to print.
   expect(settled).toContain("Client credit · recorded | $40.00");
 
-  // Host 2: the receipt on paper, read under the print stylesheet the printer would apply. The
-  // receipt keeps its own two identity lines in every host it has: there is no longer a host that
-  // states the salon and the client above them, so nothing suppresses them anywhere.
-  await page.getByTestId("checkout-print-receipt").click();
+  // Host 2: the statement on paper, read under the print stylesheet the printer would apply. It
+  // keeps its own two identity lines in every host it has: there is no longer a host that states
+  // the salon and the client above them, so nothing suppresses them anywhere.
+  //
+  // PRINT INVOICE, not Print Receipt. The invoice's money statement has three hosts - the settled
+  // Check Out panel, the modal and the Invoice print root - and Print Receipt is not one of them:
+  // it renders a different document, whose subject is the payments rather than the bill. Both
+  // buttons are on this settled panel; this one is the one that prints this statement.
+  await page.getByTestId("checkout-print-invoice").click();
   const receiptPrint = page.locator(".print-root");
   await expect(receiptPrint).toHaveCount(1);
   await page.emulateMedia({ media: "print" });
@@ -230,7 +235,7 @@ test("one invoice, three hosts, one money statement — and the Ticket is not on
   await row.getByTestId("client-row-actions").click();
   await row.getByTestId("client-appointment-history").click();
   const modal = page.getByTestId("modal");
-  await modal.getByRole("button", { name: "Receipt" }).click();
+  await modal.getByRole("button", { name: "Invoice" }).click();
   await expect(modal.locator(".receipt")).toBeVisible();
   const inModal = await moneyStatement(modal);
 
@@ -315,6 +320,89 @@ test("the work sheet: one row per pet-service pair, and the three notes", async 
   await expect(ticket(page)).toBeHidden();
   await expect(detail(page)).toBeVisible();
   await expect(detail(page).locator("[data-surface-close]")).toBeFocused();
+});
+
+/**
+ * THE SHEET ON PAPER LISTS THE SERVICES IN THE SHEET'S ORDER.
+ *
+ * `printTicket` renders `ticketDocumentMarkup` into a detached print root, which is the same
+ * function the on-screen surface renders — so the two agreeing is a property of the ARRAY they are
+ * both handed, not of two renderers being kept in step. Before 0054 that array came back ordered
+ * by `appointment_services.id`, a `gen_random_uuid()`, so both hosts agreed on an order that was a
+ * different one every time the appointment was booked.
+ *
+ * Five services rather than two, and booked in an order that is neither alphabetical nor by
+ * duration nor by price: two services is a coin flip a spec can pass by luck, five is one ordering
+ * out of 120. The screen, the paper and the order the operator submitted are all compared against
+ * each other, so a re-sort introduced in either host fails this.
+ */
+test("the printed sheet lists the services in the order they were booked", async ({
+  page,
+  request,
+  tenant
+}) => {
+  const extra = await Promise.all(
+    [
+      { name: "Ear Clean", baseDurationMinutes: 10, basePriceMinor: 1500 },
+      { name: "Teeth Brush", baseDurationMinutes: 10, basePriceMinor: 1200 },
+      { name: "De-shed", baseDurationMinutes: 20, basePriceMinor: 3000 }
+    ].map(async (data) => {
+      const response = await request.post("/api/services", { data });
+      expect(response.ok(), await response.text()).toBeTruthy();
+      return (await response.json()) as { id: string };
+    })
+  );
+  const nailTrim = await nailTrimId(request);
+  // The fixture's groomer offers only the two services it created, and the booking refuses a
+  // service its groomer does not perform — so the roster is widened before anything is booked.
+  const roster = await request.put(`/api/employees/${tenant.employeeId}`, {
+    data: { serviceIds: [tenant.serviceId, nailTrim, ...extra.map((service) => service.id)] }
+  });
+  expect(roster.ok(), await roster.text()).toBeTruthy();
+
+  // Neither alphabetical, nor by duration, nor by price, in either direction.
+  const booked = [
+    { id: extra[1]!.id, name: "Teeth Brush" },
+    { id: tenant.serviceId, name: "Full Groom" },
+    { id: extra[2]!.id, name: "De-shed" },
+    { id: nailTrim, name: "Nail Trim" },
+    { id: extra[0]!.id, name: "Ear Clean" }
+  ];
+  const appointment = await bookWithNote(
+    request,
+    tenant,
+    booked.map((service) => service.id),
+    "Five services, in the order the front desk entered them."
+  );
+
+  await observePrinting(page);
+  await login(page, tenant.ownerEmail);
+  await openTicketFromHeader(page, appointment.id);
+
+  const onScreen = ticket(page).getByTestId("ticket-services");
+  await expect(ticket(page).getByTestId("ticket-service-row")).toHaveCount(5);
+  await expect(column(onScreen, 4)).toHaveText(booked.map((service) => service.name));
+
+  await ticket(page).getByTestId("ticket-print").click();
+  const printRoot = page.locator(".print-root.print-ticket");
+  await expect(printRoot).toHaveCount(1);
+  const onPaper = printRoot.getByTestId("ticket-services");
+  await expect(printRoot.getByTestId("ticket-service-row")).toHaveCount(5);
+  await expect(column(onPaper, 4)).toHaveText(booked.map((service) => service.name));
+
+  // Compared to each other as well as to the booking, so a change that moved BOTH hosts off the
+  // booked order in the same way would still be caught by the assertions above.
+  expect(await column(onPaper, 4).allInnerTexts()).toEqual(
+    await column(onScreen, 4).allInnerTexts()
+  );
+  // The durations rode along with their own services rather than being sorted independently.
+  expect(await column(onPaper, 5).allInnerTexts()).toEqual(
+    await column(onScreen, 5).allInnerTexts()
+  );
+
+  await page.evaluate(() => {
+    for (const root of document.querySelectorAll(".print-root")) root.parentNode?.removeChild(root);
+  });
 });
 
 test("a future scheduled appointment gets a Ticket, and a note nobody has written is a dash",

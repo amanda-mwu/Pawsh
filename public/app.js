@@ -14,7 +14,7 @@ const resetToken = new URLSearchParams(location.search).get("reset");
  * holds rows belonging to one business - clients, pets, the breed catalog, the calendar's month.
  */
 function emptyState() {
-  return { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:20}, pets: [], dogBreeds: [], petTypes: [], breedsByType:{}, employees: [], services: [], appointments: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointments:[],selectedGroomerIds:null,pendingGroomerIds:null,filterInitialized:false,displayMode:"calendar",view:"week",bookingPreset:null,bookingGroomerId:null,bookingCustomerId:null,bookingPetId:null,opened:false,preferences:null}, clientProfile:null,clientProfileReturnView:"customers", messageClientId:null, reportMode:"charts",reminders:{type:"appointment_reminder",items:[],supported:true}, members: [], accessRequests:[], workspaces:[], locations: [], reports: null, login: false };
+  return { me: null, customers: [], customerDirectory:{items:[],total:0,page:1,pageSize:20}, pets: [], dogBreeds: [], petTypes: [], breedsByType:{}, employees: [], services: [], appointments: [], blockedTimes: [], businessHours:[], calendar:{selectedDate:null,weekStart:null,month:null,monthAppointments:[],selectedGroomerIds:null,pendingGroomerIds:null,filterInitialized:false,displayMode:"calendar",view:"week",bookingPreset:null,bookingGroomerId:null,bookingCustomerId:null,bookingPetId:null,opened:false,preferences:null}, clientProfile:null,clientProfileReturnView:"customers", messageClientId:null, reportMode:"charts",reminders:{type:"appointment_reminder",items:[],supported:true}, members: [], accessRequests:[], workspaces:[], locations: [], reports: null, login: false };
 }
 const state = emptyState();
 const pendingActions = new Set();
@@ -147,6 +147,54 @@ function settleUnauthenticated() {
 }
 
 /**
+ * THE EYE ON A PASSWORD FIELD - EVERY PASSWORD FIELD, FROM ONE PLACE.
+ *
+ * `apps/mobile/app/login.tsx` is the reference and this is deliberately the same control: an
+ * inset 44-square target whose accessible name says what pressing it will DO, and whose state is
+ * exposed separately so assistive technology can report whether the password is on screen. There
+ * are four password boxes in this client - the shared sign-up/sign-in form and the three on the
+ * account screen - and one implementation for all of them, because a reveal that exists on some
+ * of them teaches the operator nothing about the rest.
+ *
+ * `aria-pressed` AND A FLIPPING NAME, BOTH. The name is the action ("Show password" until it is
+ * shown, "Hide password" after), which is what the eye glyph already promises a sighted operator
+ * and what the mobile app announces word for word. `aria-pressed` carries the state the name
+ * cannot: whether the password is legible right now. The stylesheet picks the glyph off that same
+ * attribute, so the picture and the announcement cannot drift apart.
+ */
+const PASSWORD_REVEAL_SHOWN="Hide password",PASSWORD_REVEAL_HIDDEN="Show password";
+function setPasswordRevealed(button,revealed) {
+  const input=button.closest(".password-field")?.querySelector("input");
+  if (!input) return;
+  // THE INPUT KEEPS ITS IDENTITY. Only `type` moves; the element is never replaced and the value
+  // is never read out of it, so the caret, the focus and a password manager fill all survive the
+  // flip - the same reason the mobile field toggles `secureTextEntry` rather than remounting.
+  input.type=revealed?"text":"password";
+  button.setAttribute("aria-pressed",revealed?"true":"false");
+  button.setAttribute("aria-label",revealed?PASSWORD_REVEAL_SHOWN:PASSWORD_REVEAL_HIDDEN);
+}
+/**
+ * A password must never be left legible on a form the operator has moved on from, so every route
+ * that empties or re-purposes one of these forms conceals it again: signing out, a lapsed session,
+ * the sign-up/sign-in toggle, and a submission that was accepted. `form.reset()` cannot do this -
+ * it restores values, and being revealed is a property of the element rather than of its value.
+ */
+function concealPasswordFields(root) {
+  (root??document).querySelectorAll(".password-reveal").forEach((button)=>setPasswordRevealed(button,false));
+}
+// A real `<button type="button">`: Enter and Space activate it for free, it is in the tab order
+// where it sits, and it can never submit the form it is standing in.
+$$(".password-reveal").forEach((button)=>{
+  const input=button.closest(".password-field")?.querySelector("input");
+  // REVEALED TEXT IS ORDINARY TEXT TO THE KEYBOARD, which would otherwise offer to correct a
+  // password, capitalise it, and learn it into the dictionary. A concealed field is exempt from
+  // all three by virtue of its type, so this only matters once the eye has been used - which is
+  // exactly why the mobile field turns them off too rather than trusting the type.
+  if (input) { input.spellcheck=false;input.setAttribute("autocapitalize","off");input.setAttribute("autocorrect","off"); }
+  button.addEventListener("click",()=>setPasswordRevealed(button,button.getAttribute("aria-pressed")!=="true"));
+});
+
+/**
  * Returns the sign-in screen to the state a stranger should find it in.
  *
  * A salon's front desk is a shared machine, so the address the last person signed in with must not
@@ -163,6 +211,7 @@ function resetAuthForm() {
   // is not reliably a default it gives back. Blanking them outright is what was actually asked for,
   // and it covers the salon-name field signup uses as well as the two credentials.
   $$("#auth-form input").forEach((input)=>{input.value="";});
+  concealPasswordFields(form);
   $("#auth-error").textContent="";
   // Focus has to move whether or not it saves a click: it was last on something inside the shell
   // that is now hidden, and leaving it there strands keyboard and screen-reader users. The first
@@ -245,37 +294,106 @@ function invoiceRefunded(status){return status==="refunded"||status==="partially
      Ticket   the CRM document for the visit: who, which pet, which services, what to do.
      Invoice  a financial obligation. It exists the moment the visit is billed and it can owe
               money for as long as nobody pays it.
-     Payment  a settlement against an invoice.
-     Receipt  EVIDENCE OF A RECORDED PAYMENT.
+     Payment  ONE TENDER COMPONENT of a settlement against an invoice. A settlement may take
+              several - part cash, part card, part client credit - and they are the composition
+              of ONE settlement rather than a series of independent checkouts.
+     Receipt  EVIDENCE OF A COMPLETED SETTLEMENT. Not of a recorded payment: an invoice with a
+              component against it and a balance still standing has no Receipt, which is what
+              `receiptBalanceOutstanding` exists to refuse.
 
-   The printable financial page was titled `Receipt #1042` and its button offered from the moment
-   an invoice existed, so a client could be handed "Receipt #1042 / Balance $135.60 / No payment
-   recorded". That artifact is an Invoice, and calling it a Receipt is a claim about money that
-   nobody made.
+   PAYMENT CHANGES AN INVOICE'S SETTLEMENT STATE, NOT ITS DOCUMENT IDENTITY.
 
-   The two predicates below are the ONE definition of which document is on screen, asked in the two
-   forms the client has it available: off the receipt payload, which carries the payment rows, and
-   off an invoice status alone, which is all a history row has. THE MONEY STATEMENT ITSELF IS
-   SHARED - `receiptBodyMarkup` renders both - because shared financial authority is required.
-   Shared document IDENTITY is not, and that is what these decide.
+   There was ONE printable financial page here and it answered to two names: `Invoice #1042` while
+   nothing had been paid, `Receipt #1042` the moment anything had. Both halves of that were wrong.
+   The page a client was handed as a bill came back after settlement retitled as evidence of a
+   payment it does not describe, and the bill itself became unprintable at exactly the moment a
+   client is most likely to ask for it. A paid Invoice is an Invoice. Renaming it is a claim that
+   the document changed when only the balance did.
+
+   So there are TWO renderers and two titles, and neither of them asks what has been paid in order
+   to decide which document it is - the caller decides, because the caller is the control the
+   operator pressed. `receiptBodyMarkup` is the INVOICE's body: services, discounts, tax, tip,
+   total, balance, and the payment history against it. `paymentReceiptMarkup` is the RECEIPT, a
+   separate document whose subject is the TENDER COMPOSITION of the settlement that discharged
+   it - not the payments as a series.
+
+   THE MONEY STATEMENT STAYS SHARED - one `receiptBodyMarkup`, several hosts - because shared
+   financial authority is required. Shared document IDENTITY never was, and is what this file no
+   longer has.
    --------------------------------------------------------------------------- */
 // A payment is 'recorded' or 'voided' (`payment_status`, migrations/0001_initial.sql). A voided
-// record settled nothing, so an invoice whose only payment was voided is an Invoice again. A
-// refunded payment is still a recorded settlement - the money moved twice, and the receipt shows
+// record settled nothing, so an invoice whose only payment was voided has no Receipt to print. A
+// refunded payment is still a recorded settlement - the money moved twice, and the Receipt shows
 // both movements - so a refund does not take the Receipt away.
+//
+// THIS IS THE FIRST OF THE RECEIPT'S TWO GATES. `receiptBalanceOutstanding` below is the other,
+// and both are asked at both callers: the checkout footer asks them to decide whether to offer the
+// button, and `printPaymentReceipt` asks them again before drawing anything, so there is no route
+// by which a document claiming a payment can be produced without one recorded.
 function receiptHasPayment(receipt){
   return (receipt?.payments||[]).some(payment=>payment.status==="recorded");
 }
-// The same question of a row that carries only `invoices.status`. `open` and `draft` are the two
-// that owe everything and have collected nothing; a void invoice never collected either.
-const INVOICE_STATUSES_WITH_PAYMENT=new Set(["partially_paid","paid","partially_refunded","refunded"]);
-function invoiceStatusHasPayment(status){return INVOICE_STATUSES_WITH_PAYMENT.has(String(status||""));}
-// What the printable financial page is called, and it is never "Receipt" without a payment behind
-// it. The number is the invoice number in both cases: an Invoice and the Receipt that eventually
-// evidences it are the same obligation, and renumbering them would break every reconciliation.
-function financialDocumentTitle(receipt){
-  return `${receiptHasPayment(receipt)?"Receipt":"Invoice"} #${receipt.invoice.invoiceNumber}`;
+/**
+ * THE SECOND GATE: A RECEIPT IS EVIDENCE OF A SETTLEMENT THAT COMPLETED.
+ *
+ * ONE INVOICE PER APPOINTMENT, ONE COMPLETED SETTLEMENT PER INVOICE, AND A SETTLEMENT MAY USE
+ * SEVERAL TENDER COMPONENTS. `receiptHasPayment` answers whether any component was recorded at
+ * all; it cannot answer whether the settlement those components belong to has finished, and an
+ * invoice still carrying an outstanding balance has not finished settling. Handing a client a
+ * Receipt at that point evidences a settlement that has not happened - the invoice, which states
+ * the obligation and is printable throughout, is the document for a bill still owing.
+ *
+ * COMPLETED = A RECORDED COMPONENT EXISTS **AND** NOTHING IS STILL OWED. Both halves are load
+ * bearing and neither implies the other:
+ *
+ *   - Balance alone would pass the ZERO-TOTAL INVOICE, which `routes.ts` creates with status
+ *     `paid` and `balance_minor = 0` and NO payment rows at all (a $0.00 visit settles nothing).
+ *     `receiptHasPayment` is false there, so it produces no Receipt - which is right: there is no
+ *     settlement to evidence.
+ *   - A recorded component alone would pass a part-settled invoice, which is the defect this gate
+ *     closes.
+ *
+ * A REFUND DOES NOT TAKE THE RECEIPT AWAY. Refunds do not move `balance_minor` (routes.ts states
+ * that invariant where it computes collected revenue), so a refunded invoice stays settled and its
+ * Receipt still evidences what was taken and what went back. A VOID does move the balance back,
+ * and correctly withdraws the Receipt with it: the settlement is no longer complete.
+ */
+// TWO INDEPENDENT GATES, NOT ONE WITH TWO CLAUSES. `receiptHasPayment` above answers "was
+// anything recorded"; this answers "is anything still owed". Neither implies the other and each
+// refuses a case the other lets through, so they are asked as two questions at every caller -
+// including `printPaymentReceipt`, where removing either one lets a different wrong document out.
+function receiptBalanceOutstanding(receipt){
+  return Number(receipt?.invoice?.balanceMinor||0)>0;
 }
+// Both answers, for the callers that only want to know whether to offer the document at all.
+function receiptSettlementComplete(receipt){
+  return receiptHasPayment(receipt)&&!receiptBalanceOutstanding(receipt);
+}
+// THE COMPONENTS THAT SETTLED MONEY, AND WHAT THEY CAME TO.
+//
+// A settlement may be tendered in several components, and two surfaces have to agree on which of
+// them count and what they add up to: the Check Out progress line, which tells an operator how
+// much is in so far, and the Receipt's Total settled. Both were reading the same `recorded`
+// filter and running the same reduce, under two different names. Two readings of "how much money
+// has come in" that are free to drift is a disagreement a customer finds at the counter.
+//
+// THE TWO GATES ABOVE DELIBERATELY DO NOT ROUTE THROUGH THIS. They are independently sensitive by
+// design and each is killed by a different test; giving them a shared reading is what made one of
+// them untestable once already.
+function settledComponents(receipt){
+  return (receipt?.payments||[]).filter(payment=>payment.status==="recorded");
+}
+function settledComponentsMinor(receipt){
+  return settledComponents(receipt).reduce((total,payment)=>total+Number(payment.amountMinor||0),0);
+}
+// The two documents, named. Nothing branches: an Invoice is titled Invoice in every settlement
+// state there is.
+//
+// The number is the INVOICE number on both. A Receipt evidences the settlement of one invoice and
+// Pawsh has no separate receipt series - there is no column for one - so numbering the Receipt
+// anything else would invent an identifier that nothing reconciles against.
+function invoiceDocumentTitle(receipt){return `Invoice #${receipt.invoice.invoiceNumber}`;}
+function paymentReceiptTitle(receipt){return `Receipt #${receipt.invoice.invoiceNumber}`;}
 function toast(message) {
   $("#toast").textContent = message; $("#toast").classList.add("show");
   setTimeout(() => $("#toast").classList.remove("show"), 2200);
@@ -404,12 +522,17 @@ async function refresh() {
   const allowed = new Set(state.me.permissions);
   const owner = state.me.isOwner;
   const safe = (permission) => owner || allowed.has(permission);
+  // ONE window string, sent to both calendar reads. The blocks drawn on the grid and the
+  // appointments drawn on the grid have to describe the same days, and the only way to guarantee
+  // that is for there to be one description. `/api/blocked-times` takes the identical query.
+  const calendarWindow = `localDate=${businessDate()}&days=8`;
   const requests = [
     canViewDashboard() ? api("/api/dashboard") : {},
     safe("customers.view") ? api("/api/customers?paged=true&page=1&pageSize=20") : {items:[],total:0,page:1,pageSize:20},
     state.pets,
     api("/api/employees"), api("/api/services"),
-    safe("appointments.view") ? api(`/api/appointments?localDate=${businessDate()}&days=8`) : [],
+    safe("appointments.view") ? api(`/api/appointments?${calendarWindow}`) : [],
+    safe("appointments.view") ? api(`/api/blocked-times?${calendarWindow}`) : [],
     safe("team.manage") ? api("/api/members") : [],
     safe("reports.view") ? api("/api/reports") : null,
     safe("pets.view") && !state.dogBreeds.length ? api("/api/dog-breeds") : state.dogBreeds,
@@ -420,13 +543,13 @@ async function refresh() {
     api("/api/workspaces"),
     loadLocations()
   ];
-  const [dashboard, customerDirectory, pets, employees, services, appointments, members, reports, dogBreeds, petTypes, accessRequests, workspaces, locations] = await Promise.all(requests);
-  Object.assign(state, { customerDirectory,customers:customerDirectory.items||[], pets, employees, services, appointments, members, reports, dogBreeds, petTypes, accessRequests, workspaces, locations });
+  const [dashboard, customerDirectory, pets, employees, services, appointments, blockedTimes, members, reports, dogBreeds, petTypes, accessRequests, workspaces, locations] = await Promise.all(requests);
+  Object.assign(state, { customerDirectory,customers:customerDirectory.items||[], pets, employees, services, appointments, blockedTimes, members, reports, dogBreeds, petTypes, accessRequests, workspaces, locations });
   renderAccountIdentity();
   renderLocationSwitcher();
   reconcileGroomerFilter();
   if(!state.calendar.selectedDate){state.calendar.selectedDate=state.appointments[0]?appointmentLocalValue(state.appointments[0]).slice(0,10):businessDate();state.calendar.weekStart=weekStart(state.calendar.selectedDate);state.calendar.month=state.calendar.selectedDate.slice(0,7);}
-  $("#today").textContent = new Intl.DateTimeFormat([], {timeZone:schedulingZone(),weekday:"long",month:"short",day:"numeric"}).format(new Date());
+  $("#today").textContent = formatPrefWeekdayMonthDay(new Date(),schedulingZone());
   applyPermissions();
   renderDashboard(dashboard); renderCustomersEnhanced(); renderRoles(); renderServices(); renderAppointments(); renderReports();
 }
@@ -434,12 +557,18 @@ async function refresh() {
 function schedulingZone(){return state.me?.business?.timezone||"UTC";}
 // --- Dates and times in the shape the workspace chose ----------------------
 //
-// WHY THIS EXISTS. Every date and clock time this client drew went through `Intl.DateTimeFormat([])`
-// - the empty locale list, meaning "whatever this browser is set to". Two operators sitting at the
-// same front desk on differently-configured laptops read the same appointment as 09/02 and 02/09,
-// and `Settings -> Business -> Date format` changed nothing at all. A preference that changes
-// nothing is worse than no preference: the operator has been told the product does something it
-// does not.
+// WHY THIS EXISTS. Every date and clock time this client drew was formatted with an EMPTY LOCALE
+// LIST - `Intl.DateTimeFormat` asked for "whatever this browser is set to". Two operators sitting
+// at the same front desk on differently-configured laptops read the same appointment as 09/02 and
+// 02/09, and `Settings -> Business -> Date format` changed nothing at all. A preference that
+// changes nothing is worse than no preference: the operator has been told the product does
+// something it does not.
+//
+// NOTHING IN THIS FILE FORMATS WITH AN EMPTY LOCALE LIST ANY MORE, and that is a fact rather than
+// an intention: `tests/ui/client-locale.test.ts` reads this source and fails on the first one that
+// comes back. The claim was written here before it was true - 14 sites were still on the browser's
+// locale, including the `<h2>` of the appointment surface - so the guard is what the sentence
+// above now rests on.
 //
 // WHY THE PATTERN IS ASSEMBLED RATHER THAN DELEGATED TO A LOCALE. The shortcut is to pass "en-GB"
 // for DD/MM and "en-US" for MM/DD and let ICU lay it out. That couples the salon's choice to two
@@ -456,6 +585,12 @@ function schedulingZone(){return state.me?.business?.timezone||"UTC";}
 // `formatPrefLocalDate` reorders the three fields and goes nowhere near a time zone.
 const PREF_WEEKDAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 const PREF_SHORT_WEEKDAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+// The month names, for the labels that NAME a month rather than number it - the calendar range,
+// the header's own date, the appointment surface's title. Hard-coded for the same reason the
+// weekdays above are: the workspace picked a field ORDER, not a language, and the day a salon
+// picks DD/MM it must not also silently acquire ICU's idea of what September is called.
+const PREF_MONTHS=["January","February","March","April","May","June","July","August","September","October","November","December"];
+const PREF_SHORT_MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 function prefDateFormat(){return state.me?.business?.dateFormat==="DD/MM/YYYY"?"DD/MM/YYYY":"MM/DD/YYYY";}
 function prefHourFormat(){return String(state.me?.business?.hourFormat)==="24"?"24":"12";}
 function prefPad(value,width=2){return String(value).padStart(width,"0");}
@@ -515,6 +650,81 @@ function formatPrefLocalWeekdayDate(localDate){
   const day=String(localDate??"").slice(0,10);
   if(!/^\d{4}-\d{2}-\d{2}$/.test(day))return formatPrefLocalDate(localDate);
   return `${PREF_WEEKDAYS[dateAt(day).getUTCDay()]}, ${formatPrefLocalDate(day)}`;
+}
+
+/* --- The labels that spell a month out ------------------------------------
+ *
+ * The calendar range, the `#today` line, the appointment surface's title and the availability
+ * switch's accessible name do not read as `09/02/2026`: they name the month, and some of them name
+ * the weekday too. `prefDateFormat` has nothing to say about any of them - there is no field order
+ * to choose - so the ONLY thing these had to stop doing was asking the browser what September is
+ * called. The shapes below are the shapes those labels already had, restated so that a German
+ * front desk reads the same sheet as an American one.
+ *
+ * TWO INPUT KINDS, AND THEY MUST NOT BE CROSSED. `prefLayOut*` takes the numeric parts of an
+ * INSTANT resolved in a real zone by `prefParts`; `prefLocalParts` takes a `YYYY-MM-DD` CALENDAR
+ * DATE and never touches a zone at all. Putting a calendar date through the instant path is how a
+ * date arrives a day early for anyone east of the anchor, which is the whole reason the anchor is
+ * noon rather than midnight.
+ */
+/** "Sep 2". */
+function prefLayOutMonthDay(parts){return `${PREF_SHORT_MONTHS[parts.month-1]} ${parts.day}`;}
+/** "Sep 2, 2026" - the closing half of a range, which carries the year the opening half omits. */
+function prefLayOutMonthDayYear(parts){return `${prefLayOutMonthDay(parts)}, ${parts.year}`;}
+/** "September 2026". */
+function prefLayOutMonthYear(parts){return `${PREF_MONTHS[parts.month-1]} ${parts.year}`;}
+/** The `{year,month,day,weekday}` of a `YYYY-MM-DD`, or null if it is not one. */
+function prefLocalParts(localDate){
+  const day=String(localDate??"").slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(day))return null;
+  const [year,month,date]=day.split("-").map(Number);
+  return {year,month,day:date,weekday:dateAt(day).getUTCDay()};
+}
+/** "Wednesday, Sep 2" - the header's own date. */
+function formatPrefWeekdayMonthDay(instant,zone){
+  const parts=prefParts(instant,zone);
+  return `${PREF_WEEKDAYS[parts.weekday]}, ${prefLayOutMonthDay(parts)}`;
+}
+/** "Wednesday, September 2" - the appointment surface's title. */
+function formatPrefWeekdayLongMonthDay(instant,zone){
+  const parts=prefParts(instant,zone);
+  return `${PREF_WEEKDAYS[parts.weekday]}, ${PREF_MONTHS[parts.month-1]} ${parts.day}`;
+}
+/** "Wed, Sep 2" for an instant. */
+function formatPrefShortWeekdayMonthDay(instant,zone){
+  const parts=prefParts(instant,zone);
+  return `${PREF_SHORT_WEEKDAYS[parts.weekday]}, ${prefLayOutMonthDay(parts)}`;
+}
+/** "Sep 2" for a calendar date. */
+function formatPrefLocalMonthDay(localDate){
+  const parts=prefLocalParts(localDate);
+  return parts?prefLayOutMonthDay(parts):String(localDate??"");
+}
+/** "Sep 2, 2026" for a calendar date. */
+function formatPrefLocalMonthDayYear(localDate){
+  const parts=prefLocalParts(localDate);
+  return parts?prefLayOutMonthDayYear(parts):String(localDate??"");
+}
+/** "September 2026" for a calendar date. */
+function formatPrefLocalMonthYear(localDate){
+  const parts=prefLocalParts(localDate);
+  return parts?prefLayOutMonthYear(parts):String(localDate??"");
+}
+/** "Wed" for a calendar date - a week column's head. */
+function formatPrefLocalShortWeekday(localDate){
+  const parts=prefLocalParts(localDate);
+  return parts?PREF_SHORT_WEEKDAYS[parts.weekday]:String(localDate??"");
+}
+/** "Wed, Sep 2" for a calendar date. */
+function formatPrefLocalShortWeekdayMonthDay(localDate){
+  const parts=prefLocalParts(localDate);
+  return parts?`${PREF_SHORT_WEEKDAYS[parts.weekday]}, ${prefLayOutMonthDay(parts)}`:String(localDate??"");
+}
+/** "Saturday 14 March 2026" - a date read out rather than scanned, for an accessible name. */
+function formatPrefLocalSpokenDate(localDate){
+  const parts=prefLocalParts(localDate);
+  if(!parts)return String(localDate??"");
+  return `${PREF_WEEKDAYS[parts.weekday]} ${parts.day} ${PREF_MONTHS[parts.month-1]} ${parts.year}`;
 }
 function wallParts(value=new Date()){
   return new Intl.DateTimeFormat("en-CA",{timeZone:schedulingZone(),hourCycle:"h23",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}).formatToParts(value);
@@ -644,7 +854,7 @@ function appointmentNoteEntries(item){
 }
 function appointmentPresentation(item){
   const start=new Date(item.startAt),end=new Date(item.endAt),zone=item.schedulingTimezone||schedulingZone(),formatTime=value=>formatPrefTime(value,zone),serviceSnapshots=item.services||[],services=serviceSnapshots.map(service=>service.name),groomers=(item.groomers||[]).map(groomer=>groomer.displayName),prices=serviceSnapshots.map(service=>service.priceMinor).filter(value=>value!==null&&value!==undefined);
-  return {id:item.id,date:appointmentLocalValue(item).slice(0,10),dateLabel:new Intl.DateTimeFormat([],{weekday:"long",month:"long",day:"numeric",timeZone:zone}).format(start),timeRange:`${formatTime(start)}–${formatTime(end)}`,timeRangeCompact:compactTimeRange(start,end,zone),petName:item.petName,breed:item.breed||"",customerName:`${clientName(item)}`,services,serviceSnapshots,groomer:groomers[0]||item.employeeName,status:item.status.replace("_"," "),conflictOverridden:Boolean(item.conflictOverridden),rabiesNeeded:["not_provided","expires_before_appointment"].includes(item.rabiesAppointmentStatus),warning:item.safetyAlerts||item.behaviorNotes||item.medicalNotes||item.groomingPreferences||item.coatNotes||"",durationMinutes:Math.max(1,Math.round((end-start)/60000)),totalPriceMinor:prices.length===serviceSnapshots.length?prices.reduce((sum,value)=>sum+Number(value),0):null};
+  return {id:item.id,date:appointmentLocalValue(item).slice(0,10),dateLabel:formatPrefWeekdayLongMonthDay(start,zone),timeRange:`${formatTime(start)}–${formatTime(end)}`,timeRangeCompact:compactTimeRange(start,end,zone),petName:item.petName,breed:item.breed||"",customerName:`${clientName(item)}`,services,serviceSnapshots,groomer:groomers[0]||item.employeeName,status:item.status.replace("_"," "),conflictOverridden:Boolean(item.conflictOverridden),rabiesNeeded:["not_provided","expires_before_appointment"].includes(item.rabiesAppointmentStatus),warning:item.safetyAlerts||item.behaviorNotes||item.medicalNotes||item.groomingPreferences||item.coatNotes||"",durationMinutes:Math.max(1,Math.round((end-start)/60000)),totalPriceMinor:prices.length===serviceSnapshots.length?prices.reduce((sum,value)=>sum+Number(value),0):null};
 }
 function appointmentAccessibleName(model){return `${model.timeRange}, ${model.petName}${model.breed?`, ${model.breed}`:""}, ${model.customerName}, ${model.services.join(", ")}, ${model.status}`;}
 function appointmentHoverDetails(model){return `<div><span>Status</span><strong>${escape(model.status)}</strong></div><p><strong>${escape(model.dateLabel)}</strong><br>${escape(model.timeRange)}</p><dl><div><dt>Client</dt><dd>${escape(model.customerName)}</dd></div><div><dt>Pet</dt><dd>${escape(petName({petName:model.petName}))}${model.breed?` · ${escape(model.breed)}`:""}</dd></div><div><dt>Services</dt><dd>${model.services.map(escape).join("<br>")}</dd></div><div><dt>Groomer</dt><dd>${escape(model.groomer)}</dd></div></dl><p class="hover-summary"><strong>${model.durationMinutes} min${model.totalPriceMinor!==null?` · ${money(model.totalPriceMinor)}`:""}</strong></p>`;}
@@ -697,6 +907,145 @@ function appointmentCard(item,{day=false,style="",groomerId="",overlap=false}={}
   const body=`<button type="button" class="calendar-open" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><span class="appointment-identity"><strong class="appointment-pet">${escape(petName({petName:model.petName}))}</strong>${model.breed?`<span class="appointment-breed">${escape(model.breed)}</span>`:""}</span>${services}${model.conflictOverridden?`<small class="conflict-override" data-testid="conflict-override">Intentional overlap</small>`:""}<span class="appointment-client">${escape(model.customerName)}</span></button>`;
   return `<article class="${day?"day-appointment ":""}week-appointment appointment-block density-${density} status-${escape(item.status)} ${overlap?"overlap":""}" data-appointment-id="${item.id}" ${draggable?'data-draggable="true" ':""}${groomerId?`data-groomer-id="${groomerId}" data-groomer-slot="${groomerColorSlot(groomerId)}"`:""} style="${style}">${head}${body}<div class="sr-only appointment-accessible-safety">${safetyContext(item)}</div><div class="appointment-quick-actions">${calendarAction(item)}</div></article>`;
 }
+// == Blocked time on the grid ==
+//
+// A block has been enforced since 0001 and drawn never. An operator dragging an appointment onto a
+// groomer's lunch got a correct refusal aimed at a region the calendar had painted nothing for,
+// which reads as the software being wrong rather than as the time being spoken for. These bands are
+// the missing half: they SHOW what `refuseStaffAvailability` already enforces.
+//
+// A band is STILL NOT A CARD. It opens the Block Time dialog on click and on Enter now that a block
+// can be edited, but it is not draggable, not a drop target and carries no appointment identity -
+// see `blockedTimeBand` for the three attributes it deliberately does not have and why.
+//
+// THE WALL CLOCK IS SLICED, NEVER PARSED. `scheduledLocalStart` / `scheduledLocalEnd` are zone-less
+// text ("2026-09-08T12:00"); `new Date(...)` on either would re-read it in the BROWSER's zone and
+// place a Los Angeles lunch three columns away in a New York front office. Same discipline, and the
+// same reason, as `dropConfirmDestination`.
+function blockedTimeMinutes(wall){return Number(wall.slice(11,13))*60+Number(wall.slice(14,16));}
+/** "12:00–12:30", laid out by `Settings -> Business` rather than by whatever the browser prefers. */
+function blockedTimeRange(block){return `${timeLabel(blockedTimeMinutes(block.scheduledLocalStart))}–${timeLabel(blockedTimeMinutes(block.scheduledLocalEnd))}`;}
+// `reason` has been nullable since 0001, so a block without one prints the range alone. Inventing
+// "Blocked" here would be the calendar asserting a reason the salon never gave.
+function blockedTimeReason(block){const reason=block&&typeof block.reason==="string"?block.reason.trim():"";return reason;}
+function blockedTimeLabel(block){const reason=blockedTimeReason(block);return reason?`${blockedTimeRange(block)} · ${reason}`:blockedTimeRange(block);}
+// The band's own name, and now the name of the control that opens it. The colour is spoken because
+// a band that carries one is distinguishable on screen by hue as well as by its label, and colour
+// that is only ever a hue is a channel a screen reader has no access to.
+//
+// AND ITS POSITION IN A STACK, when there is one. Two blocks on the same groomer at the same time
+// can be identical in every field this sentence reads - same range, same person, no note, no colour
+// - so a reader tabbing through them would hear one name twice and have no way to tell which of the
+// two bands is under the cursor. "1 of 2" is the only part of a band that is guaranteed to differ.
+function blockedTimeAccessibleName(block,{lane=0,lanes=1}={}){
+  const reason=blockedTimeReason(block),slot=blockedTimeColorSlot(block);
+  return `Blocked time, ${blockedTimeRange(block)}, ${block.employeeName}${reason?`, ${reason}`:""}${
+    slot===null?"":`, ${groomerSlotNames[slot]}`}${lanes>1?`, ${lane+1} of ${lanes}`:""}`;
+}
+/**
+ * Which rows of one day column this block fills, or null if it fills none of them.
+ *
+ * THE CLIENT DECIDES WHICH PIXELS TO FILL. `GET /api/blocked-times` is an OVERLAP read, so a block
+ * straddling the window edge arrives with its own unclamped wall clock - last night's 23:00 block
+ * is handed to today's paint. The interval is therefore intersected twice: with the day column, so
+ * the overhang starts at the top of the column instead of at a negative row; and with the visible
+ * hours from `calendarHours()`, so a block running past closing stops at the last drawn half hour
+ * rather than spanning rows the grid does not have.
+ */
+function blockedTimePlacement(block,day,start,end){
+  const startDay=block.scheduledLocalStart.slice(0,10),endDay=block.scheduledLocalEnd.slice(0,10);
+  if(day<startDay||day>endDay)return null;
+  const from=startDay<day?0:blockedTimeMinutes(block.scheduledLocalStart);
+  // Half-open: a block ending at exactly 00:00 belongs to the previous day and draws nothing here.
+  const to=endDay>day?24*60:blockedTimeMinutes(block.scheduledLocalEnd);
+  const visibleFrom=Math.max(from,start),visibleTo=Math.min(to,end);
+  if(visibleTo<=visibleFrom)return null;
+  const first=Math.floor((visibleFrom-start)/30),last=Math.ceil((visibleTo-start)/30);
+  return {offset:first,span:Math.max(1,last-first)};
+}
+/**
+ * ONE COLUMN'S BANDS, SIDE BY SIDE INSTEAD OF ON TOP OF EACH OTHER.
+ *
+ * `blockedTimePlacement` answers WHICH ROWS, and for a long time that was the whole answer: every
+ * band was emitted at the full width of its column, so two blocks on the same groomer at the same
+ * time painted exactly one band. Human QA created a second block over a seeded lunch and read the
+ * unchanged grid as the create having failed - which is the worst shape a defect can take, because
+ * the operator's next move is to create it again.
+ *
+ * THIS IS THE APPOINTMENT LANE SCAN, GENERALISED FROM A FLAG TO AN INDEX. The week grid already
+ * carries a `placed[]` scan that hands `appointmentCard` an `overlap` boolean, and `.overlap`
+ * spends it as one fixed inset - which is exactly enough for two cards and silently not enough for
+ * three. A block stack has no such ceiling, so the same scan is kept and the answer widened: each
+ * band is told its LANE and how many lanes its cluster needs, and the stylesheet divides the column
+ * by that count. Two bands are two halves; three are three thirds; none of them is unreachable.
+ *
+ * THE INTERVALS COMPARED ARE THE PAINTED ONES, NOT THE STORED ONES. A band is snapped to whole
+ * half-hour rows, so 12:00-12:15 and 12:20-12:30 do not overlap on the clock and DO overlap on the
+ * grid - both fill the single 12:00 row. Comparing minutes would leave that pair stacked, which is
+ * the very defect this exists to close, so the comparison is `[offset, offset+span)`.
+ *
+ * A CLUSTER IS TRANSITIVE. Lanes are counted per run of touching bands rather than per grid, so a
+ * 9:00 pair does not halve the width of an unrelated 4:00 block further down the same column.
+ */
+function blockedTimeColumnLayout(blocks,day,start,end){
+  // Sorted by row so the greedy scan below can retire a lane the moment a band clears it. The id
+  // is the final tiebreak, so two identical blocks land in a stable order rather than in whatever
+  // order the last read happened to return them in.
+  const entries=blocks.map(block=>({block,place:blockedTimePlacement(block,day,start,end)}))
+    .filter(entry=>entry.place)
+    .sort((a,b)=>a.place.offset-b.place.offset||b.place.span-a.place.span
+      ||String(a.block.id).localeCompare(String(b.block.id)));
+  const laid=[];let cluster=[],laneEnds=[],clusterEnd=0;
+  const flush=()=>{
+    for(const entry of cluster)laid.push({...entry,lanes:laneEnds.length});
+    cluster=[];laneEnds=[];clusterEnd=0;
+  };
+  for(const entry of entries){
+    const from=entry.place.offset,to=from+entry.place.span;
+    if(cluster.length&&from>=clusterEnd)flush();
+    let lane=laneEnds.findIndex(value=>value<=from);
+    if(lane<0){lane=laneEnds.length;laneEnds.push(to);}else laneEnds[lane]=to;
+    cluster.push({block:entry.block,place:entry.place,lane});
+    clusterEnd=Math.max(clusterEnd,to);
+  }
+  flush();
+  return laid;
+}
+/**
+ * The band itself. ANATOMY RATHER THAN HUE, still. Colour on this grid means WHICH GROOMER, so a
+ * band that were merely tinted would read as somebody's appointment. It is a hatched fill on the
+ * same `repeating-linear-gradient` geometry the closed-hours slot uses, bordered 1px all round
+ * where an appointment carries a 4px left rail, and it keeps both of those whatever colour it is
+ * given: an operator's colour tints WITHIN the anatomy, it does not replace it. The label stays
+ * `--ink` for the same reason it stays a label - Amber, Teal and Steel blue all fall under 4.5:1
+ * as text on their own tint, so a saturated colour may only ever be chrome here.
+ *
+ * STILL NOT A CARD. No `data-appointment-id`, no `data-draggable` and no `data-slot`, which is
+ * what keeps it out of `calendarDragCard` and `calendarDropSlot` without either of them having to
+ * learn about blocks; the drop slot underneath stays droppable deliberately, so a drag onto a
+ * block still reaches the scheduling authority and still comes back refused.
+ *
+ * WHAT CHANGED IN THIS SEAM is the nested `<button>`, and only that. A block is now editable, so
+ * the region has to be openable by pointer AND by keyboard - and a button inside the band buys
+ * exactly one tab stop and one activation target, the same arrangement `.calendar-open` already
+ * has inside an appointment card. `data-blocked-time-id` is still what the hover reads.
+ *
+ * THE LANE IS SPENT ON GEOMETRY AND NOTHING ELSE. A stacked band carries `--block-lane` and
+ * `--block-lanes` and keeps every other part of its anatomy - the hatch, the 1px all-round border,
+ * the `--ink` label, the absent drag and drop attributes. A narrower band is still a band.
+ */
+function blockedTimeBand(block,style,{lane=0,lanes=1}={}){
+  const slot=blockedTimeColorSlot(block);
+  const stacked=lanes>1;
+  return `<div class="calendar-block" data-testid="calendar-block" data-blocked-time-id="${escapeAttr(block.id)}"${
+    slot===null?"":` data-block-slot="${slot}"`}${
+    stacked?` data-block-lane="${lane}" data-block-lanes="${lanes}"`:""} style="${style}${
+    stacked?`;--block-lane:${lane};--block-lanes:${lanes}`:""}">`
+    +`<button type="button" class="calendar-block-open" data-blocked-time-open="${escapeAttr(block.id)}" aria-label="${escapeAttr(blockedTimeAccessibleName(block,{lane,lanes}))}">`
+    +`<span class="calendar-block-label">${escape(blockedTimeLabel(block))}</span></button></div>`;
+}
+function calendarBlockedTimes(){return Array.isArray(state.blockedTimes)?state.blockedTimes:[];}
+function blockedTimeById(id){return calendarBlockedTimes().find(block=>block.id===id);}
 function activeGroomers(){return state.employees.filter(employee=>employee.active).sort((a,b)=>a.displayName.localeCompare(b.displayName));}
 function selectedGroomers(){const selected=state.calendar.selectedGroomerIds;return activeGroomers().filter(employee=>selected===null||selected.has(employee.id));}
 function filteredAppointments(items=state.appointments){const selected=state.calendar.selectedGroomerIds;if(selected===null)return items;return items.filter(item=>(item.groomers||[]).some(groomer=>selected.has(groomer.id)));}
@@ -724,7 +1073,7 @@ function renderCalendar(){if(state.calendar.displayMode==="agenda")renderAgendaC
 function renderAgendaCalendar(){
   const target=$("#calendar-list"),items=filteredAppointments().slice().sort((a,b)=>new Date(a.startAt)-new Date(b.startAt));
   const groups=items.reduce((map,item)=>{const date=appointmentPresentation(item).date,mapItems=map.get(date)||[];mapItems.push(item);map.set(date,mapItems);return map;},new Map());target.className="calendar-agenda";target.style.removeProperty("min-width");target.style.removeProperty("--groomer-count");target.innerHTML=items.length?[...groups].map(([date,group])=>`<section class="agenda-day"><h3>${escape(formatPrefLocalWeekdayDate(date))}</h3>${group.map(item=>{const model=appointmentPresentation(item);return `<article class="agenda-entry" data-appointment-id="${item.id}"><time datetime="${escape(item.startAt)}">${escape(model.timeRange)}</time><button type="button" class="agenda-appointment" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><strong>${escape(petName({petName:model.petName}))}${model.breed?` <span>(${escape(model.breed)})</span>`:""}</strong><span>${escape(model.customerName)}</span><span>${model.services.map(escape).join(", ")}</span><small>${escape(model.groomer)}</small></button><div class="agenda-indicators"><span class="appointment-status">${escape(model.status)}</span>${model.rabiesNeeded?`<span class="rabies-needed">Rabies needed</span>`:""}${model.warning?`<span class="agenda-warning">⚠ ${escape(model.warning)}</span>`:""}</div></article>`;}).join("")}</section>`).join(""):"<p class=\"empty\">No appointments in this period.</p>";
-  const days=state.calendar.view==="day"?1:state.calendar.view==="month"?42:7,start=state.calendar.view==="day"?state.calendar.selectedDate:state.calendar.view==="month"?dateShift(`${state.calendar.month}-01`,-dateAt(`${state.calendar.month}-01`).getUTCDay()):state.calendar.weekStart,end=dateShift(start,days-1);$("#calendar-range").textContent=days===1?formatPrefLocalWeekdayDate(start):`${new Intl.DateTimeFormat([],{month:"short",day:"numeric"}).format(dateAt(start))} – ${new Intl.DateTimeFormat([],{month:"short",day:"numeric",year:"numeric"}).format(dateAt(end))}`;bindCalendarInteractions(target);
+  const days=state.calendar.view==="day"?1:state.calendar.view==="month"?42:7,start=state.calendar.view==="day"?state.calendar.selectedDate:state.calendar.view==="month"?dateShift(`${state.calendar.month}-01`,-dateAt(`${state.calendar.month}-01`).getUTCDay()):state.calendar.weekStart,end=dateShift(start,days-1);$("#calendar-range").textContent=days===1?formatPrefLocalWeekdayDate(start):`${formatPrefLocalMonthDay(start)} – ${formatPrefLocalMonthDayYear(end)}`;bindCalendarInteractions(target);
 }
 // Month cells are a fixed height so all six week rows stay uniform; MONTH_EVENT_LIMIT is the
 // number of 21px pills that fit under the header line, with the "+N more" link occupying the
@@ -741,7 +1090,7 @@ function renderMonthCalendar(){
   target.className="calendar-month-view";target.setAttribute("aria-label","Monthly appointment schedule");target.style.removeProperty("--groomer-count");target.style.removeProperty("min-width");
   const headings=(calendarPreferences().firstDay==="monday"?["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]:["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]).map(day=>`<div class="calendar-month-weekday">${day}</div>`).join("");
   const cells=days.map(day=>{const items=visible.filter(item=>appointmentLocalValue(item).slice(0,10)===day).sort((a,b)=>new Date(a.startAt)-new Date(b.startAt)),outside=day.slice(0,7)!==state.calendar.month,periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(day).getUTCDay()),closed=state.businessHours.length>0&&!periods.length,booked=items.filter(item=>!monthNeutralStatus(item)),revenue=booked.reduce((total,item)=>total+(item.services||[]).reduce((sum,service)=>sum+Number(service.priceMinor||0),0),0),ordered=[...booked,...items.filter(monthNeutralStatus)],shown=ordered.slice(0,MONTH_EVENT_LIMIT),dayLabel=formatPrefLocalWeekdayDate(day);return `<div class="calendar-month-day ${outside?"outside":""} ${closed?"closed":""} ${day===today?"today":""} ${day===state.calendar.selectedDate?"selected":""}" data-month-cell="${day}"><div class="month-day-head">${booked.length?`<span class="month-day-total"><span class="month-day-money">(${escape(money(revenue))}, </span>${booked.length} pet${booked.length===1?"":"s"}<span class="month-day-money">)</span></span>`:`<span class="month-day-total"></span>`}<button type="button" class="calendar-month-add" data-month-book-date="${day}" aria-label="Create appointment on ${escape(dayLabel)}">+</button><button type="button" class="calendar-month-date" data-month-open-date="${day}" aria-label="Open ${escape(dayLabel)} in day view">${Number(day.slice(8,10))}</button></div><div class="calendar-month-events">${shown.map(item=>{const model=appointmentPresentation(item),neutral=monthNeutralStatus(item),slot=neutral?"":groomerColorSlot((item.groomers||[])[0]?.id||item.employeeId);return `<span class="month-appointment-wrap ${neutral?"neutral":""}" data-appointment-id="${item.id}" ${slot===""?"":`data-groomer-slot="${slot}"`}><button type="button" class="calendar-month-event" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><time>${escape(schedulingTime(item))}</time><span class="month-event-name">${escape(model.customerName)}</span></button></span>`;}).join("")}</div>${ordered.length>MONTH_EVENT_LIMIT?`<button type="button" class="calendar-month-more" data-month-open-date="${day}">+${ordered.length-MONTH_EVENT_LIMIT} more</button>`:""}</div>`;}).join("");
-  target.innerHTML=headings+cells;$("#calendar-range").textContent=new Intl.DateTimeFormat([],{month:"long",year:"numeric"}).format(dateAt(first));
+  target.innerHTML=headings+cells;$("#calendar-range").textContent=formatPrefLocalMonthYear(first);
   $$('[data-month-open-date]').forEach(button=>button.addEventListener("click",()=>{state.calendar.view="day";updateCalendarViewControls();selectCalendarDate(button.dataset.monthOpenDate);}));
   $$('[data-month-book-date]').forEach(button=>button.addEventListener("click",()=>{state.calendar.bookingPreset=`${button.dataset.monthBookDate}T09:00`;state.calendar.bookingGroomerId=null;actions["new-appointment"]();}));bindCalendarInteractions();
 }
@@ -754,13 +1103,25 @@ function renderWeekCalendar(){
   // real floor. WEEK_LANE_WIDTH matches the minmax() floor in styles.css; the resulting width is
   // absorbed by .week-scroll, which is marked data-allow-horizontal-scroll.
   target.style.minWidth=`${64+laneCount*WEEK_LANE_WIDTH}px`;const [start,end]=calendarHours();const slots=(end-start)/30;
-  const header=`<div class="week-corner" style="grid-column:1;grid-row:1/span 2">Time</div>${days.map((day,index)=>`<button type="button" class="week-day-head ${day===state.calendar.selectedDate?"selected":""}" data-calendar-date="${day}" style="grid-column:${index*groomers.length+2}/span ${groomers.length};grid-row:1"><strong>${new Intl.DateTimeFormat([],{weekday:"short"}).format(dateAt(day))}</strong> ${new Intl.DateTimeFormat([],{month:"short",day:"numeric"}).format(dateAt(day))}</button>`).join("")}${days.flatMap((day,dayIndex)=>groomers.map((groomer,groomerIndex)=>`<div class="week-groomer-head ${groomerIndex===0?"week-day-start":""}" data-groomer-slot="${groomerColorSlot(groomer.id)}" style="grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:2" title="${escape(groomer.displayName)}">${escape(groomer.displayName)}</div>`)).join("")}`;
+  const header=`<div class="week-corner" style="grid-column:1;grid-row:1/span 2">Time</div>${days.map((day,index)=>`<button type="button" class="week-day-head ${day===state.calendar.selectedDate?"selected":""}" data-calendar-date="${day}" style="grid-column:${index*groomers.length+2}/span ${groomers.length};grid-row:1"><strong>${formatPrefLocalShortWeekday(day)}</strong> ${formatPrefLocalMonthDay(day)}</button>`).join("")}${days.flatMap((day,dayIndex)=>groomers.map((groomer,groomerIndex)=>`<div class="week-groomer-head ${groomerIndex===0?"week-day-start":""}" data-groomer-slot="${groomerColorSlot(groomer.id)}" style="grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:2" title="${escape(groomer.displayName)}">${escape(groomer.displayName)}</div>`)).join("")}`;
   let cells="";
   for(let slot=0;slot<slots;slot++){const minutes=start+slot*30,row=slot+3;cells+=`<div class="week-time" style="grid-column:1;grid-row:${row}">${timeLabel(minutes)}</div>`;for(let dayIndex=0;dayIndex<7;dayIndex++){const day=days[dayIndex],periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(day).getUTCDay()),open=!periods.length&&!state.businessHours.length||periods.some(period=>{const from=Number(String(period.startTime).slice(0,2))*60+Number(String(period.startTime).slice(3,5)),to=Number(String(period.endTime).slice(0,2))*60+Number(String(period.endTime).slice(3,5));return minutes>=from&&minutes<to;});for(let groomerIndex=0;groomerIndex<groomers.length;groomerIndex++){const groomer=groomers[groomerIndex],preset=`${day}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`;cells+=`<button type="button" aria-label="${day}, ${timeLabel(minutes)}, ${escape(groomer.displayName)}, ${open?"create appointment":"closed"}" class="week-slot ${groomerIndex===0?"week-day-start ":""}${open?"":"closed"}" ${open?`data-slot="${preset}" data-slot-groomer="${groomer.id}"`:"disabled"} style="grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${row}"></button>`;}}}
+  // Drawn before the appointment cards so that, at equal specificity, a booking painted over a
+  // block still reads as the booking. A groomer with no column here draws no band: the filter that
+  // chose the columns is the filter the API was already asked with.
+  // One layout per lane of the grid - per groomer, per day - because that is the region a stack of
+  // blocks actually competes for. Widths divided across a whole week would be a week's worth of
+  // narrowing to solve one Tuesday.
+  const blocks=days.flatMap((day,dayIndex)=>groomers.flatMap((groomer,groomerIndex)=>
+    blockedTimeColumnLayout(calendarBlockedTimes().filter(block=>block.employeeId===groomer.id),day,start,end)
+      .map(({block,place,lane,lanes})=>blockedTimeBand(block,
+        `grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${place.offset+3}/span ${place.span}`,
+        {lane,lanes}))
+  )).join("");
   const visible=filteredAppointments();const placed=[];
   const appointments=visible.flatMap(item=>{const local=appointmentLocalValue(item),day=local.slice(0,10),dayIndex=days.indexOf(day);if(dayIndex<0)return [];const minutes=Number(local.slice(11,13))*60+Number(local.slice(14,16)),duration=Math.max(30,Math.round((new Date(item.endAt)-new Date(item.startAt))/60000)),row=Math.floor((minutes-start)/30)+3;if(row<3||row>slots+2)return [];return (item.groomers||[]).map(assigned=>{const groomerIndex=groomers.findIndex(groomer=>groomer.id===assigned.id);if(groomerIndex<0)return "";const lane=`${day}:${assigned.id}`,overlap=placed.some(other=>other.lane===lane&&minutes<other.end&&minutes+duration>other.start);placed.push({lane,start:minutes,end:minutes+duration});return appointmentCard(item,{day:true,groomerId:assigned.id,overlap,style:`grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${row}/span ${Math.max(1,Math.ceil(duration/30))}`});});}).join("");
-  const now=currentBusinessMinutes(),todayIndex=days.indexOf(businessDate()),nowRow=Math.floor((now-start)/30)+3,currentLine=todayIndex>=0&&now>=start&&now<end?`<div class="calendar-now-line" role="status" aria-label="Current business time" style="grid-column:${todayIndex*groomers.length+2}/span ${groomers.length};grid-row:${nowRow}"></div>`:"";target.innerHTML=header+cells+appointments+currentLine;
-  $("#calendar-range").textContent=`${new Intl.DateTimeFormat([],{month:"short",day:"numeric"}).format(dateAt(days[0]))} – ${new Intl.DateTimeFormat([],{month:"short",day:"numeric",year:"numeric"}).format(dateAt(days[6]))}`;
+  const now=currentBusinessMinutes(),todayIndex=days.indexOf(businessDate()),nowRow=Math.floor((now-start)/30)+3,currentLine=todayIndex>=0&&now>=start&&now<end?`<div class="calendar-now-line" role="status" aria-label="Current business time" style="grid-column:${todayIndex*groomers.length+2}/span ${groomers.length};grid-row:${nowRow}"></div>`:"";target.innerHTML=header+cells+blocks+appointments+currentLine;
+  $("#calendar-range").textContent=`${formatPrefLocalMonthDay(days[0])} – ${formatPrefLocalMonthDayYear(days[6])}`;
   $$('[data-calendar-date]').forEach(button=>button.addEventListener("click",()=>runDetached(()=>selectCalendarDate(button.dataset.calendarDate))));
   bindCalendarInteractions();
 }
@@ -772,6 +1133,16 @@ function renderDayCalendar(){
   if(!groomers.length){target.className="calendar-empty-groomers";target.innerHTML="<p><strong>No groomers selected.</strong><br>Choose groomers to display.</p>";$("#calendar-range").textContent=formatPrefLocalWeekdayDate(state.calendar.selectedDate);return;}
   let content=`<div class="day-corner" style="grid-column:1;grid-row:1">Time</div>${groomers.map((groomer,index)=>`<div class="day-groomer" data-groomer-slot="${groomerColorSlot(groomer.id)}" style="grid-column:${index+2};grid-row:1">${escape(groomer.displayName)}</div>`).join("")}`;
   for(let slot=0;slot<slots;slot++){const minutes=start+slot*30,row=slot+2,periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(state.calendar.selectedDate).getUTCDay()),open=!periods.length&&!state.businessHours.length||periods.some(period=>{const from=Number(String(period.startTime).slice(0,2))*60+Number(String(period.startTime).slice(3,5)),to=Number(String(period.endTime).slice(0,2))*60+Number(String(period.endTime).slice(3,5));return minutes>=from&&minutes<to;});content+=`<div class="day-time" style="grid-column:1;grid-row:${row}">${timeLabel(minutes)}</div>`;for(let index=0;index<groomers.length;index++){const groomer=groomers[index],preset=`${state.calendar.selectedDate}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`;content+=`<button type="button" class="day-slot ${open?"":"closed"}" ${open?`data-slot="${preset}" data-slot-groomer="${groomer.id}"`:`disabled`} style="grid-column:${index+2};grid-row:${row}" aria-label="${escape(state.calendar.selectedDate)}, ${timeLabel(minutes)}, ${escape(groomer.displayName)}, ${open?"create appointment":"closed"}"></button>`;}}
+  // Same two clamps as the week grid, one column each. A block whose groomer has no column on
+  // screen is not drawn, because there is nowhere honest to draw it.
+  // Walked per column rather than per block, for the same reason the week grid is: a lane count is
+  // a property of one groomer's column on one day, so the column has to be assembled before any of
+  // its bands can be told how wide it is.
+  for(let column=0;column<groomers.length;column++){
+    const own=calendarBlockedTimes().filter(block=>block.employeeId===groomers[column].id);
+    for(const {block,place,lane,lanes} of blockedTimeColumnLayout(own,state.calendar.selectedDate,start,end))
+      content+=blockedTimeBand(block,`grid-column:${column+2};grid-row:${place.offset+2}/span ${place.span}`,{lane,lanes});
+  }
   for(const item of filteredAppointments().filter(appointment=>appointmentLocalValue(appointment).slice(0,10)===state.calendar.selectedDate)){const local=appointmentLocalValue(item),minutes=Number(local.slice(11,13))*60+Number(local.slice(14,16)),duration=Math.max(30,Math.round((new Date(item.endAt)-new Date(item.startAt))/60000)),row=Math.floor((minutes-start)/30)+2;if(row<2||row>slots+1)continue;for(const assigned of item.groomers||[]){const column=groomers.findIndex(groomer=>groomer.id===assigned.id);if(column<0)continue;content+=appointmentCard(item,{day:true,groomerId:assigned.id,style:`grid-column:${column+2};grid-row:${row}/span ${Math.max(1,Math.ceil(duration/30))}`});}}
   const now=currentBusinessMinutes(),nowRow=Math.floor((now-start)/30)+2;if(state.calendar.selectedDate===businessDate()&&now>=start&&now<end)content+=`<div class="calendar-now-line" role="status" aria-label="Current business time" style="grid-column:2/-1;grid-row:${nowRow}"></div>`;target.innerHTML=content;$("#calendar-range").textContent=formatPrefLocalWeekdayDate(state.calendar.selectedDate);bindCalendarInteractions();
 }
@@ -779,7 +1150,7 @@ function renderDayCalendar(){
 // beside a trigger, so it has no expanded sibling to reset. Guarding on the attribute keeps this
 // from writing aria-expanded onto whatever element happens to precede a floating popover.
 function closeCalendarMenus({restoreFocus=false}={}){$$(".calendar-action-popover:not([hidden])").forEach(popover=>{popover.hidden=true;const trigger=popover.previousElementSibling;if(!trigger?.hasAttribute("aria-expanded"))return;trigger.setAttribute("aria-expanded","false");if(restoreFocus)trigger.focus();});}
-function bindCalendarInteractions(root=document){bindAppointmentLockNote(root);const find=selector=>[...root.querySelectorAll(selector)];find('[data-slot]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openSlotMenu(button);}));find('[data-calendar-appointment]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();closeCalendarMenus();openCalendarAppointment(button.dataset.calendarAppointment,event.currentTarget);}));find('[data-appointment-notes]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openAppointmentNotes(button.dataset.appointmentNotes,event.currentTarget);}));find('[data-appointment-menu]').forEach(trigger=>trigger.addEventListener("click",event=>{event.stopPropagation();const popover=trigger.nextElementSibling,opening=popover.hidden;closeCalendarMenus();popover.hidden=!opening;trigger.setAttribute("aria-expanded",String(opening));if(opening)popover.querySelector("button")?.focus();}));find('.calendar-action-popover').forEach(popover=>popover.addEventListener("keydown",event=>{if(!["ArrowDown","ArrowUp","Home","End"].includes(event.key))return;event.preventDefault();const items=[...popover.querySelectorAll('[role="menuitem"]')],index=items.indexOf(document.activeElement),next=event.key==="Home"?0:event.key==="End"?items.length-1:(index+(event.key==="ArrowDown"?1:-1)+items.length)%items.length;items[next]?.focus();}));find('.view-appointment-action').forEach(button=>button.addEventListener("click",event=>{closeCalendarMenus();openCalendarAppointment(button.dataset.id,event.currentTarget);}));}
+function bindCalendarInteractions(root=document){bindAppointmentLockNote(root);const find=selector=>[...root.querySelectorAll(selector)];find('[data-slot]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openSlotMenu(button);}));find('[data-calendar-appointment]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();closeCalendarMenus();openCalendarAppointment(button.dataset.calendarAppointment,event.currentTarget);}));find('[data-appointment-notes]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openAppointmentNotes(button.dataset.appointmentNotes,event.currentTarget);}));find('[data-appointment-menu]').forEach(trigger=>trigger.addEventListener("click",event=>{event.stopPropagation();const popover=trigger.nextElementSibling,opening=popover.hidden;closeCalendarMenus();popover.hidden=!opening;trigger.setAttribute("aria-expanded",String(opening));if(opening)popover.querySelector("button")?.focus();}));find('.calendar-action-popover').forEach(popover=>popover.addEventListener("keydown",event=>{if(!["ArrowDown","ArrowUp","Home","End"].includes(event.key))return;event.preventDefault();const items=[...popover.querySelectorAll('[role="menuitem"]')],index=items.indexOf(document.activeElement),next=event.key==="Home"?0:event.key==="End"?items.length-1:(index+(event.key==="ArrowDown"?1:-1)+items.length)%items.length;items[next]?.focus();}));find('.view-appointment-action').forEach(button=>button.addEventListener("click",event=>{closeCalendarMenus();openCalendarAppointment(button.dataset.id,event.currentTarget);}));find('[data-blocked-time-open]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openBlockedTime(button.dataset.blockedTimeOpen,event.currentTarget);}));}
 // Small notes dialog. Reuses the shared <dialog>, so Escape closes it and focus returns to the
 // card button through the existing #modal close handler.
 function openAppointmentNotes(id,origin=null){
@@ -802,7 +1173,10 @@ function applyCalendarAppointment(row){
   }
   try{renderAppointments();}catch{/* the calendar is not mounted; nothing to redraw */}
 }
-function appointmentHost(target){return target.closest?.("[data-appointment-id]");}
+// The hover host is whichever of the two things the calendar draws the pointer is over. A blocked
+// time is not an appointment and carries no `data-appointment-id` - that attribute is what the drag
+// and the detail dialog key off - so it is matched by its own id here and branched on below.
+function appointmentHost(target){return target.closest?.("[data-appointment-id],[data-blocked-time-id]");}
 // == Calendar drag-to-move ==
 // Pointer events, not HTML5 drag-and-drop: the grid needs a movement threshold (so a press that
 // never travels still opens the appointment), pointer capture (so a slot underneath cannot steal
@@ -953,7 +1327,14 @@ function endCalendarDrag(commit){
   swallowNextClick();
   const slot=commit?drag.slot:null;
   if(!slot||slot.dataset.slot===drag.fromSlot&&slot.dataset.slotGroomer===drag.fromGroomer)return;
-  runDetached(()=>dropAppointment(drag.id,slot.dataset.slot,slot.dataset.slotGroomer));
+  // The gesture is not the commit. `confirmAppointmentDrop` resolves only once its dialog has
+  // CLOSED, so the request - and, if the server refuses, the Move dialog - runs with the top layer
+  // already empty. The card's open button is handed over as the place to put focus back.
+  const origin=drag.card.querySelector(".calendar-open");
+  runDetached(async()=>{
+    if(!await confirmAppointmentDrop(slot.dataset.slot,origin))return;
+    await dropAppointment(drag.id,slot.dataset.slot,slot.dataset.slotGroomer);
+  });
 }
 document.addEventListener("pointerdown",event=>{
   if(calendarDrag)endCalendarDrag(false);
@@ -977,7 +1358,60 @@ document.addEventListener("pointercancel",event=>{if(calendarDrag&&event.pointer
 document.addEventListener("keydown",event=>{if(event.key==="Escape"&&calendarDrag)endCalendarDrag(false);});
 function dropSlotLabel(localStart,employeeId){
   const minutes=Number(localStart.slice(11,13))*60+Number(localStart.slice(14,16)),groomer=state.employees.find(item=>item.id===employeeId)?.displayName;
-  return `${new Intl.DateTimeFormat([],{weekday:"short",month:"short",day:"numeric"}).format(dateAt(localStart.slice(0,10)))}, ${timeLabel(minutes)}${groomer?` with ${groomer}`:""}`;
+  return `${formatPrefLocalShortWeekdayMonthDay(localStart.slice(0,10))}, ${timeLabel(minutes)}${groomer?` with ${groomer}`:""}`;
+}
+/**
+ * The slot a drop landed on, written the way the workspace writes a stamp: "09/07/2026 1:30 PM".
+ *
+ * A DROP TARGET IS A WALL CLOCK, NOT AN INSTANT, so this cannot go through `formatPrefDateAndTime`
+ * - that resolves a real instant in the scheduling zone, and `new Date("2026-09-07T13:30")` is read
+ * in the BROWSER's zone, which is how a confirmation ends up naming a different afternoon than the
+ * one the card is about to land on. `formatPrefLocalDate` reorders the calendar date without going
+ * near a zone and `timeLabel` lays out the clock; both read
+ * `Settings -> Business -> Date format` and the hour format, so a DD/MM/YYYY salon on a 24-hour
+ * clock is asked about "07/09/2026 13:30" and nothing here asks the browser what it prefers.
+ */
+function dropConfirmDestination(localStart){
+  const minutes=Number(localStart.slice(11,13))*60+Number(localStart.slice(14,16));
+  return `${formatPrefLocalDate(localStart.slice(0,10))} ${timeLabel(minutes)}`;
+}
+/**
+ * Every drop asks first.
+ *
+ * A drag is a coarse gesture over a dense grid, and the slot under the cursor is not reliably the
+ * slot that was meant. Until now a mis-aimed drop was applied the moment the pointer came up: the
+ * appointment had already moved, and putting it back was a second move, through a dialog, that the
+ * server was free to refuse. So the question is asked for EVERY drop rather than only for an
+ * occupied one - the mistake being caught is the mis-aimed drop, and an empty slot is exactly where
+ * that lands. A conflict is a different conversation and still happens after this one.
+ *
+ * IT IS A GATE AND NOTHING ELSE. It never touches the network. Confirming runs `dropAppointment`
+ * unchanged, so the success toast, the 403 reconcile, the lock's own sentence and the single
+ * conflict path through `openMoveRejection` are the ones that were already there. Cancelling issues
+ * no request at all, which is the whole point: nothing moved, so there is nothing to put back.
+ *
+ * `#stacked-dialog` is the shared Cancel/OK confirmation this file already uses, and it is not the
+ * `#modal` a refusal reopens - so resolving on the dialog's `close` event, rather than inside the
+ * OK handler, is what keeps `openMoveRejection` from calling showModal() over a dialog still up.
+ */
+function confirmAppointmentDrop(localStart,origin=null){
+  return new Promise(resolve=>{
+    let confirmed=false;
+    const dialog=openStackedDialog({
+      title:"Re-schedule appointment",
+      body:`<p data-testid="reschedule-confirm-question">Reschedule appointment to ${escape(dropConfirmDestination(localStart))}?</p>`,
+      confirmLabel:"OK",
+      dismissLabel:"Cancel",
+      onConfirm:()=>{confirmed=true;}
+    });
+    // OK, Cancel and Escape all arrive here, so there is one exit rather than three.
+    dialog.addEventListener("close",()=>{
+      // A pointer drag leaves focus wherever it happened to be, so the dialog's own restore has
+      // nothing useful to hand back. The card the gesture was about does.
+      if(origin?.isConnected&&(!document.activeElement||document.activeElement===document.body))origin.focus();
+      resolve(confirmed);
+    },{once:true});
+  });
 }
 async function dropAppointment(id,localStart,employeeId){
   const appointment=calendarAppointmentById(id);if(!appointment)return;
@@ -1008,15 +1442,933 @@ async function openMoveRejection(error,id,preset){
   if(error.retryConflictOverride)renderConflictOverride(error);
   else $("#modal-error").textContent=error.message;
 }
-function showCalendarHover(host){if(!globalThis.matchMedia("(hover: hover) and (pointer: fine)").matches)return;const item=calendarAppointmentById(host?.dataset.appointmentId);if(!item)return;const preview=$("#calendar-hover-preview"),model=appointmentPresentation(item),rect=host.getBoundingClientRect(),width=Math.min(280,globalThis.innerWidth-24);preview.innerHTML=appointmentHoverDetails(model);preview.style.width=`${width}px`;preview.hidden=false;const height=preview.offsetHeight,leftSpace=rect.left-12,rightSpace=globalThis.innerWidth-rect.right-12,left=rightSpace>=width?rect.right+8:leftSpace>=width?rect.left-width-8:Math.max(12,Math.min(rect.left,globalThis.innerWidth-width-12)),top=rect.bottom+height+12<=globalThis.innerHeight?rect.bottom+8:Math.max(12,rect.top-height-8);preview.style.left=`${left}px`;preview.style.top=`${top}px`;preview.dataset.hoverAppointmentId=item.id;}
-function hideCalendarHover(){const preview=$("#calendar-hover-preview");preview.hidden=true;preview.removeAttribute("data-hover-appointment-id");}
+// The band is a 30-minute strip, so its label is a summary and the hover is where the block is
+// actually read. Same shape as the appointment hover - a capitalised kind line, the day and range,
+// then the detail - so the two previews are recognisably the same object. A block with no reason
+// prints no Reason row rather than an empty one.
+function blockedTimeHoverDetails(block){
+  const reason=blockedTimeReason(block);
+  return `<div><span>Block time</span><strong>${escape(block.employeeName)}</strong></div><p><strong>${escape(formatPrefLocalWeekdayDate(block.scheduledLocalStart.slice(0,10)))}</strong><br>${escape(blockedTimeRange(block))}</p>${reason?`<dl><div><dt>Reason</dt><dd>${escape(reason)}</dd></div></dl>`:""}`;
+}
+// ONE tooltip for the whole grid. `#calendar-hover-preview` is the element the appointment hover
+// already fills and positions; a block only decides what goes inside it, so there is no second
+// tooltip to keep in step and nothing about the placement maths changes.
+function showCalendarHover(host){if(!globalThis.matchMedia("(hover: hover) and (pointer: fine)").matches)return;const blockId=host?.dataset.blockedTimeId,block=blockId?blockedTimeById(blockId):null,item=blockId?null:calendarAppointmentById(host?.dataset.appointmentId);if(!block&&!item)return;const preview=$("#calendar-hover-preview"),rect=host.getBoundingClientRect(),width=Math.min(280,globalThis.innerWidth-24);preview.innerHTML=block?blockedTimeHoverDetails(block):appointmentHoverDetails(appointmentPresentation(item));preview.style.width=`${width}px`;preview.hidden=false;const height=preview.offsetHeight,leftSpace=rect.left-12,rightSpace=globalThis.innerWidth-rect.right-12,left=rightSpace>=width?rect.right+8:leftSpace>=width?rect.left-width-8:Math.max(12,Math.min(rect.left,globalThis.innerWidth-width-12)),top=rect.bottom+height+12<=globalThis.innerHeight?rect.bottom+8:Math.max(12,rect.top-height-8);preview.style.left=`${left}px`;preview.style.top=`${top}px`;if(block){preview.dataset.hoverBlockedTimeId=block.id;preview.removeAttribute("data-hover-appointment-id");}else{preview.dataset.hoverAppointmentId=item.id;preview.removeAttribute("data-hover-blocked-time-id");}}
+function hideCalendarHover(){const preview=$("#calendar-hover-preview");preview.hidden=true;preview.removeAttribute("data-hover-appointment-id");preview.removeAttribute("data-hover-blocked-time-id");}
 document.addEventListener("pointerover",event=>{const host=appointmentHost(event.target);if(host&&!host.contains(event.relatedTarget))showCalendarHover(host);});
 document.addEventListener("pointerout",event=>{const host=appointmentHost(event.target);if(host&&!host.contains(event.relatedTarget))hideCalendarHover();});
 document.addEventListener("focusin",event=>{const host=appointmentHost(event.target);if(host)showCalendarHover(host);});
 document.addEventListener("focusout",event=>{const host=appointmentHost(event.target);if(host&&!host.contains(event.relatedTarget))hideCalendarHover();});
-async function loadAppointmentRange(start,days){const chunks=[],selected=state.calendar.selectedGroomerIds,employeeQuery=selected===null?"":`&employeeIds=${encodeURIComponent([...selected].join(","))}`;if(selected!==null&&!selected.size)return [];for(let offset=0;offset<days;offset+=31){const size=Math.min(31,days-offset);chunks.push(api(`/api/appointments?localDate=${dateShift(start,offset)}&days=${size}${employeeQuery}`));}return (await Promise.all(chunks)).flat();}
+/* == The Block Time dialog =====================================================================
+ *
+ * Seam 1 drew the band and said, in its own comment, "no click, no drag, no edit, no delete - a
+ * band is a region, not a card". That was true of a seam that could only READ. `PATCH`, `DELETE`
+ * and the activity feed now exist, so the region has to become openable - and the whole of the
+ * care below is about making it openable WITHOUT making it a card.
+ *
+ * WHAT KEEPS THE BAND OUT OF DRAG AND DROP. The `<div class="calendar-block">` still carries no
+ * `data-appointment-id`, no `data-draggable` and no `data-slot`, so `calendarDragCard` (which only
+ * matches `.appointment-block[data-draggable="true"]`) still refuses it and `calendarDropSlot`
+ * (which walks `elementsFromPoint` for the first `[data-slot]`) still walks straight past it to the
+ * week/day slot underneath. The click and the keyboard both arrive through a plain `<button>` NESTED
+ * INSIDE the band - exactly the arrangement `.calendar-open` already has inside an appointment card
+ * - which adds a tab stop and an activation target and nothing else. A drag aimed at a block still
+ * reaches the scheduling authority and still comes back refused, which is the enforcement the band
+ * exists to explain.
+ *
+ * WHY THE DIALOG IS BUILT HERE RATHER THAN DECLARED IN index.html. `public/app.js` binds every
+ * `.close` in the document to `$("#modal").close()` at load. A `.close` inside this dialog would be
+ * swallowed by that global handler and would close the WRONG dialog. Two things prevent that: this
+ * element is created on first open, long after that sweep has run, and - the part that would still
+ * hold if it were ever moved into the markup - the dismiss controls do not use the `.close` class
+ * at all. They are `[data-blocked-time-close]` and `[data-blocked-time-cancel]`, bound to THIS
+ * dialog, in `bindBlockedTimeEditor`.
+ *
+ * X, CANCEL AND ESCAPE ALL MUTATE NOTHING. Each of the three does exactly `dialog.close()`; the
+ * dialog's own `close` listener restores focus and empties the element, and issues no request. The
+ * only two requests this file makes are the ones an operator explicitly asks for with Update and
+ * Delete.
+ *
+ * THE VERSION IS CARRIED END TO END. `PATCH` sends it in the body, `DELETE` sends it as `?version=`,
+ * and a `409 STALE_BLOCKED_TIME` re-reads the calendar and redraws this form over the CURRENT row
+ * rather than retrying. A silent retry would be last-write-wins with extra steps.
+ */
+let blockTimeEditor=null;
+/** The block's own colour, or null. No hash fallback, unlike a groomer: nobody chose is an answer. */
+function blockedTimeColorSlot(block){
+  const slot=block?.colorSlot;
+  return Number.isInteger(slot)&&slot>=0&&slot<groomerPaletteSize?slot:null;
+}
+function blockedTimeColourName(slot){return slot===null?"No colour":groomerSlotNames[slot];}
+/** "13:30" -> 810, the same slicing discipline the wall clock gets everywhere else in this file. */
+function clockMinutes(value){return Number(String(value).slice(0,2))*60+Number(String(value).slice(3,5));}
+/**
+ * Which day the end time lands on, and whether this dialog can express the block at all.
+ *
+ * The dialog offers ONE date, which is what an operator means by a block on all but one shape of
+ * row. The exception is genuine: `blocked_times` stores two independent instants, so a block can
+ * legitimately run into the next morning or across a week. An end at or before the start reads as
+ * the next morning and is offered; anything longer than that cannot be said with one date field, so
+ * the schedule is DISABLED with the reason on it rather than silently truncated to the first day.
+ */
+function blockedTimeSpan(block){
+  const startDay=block.scheduledLocalStart.slice(0,10),endDay=block.scheduledLocalEnd.slice(0,10);
+  if(endDay===startDay)return {editable:true,overnight:false};
+  if(endDay===dateShift(startDay,1)
+    &&clockMinutes(block.scheduledLocalEnd.slice(11))<=clockMinutes(block.scheduledLocalStart.slice(11)))
+    return {editable:true,overnight:true};
+  return {editable:false,overnight:false};
+}
+function blockedTimeEndDate(date,startTime,endTime){
+  return clockMinutes(endTime)<=clockMinutes(startTime)?dateShift(date,1):date;
+}
+/**
+ * A `datetime-local` an hour later, sliced rather than parsed.
+ *
+ * ONE HOUR IS ONE HOUR, NOT "one hour if that is convenient". A start at 23:30 defaults to 00:30 on
+ * the following day, which is what adding an hour to it means, and a start that puts the end past
+ * closing or outside the calendar's drawn window still defaults to plus an hour. Clamping here
+ * would put a time in the field that nobody asked for and that the operator would have to notice
+ * before it became a block; whether the resulting interval is ALLOWED is the server's sentence to
+ * pass, and it passes it on submit with a message rather than silently in a form field.
+ *
+ * An unusable value in, an empty string out - the field simply keeps whatever it had.
+ */
+function blockedTimePlusHour(value){
+  const text=String(value||"");
+  if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(text))return "";
+  const date=text.slice(0,10),hour=Number(text.slice(11,13))+1,minute=text.slice(14,16);
+  return hour>=24?`${dateShift(date,1)}T${prefPad(hour-24)}:${minute}`:`${date}T${prefPad(hour)}:${minute}`;
+}
+/** The salon's own words for the times in the native pickers above it, which read the browser's. */
+function blockedTimeWhenLine(date,startTime,endTime){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||!/^\d{2}:\d{2}/.test(startTime)||!/^\d{2}:\d{2}/.test(endTime))
+    return "Choose a date, a start and an end.";
+  const overnight=clockMinutes(endTime)<=clockMinutes(startTime);
+  return `${formatPrefLocalWeekdayDate(date)} · ${timeLabel(clockMinutes(startTime))}–${timeLabel(clockMinutes(endTime))}${overnight?" (ends the next day)":""}`;
+}
+/* == The Block Time clock ==
+ *
+ * Three scrolling columns - hour, minute, AM/PM - in a popover hung off the time field, with the
+ * current value highlighted and an OK that commits. It is the control Amanda's reference shows, and
+ * it exists because the native time input is the one part of these two dialogs the product cannot
+ * style, cannot lay out in the workspace's own hour format, and cannot make comfortable to hit.
+ *
+ * SCOPE IS BLOCK TIME, DELIBERATELY AND ONLY. The create dialog's Start and End, and the drawer's
+ * Start and End. Appointment booking, business hours and every other time input in the product are
+ * untouched, which is why this is attached at four call sites rather than folded into `field()`.
+ *
+ * IT DOES NOT REPLACE THE FIELD, IT FILLS IT. The `<input>` stays exactly what it was - same name,
+ * same type, same value, same place in the same form - so `blockedTimeUpdatePayload` and the create
+ * submit read what they always read and send it unchanged. The popover is an ADDITIONAL way to set
+ * that value; typing into the field, and the browser's own picker, both still work.
+ *
+ * AND THE WALL CLOCK IS STILL SLICED. `datetime-local` carries a date this control has no business
+ * touching, so the date is sliced off the front, the time is replaced, and the two are rejoined.
+ * `new Date(...)` on either half would re-read it in the browser's zone - the same mistake
+ * `dropConfirmDestination` and `blockedTimeMinutes` exist to spell out.
+ *
+ * THE KEYBOARD OWNS IT AS MUCH AS THE POINTER DOES. Each column is one listbox, one tab stop and
+ * one `aria-activedescendant`, so a reader moves within a column with the arrows and between them
+ * with Tab, rather than tabbing past thirty-six options to reach OK. Enter and OK commit; Escape
+ * dismisses and changes nothing.
+ */
+const TIME_PICKER_MINUTE_STEP=5;
+/** The hour a field with nothing in it opens on, so the columns never start on a blank. */
+const TIME_PICKER_DEFAULT_HOUR=9;
+/** At most one popover is open, and this is it. */
+let timePicker=null;
+/** "HH:MM" out of either kind of field, or "" when the field holds nothing usable yet. */
+function timePickerClock(input){
+  const value=String(input?.value||"");
+  const clock=input?.type==="datetime-local"?value.slice(11,16):value.slice(0,5);
+  return /^\d{2}:\d{2}$/.test(clock)?clock:"";
+}
+/**
+ * "HH:MM" back into either kind of field.
+ *
+ * A `datetime-local` keeps whatever date it already had. When it has none - the New menu opens the
+ * create dialog with an empty Start - the day the operator is looking at is the honest answer, and
+ * it is a slice of the calendar's own state rather than anything parsed.
+ */
+function timePickerWrite(input,clock){
+  if(input.type!=="datetime-local"){input.value=clock;return;}
+  const value=String(input.value||"");
+  const date=/^\d{4}-\d{2}-\d{2}/.test(value)?value.slice(0,10):(state.calendar.selectedDate||businessDate());
+  input.value=`${date}T${clock}`;
+}
+/**
+ * The field's value as the three columns see it.
+ *
+ * TWELVE AND TWENTY-FOUR ARE BOTH FIRST-CLASS. `Settings -> Business -> Hour format` already
+ * decides how every other time in this product reads, and a picker that ignored it would be the one
+ * place in the workspace showing PM to a salon that asked for 14:00. In 24-hour mode there is no
+ * meridiem at all - `meridiem` is null, the third column is not drawn, and the hour column runs
+ * 00-23 rather than 01-12.
+ */
+function timePickerSelection(clock){
+  const known=/^\d{2}:\d{2}$/.test(clock);
+  const hour=known?Number(clock.slice(0,2)):TIME_PICKER_DEFAULT_HOUR,minute=known?Number(clock.slice(3,5)):0;
+  if(prefHourFormat()==="24")return {hour,minute,meridiem:null};
+  return {hour:hour%12===0?12:hour%12,minute,meridiem:hour<12?"AM":"PM"};
+}
+/** The three columns back into the one 24-hour string every wire format in this file speaks. */
+function timePickerClockOf(selection){
+  const hour=selection.meridiem===null?selection.hour
+    :selection.meridiem==="AM"?(selection.hour===12?0:selection.hour)
+    :(selection.hour===12?12:selection.hour+12);
+  return `${prefPad(hour)}:${prefPad(selection.minute)}`;
+}
+/**
+ * What each column offers.
+ *
+ * The minute column is the reference's five-minute ladder, PLUS the value the field already holds
+ * when that is not on it. A block stored at 12:07 must be openable and closable without the picker
+ * quietly rounding it to 12:05 - a control that cannot express the value it was given is a control
+ * that edits by being looked at.
+ */
+function timePickerValues(column,selection){
+  if(column==="hour")
+    return prefHourFormat()==="24"
+      ?Array.from({length:24},(_,hour)=>hour)
+      :Array.from({length:12},(_,index)=>index+1);
+  if(column==="minute"){
+    const values=new Set(Array.from({length:60/TIME_PICKER_MINUTE_STEP},(_,index)=>index*TIME_PICKER_MINUTE_STEP));
+    if(Number.isInteger(selection.minute))values.add(selection.minute);
+    return [...values].sort((a,b)=>a-b);
+  }
+  return ["AM","PM"];
+}
+function timePickerOptionText(column,value){return column==="meridiem"?String(value):prefPad(value);}
+function timePickerOptionId(id,column,value){return `${id}-${column}-${String(value).toLowerCase()}`;}
+/**
+ * One column: a named listbox with one tab stop.
+ *
+ * `role="option"` on real `<button>`s rather than on bare `<div>`s, so the pointer gets a control
+ * the browser already knows how to press and hover; `tabindex="-1"` keeps them out of the tab order
+ * because the LISTBOX is the tab stop and `aria-activedescendant` is what moves.
+ */
+function timePickerColumnMarkup(id,column,label,values,selected){
+  return `<div class="time-picker-column">`
+    +`<span class="time-picker-column-name" id="${escapeAttr(id)}-${escapeAttr(column)}-name">${escape(label)}</span>`
+    +`<div class="time-picker-options" role="listbox" tabindex="0" data-time-picker-column="${escapeAttr(column)}"`
+    +` aria-labelledby="${escapeAttr(id)}-${escapeAttr(column)}-name"`
+    +` aria-activedescendant="${escapeAttr(timePickerOptionId(id,column,selected))}">`
+    +values.map(value=>`<button type="button" role="option" tabindex="-1" class="time-picker-option"`
+      +` id="${escapeAttr(timePickerOptionId(id,column,value))}"`
+      +` data-time-picker-value="${escapeAttr(String(value))}"`
+      +` aria-selected="${String(value)===String(selected)?"true":"false"}"`
+      +`>${escape(timePickerOptionText(column,value))}</button>`).join("")
+    +`</div></div>`;
+}
+function timePickerMarkup(id,selection,testid){
+  return `<div class="time-picker-columns">`
+    +timePickerColumnMarkup(id,"hour","Hour",timePickerValues("hour",selection),selection.hour)
+    +timePickerColumnMarkup(id,"minute","Minute",timePickerValues("minute",selection),selection.minute)
+    +(selection.meridiem===null?""
+      :timePickerColumnMarkup(id,"meridiem","AM or PM",timePickerValues("meridiem",selection),selection.meridiem))
+    +`</div>`
+    +`<div class="time-picker-foot">`
+    +`<button type="button" class="primary compact time-picker-ok" data-time-picker-ok data-testid="${escapeAttr(testid)}-picker-ok">OK</button>`
+    +`</div>`;
+}
+/**
+ * A time field WITH the picker on it, which is a plain field plus two siblings.
+ *
+ * THE TRIGGER IS OUTSIDE THE LABEL, on purpose. A `<button>` inside a `<label>` gets the label's
+ * click forwarded to it AND forwards its own to the input, so pressing the clock would open the
+ * browser's picker over ours. The caption is therefore a `<span>` the input names with
+ * `aria-labelledby`, which is the same accessible name a `<label>` would have given it.
+ */
+function blockedTimeClockField({name,label,value,type,testid,pickerLabel,disabled=false,wide=false}){
+  const id=`time-picker-${name}`;
+  return `<div class="time-picker-field${wide?" wide":""}" data-time-picker-field="${escapeAttr(name)}">`
+    +`<span class="time-picker-caption" id="${escapeAttr(id)}-caption">${escape(label)}</span>`
+    +`<div class="time-picker-control">`
+    +`<input data-testid="${escapeAttr(testid)}" name="${escapeAttr(name)}" type="${escapeAttr(type)}"`
+    +` value="${escapeAttr(value)}" required aria-labelledby="${escapeAttr(id)}-caption"`
+    +`${disabled?" disabled":""}>`
+    +`<button type="button" class="time-picker-trigger" data-time-picker-open="${escapeAttr(name)}"`
+    +` data-testid="${escapeAttr(testid)}-picker" aria-haspopup="dialog" aria-expanded="false"`
+    +` aria-controls="${escapeAttr(id)}" aria-label="${escapeAttr(pickerLabel)}"`
+    +`${disabled?` disabled aria-disabled="true"`:""}>`
+    +`<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`
+    +`</button></div>`
+    // The committed value in the salon's own words. The `<input>` holds it either way, but a reader
+    // whose focus has just been handed back to the clock button would otherwise be told nothing.
+    +`<span class="visually-hidden" role="status" aria-live="polite" data-time-picker-live></span>`
+    +`<div class="time-picker-popover" id="${escapeAttr(id)}" role="dialog" aria-label="${escapeAttr(pickerLabel)}" hidden></div>`
+    +`</div>`;
+}
+/**
+ * The chosen option, centred in its own column.
+ *
+ * NOT `scrollIntoView`, which would scroll the dialog behind the popover as well and can move the
+ * whole form out from under the operator. And measured with rectangles rather than `offsetTop`: the
+ * nearest positioned ancestor of an option is the POPOVER, not the column it is in, so `offsetTop`
+ * carries the column heading's height with it and lands the selection a row too low.
+ */
+function scrollTimePickerColumn(host){
+  const active=host.querySelector('[aria-selected="true"]');
+  if(!active)return;
+  const option=active.getBoundingClientRect(),column=host.getBoundingClientRect();
+  host.scrollTop+=option.top-column.top-(column.height-option.height)/2;
+}
+/**
+ * Which way the popover opens, measured against the DIALOG rather than the viewport for the
+ * horizontal half.
+ *
+ * The drawer's schedule row is three narrow fields, and the End is the rightmost of them. A popover
+ * that always opened rightwards from a field that narrow would hang outside the drawer, and
+ * `.drawer-body` scrolls - `overflow-y:auto` makes the other axis auto too - so the operator would
+ * get a horizontal scrollbar under the form instead of a picker. It flips to the field's right edge
+ * instead, and opens upwards when there is no room below it.
+ */
+function positionTimePicker(){
+  const session=timePicker;if(!session)return;
+  const control=session.field.querySelector(".time-picker-control");
+  if(!control)return;
+  const anchor=control.getBoundingClientRect();
+  const height=session.popover.offsetHeight,width=session.popover.offsetWidth;
+  session.popover.dataset.timePickerDrop=
+    anchor.bottom+height+12>globalThis.innerHeight&&anchor.top-height-12>0?"up":"down";
+  const bounds=(session.popover.closest("dialog")||document.documentElement).getBoundingClientRect();
+  session.popover.dataset.timePickerAlign=anchor.left+width>bounds.right-8?"right":"left";
+}
+function openTimePicker(trigger){
+  const field=trigger.closest("[data-time-picker-field]");
+  const input=field?.querySelector("input"),popover=field?.querySelector(".time-picker-popover");
+  if(!input||!popover||input.disabled)return;
+  // A second press on the same clock closes it, which is what a popover trigger is expected to do.
+  if(timePicker?.popover===popover){closeTimePicker({restoreFocus:true});return;}
+  closeTimePicker();
+  const selection=timePickerSelection(timePickerClock(input));
+  popover.innerHTML=timePickerMarkup(popover.id,selection,input.dataset.testid||input.name);
+  popover.hidden=false;
+  trigger.setAttribute("aria-expanded","true");
+  timePicker={field,input,trigger,popover,selection};
+  positionTimePicker();
+  for(const host of popover.querySelectorAll("[data-time-picker-column]"))scrollTimePickerColumn(host);
+  popover.querySelector('[data-time-picker-column="hour"]')?.focus();
+  document.addEventListener("pointerdown",timePickerOutside,true);
+  // The dialog behind it can be dismissed while this is open - Escape on the drawer, Cancel on the
+  // modal - and that empties the element this session is holding. One-shot, so nothing accumulates.
+  popover.closest("dialog")?.addEventListener("close",timePickerDismiss,{once:true});
+}
+/** Every exit lands here, and NONE of them writes to the field. Only `commitTimePicker` does. */
+function closeTimePicker({restoreFocus=false}={}){
+  const session=timePicker;if(!session)return;
+  timePicker=null;
+  document.removeEventListener("pointerdown",timePickerOutside,true);
+  session.popover.hidden=true;
+  session.popover.innerHTML="";
+  session.trigger.setAttribute("aria-expanded","false");
+  if(restoreFocus&&session.trigger.isConnected)session.trigger.focus();
+}
+function timePickerDismiss(){closeTimePicker();}
+function timePickerOutside(event){
+  const session=timePicker;if(!session)return;
+  if(!session.popover.isConnected){closeTimePicker();return;}
+  if(session.popover.contains(event.target)||session.trigger.contains(event.target))return;
+  closeTimePicker();
+}
+function selectTimePickerValue(column,value){
+  const session=timePicker;if(!session)return;
+  session.selection={...session.selection,[column]:column==="meridiem"?String(value):Number(value)};
+  const host=session.popover.querySelector(`[data-time-picker-column="${column}"]`);
+  if(!host)return;
+  for(const option of host.querySelectorAll("[data-time-picker-value]")){
+    const active=option.dataset.timePickerValue===String(value);
+    option.setAttribute("aria-selected",active?"true":"false");
+    if(active)host.setAttribute("aria-activedescendant",option.id);
+  }
+  scrollTimePickerColumn(host);
+}
+function moveTimePicker(host,key){
+  const options=[...host.querySelectorAll("[data-time-picker-value]")];
+  if(!options.length)return;
+  const index=options.findIndex(option=>option.getAttribute("aria-selected")==="true");
+  const next=key==="Home"?0:key==="End"?options.length-1
+    :key==="ArrowDown"?Math.min(options.length-1,index+1):Math.max(0,index-1);
+  const option=options[next];
+  if(option)selectTimePickerValue(host.dataset.timePickerColumn,option.dataset.timePickerValue);
+}
+/**
+ * OK, and only OK, moves the value.
+ *
+ * The `input` and `change` events are dispatched because the field did not type itself: the
+ * drawer's own `change` listener is what keeps `blocked-time-when` honest, and the create dialog's
+ * one-hour link listens on `input`. Both are told the truth - a person set this field - rather than
+ * being left to discover it on submit.
+ */
+function commitTimePicker(){
+  const session=timePicker;if(!session)return;
+  const {input,field,selection}=session;
+  const clock=timePickerClockOf(selection);
+  timePickerWrite(input,clock);
+  const spoken=field.querySelector("[data-time-picker-live]");
+  if(spoken)spoken.textContent=`${field.querySelector(".time-picker-caption")?.textContent||"Time"} set to ${timeLabel(clockMinutes(clock))}`;
+  closeTimePicker({restoreFocus:true});
+  input.dispatchEvent(new globalThis.Event("input",{bubbles:true}));
+  input.dispatchEvent(new globalThis.Event("change",{bubbles:true}));
+}
+/**
+ * Wired to the elements themselves rather than to any container they sit in.
+ *
+ * `#modal-fields` is a permanent element the shared dialog refills for every modal in the product,
+ * so a listener left there would outlive this dialog and accumulate one copy per opening - the same
+ * trap `bindBlockedTimeCreateColours` documents. Every element reached here is markup built for
+ * this opening and discarded with it.
+ */
+function bindTimePickers(root){
+  for(const trigger of root.querySelectorAll("[data-time-picker-open]"))
+    trigger.addEventListener("click",event=>{event.preventDefault();openTimePicker(event.currentTarget);});
+  for(const popover of root.querySelectorAll(".time-picker-popover")){
+    popover.addEventListener("click",event=>{
+      const option=event.target.closest("[data-time-picker-value]");
+      if(option){
+        const host=option.closest("[data-time-picker-column]");
+        selectTimePickerValue(host.dataset.timePickerColumn,option.dataset.timePickerValue);
+        host.focus();
+        return;
+      }
+      if(event.target.closest("[data-time-picker-ok]"))commitTimePicker();
+    });
+    popover.addEventListener("keydown",event=>{
+      if(event.key==="Escape"){
+        // Refused as a default action as well as stopped from propagating: an unhandled Escape is
+        // the parent `<dialog>`'s own close request, so dismissing this popover would otherwise
+        // dismiss the form behind it. Nothing is written on the way out.
+        event.preventDefault();event.stopPropagation();closeTimePicker({restoreFocus:true});return;
+      }
+      const host=event.target.closest("[data-time-picker-column]");
+      if(!host)return;
+      if(["ArrowDown","ArrowUp","Home","End"].includes(event.key)){event.preventDefault();moveTimePicker(host,event.key);return;}
+      // Space as well as Enter, because the alternative on a focused listbox is the space bar
+      // scrolling the dialog out from under an open popover.
+      if(event.key==="Enter"||event.key===" "){event.preventDefault();commitTimePicker();}
+    });
+  }
+}
+/**
+ * The colour picker, and it is the STAFF one.
+ *
+ * `.staff-swatches` / `.staff-swatch` is already a working, accessible, 44px-target picker with a
+ * checkmark on the selection and a spoken "Selected: Plum" line, over the same ten `--groomer-N`
+ * tokens - so this reuses that markup contract rather than growing a second palette. The one
+ * difference is the unset option: a groomer's is "Auto" and falls back to a hash, because a
+ * groomer's colour identifies a person across every screen. A block's does not, so its unset option
+ * is "None" and draws the plain hatched band.
+ */
+function blockedTimeColoursMarkup(block,editable,{testid="blocked-time-colour-current",wide=false}={}){
+  const chosen=blockedTimeColorSlot(block),value=chosen===null?"":String(chosen);
+  const swatches=groomerSlotNames.map((name,slot)=>
+    `<label class="staff-swatch"><input type="radio" name="colorSlot" value="${slot}" ${value===String(slot)?"checked":""} ${editable?"":"disabled"}>`
+    +`<span class="staff-swatch-dot" data-groomer-slot="${slot}" aria-hidden="true"></span>`
+    +`<span class="visually-hidden">${escape(name)}</span></label>`).join("");
+  return `<fieldset class="staff-colours blocked-time-colours${wide?" wide":""}"><legend>Colour</legend>`
+    +`<p class="field-hint">Tints this band on the calendar. It never changes what the band means: a block stays hatched and outlined whatever colour it carries, so it can still never be read as an appointment.</p>`
+    +`<div class="staff-swatches">`
+    +`<label class="staff-swatch is-none"><input type="radio" name="colorSlot" value="" ${value===""?"checked":""} ${editable?"":"disabled"}>`
+    +`<span class="staff-swatch-dot" aria-hidden="true"></span>`
+    +`<span class="visually-hidden">No colour</span><span class="staff-swatch-auto" aria-hidden="true">None</span></label>`
+    +swatches+`</div>`
+    +`<p class="staff-swatch-current" data-testid="${escapeAttr(testid)}" aria-live="polite">Selected: ${escape(blockedTimeColourName(chosen))}</p>`
+    +`</fieldset>`;
+}
+/**
+ * One time, and Recurring switched off in front of you.
+ *
+ * PAWSH HAS NO RECURRENCE. Not a disabled feature, not an unfinished one - there is no rule column,
+ * no expansion and no series id anywhere in the schema or the scheduler. Hiding the choice would
+ * make the dialog look complete and leave the operator to discover the gap by looking for it;
+ * faking it client-side would be worse, because every band it drew would be a block the scheduler
+ * does not enforce. So it is drawn, disabled, and says what it is.
+ */
+function blockedTimeRepeatMarkup(){
+  return `<fieldset class="blocked-time-repeat"><legend>Repeat</legend>`
+    +`<div class="blocked-time-repeat-options">`
+    +`<label class="blocked-time-repeat-option"><input type="radio" name="repeat" value="once" checked> One time</label>`
+    +`<label class="blocked-time-repeat-option is-unavailable"><input type="radio" name="repeat" value="recurring" disabled aria-describedby="blocked-time-recurring-note"> Recurring</label>`
+    +`</div>`
+    +`<p class="field-hint" id="blocked-time-recurring-note" data-testid="blocked-time-recurring-note">Recurring blocks are not available. Pawsh stores every block as one interval on one calendar, so a block that repeats has to be entered for each day it covers.</p>`
+    +`</fieldset>`;
+}
+function blockedTimeStaffOptions(block){
+  const groomers=activeGroomers().map(item=>[item.id,item.displayName]);
+  // A block can outlive its groomer's active flag. Its own groomer is always offered, or Update
+  // would silently reassign the block to whoever happens to sort first.
+  if(!groomers.some(([id])=>id===block.employeeId))
+    groomers.unshift([block.employeeId,`${block.employeeName} (inactive)`]);
+  return groomers;
+}
+function blockedTimeEditorMarkup(block){
+  const editable=allowed("calendar.blocks_edit"),span=blockedTimeSpan(block);
+  const scheduleEditable=editable&&span.editable;
+  const date=block.scheduledLocalStart.slice(0,10);
+  const startTime=block.scheduledLocalStart.slice(11,16),endTime=block.scheduledLocalEnd.slice(11,16);
+  const locked=reason=>`<p class="field-hint blocked-time-locked" data-testid="blocked-time-locked">${escape(reason)}</p>`;
+  return `<div class="drawer-head">`
+    +`<div><p class="eyebrow">Calendar</p><h3 id="blocked-time-dialog-title">Block Time</h3></div>`
+    // NOT `.close`. See the header comment: that class is bound document-wide to a different dialog.
+    +`<button type="button" class="blocked-time-close" data-blocked-time-close data-testid="blocked-time-close" aria-label="Close block time">&#215;</button>`
+    +`</div>`
+    // The form and the history scroll TOGETHER inside the drawer's one body, so Update, Delete and
+    // Cancel stay pinned in the foot and are reachable without scrolling past the activity feed.
+    +`<div class="drawer-body blocked-time-body">`
+    +`<form id="blocked-time-form" class="blocked-time-fields" data-testid="blocked-time-form">`
+    +(editable?"":locked("You do not have permission to change blocked time. Everything here is read-only."))
+    +(editable&&!span.editable?locked("This block runs across more than one day, which the date and time fields below cannot express. Its staff member, colour and note can still be changed here."):"")
+    +`<div class="blocked-time-schedule">`
+    +`<label>Date<input type="date" name="localDate" data-testid="blocked-time-date" value="${escapeAttr(date)}" required ${scheduleEditable?"":"disabled"}></label>`
+    +blockedTimeClockField({name:"localStartTime",label:"Start",value:startTime,type:"time",
+      testid:"blocked-time-start",pickerLabel:"Choose the start time",disabled:!scheduleEditable})
+    +blockedTimeClockField({name:"localEndTime",label:"End",value:endTime,type:"time",
+      testid:"blocked-time-end",pickerLabel:"Choose the end time",disabled:!scheduleEditable})
+    +`</div>`
+    // The native pickers lay themselves out in the BROWSER's locale and nothing can be done about
+    // that. This line is the same block in the salon's own date order and hour format, so what the
+    // dialog is about stays legible in a 24-hour DD/MM/YYYY workspace whatever the laptop prefers.
+    +`<p class="blocked-time-when" data-testid="blocked-time-when" role="status" aria-live="polite">${escape(blockedTimeWhenLine(date,startTime,endTime))}</p>`
+    +`<label>Staff<select name="employeeId" data-testid="blocked-time-staff" required ${scheduleEditable?"":"disabled"}>`
+    +blockedTimeStaffOptions(block).map(([id,name])=>
+      `<option value="${escapeAttr(id)}" ${id===block.employeeId?"selected":""}>${escape(name)}</option>`).join("")
+    +`</select></label>`
+    +blockedTimeColoursMarkup(block,editable)
+    // OPTIONAL, AND NOW TRUTHFULLY SO. `blockedTimeUpdateSchema.reason` is `.nullish()` over a
+    // trimmed `min(1)`: absent leaves the note alone, an explicit `null` CLEARS it, and `""` is a
+    // 400 rather than a covert clear. The field carried `required` for as long as there was no way
+    // to say "remove this", which turned a box an operator had emptied into a form that would not
+    // submit. There is a way now, so the box may be emptied - and `blockedTimeUpdatePayload` is the
+    // ONE place that turns an empty box into the `null` that clears it.
+    +`<label>Note<input type="text" name="reason" data-testid="blocked-time-note" maxlength="500" value="${escapeAttr(block.reason||"")}" ${editable?"":"disabled"}>`
+    +(editable?`<span class="field-hint" data-testid="blocked-time-note-hint">Optional. Empty the box to remove the note — the band then reads as its time alone.</span>`:"")
+    +`</label>`
+    +blockedTimeRepeatMarkup()
+    +`</form>`
+    +`<section class="blocked-time-activity" aria-labelledby="blocked-time-activity-title">`
+    +`<h4 id="blocked-time-activity-title">Activities</h4>`
+    +`<div id="blocked-time-activity-list" data-testid="blocked-time-activity"><p class="fine">Loading activity…</p></div>`
+    +`</section>`
+    +`</div>`
+    +`<p class="error drawer-status" data-testid="blocked-time-error" role="alert"></p>`
+    +`<div class="drawer-foot blocked-time-foot">`
+    // Delete sits apart from Cancel and Update on purpose: the destructive control should not be
+    // the one a hurried hand finds beside the one it meant.
+    +`<button type="button" class="secondary compact blocked-time-delete" data-blocked-time-delete data-testid="blocked-time-delete" ${editable?"":`disabled aria-disabled="true" title="You do not have permission to delete blocked time"`}>Delete</button>`
+    +`<span class="blocked-time-foot-gap"></span>`
+    +`<button type="button" class="secondary compact" data-blocked-time-cancel data-testid="blocked-time-cancel">Cancel</button>`
+    // Outside the form, attached to it by `form=`, so it stays pinned in the foot while the fields
+    // scroll - and still submits with Enter from any field, which is what an operator expects.
+    +`<button type="submit" form="blocked-time-form" class="primary compact" data-testid="blocked-time-update" ${editable?"":`disabled aria-disabled="true" title="You do not have permission to change blocked time"`}>Update</button>`
+    +`</div>`;
+}
+
+/* -- The activity feed -------------------------------------------------------------------------
+ *
+ * `GET /api/blocked-times/:id/activity` returns two KINDS of entry, and the difference is the whole
+ * reason this reads the `derived` flag rather than just printing a list.
+ *
+ * A REAL entry was observed: `record()` wrote it when somebody created, edited or deleted the block,
+ * and it carries before/after values that can be shown as a change.
+ *
+ * A DERIVED entry was RECONSTRUCTED at read time from `blocked_times.created_by` and `created_at`,
+ * because the block predates the audit wiring and no create event was ever logged for it. It knows
+ * who and when and NOTHING else - every from/to pair is null - so it is drawn with a "Reconstructed"
+ * tag, a dashed marker and a sentence saying where it came from. A reader has to be able to tell
+ * what the log observed from what was inferred from two columns, without comparing ids.
+ *
+ * `startAt`/`endAt` in these entries are INSTANTS, not the wall clock the projection carries, so
+ * they are read through the `schedulingTimezone` this dialog is already holding. And `item.reason`
+ * is NOT the block's note - it is `audit_events.reason`, the justification for an ACTION that these
+ * routes never collect, so it is always null and is deliberately not rendered anywhere below.
+ */
+const BLOCKED_TIME_ACTIONS={"blocked_time.create":"Created","blocked_time.update":"Updated","blocked_time.delete":"Deleted"};
+function blockedTimeActorName(id){
+  if(!id)return "Not set";
+  return state.employees.find(item=>item.id===id)?.displayName||"A staff member no longer on the team";
+}
+function blockedTimeInstantLabel(value,zone){return value?formatPrefDateAndTime(new Date(value),zone):"Not set";}
+function blockedTimeNoteLabel(value){const text=typeof value==="string"?value.trim():"";return text||"No note";}
+function blockedTimeSlotLabel(value){
+  return Number.isInteger(value)&&value>=0&&value<groomerPaletteSize?groomerSlotNames[value]:"No colour";
+}
+/** The five fields an operator can actually change, in the order the form lists them. */
+function blockedTimeActivityFields(item,zone){
+  return [
+    ["Staff",blockedTimeActorName(item.fromEmployeeId),blockedTimeActorName(item.toEmployeeId)],
+    ["Start",blockedTimeInstantLabel(item.fromStartAt,zone),blockedTimeInstantLabel(item.toStartAt,zone)],
+    ["End",blockedTimeInstantLabel(item.fromEndAt,zone),blockedTimeInstantLabel(item.toEndAt,zone)],
+    ["Colour",blockedTimeSlotLabel(item.fromColorSlot),blockedTimeSlotLabel(item.toColorSlot)],
+    ["Note",blockedTimeNoteLabel(item.fromReason),blockedTimeNoteLabel(item.toReason)]
+  ];
+}
+function blockedTimeActivityBody(item,zone){
+  // A derived Created knows who and when and nothing else, and inventing a value here would state
+  // as history something nobody recorded.
+  if(item.derived)
+    return `<p class="fine">Rebuilt from the block's own record of who created it and when. This block is older than the activity log, so what it said at the time was never written down.</p>`;
+  const fields=blockedTimeActivityFields(item,zone);
+  // A delete has a before and no after. Listing every field as "X → Not set" would read as five
+  // edits rather than as one removal, so the entry says the one true thing and stops.
+  if(item.action==="blocked_time.delete")
+    return `<p class="fine">The block was removed and its time opened for booking again.</p>`;
+  if(item.action==="blocked_time.create")
+    return `<dl class="blocked-time-event-fields">${fields.map(([label,,to])=>
+      `<div><dt>${escape(label)}</dt><dd>${escape(to)}</dd></div>`).join("")}</dl>`;
+  const changed=fields.filter(([,from,to])=>from!==to);
+  if(!changed.length)return `<p class="fine">No field on the block changed.</p>`;
+  return `<dl class="blocked-time-event-fields">${changed.map(([label,from,to])=>
+    `<div><dt>${escape(label)}</dt><dd><span class="blocked-time-event-from">${escape(from)}</span> → <strong>${escape(to)}</strong></dd></div>`).join("")}</dl>`;
+}
+function blockedTimeActivityMarkup(items,zone){
+  if(!items.length)return `<p class="fine" data-testid="blocked-time-activity-empty">No activity recorded for this block.</p>`;
+  return `<ol class="blocked-time-events">${items.map(item=>
+    `<li class="blocked-time-event ${item.derived?"is-derived":""}" data-testid="blocked-time-activity-item" data-derived="${item.derived?"true":"false"}" data-action="${escapeAttr(item.action)}">`
+    +`<p class="blocked-time-event-head"><strong>${escape(BLOCKED_TIME_ACTIONS[item.action]||item.action)}</strong>`
+    +(item.derived?`<span class="blocked-time-event-tag" data-testid="blocked-time-activity-derived-tag">Reconstructed</span>`:"")
+    +`</p>`
+    +`<p class="blocked-time-event-meta">${escape(item.actorName||"Unknown")} · ${escape(formatPrefDateAndTime(new Date(item.createdAt),zone))}</p>`
+    +blockedTimeActivityBody(item,zone)
+    +`</li>`).join("")}</ol>`;
+}
+async function loadBlockedTimeActivity(){
+  const editor=blockTimeEditor;if(!editor)return;
+  const host=$("#blocked-time-activity-list");if(!host)return;
+  try{
+    const result=await api(`/api/blocked-times/${editor.block.id}/activity`);
+    // A second open, or a close, while this was in flight owns the dialog now.
+    if(blockTimeEditor!==editor||!host.isConnected)return;
+    host.innerHTML=blockedTimeActivityMarkup(result.items||[],editor.block.schedulingTimezone);
+  }catch(error){
+    if(blockTimeEditor!==editor||!host.isConnected)return;
+    host.innerHTML=`<p class="error" data-testid="blocked-time-activity-error">${escape(error.message)}</p>`;
+  }
+}
+
+/* -- Opening, saving, deleting ---------------------------------------------------------------- */
+
+function blockedTimeDialogElement(){
+  const existing=$("#blocked-time-dialog");
+  if(existing)return existing;
+  const dialog=document.createElement("dialog");
+  dialog.id="blocked-time-dialog";
+  dialog.className="drawer blocked-time-dialog";
+  dialog.dataset.testid="blocked-time-dialog";
+  dialog.setAttribute("aria-labelledby","blocked-time-dialog-title");
+  // X, Cancel and Escape all arrive here, and here issues no request. The element is emptied for
+  // the reason the booking workspace documents: a closed-but-populated dialog leaves a second set
+  // of ids and test ids in the document for the next lookup to trip over.
+  dialog.addEventListener("close",()=>{
+    // AND THE TEARDOWN BELONGS TO THE SESSION THAT WAS CLOSED, WHICH IS NOT ALWAYS THE ONE ON
+    // SCREEN. `close` is dispatched in a QUEUED TASK rather than synchronously with the dismissal,
+    // so a reopen can legitimately land between the two: dismiss with Escape and open another band
+    // in the same turn - which is one keystroke and one click for anyone working the calendar by
+    // keyboard - and the reopen wins the race. Emptying unconditionally then wiped the dialog that
+    // had JUST been built and nulled the editor that owned it, leaving an open, blank, contentless
+    // modal with no × to click and no way back to the block. `dialog.open` is the whole test:
+    // it is false for the close this handler is about, and true only when something has already
+    // reopened, in which case that session owns the element and its own focus.
+    if(dialog.open)return;
+    const origin=blockTimeEditor?.origin;
+    blockTimeEditor=null;
+    dialog.innerHTML="";
+    if(origin?.isConnected)origin.focus();
+  });
+  document.body.append(dialog);
+  return dialog;
+}
+function renderBlockedTimeEditor(){
+  const editor=blockTimeEditor;if(!editor)return null;
+  const dialog=blockedTimeDialogElement();
+  dialog.innerHTML=blockedTimeEditorMarkup(editor.block);
+  bindBlockedTimeEditor(dialog);
+  return dialog;
+}
+function bindBlockedTimeEditor(dialog){
+  // SCOPED TO THIS DIALOG, and not through the `.close` class. `$$(".close")` is bound document-wide
+  // to `$("#modal").close()`, so a `.close` here would dismiss a dialog this one is not.
+  dialog.querySelector("[data-blocked-time-close]")?.addEventListener("click",()=>dialog.close());
+  dialog.querySelector("[data-blocked-time-cancel]")?.addEventListener("click",()=>dialog.close());
+  dialog.querySelector("[data-blocked-time-delete]")?.addEventListener("click",()=>askDeleteBlockedTime());
+  bindTimePickers(dialog);
+  const form=dialog.querySelector("#blocked-time-form");
+  if(!form)return;
+  form.addEventListener("submit",event=>{event.preventDefault();runDetached(submitBlockedTime);});
+  const when=dialog.querySelector(`[data-testid="blocked-time-when"]`);
+  const colour=dialog.querySelector(`[data-testid="blocked-time-colour-current"]`);
+  form.addEventListener("change",()=>{
+    const fields=form.elements;
+    if(when)when.textContent=blockedTimeWhenLine(fields.localDate.value,fields.localStartTime.value,fields.localEndTime.value);
+    if(colour){
+      const value=fields.colorSlot?.value??"";
+      colour.textContent=`Selected: ${blockedTimeColourName(value===""?null:Number(value))}`;
+    }
+  });
+}
+/**
+ * Opening a band. Reachable by pointer and by keyboard, because the band is now a control.
+ *
+ * The hover preview is dismissed on the way in: it is positioned against the viewport rather than
+ * inside the dialog, so leaving it up would float the block's summary over the form describing the
+ * same block.
+ */
+function openBlockedTime(id,origin=null){
+  const block=blockedTimeById(id);if(!block)return;
+  closeCalendarMenus();hideCalendarHover();
+  const dialog=blockedTimeDialogElement();
+  blockTimeEditor={block,origin:origin||document.activeElement};
+  renderBlockedTimeEditor();
+  if(!dialog.open)dialog.showModal();
+  focusFirstBlockedTimeField(dialog);
+  runDetached(loadBlockedTimeActivity);
+}
+/**
+ * The first control an operator can actually USE, rather than the first one drawn.
+ *
+ * Opening used to focus the Date field unconditionally, which is right for the ordinary block and
+ * silently wrong for the two that are not: a block spanning more than one day has its whole schedule
+ * disabled, and a reader without `calendar.blocks_edit` has every field disabled. `.focus()` on a
+ * disabled input is a no-op that reports nothing, so the caret stayed wherever `showModal` left it.
+ *
+ * The named order is the reading order of the form, and it deliberately STOPS BEFORE the colour
+ * swatches. Their radios are 1px clipped inputs whose focus ring is drawn by
+ * `.staff-swatch:has(input:focus-visible)` - and a programmatic focus does not always satisfy
+ * `:focus-visible`, so landing there could be focus with no visible indicator, which is worse than
+ * landing somewhere blunter. A dialog with nothing editable at all falls back to its close button,
+ * which is the one thing such a reader can still do.
+ */
+function focusFirstBlockedTimeField(dialog){
+  const field=["blocked-time-date","blocked-time-start","blocked-time-end","blocked-time-staff","blocked-time-note"]
+    .map(testid=>dialog.querySelector(`[data-testid="${testid}"]`))
+    .find(candidate=>candidate&&!candidate.disabled);
+  (field||dialog.querySelector("[data-blocked-time-close]"))?.focus();
+}
+function blockedTimeError(dialog){return dialog.querySelector(`[data-testid="blocked-time-error"]`);}
+function blockedTimeIsStale(error){return error.status===409&&error.data?.code==="STALE_BLOCKED_TIME";}
+/**
+ * The request an Update actually is.
+ *
+ * `version` ALWAYS, so a 409 means one thing. The schedule group is all four fields or none, which
+ * `blockedTimeUpdateSchema` enforces as a 400 - so it is assembled as a group here, and only when
+ * one of its members has moved. `colorSlot` distinguishes absent from null on purpose: absent
+ * leaves the colour alone, an explicit `null` clears it, and only an actual change is sent at all.
+ * An Update that changes nothing sends `version` alone, which the server answers as a no-op with
+ * the current projection - and, if this tab is behind, as the 409 it should be.
+ */
+function blockedTimeUpdatePayload(block,form){
+  const fields=form.elements,payload={version:block.version},span=blockedTimeSpan(block);
+  if(span.editable&&!fields.localDate.disabled){
+    const date=fields.localDate.value;
+    const startTime=fields.localStartTime.value.slice(0,5),endTime=fields.localEndTime.value.slice(0,5);
+    const localStart=`${date}T${startTime}`,localEnd=`${blockedTimeEndDate(date,startTime,endTime)}T${endTime}`;
+    const employeeId=fields.employeeId.value;
+    if(localStart!==block.scheduledLocalStart||localEnd!==block.scheduledLocalEnd||employeeId!==block.employeeId){
+      payload.employeeId=employeeId;payload.localStart=localStart;payload.localEnd=localEnd;
+      payload.expectedLocationVersion=state.me.business.locationVersion;
+    }
+  }
+  // THREE OUTCOMES, AND THE EMPTY STRING IS NOT ONE OF THEM. Unchanged sends no `reason` key at
+  // all, so a dialog nobody edited still cannot bump the version. Emptied sends `null`, the only
+  // wire form that clears - `""` and `"   "` are a 400 by design, precisely so a field somebody
+  // has not filled in yet and a deletion cannot be the same request. Trimmed here as well as on
+  // the server, so typing a space into an already-empty box stays "unchanged" rather than becoming
+  // a refusal. Clearing an already-empty note is not reachable from here at all, and would be a
+  // server-side no-op if it were.
+  const reason=String(fields.reason.value||"").trim();
+  if(reason!==(block.reason||""))payload.reason=reason===""?null:reason;
+  const slot=fields.colorSlot?.value??"",current=Number.isInteger(block.colorSlot)?String(block.colorSlot):"";
+  if(slot!==current)payload.colorSlot=slot===""?null:Number(slot);
+  return payload;
+}
+async function submitBlockedTime(){
+  const editor=blockTimeEditor;if(!editor)return;
+  const dialog=blockedTimeDialogElement(),form=dialog.querySelector("#blocked-time-form");
+  if(!form)return;
+  const error=blockedTimeError(dialog),button=dialog.querySelector(`[data-testid="blocked-time-update"]`);
+  if(error)error.textContent="";
+  if(button)button.disabled=true;
+  try{
+    const updated=await api(`/api/blocked-times/${editor.block.id}`,
+      {method:"PATCH",body:JSON.stringify(blockedTimeUpdatePayload(editor.block,form))});
+    applyCalendarBlockedTime(updated);
+    dialog.close();
+    toast("Block time saved");
+  }catch(failure){
+    const region=blockedTimeError(dialog);
+    if(region)region.textContent=failure.message;
+    if(blockedTimeIsStale(failure))await reconcileBlockedTimeEditor();
+  }finally{
+    if(button)button.disabled=false;
+  }
+}
+/**
+ * A refusal is also the news that this tab's copy is stale.
+ *
+ * The calendar is re-read and this form redrawn over the CURRENT row, with the operator told so.
+ * Retrying with the version the server just handed back would be last-write-wins through the back
+ * door: somebody else's edit overwritten by a request the operator composed against a row that no
+ * longer exists.
+ *
+ * The wording does not claim the block was DELETED when it is simply no longer in this window - the
+ * re-read covers the range on screen, and another writer may have moved it out of it.
+ */
+async function reconcileBlockedTimeEditor(){
+  const editor=blockTimeEditor;if(!editor)return;
+  const dialog=blockedTimeDialogElement();
+  try{await loadCalendarWeek();}catch(error){toast(error.message);}
+  if(blockTimeEditor!==editor)return;
+  const fresh=blockedTimeById(editor.block.id);
+  if(!fresh){
+    dialog.close();
+    toast("That block time is no longer on this calendar. It was changed or removed somewhere else.");
+    return;
+  }
+  editor.block=fresh;
+  renderBlockedTimeEditor();
+  const region=blockedTimeError(dialog);
+  if(region)region.textContent="This block changed somewhere else. The form now shows the current version — check it and try again.";
+  // The button the operator pressed was replaced by the redraw, so focus is handed back to its
+  // replacement rather than left on a detached node for the dialog to reclaim.
+  dialog.querySelector(`[data-testid="blocked-time-update"]`)?.focus();
+  runDetached(loadBlockedTimeActivity);
+}
+/**
+ * The block named in a sentence, for a question that has to be unmistakable.
+ *
+ * The band's own label is a thirty-minute strip's summary and states NO DATE, which is exactly the
+ * fact a "delete this?" cannot leave out: five identical Lunches down a week are told apart by the
+ * day and by nothing else. Both halves go through the preference layer - `formatPrefLocalWeekdayDate`
+ * reorders the date the way `Settings -> Business` says, `blockedTimeRange` prints the clock in the
+ * salon's hour format - so the confirmation reads the way the band above it reads. A block that does
+ * not end on the day it starts names its end day too, rather than printing a range that reads as
+ * though it did.
+ */
+function blockedTimeWhenSentence(block){
+  const startDay=block.scheduledLocalStart.slice(0,10),endDay=block.scheduledLocalEnd.slice(0,10);
+  const when=`${formatPrefLocalWeekdayDate(startDay)}, ${blockedTimeRange(block)}`;
+  return endDay===startDay?when:`${when} (ends ${formatPrefLocalWeekdayDate(endDay)})`;
+}
+/**
+ * Delete asks first, through the same `#stacked-dialog` every other destructive confirmation in
+ * this file uses, and resolves on its CLOSE - so the request runs with the confirmation already
+ * gone and a refusal has the Block Time dialog's own error region to land in.
+ *
+ * NOTHING LEAVES THE BROWSER UNTIL `confirmed` IS TRUE, and `confirmed` is set in exactly one
+ * place: the confirm button's own handler. Cancel and Escape both reach the same `close` with it
+ * still false, so the dismissal paths are not merely expected to send nothing - there is no code
+ * on them that could.
+ *
+ * THE QUESTION IDENTIFIES THE BLOCK. Which day, which clock, whose column, and the note if it has
+ * one - enough that an operator who opened the wrong band recognises it as the wrong one before
+ * the row is gone rather than after.
+ */
+function askDeleteBlockedTime(){
+  const editor=blockTimeEditor;if(!editor)return;
+  const reason=blockedTimeReason(editor.block);
+  let confirmed=false;
+  const stacked=openStackedDialog({
+    title:"Delete block time",
+    body:`<p data-testid="blocked-time-delete-question">Delete <strong>${escape(blockedTimeWhenSentence(editor.block))}</strong> for ${escape(editor.block.employeeName)}${reason?`, noted “${escape(reason)}”`:""}? The time opens for booking again.</p>`,
+    confirmLabel:"Delete",
+    dismissLabel:"Keep block",
+    onConfirm:()=>{confirmed=true;}
+  });
+  stacked.addEventListener("close",()=>{if(confirmed)runDetached(()=>commitBlockedTimeDelete(editor));},{once:true});
+}
+/**
+ * Where focus goes once the band it came from has been deleted.
+ *
+ * The dialog's `close` handler hands focus back to whatever opened it, which on every other exit is
+ * the band's own button. A delete is the one exit where that element no longer exists -
+ * `removeCalendarBlockedTime` has already redrawn the grid without it - and focusing a detached node
+ * silently drops the caret on `<body>`, which on a scrolled week grid loses a keyboard operator's
+ * place entirely.
+ *
+ * THE DESTINATION IS THE SLOT THE BLOCK WAS SITTING ON, in the same groomer's column. It is where
+ * the operator is already looking, it is the cell the band physically occupied, and it is the
+ * control that now offers the thing the deletion just made possible: booking that time. The start
+ * is clamped into the visible hours and floored to the grid's half hour, because a block may begin
+ * before the first drawn row, after the last, or on a minute that has no cell of its own.
+ *
+ * The fallbacks descend by how much they still say - any slot on the block's own day, then the grid
+ * itself, which is what a month view, an agenda view or a closed day leaves. `#calendar-list` is not
+ * naturally focusable, so it is given `tabindex="-1"`: a programmatic target, never a new tab stop.
+ */
+function blockedTimeFocusAfterDelete(block){
+  const day=block.scheduledLocalStart.slice(0,10),[start,end]=calendarHours();
+  const minutes=Math.min(Math.max(blockedTimeMinutes(block.scheduledLocalStart),start),Math.max(start,end-30));
+  const aligned=start+Math.floor((minutes-start)/30)*30;
+  const wall=`${day}T${String(Math.floor(aligned/60)).padStart(2,"0")}:${String(aligned%60).padStart(2,"0")}`;
+  const found=document.querySelector(`[data-slot="${wall}"][data-slot-groomer="${block.employeeId}"]`)
+    ||document.querySelector(`[data-slot^="${day}T"][data-slot-groomer="${block.employeeId}"]`)
+    ||document.querySelector(`[data-slot^="${day}T"]`);
+  if(found)return found;
+  const grid=$("#calendar-list");
+  if(grid&&!grid.hasAttribute("tabindex"))grid.setAttribute("tabindex","-1");
+  return grid;
+}
+async function commitBlockedTimeDelete(editor){
+  if(blockTimeEditor!==editor)return;
+  const dialog=blockedTimeDialogElement();
+  return runOnce(`blocked-time-delete:${editor.block.id}`,async()=>{
+    try{
+      // The version travels in the QUERY STRING here - `blockedTimeVersionQuerySchema` - because a
+      // DELETE carries no body.
+      await api(`/api/blocked-times/${editor.block.id}?version=${editor.block.version}`,{method:"DELETE"});
+      removeCalendarBlockedTime(editor.block.id);
+      // The band this dialog was opened from has just stopped existing, so the `close` handler's
+      // usual "focus what opened me" would aim at a detached node and fall through to <body>. The
+      // origin is REPLACED with a live destination before the close rather than the close handler
+      // being taught a second rule: focus restoration stays decided in one place.
+      editor.origin=blockedTimeFocusAfterDelete(editor.block);
+      dialog.close();
+      toast("Block time deleted");
+    }catch(failure){
+      const region=blockedTimeError(dialog);
+      if(region)region.textContent=failure.message;
+      if(blockedTimeIsStale(failure))await reconcileBlockedTimeEditor();
+    }
+  });
+}
+// The other direction, the way `applyCalendarAppointment` does it for a card: the row the server
+// just handed back, written into the array the grid draws from, and the grid redrawn.
+function applyCalendarBlockedTime(row){
+  const list=calendarBlockedTimes(),index=list.findIndex(block=>block.id===row.id);
+  if(index>=0)list[index]=row;else list.push(row);
+  state.blockedTimes=list;
+  try{renderAppointments();}catch{/* the calendar is not mounted; nothing to redraw */}
+}
+function removeCalendarBlockedTime(id){
+  state.blockedTimes=calendarBlockedTimes().filter(block=>block.id!==id);
+  try{renderAppointments();}catch{/* the calendar is not mounted; nothing to redraw */}
+}
+/**
+ * The query strings one calendar paint is made of, built ONCE and handed to both reads.
+ *
+ * `/api/blocked-times` takes `calendarQuerySchema` verbatim - the same `localDate`, `days` and
+ * `employeeIds` as `/api/appointments` - so building the window in one place is what stops the two
+ * answers from describing different days. `days` is capped at 31 by the schema, so a month view
+ * still arrives as chunks; each chunk is one window that both endpoints are asked about.
+ */
+function calendarRangeQueries(start,days){
+  const selected=state.calendar.selectedGroomerIds,employeeQuery=selected===null?"":`&employeeIds=${encodeURIComponent([...selected].join(","))}`;
+  if(selected!==null&&!selected.size)return [];
+  const queries=[];
+  for(let offset=0;offset<days;offset+=31){const size=Math.min(31,days-offset);queries.push(`localDate=${dateShift(start,offset)}&days=${size}${employeeQuery}`);}
+  return queries;
+}
+async function loadAppointmentRange(start,days){return (await Promise.all(calendarRangeQueries(start,days).map(query=>api(`/api/appointments?${query}`)))).flat();}
+// Deliberately not wrapped in a catch. A block is a constraint the scheduler will enforce whether
+// or not the grid managed to draw it, and swallowing a failure here would put the operator back in
+// front of the exact defect this seam exists to close: a refusal pointing at nothing. The read
+// fails the way the working-hours read beside it does, loudly.
+async function loadBlockedTimeRange(start,days){return (await Promise.all(calendarRangeQueries(start,days).map(query=>api(`/api/blocked-times?${query}`)))).flat();}
 async function loadCalendarWeek(start=state.calendar.weekStart){
-  state.calendar.weekStart=start;let rangeStart=start,days=7;if(state.calendar.view==="day"){rangeStart=state.calendar.selectedDate;days=1;}else if(state.calendar.view==="month"){rangeStart=weekStart(`${state.calendar.month}-01`);days=42;}const [appointments,hours]=await Promise.all([loadAppointmentRange(rangeStart,days),state.businessHours.length?state.businessHours:api("/api/business/working-hours")]);state.appointments=appointments;state.businessHours=hours;if(state.calendar.view==="month")state.calendar.monthAppointments=appointments;if(!state.calendar.monthAppointments.length&&state.calendar.view!=="month")await loadCalendarMonth(state.calendar.month,false);renderAppointments();
+  state.calendar.weekStart=start;let rangeStart=start,days=7;if(state.calendar.view==="day"){rangeStart=state.calendar.selectedDate;days=1;}else if(state.calendar.view==="month"){rangeStart=weekStart(`${state.calendar.month}-01`);days=42;}// The month grid draws no bands, so it reads none: a 42-day month window is two chunked requests
+// per endpoint, and asking for blocks the paint has nowhere to put them is work for nothing.
+// Switching back to a week or a day runs this again, so nothing is stale by the time it is drawn.
+const [appointments,blockedTimes,hours]=await Promise.all([loadAppointmentRange(rangeStart,days),state.calendar.view==="month"?[]:loadBlockedTimeRange(rangeStart,days),state.businessHours.length?state.businessHours:api("/api/business/working-hours")]);state.appointments=appointments;state.blockedTimes=blockedTimes;state.businessHours=hours;if(state.calendar.view==="month")state.calendar.monthAppointments=appointments;if(!state.calendar.monthAppointments.length&&state.calendar.view!=="month")await loadCalendarMonth(state.calendar.month,false);renderAppointments();
 }
 async function openCalendarView(){await loadCalendarWeek();if(!state.calendar.opened&&!state.appointments.length&&state.calendar.selectedGroomerIds===null){const upcoming=await api(`/api/appointments?localDate=${businessDate()}&days=31`);if(upcoming.length){const date=appointmentLocalValue(upcoming[0]).slice(0,10);state.calendar.opened=true;return selectCalendarDate(date);}}state.calendar.opened=true;}
 async function loadCalendarMonth(month=state.calendar.month){const start=weekStart(`${month}-01`),appointments=await loadAppointmentRange(start,42);state.calendar.monthAppointments=appointments;return appointments;}
@@ -1137,18 +2489,66 @@ function appointmentLifecycleValues(item,activity){
   return {checkedIn,finished,minutes,stored};
 }
 
-// A .print-root appended to <body>, which the print stylesheet is the only thing that shows -
-// the one printing mechanism the product has.
-//
-// IT NAMES ITSELF FROM THE PAYMENTS ON IT. The body is the same money statement either way; the
-// heading is the part that makes a claim, and on an invoice nobody has paid it has to say Invoice.
-function printFinancialDocument(receipt){
+// The Invoice and the Receipt, through `appendPrintRoot` below. The <h1> is prepended here because
+// neither financial body carries a title of its own; the Ticket prepends nothing, because it opens
+// on its own reference.
+function printFinancialRoot(title,body,className){
+  appendPrintRoot(className,`<h1>${escape(title)}</h1>${body}`);
+}
+/**
+ * THE PRINTING MECHANISM ITSELF, STATED ONCE.
+ *
+ * Every printable document in the product - the Ticket, the Invoice, the Receipt, a single
+ * appointment and the agenda - reaches paper the same way: a `.print-root` <section> appended to
+ * <body>, which `body>*:not(.print-root){display:none!important}` in styles.css is the only thing
+ * that reveals. No second window and no separate page. The root is torn down a second later, once
+ * the print dialog has taken its copy.
+ *
+ * What differs between documents is the class that says which one it is and the markup it carries,
+ * so that is all a caller passes. The teardown delay is the part that most wanted one home: it was
+ * written out four times, and four copies of a number that has to outlive a browser print dialog
+ * are four chances for one of them to be shortened on its own.
+ */
+function appendPrintRoot(className,html){
   const root=document.createElement("section");
-  root.className="print-root";
-  root.innerHTML=`<h1>${escape(financialDocumentTitle(receipt))}</h1>${receiptBodyMarkup(receipt)}`;
+  root.className=className;
+  root.innerHTML=html;
   document.body.append(root);
   globalThis.print();
   setTimeout(()=>root.remove(),1000);
+}
+// THE INVOICE, IN EVERY SETTLEMENT STATE. Unpaid, part-paid and settled all print the same
+// statement under the same name, because what a client is handed when they ask what the visit cost
+// does not depend on whether they have paid for it yet.
+function printInvoiceDocument(receipt){
+  printFinancialRoot(invoiceDocumentTitle(receipt),receiptBodyMarkup(receipt),"print-root");
+}
+// THE RECEIPT, and only behind a COMPLETED SETTLEMENT. BOTH gates are asked here, and asked at
+// the renderer rather than only at the button, so that a caller reached by some later route still
+// cannot produce evidence of a settlement that did not happen:
+//
+//   receiptHasPayment          nothing was recorded at all, so there is no settlement to evidence.
+//                              This is the gate that stops a $0.00 invoice - created `paid` with
+//                              no payment rows - printing a Receipt for money nobody moved.
+//   receiptBalanceOutstanding  something was recorded but the invoice is still owing, so the
+//                              settlement is IN PROGRESS. The Invoice states that obligation and
+//                              is printable throughout; the Receipt waits until it is discharged.
+//
+// It renders `paymentReceiptMarkup` and nothing else - never `ticketDocumentMarkup`, which is a
+// work sheet and carries no money at all.
+//
+// `print-payment-receipt` on the root is a DOCUMENT-IDENTITY marker rather than a style hook, and
+// its having no rule in `styles.css` is deliberate rather than an oversight. `printFinancialRoot`
+// builds the Invoice and the Receipt the same way, so without a marker the two printed documents
+// would be indistinguishable in the DOM - a bare `.print-root` is the Invoice, this is the Receipt,
+// and `.print-ticket` is the Ticket. The Receipt's actual print styling hangs off the classes
+// INSIDE the markup - `.print-root .payment-receipt-record`, `.print-root .payment-receipt-refund`
+// - which is the narrower hook and stays correct wherever that markup is drawn.
+function printPaymentReceipt(receipt){
+  if(!receiptHasPayment(receipt))return;
+  if(receiptBalanceOutstanding(receipt))return;
+  printFinancialRoot(paymentReceiptTitle(receipt),paymentReceiptMarkup(receipt),
+    "print-root print-payment-receipt");
 }
 
 function checkoutDisclosureMarkup(id,label,body,open){
@@ -1302,6 +2702,30 @@ function checkoutMethodMarkup(co){
     +`</fieldset>`;
 }
 
+/**
+ * A SETTLEMENT IN PROGRESS IS NOT A FINISHED CHECKOUT, AND THIS SCREEN SAYS SO.
+ *
+ * A tender component smaller than the balance is legitimate - split tender and partial client
+ * credit are exactly that - so recording one is never blocked. What must not happen is the
+ * surface reading like a completed outcome afterwards: $40.00 taken against a $92.01 invoice used
+ * to leave a screen whose only visible change was a smaller balance, under a toast that called it
+ * a "part payment recorded", which frames an unfinished settlement as a terminal workflow.
+ *
+ * Drawn only once a component exists and something is still owed - the state that is genuinely
+ * mid-settlement. An untouched invoice with nothing paid against it is not "in progress", it is
+ * simply owing, and the balance in the footer already says so.
+ */
+function checkoutSettlementProgressMarkup(co){
+  const receipt=co.receipt;
+  if(checkoutMode(co)!=="collect"||!receiptHasPayment(receipt))return "";
+  const recordedMinor=settledComponentsMinor(receipt);
+  // role="status" so the sentence is announced when the surface redraws after a component lands,
+  // which is the moment an operator is deciding whether they are finished.
+  return `<p class="checkout-settlement-progress" role="status" data-testid="checkout-settlement-progress">`
+    +`Settlement in progress · ${money(recordedMinor)} recorded · `
+    +`<strong>${money(receipt.invoice.balanceMinor)} still to settle</strong></p>`;
+}
+
 function checkoutMoneyMarkup(co){
   if(checkoutMode(co)==="settled"){
     return `<div class="checkout-money checkout-settled">${receiptBodyMarkup(co.receipt)}</div>`;
@@ -1313,6 +2737,7 @@ function checkoutMoneyMarkup(co){
       +`</select></label>`
     : "";
   return `<div class="checkout-money">`
+    +checkoutSettlementProgressMarkup(co)
     +`<label class="checkout-pay" data-checkout-pay>Pay`
       +`<input data-testid="field-pay" name="pay" type="number" inputmode="decimal" step="0.01" min="0" required>`
     +`</label>`
@@ -1342,12 +2767,18 @@ function checkoutSurfaceMarkup(co){
   const foot=`<footer class="surface-foot">`
     +`<p class="checkout-balance" role="status" aria-live="polite" data-testid="checkout-balance"></p>`
     +`<div class="surface-foot-actions">`
-      // A RECEIPT ONLY ONCE SOMETHING HAS BEEN PAID. Before that the same page is an Invoice and
-      // says so, under its own test id, so that "no Print Receipt on an unpaid invoice" is a
-      // thing a test can assert rather than a label somebody has to read.
-      +(receipt?(receiptHasPayment(receipt)
+      // TWO DOCUMENTS, NOT TWO NAMES FOR ONE, so these are not alternatives. Print Invoice is here
+      // from the moment an invoice exists and never leaves, because a settled visit still has a
+      // bill and a client may still ask for it. Print Receipt joins it once the settlement has
+      // actually COMPLETED - a recorded component AND nothing still owed - and is absent, not
+      // disabled, until then: there is no document to disable, and "no Receipt on an invoice that
+      // is still owing" is a thing a test asserts rather than a label somebody has to read.
+      +(receipt
+        ? `<button type="button" class="secondary compact" data-testid="checkout-print-invoice">Print Invoice</button>`
+        : "")
+      +(receipt&&receiptSettlementComplete(receipt)
         ? `<button type="button" class="secondary compact" data-testid="checkout-print-receipt">Print Receipt</button>`
-        : `<button type="button" class="secondary compact" data-testid="checkout-print-invoice">Print Invoice</button>`):"")
+        : "")
       // EVERY MODE, matching the appointment surface's own Ticket button and the header icon. The
       // Ticket is a work sheet that carries no money, so gating it on a settled bill was gating a
       // CRM document on a payment - the same conflation this screen's Print Receipt button had.
@@ -1455,7 +2886,16 @@ async function checkout(id) {
   // bill costs nothing to abandon, and a confirm on the way out of those would train the operator
   // to dismiss it without reading.
   level.guard=async()=>{
-    if(checkoutMode(co)==="settled"||signature()===baseline)return true;
+    if(checkoutMode(co)==="settled")return true;
+    // A SETTLEMENT THAT STARTED AND DID NOT FINISH. Leaving here is the one route by which an
+    // operator can walk away from a checkout with money outstanding, and unlike the case below
+    // nothing typed is at stake - the components already landed. The question is therefore about
+    // the invoice, not about the form, and it is asked whether or not anything has been retyped.
+    if(receiptHasPayment(co.receipt)){
+      return confirm(`Leave this checkout? ${money(co.receipt.invoice.balanceMinor)} of this `
+        +`invoice is still to settle, and it stays owing until somebody settles it.`);
+    }
+    if(signature()===baseline)return true;
     return confirm("Leave this checkout? Nothing has been charged and the amounts you entered will be lost.");
   };
 
@@ -1554,7 +2994,10 @@ async function checkout(id) {
       if(due===null)parts.push("Balance is not available");
       else parts.push(`Balance ${money(due)}`);
       if(couponBlocks)parts.push("the coupon comes off when you check out");
-      else if(due!==null&&pay!==null&&pay<due)parts.push(`${money(due-pay)} will remain`);
+      // "still to settle", not "will remain": what is left after a component smaller than the
+      // balance is an UNFINISHED SETTLEMENT, and a phrase that only describes a leftover reads as
+      // an accepted outcome of the checkout the operator is about to complete.
+      else if(due!==null&&pay!==null&&pay<due)parts.push(`${money(due-pay)} still to settle`);
       // What is left ON ACCOUNT afterwards, which is a different figure from what is left owed.
       // This line is already role="status" aria-live="polite", so it is announced when the method
       // changes.
@@ -1597,12 +3040,15 @@ async function checkout(id) {
   const bind=()=>{
     dialog.querySelector("[data-surface-close]")?.addEventListener("click",()=>runDetached(()=>popStackLevel()));
     dialog.querySelector('[data-testid="checkout-done"]')?.addEventListener("click",()=>runDetached(()=>popStackLevel()));
-    // One handler, both labels: which document gets printed is decided inside
-    // `printFinancialDocument`, off the payments, so the two buttons cannot disagree with the page.
-    dialog.querySelectorAll('[data-testid="checkout-print-receipt"],[data-testid="checkout-print-invoice"]')
-      .forEach(button=>button.addEventListener("click",()=>{
-        if(co.receipt)printFinancialDocument(co.receipt);
-      }));
+    // ONE BUTTON, ONE DOCUMENT. There is no longer a shared handler that works out which artifact
+    // was meant, because there is no longer a question to work out: the operator answered it by
+    // pressing one of two controls that are on screen together.
+    dialog.querySelector('[data-testid="checkout-print-invoice"]')?.addEventListener("click",()=>{
+      if(co.receipt)printInvoiceDocument(co.receipt);
+    });
+    dialog.querySelector('[data-testid="checkout-print-receipt"]')?.addEventListener("click",()=>{
+      if(co.receipt)printPaymentReceipt(co.receipt);
+    });
     // NO RECEIPT IS HANDED UP. The Ticket is a work sheet and carries no money at all, so the
     // receipt this surface is holding is not its business; the bill stays here, on the screen that
     // took the payment.
@@ -1779,6 +3225,18 @@ async function checkout(id) {
             &&typeof error.data.creditAvailableMinor==="number"){
             co.creditAvailableMinor=error.data.creditAvailableMinor;
           }
+          // THE SAME RACE, ON THE INVOICE RATHER THAN ON THE ACCOUNT. `expectedBalanceMinor` is
+          // now checked independently of the tender amount, so a component composed against a
+          // balance somebody else has already moved is refused instead of quietly landing against
+          // the new one. The 409 carries the true balance, and taking it is what lets the operator
+          // compose the NEXT component against what is actually owed - which is the whole of how
+          // split tender works - rather than reading a stale figure until they reopen the screen.
+          // The re-read below is still authoritative when it succeeds; this is what the surface
+          // has to go on when it does not.
+          if(error.status===409&&error.data?.code==="STALE_FINANCIAL_STATE"
+            &&typeof error.data.balanceMinor==="number"&&co.receipt?.invoice){
+            co.receipt.invoice.balanceMinor=error.data.balanceMinor;
+          }
           // Only when this submit is what raised the invoice. Against one that was already there
           // the sentence would be inventing an event, and the server's own words are the whole
           // story: the balance moved under this screen.
@@ -1799,7 +3257,13 @@ async function checkout(id) {
       }
       co.awaitingReceipt=null;
       draw();
-      toast(checkoutMode(co)==="settled"?"Payment recorded":"Part payment recorded");
+      // The withdrawn wording named an unfinished settlement as though it were a completed one of
+      // a smaller kind - a "part payment", recorded, done. This says what actually happened, that
+      // a component landed, and what is still outstanding: the operator's next action rather than
+      // their last. `tests/ui/payment-receipt.test.ts` holds the old phrase out of this file.
+      toast(checkoutMode(co)==="settled"
+        ? "Payment recorded"
+        : `Settlement in progress · ${money(co.receipt.invoice.balanceMinor)} still to settle`);
     }catch(error){
       setError(error.message);
       // A REFUSAL IS NOT A REASON TO REDRAW. An expired coupon, a method nobody chose, an amount
@@ -1807,7 +3271,7 @@ async function checkout(id) {
       // disclosures and throw away what the operator typed, which is exactly what the shared
       // dialog was careful not to do. Only a failure that happened after the invoice existed can
       // have left this screen describing something that is no longer true.
-      if(raised||mode!=="build"){
+      if(raised||mode!=="build"||error.data?.code==="STALE_FINANCIAL_STATE"){
         const message=error.message;
         await loadReceipt();
         draw();setError(message);
@@ -2032,6 +3496,13 @@ function receiptRefundableMinor(receipt,payment){
 // retrieved Square refund reported COMPLETED. A pending refund says it is waiting and offers the
 // same "check with the processor" recovery the terminal capture offers, because the webhook that
 // would have settled it can be missed.
+// A minus sign is money that HAS moved; brackets are money only spoken for. BOTH financial
+// documents draw refunds and both have to observe it, so it is one expression rather than the
+// same ternary written out under each renderer - a pending refund drawn as a minus on either
+// document tells a client they have been paid back when they have not.
+function refundAmountMarkup(refund){
+  return refund.settled?`-${money(refund.amountMinor)}`:`(${money(refund.amountMinor)})`;
+}
 function receiptRefundRow(refund){
   const detail=refund.failed&&refund.failureReason?escape(refund.failureReason)
     :refund.inFlight?"Waiting for the card processor to confirm."
@@ -2049,32 +3520,81 @@ function receiptRefundRow(refund){
     +`<small>${escape(formatPrefDate(new Date(when)))}${tip}</small>`
     +(detail?`<small class="fine">${detail}</small>`:"")
     +`</span>`
-    // A minus sign, because this is money leaving. Only a settled refund is shown as an amount
-    // that has moved; a pending one is shown in brackets so nobody reads it as done.
-    +`<strong class="receipt-refund-amount">${refund.settled?`-${money(refund.amountMinor)}`:`(${money(refund.amountMinor)})`}</strong>`
+    // Money leaving, under the shared convention: settled draws a minus, pending draws brackets.
+    +`<strong class="receipt-refund-amount">${refundAmountMarkup(refund)}</strong>`
     +action
     +`</div>`;
 }
 
+/* ---------------------------------------------------------------------------
+   THE SALON'S OWN IDENTITY, AT THE HEAD OF A PRINTED DOCUMENT.
+
+   ALL THREE PRINTABLE DOCUMENTS CARRY IT and there is ONE renderer for all of them, which is
+   what ADR-011 asks for: the Ticket, the Invoice and the Receipt read the same `businesses` row,
+   so they cannot disagree today, and one helper is what stops a later change making them.
+
+   THEY RESOLVE IT DIFFERENTLY, AND THAT IS THE POINT. The Ticket takes the session's active
+   location out of `state.me.business`. The two financial documents take the four fields
+   `GET /api/invoices/:id/receipt` returns, which the server resolved through the INVOICE'S OWN
+   APPOINTMENT'S location - a bill and its evidence are documents about one visit, so the address
+   on them has to be a fact about that visit rather than about whoever happens to be reprinting
+   it. Different sources, identical block.
+
+   A LINE IS DRAWN ONLY WHEN THERE IS SOMETHING ON IT. Phone, email and address are each nullable,
+   and a salon that has not filled the Business settings form in gets a header with no blank lines
+   in it rather than one carrying `Phone:` with nothing after it.
+   --------------------------------------------------------------------------- */
+// Blank is the same absence as null here, so a value that is only whitespace draws no line either.
+function salonIdentityOf({name,phone,email,address}){
+  const line=value=>String(value??"").trim();
+  return {name:line(name),phone:line(phone),email:line(email),address:line(address)};
+}
+// THE TWO FINANCIAL DOCUMENTS' SOURCE, MAPPED ONCE. The Invoice and the Receipt both take these
+// four fields off `GET /api/invoices/:id/receipt`, which resolved the address through THIS
+// invoice's own appointment's location - so a reprint says where the visit happened rather than
+// where whoever is reprinting it happens to be standing. Writing the mapping out under each
+// renderer is how one of the two documents ends up reading a field from somewhere else.
+function invoiceSalonIdentity(invoice){
+  return salonIdentityOf({name:invoice.businessName,phone:invoice.businessPhone,
+    email:invoice.businessEmail,address:invoice.locationAddress});
+}
+// Label and value on one line, the label carrying the weight. An absent line is not drawn.
+//
+// The test id is the caller's because the documents are asserted separately - `ticket-salon`,
+// `receipt-salon` on the Invoice's statement and `payment-receipt-salon` on the Receipt - while
+// the classes are shared, which is the same split the block itself is.
+function salonIdentityMarkup(salon,testid){
+  const line=(label,value)=>value
+    ? `<p class="salon-identity-line"><span>${escape(label)}:</span> ${escape(value)}</p>`
+    : "";
+  return `<header class="salon-identity" data-testid="${escapeAttr(testid)}">`
+    +`<p class="salon-identity-name">${escape(salon.name)}</p>`
+    +line("Phone",salon.phone)+line("Email",salon.email)+line("Address",salon.address)
+  +`</header>`;
+}
+
 /**
- * The receipt itself: items, the discount breakdown, the totals, and every payment record with
- * whatever correction it still allows.
+ * THE INVOICE'S BODY: items, the discount breakdown, the totals, and every payment record against
+ * it with whatever correction that record still allows.
  *
- * ONE BODY, TWO HOSTS. The modal shows it, and so does a settled Check Out - because a settled
- * checkout IS the receipt, and rendering a second, thinner version of it beside the real one is
- * how the two drift. `bindReceiptActions` binds whichever copy is on screen.
+ * ONE BODY, THREE HOSTS. The modal shows it, a settled Check Out shows it - because a settled
+ * checkout IS the bill, and rendering a second, thinner version of it beside the real one is how
+ * the two drift - and Print Invoice puts the same body on paper. `bindReceiptActions` binds
+ * whichever copy is on screen.
  *
- * THE BODY IS SHARED; THE DOCUMENT'S NAME IS NOT. This is the money statement of an invoice, and
- * an invoice with nothing paid against it has one too - "No payment recorded" below is exactly
- * that case. What the page is CALLED is decided by `financialDocumentTitle`, off the payments, and
- * never here.
+ * THE HOSTS ARE THE INVOICE'S. This is the money statement of an invoice in every settlement
+ * state: an invoice with nothing paid against it has one too, and "No payment recorded" below is
+ * exactly that case. It is titled `invoiceDocumentTitle` wherever it is drawn and it is never
+ * retitled by what has been paid - the Receipt is `paymentReceiptMarkup`, a different document
+ * with a different subject, and this function is not it.
+ *
+ * The name of the function is the one thing here left over from when there was only one financial
+ * page. Renaming it would touch every money assertion in the browser suite for no behaviour, so it
+ * keeps the name and states plainly what it renders.
  */
 function receiptBodyMarkup(receipt) {
   const invoice=receipt.invoice;
-  // A payment taken on a terminal is named as one. "External card" is the settlement type the
-  // ledger records, and it is what a manually keyed card payment says too; on a receipt somebody
-  // reads at a counter, the difference between the two is the difference between money Pawsh can
-  // point at in a card processor and money it cannot.
+  // How a payment is named is `receiptPaymentLabel`'s, below, and shared with the Receipt.
   //
   // THE ACTION ON A PAYMENT DEPENDS ON WHETHER PAWSH TOOK THE MONEY. A terminal payment offers
   // Refund and never Void, because voiding it would delete the record while the customer's card
@@ -2100,7 +3620,7 @@ function receiptBodyMarkup(receipt) {
         // `redemption_reversal` that puts the money back on the client's balance. The method
         // travels on the button so the confirmation can say what will actually happen.
         :`<button type="button" class="text-button void-payment" data-payment-id="${payment.id}" data-payment-provider="" data-payment-method="${escapeAttr(payment.method)}">Void record</button>`;
-    return `<div><span>${escape(payment.provider==="square"?"card terminal":paymentMethodLabel(payment.method))} · ${escape(payment.status)}</span><strong>${money(payment.amountMinor)}</strong>${action}</div>`
+    return `<div><span>${escape(receiptPaymentLabel(payment))} · ${escape(payment.status)}</span><strong>${money(payment.amountMinor)}</strong>${action}</div>`
       +receiptRefundsFor(receipt,payment.id).map(receiptRefundRow).join("");
   }).join("");
 /**
@@ -2150,7 +3670,183 @@ function receiptDiscountLines(receipt,invoice){
   const refundedLine=receipt.refundedMinor
     ? `<div class="receipt-refunded" data-testid="receipt-refunded"><span>Refunded</span><strong>-${money(receipt.refundedMinor)}</strong></div>`
     :"";
-  return `<div class="wide receipt" data-testid="receipt"><p><strong>${escape(invoice.businessName)}</strong></p><p>${escape(clientName(invoice))}</p>${receipt.items.map(item=>`<div><span>${escape(item.description)}</span><strong>${money(item.amountMinor)}</strong></div>`).join("")}<div><span>Subtotal</span><strong>${money(invoice.subtotalMinor)}</strong></div>${receiptDiscountLines(receipt,invoice)}<div><span>Tax</span><strong>${money(invoice.taxMinor)}</strong></div><div><span>Tip</span><strong>${money(invoice.tipMinor)}</strong></div><div class="receipt-total"><span>Total</span><strong>${money(invoice.totalMinor)}</strong></div><div><span>Balance</span><strong>${money(invoice.balanceMinor)}</strong></div>${refundedLine}<h4>Payment records</h4>${payments||"<p>No payment recorded.</p>"}</div>`;
+  // The head of the document, before any money: who printed it, then who it is about.
+  const salon=salonIdentityMarkup(invoiceSalonIdentity(invoice),"receipt-salon");
+  return `<div class="wide receipt" data-testid="receipt">${salon}<p>${escape(clientName(invoice))}</p>${receipt.items.map(item=>`<div><span>${escape(item.description)}</span><strong>${money(item.amountMinor)}</strong></div>`).join("")}<div><span>Subtotal</span><strong>${money(invoice.subtotalMinor)}</strong></div>${receiptDiscountLines(receipt,invoice)}<div><span>Tax</span><strong>${money(invoice.taxMinor)}</strong></div><div><span>Tip</span><strong>${money(invoice.tipMinor)}</strong></div><div class="receipt-total"><span>Total</span><strong>${money(invoice.totalMinor)}</strong></div><div><span>Balance</span><strong>${money(invoice.balanceMinor)}</strong></div>${refundedLine}<h4>Payment records</h4>${payments||"<p>No payment recorded.</p>"}</div>`;
+}
+
+/**
+ * What a payment is CALLED on a document somebody reads at a counter.
+ *
+ * "External card" is the settlement type the ledger records and it is what a manually keyed card
+ * payment says too; a payment taken on a terminal is named as one, because the difference between
+ * those two is the difference between money Pawsh can point at in a card processor and money it
+ * cannot. SHARED BY BOTH FINANCIAL DOCUMENTS - the Invoice's payment history and the Receipt -
+ * so a payment cannot be called one thing on the bill and another on the evidence.
+ */
+function receiptPaymentLabel(payment){
+  return payment.provider==="square"?"card terminal":paymentMethodLabel(payment.method);
+}
+// The processor's own name, written the way a person would. There is one provider today; anything
+// else falls through to whatever the ledger stored rather than to a guess.
+const PAYMENT_PROVIDER_LABELS={square:"Square"};
+function paymentProviderLabel(provider){
+  return PAYMENT_PROVIDER_LABELS[provider]||String(provider||"");
+}
+
+/**
+ * ONE LABELLED FACT, DRAWN ONLY WHEN THERE IS ONE.
+ *
+ * Every optional line on the Receipt goes through this, so "only when present" is one rule in one
+ * place rather than six conditionals that can each be got wrong separately. An absent value draws
+ * NOTHING - not an empty row, not a dash - for the same reason the salon identity header omits a
+ * line it has no value for: a row reading "Processor payment ID: -" on a cash receipt implies a
+ * processor was involved.
+ */
+function paymentReceiptLine(label,value,testid){
+  const text=String(value??"").trim();
+  return text
+    ? `<div data-testid="${escapeAttr(testid)}"><span>${escape(label)}</span><strong>${escape(text)}</strong></div>`
+    : "";
+}
+
+/**
+ * THE RECEIPT: THE TENDER COMPOSITION OF ONE COMPLETED SETTLEMENT.
+ *
+ * ONE INVOICE PER APPOINTMENT. ONE COMPLETED SETTLEMENT PER INVOICE. A SETTLEMENT MAY USE SEVERAL
+ * TENDER COMPONENTS. $40.00 of client credit and $52.01 on a card is ONE settlement paid two ways,
+ * not two checkouts; the `payments` rows behind it are components of that settlement and this
+ * document presents them as such. It used to head each block "Payment 1 of 2", which framed one
+ * settlement as a SERIES of independent payment events and invited a client holding it to ask
+ * which of the two receipts they were looking at. There is one. This is it.
+ *
+ * Not the money statement under another heading. `receiptBodyMarkup` above is the Invoice - what
+ * the visit cost, itemised, and what is still owed - and it is what an operator prints for a
+ * client asking about the bill. This is what an operator prints for a client asking for proof
+ * they paid, and its subject is how the settlement was tendered: what was taken, how, when, and
+ * by what reference each component can be found again. It is also NOT the Ticket, which states no
+ * money at all and is reached from its own surface; nothing here goes anywhere near
+ * `ticketDocumentMarkup`.
+ *
+ * "TOTAL SETTLED", NEVER "TOTAL PAID". The aggregate includes client credit, and client credit is
+ * an obligation discharged from the client's own balance - no money was collected for it. A total
+ * that spans both tender types and calls itself "paid" claims a salon took money it never touched,
+ * on the one document a client keeps as proof. The credit component says so on its own line too,
+ * so the composition is readable without doing the arithmetic. The INVOICE may still show `Paid`
+ * as its settlement status: that is a statement about the obligation, which is discharged, and it
+ * is correct.
+ *
+ * WHAT IT SHOWS BEYOND THE COMPONENTS, and why each line earns its place:
+ *
+ *   Total settled  ALWAYS. A settlement of several components is a figure a reader should not
+ *                  have to add up at a counter.
+ *   Refunded       ONLY when money has gone back, and ATTRIBUTED TO ITS COMPONENT as well as
+ *                  summed. A settlement refunded down one of two tenders is not the same fact as
+ *                  one refunded down the other - the card is where the money went back to - so
+ *                  the refund is drawn inside the component it came out of, keyed on
+ *                  `refunds[].paymentId`, and the aggregate below is a sum rather than a
+ *                  replacement for it.
+ *   Balance        ONLY while something is still owed. `receiptSettlementComplete` means this
+ *                  renderer is not reached in that state through any control the product offers;
+ *                  the line stays because a document that ever did state a part settlement must
+ *                  say so rather than read as settlement in full.
+ *
+ * NOTHING IS INVENTED. `provider` and `provider_payment_id` are nullable on `payments`, and a
+ * cash payment, a client-credit payment or a manually keyed card payment carries neither: those
+ * two lines are then ABSENT - not blank, not dashed. The client fabricates no processor identity
+ * to fill a gap, and no backend change was needed to hold that line -
+ * `GET /api/invoices/:id/receipt` already returns both columns.
+ *
+ * VOIDED COMPONENTS ARE NOT ON IT. A voided record settled nothing and so evidences nothing. The
+ * correction is history, and history is on the Invoice, where the voided row still stands.
+ */
+function paymentReceiptMarkup(receipt){
+  const invoice=receipt.invoice;
+  // The same header the Invoice and the Ticket draw, through the same renderer and off the same
+  // four fields. Its own test id, because three documents that share a block still have to be
+  // asserted apart.
+  const salon=salonIdentityMarkup(invoiceSalonIdentity(invoice),"payment-receipt-salon");
+  const settled=settledComponents(receipt);
+  const settledMinor=settledComponentsMinor(receipt);
+  const records=settled.map(payment=>
+    // A <section> rather than a <div>: `.payment-receipt>div` is a money row of this document's
+    // own totals, and a block shaped like a row would put a component into that sweep.
+    `<section class="payment-receipt-record" data-testid="payment-receipt-payment">`
+      // THE COMPOSITION LINE: how this part of the settlement was tendered, and for how much.
+      // Method on the left, amount on the right, one line per component - the shape a reader
+      // scans down to see what made up the total underneath.
+      +`<div class="payment-receipt-tender" data-testid="payment-receipt-tender">`
+        +`<span>${escape(receiptPaymentLabel(payment))}</span>`
+        +`<strong>${money(payment.amountMinor)}</strong></div>`
+      // Said on the component, not left to the total: this much of the settlement came off the
+      // client's own balance and no money changed hands for it.
+      +(payment.method==="client_credit"
+        ? `<p class="fine" data-testid="payment-receipt-credit-note">Settled from the client&#39;s account balance. No money was collected.</p>`
+        : "")
+      // Pawsh's own handle on this component, in the 8-character form the Ticket and Check Out
+      // already use for a reference somebody reads aloud. It is not a processor field and is
+      // never presented as one.
+      +(payment.id
+        ? paymentReceiptLine("Payment reference",`#${String(payment.id).slice(0,8)}`,
+          "payment-receipt-reference")
+        : "")
+      // Through the preference layer, like every other stamp in this client. `Intl` on an empty
+      // locale list would print this workspace's receipt in whatever the laptop is set to.
+      +paymentReceiptLine("Received",
+        payment.recordedAt?formatPrefDateAndTime(new Date(payment.recordedAt)):"",
+        "payment-receipt-received")
+      +paymentReceiptLine("Processor",paymentProviderLabel(payment.provider),
+        "payment-receipt-provider")
+      +paymentReceiptLine("Processor payment ID",payment.providerPaymentId,
+        "payment-receipt-provider-payment-id")
+      // NO `externalReference`, DELIBERATELY. It is unconstrained free text an operator types,
+      // up to 200 characters, and this document is handed to a client - so whatever was typed
+      // into it, a card number included, would be printed on paper the salon does not control.
+      // The same endpoint already strips `providerRefundId` for the same reason: a screen has no
+      // use for it, and a value a client holds is a value a client can send back. The field may
+      // keep reaching this client on the projection; the Receipt does not draw it.
+      +paymentReceiptRefunds(receipt,payment)
+    +`</section>`).join("");
+  const totals=`<div class="receipt-total" data-testid="payment-receipt-total-settled">`
+      +`<span>Total settled</span><strong>${money(settledMinor)}</strong></div>`
+    +(receipt.refundedMinor
+      ? `<div class="receipt-refunded" data-testid="payment-receipt-refunded"><span>Refunded</span>`
+        +`<strong>-${money(receipt.refundedMinor)}</strong></div>`
+      : "")
+    +(invoice.balanceMinor
+      ? `<div data-testid="payment-receipt-balance"><span>Balance still owed</span>`
+        +`<strong>${money(invoice.balanceMinor)}</strong></div>`
+      : "");
+  return `<div class="wide payment-receipt" data-testid="payment-receipt">${salon}`
+    +`<p data-testid="payment-receipt-client">${escape(clientName(invoice))}</p>`
+    // Named, because a bare list of two amounts under a client's name is not self-describing.
+    +(records?`<h4>Payment methods</h4>`:"")
+    +records+totals
+  +`</div>`;
+}
+
+/**
+ * WHAT WENT BACK OUT OF THIS COMPONENT, drawn inside the component it came out of.
+ *
+ * REFUND ATTRIBUTION SURVIVES. `payment_refunds.payment_id` is on the projection, so a refund
+ * knows which tender it reversed and this document says so: a $10.00 refund against the card is
+ * drawn under the card, never flattened into an aggregate that leaves a reader unable to tell
+ * which of two tenders the money came back to. No reconciliation arithmetic is invented here -
+ * every figure is a row the ledger holds.
+ *
+ * A FAILED REFUND MOVED NOTHING and is not on the evidence; it is a correction that did not
+ * happen, and the Invoice's payment history is where corrections live. A PENDING one is drawn in
+ * brackets rather than as a minus - `refundAmountMarkup`, the one expression of that convention,
+ * which the Invoice draws through as well - so money that is only spoken for is never read as
+ * money returned.
+ */
+function paymentReceiptRefunds(receipt,payment){
+  return receiptRefundsFor(receipt,payment.id)
+    .filter(refund=>refund.status!=="failed")
+    .map(refund=>`<div class="payment-receipt-refund" data-testid="payment-receipt-refund">`
+      +`<span>Refunded${refund.settled?"":" (pending)"}</span>`
+      +`<strong>${refundAmountMarkup(refund)}</strong>`
+    +`</div>`).join("");
 }
 
 // Scoped to the copy of the receipt that was just rendered, for the same reason the client summary
@@ -2169,11 +3865,46 @@ function bindReceiptActions(root,receipt){
     refreshRefund(button.dataset.refundId,invoice.id))));
 }
 
-// The same page in a dialog, titled by the same rule. An unpaid invoice opened from a client's
-// transaction history is headed "Invoice #1042", not "Receipt #1042".
-function showFinancialDocument(receipt){
-  openModal(financialDocumentTitle(receipt),receiptBodyMarkup(receipt),async()=>{});
-  bindReceiptActions($("#modal-fields"),receipt);
+/**
+ * BOTH DOCUMENTS ARE REACHABLE FROM AN INVOICE OPENED AWAY FROM CHECK OUT.
+ *
+ * The data to reproduce a Receipt is persisted - `GET /api/invoices/:id/receipt` returns every
+ * component, its processor fields and its refunds - so a settled visit reached from a client's
+ * transaction history weeks later can produce the same evidence Check Out produced on the day.
+ * Leaving the Receipt reachable only during the checkout session that created it made a printable
+ * document depend on a browser session rather than on the ledger.
+ *
+ * SAME TWO GATES, SAME TWO ANSWERS AS THE CHECK OUT FOOTER, because they are the same two
+ * documents. Print Invoice is here whenever an invoice is: an obligation is printable in every
+ * settlement state. Print Receipt is here only when the settlement COMPLETED, and is ABSENT rather
+ * than disabled until then - the deliberate decision this product already made about an unsettled
+ * invoice, kept here so the two surfaces cannot say different things about the same invoice.
+ */
+function invoiceDocumentActionsMarkup(receipt){
+  return `<div class="wide document-actions" data-testid="invoice-document-actions">`
+    +`<button type="button" class="secondary compact" data-testid="invoice-print-invoice">Print Invoice</button>`
+    +(receiptSettlementComplete(receipt)
+      ? `<button type="button" class="secondary compact" data-testid="invoice-print-receipt">Print Receipt</button>`
+      : "")
+  +`</div>`;
+}
+
+// THE INVOICE IN A DIALOG, AND IT IS AN INVOICE WHATEVER HAS BEEN PAID AGAINST IT. An invoice
+// opened from a client's transaction history is headed "Invoice #1042" unpaid, part-paid and
+// settled alike; settlement moves the balance and adds a payment record, and neither of those is
+// a change of document. There is no Receipt branch on the TITLE here because the Receipt is not
+// this document - it is a second document, reached by its own control in the footer below.
+function showInvoiceDocument(receipt){
+  openModal(invoiceDocumentTitle(receipt),
+    receiptBodyMarkup(receipt)+invoiceDocumentActionsMarkup(receipt),async()=>{});
+  const host=$("#modal-fields");
+  // Each control prints ONE document, chosen by the operator rather than worked out from what has
+  // been paid - the same discipline the Check Out footer follows.
+  host.querySelector('[data-testid="invoice-print-invoice"]')
+    ?.addEventListener("click",()=>printInvoiceDocument(receipt));
+  host.querySelector('[data-testid="invoice-print-receipt"]')
+    ?.addEventListener("click",()=>printPaymentReceipt(receipt));
+  bindReceiptActions(host,receipt);
 }
 
 // Re-reads the receipt and shows it again, which is how every refund outcome comes back to the
@@ -2192,7 +3923,7 @@ async function reopenReceipt(invoiceId,message){
   }
   $("#modal").close();
   if(message)toast(message);
-  setTimeout(()=>showFinancialDocument(receipt),50);
+  setTimeout(()=>showInvoiceDocument(receipt),50);
   if(state.me)runDetached(()=>refresh());
 }
 
@@ -3073,13 +4804,16 @@ async function showCustomerHistory(id) {
     const combined=[...(historyData.upcoming?.items||[]),...(historyData.history?.items||[])]
       .sort((left,right)=>new Date(right.startAt)-new Date(left.startAt));
     const appointments=combined.map(item=>`<div><span>${escape(formatPrefDate(new Date(item.startAt),item.schedulingTimezone||schedulingZone()))} / ${escape(petName({petName:item.petName}))}</span><strong>${escape(item.status.replace("_"," "))}</strong></div>`).join("")||"<p>No appointments yet.</p>";
-    const invoices=historyData.invoices.map(item=>`<div><span>Invoice ${escape(item.invoiceNumber)}</span><span><strong>${money(item.totalMinor)} / ${escape(invoiceStatusLabel(item.status))}</strong><button type="button" class="text-button history-receipt" data-invoice-id="${item.id}">${invoiceStatusHasPayment(item.status)?"Receipt":"Invoice"}</button></span></div>`).join("")||`<p>${allowed("payments.view")?"No invoices yet.":"Financial history requires payment access."}</p>`;
+    const invoices=historyData.invoices.map(item=>`<div><span>Invoice ${escape(item.invoiceNumber)}</span><span><strong>${money(item.totalMinor)} / ${escape(invoiceStatusLabel(item.status))}</strong><button type="button" class="text-button history-invoice" data-testid="history-invoice" data-invoice-id="${item.id}">Invoice</button></span></div>`).join("")||`<p>${allowed("payments.view")?"No invoices yet.":"Financial history requires payment access."}</p>`;
     const petDocuments=allowed("pets.care.view")?historyData.pets.map(pet=>`<div><span>${escape(petName(pet))}${pet.archivedAt?" (archived)":""}</span><button type="button" class="text-button history-pet-documents" data-pet-id="${pet.id}">Documents</button></div>`).join(""):"";
     openModal(`${clientName(historyData.customer)} history`,`<div class="wide history-list">${petDocuments?`<h4>Pet Care documents</h4>${petDocuments}`:""}<h4>Appointments</h4>${appointments}<h4>Transactions</h4>${invoices}</div>`,async()=>{});
     $$(".history-pet-documents").forEach(button=>button.addEventListener("click",()=>showPetDocuments(button.dataset.petId)));
-    $$(".history-receipt").forEach(button=>button.addEventListener("click",async()=>{
+    // The row is an invoice row and the control opens that invoice, in every status. It used to
+    // read "Receipt" once anything had been paid and open a page titled the same way, which is the
+    // paid-implies-Receipt rule this client no longer has anywhere.
+    $$(".history-invoice").forEach(button=>button.addEventListener("click",async()=>{
       const receipt=await api(`/api/invoices/${button.dataset.invoiceId}/receipt`);
-      $("#modal").close();setTimeout(()=>showFinancialDocument(receipt),50);
+      $("#modal").close();setTimeout(()=>showInvoiceDocument(receipt),50);
     }));
   }catch(error){toast(error.message);}
 }
@@ -4014,13 +5748,107 @@ const actions = {
   },
   // Blocking accepts the slot it was opened from so the Block choice on an empty slot lands on
   // that slot rather than making someone retype the time they just clicked.
-  "blocked-time": ({preset=null,groomerId=null}={}) => openModal("Block team time",
-    select("employeeId","Team member",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]),false,groomerId||"")+
-    field("startAt","Start","datetime-local",`required value="${escape(preset||"")}"`)+
-    field("endAt","End","datetime-local","required")+
-    field("reason","Reason","text","required",true),
-    form=>api("/api/blocked-times",{method:"POST",body:JSON.stringify({employeeId:form.get("employeeId"),locationId:state.me.business.locationId,localStart:form.get("startAt"),localEnd:form.get("endAt"),expectedLocationVersion:state.me.business.locationVersion,reason:form.get("reason")})}))
+  //
+  // THE COLOUR IS CHOSEN HERE RATHER THAN ON A SECOND VISIT. `blockedTimeSchema` has accepted
+  // `colorSlot` since the band learned to carry one, but this dialog had no picker - so every
+  // coloured block was a create followed immediately by an edit of the thing just created. The
+  // picker is the SAME `blockedTimeColoursMarkup` the Block Time drawer draws: one palette, one set
+  // of `--groomer-N` tokens, one set of names, one accessible pattern. It is given its own test id
+  // for its spoken line and `wide` so it spans `.form-grid`'s two columns, and nothing else about
+  // it differs - a second list of colours here is exactly the drift the shared helper exists to
+  // prevent.
+  //
+  // WHAT TRAVELS IS THE SLOT. An integer index into the palette, never a hex and never a CSS value:
+  // which colour that slot paints is a stylesheet's business and has to stay one, or a repaint
+  // becomes a data migration.
+  //
+  // NO COLOUR REMAINS THE DEFAULT. The unset radio is pre-checked, and choosing nothing sends no
+  // `colorSlot` key at all - so a block created without touching the picker is null in the row and
+  // a plain hatched band on the grid, exactly as it was before the picker existed.
+  //
+  // AND THE NOTE IS OPTIONAL HERE TOO, matching `blockedTimeSchema` rather than the drawer twice
+  // over. `blocked_times.reason` has been nullable since 0001 and the band has drawn the null case
+  // correctly since it learned to draw at all - the range alone, no dangling separator - but that
+  // case used to be reachable only by a row older than the create route. It is reachable through
+  // this dialog now, and `blockedTimeLabel`, `blockedTimeAccessibleName` and
+  // `blockedTimeHoverDetails` already handle it, so nothing new draws it: what changed is that a
+  // note is no longer demanded for a block whose time is the whole point.
+  "blocked-time": ({preset=null,groomerId=null}={}) => {
+    openModal("Block team time",
+      select("employeeId","Team member",state.employees.filter(item=>item.active).map(item=>[item.id,item.displayName]),false,groomerId||"")+
+      blockedTimeClockField({name:"startAt",label:"Start",value:preset||"",type:"datetime-local",
+        testid:"field-startAt",pickerLabel:"Choose the start time"})+
+      blockedTimeClockField({name:"endAt",label:"End",value:blockedTimePlusHour(preset||""),type:"datetime-local",
+        testid:"field-endAt",pickerLabel:"Choose the end time"})+
+      field("reason","Note","text",'maxlength="500"',true)+
+      `<p class="field-hint wide">Optional. A block with no note reads as its time alone on the calendar.</p>`+
+      blockedTimeColoursMarkup(null,true,{testid:"blocked-time-create-colour-current",wide:true}),
+      async form=>{
+        const slot=String(form.get("colorSlot")??"");
+        // The note is OMITTED when the box is empty, never sent as `""`. `blockedTimeSchema` reads
+        // an empty string the way its edit twin does - a 400, not a covert "no note" - because a
+        // field somebody has not filled in and a deliberate blank must not be the same request.
+        // Omitted rather than an explicit `null` for the same reason `colorSlot` is omitted: on a
+        // create the two say exactly the same thing, and the shorter one asks less of the schema.
+        const reason=String(form.get("reason")??"").trim();
+        const created=await api("/api/blocked-times",{method:"POST",body:JSON.stringify({employeeId:form.get("employeeId"),locationId:state.me.business.locationId,localStart:form.get("startAt"),localEnd:form.get("endAt"),expectedLocationVersion:state.me.business.locationVersion,...(reason===""?{}:{reason}),...(slot===""?{}:{colorSlot:Number(slot)})})});
+        // The band appears without a reload, and without depending on `refresh()`'s eight-day
+        // window from TODAY happening to cover the week on screen - block a Tuesday three weeks
+        // out and that window does not. `POST` answers with the read route's projection field for
+        // field, so this writes the same row a refetch would have drawn, in the same place.
+        return ()=>applyCalendarBlockedTime(created);
+      });
+    bindBlockedTimeCreateColours();
+    bindBlockedTimeCreateSchedule();
+    bindTimePickers($("#modal-fields"));
+  }
 };
+/**
+ * A BLOCK IS AN HOUR UNTIL SOMEBODY SAYS OTHERWISE.
+ *
+ * The dialog used to open with a Start taken from the clicked slot and an End that was simply
+ * blank, so the commonest thing an operator wanted - block the next hour - was two fields of typing
+ * with the second one entered from scratch. The End now opens at Start plus an hour, and FOLLOWS
+ * the Start for as long as it is still the dialog's suggestion rather than the operator's answer.
+ *
+ * THE RULE, EXACTLY. The End tracks Start + 1h on every change to the Start, until the operator
+ * edits the End themselves - by typing in it, or by committing the scroll picker on it. From that
+ * moment the End is theirs and the Start stops moving it, for the rest of this opening. Opening the
+ * dialog again is a new suggestion, and the link is live again.
+ *
+ * The latch is set from the End's own `input` event, which is exactly the set of edits a PERSON
+ * made: assigning `.value` in script fires nothing, so the link moving the End cannot be mistaken
+ * for the operator having chosen it.
+ */
+function bindBlockedTimeCreateSchedule(){
+  const fields=$("#modal-fields");if(!fields)return;
+  const start=fields.querySelector('[name="startAt"]'),end=fields.querySelector('[name="endAt"]');
+  if(!start||!end)return;
+  let endChosen=false;
+  end.addEventListener("input",()=>{endChosen=true;});
+  start.addEventListener("input",()=>{
+    if(endChosen)return;
+    const suggested=blockedTimePlusHour(start.value);
+    if(suggested)end.value=suggested;
+  });
+}
+/**
+ * The create picker's spoken line, kept in step the way the drawer's is.
+ *
+ * Bound to the FIELDSET rather than to `#modal-fields`, which is a permanent element the shared
+ * dialog refills for every modal in the product: a listener left on it would outlive this dialog,
+ * accumulate one copy per opening, and hold a reference to a `<p>` that no longer exists. The
+ * fieldset is new markup on every open and is discarded with the dialog's contents.
+ */
+function bindBlockedTimeCreateColours(){
+  const picker=$("#modal-fields .blocked-time-colours");if(!picker)return;
+  const current=picker.querySelector(`[data-testid="blocked-time-create-colour-current"]`);if(!current)return;
+  picker.addEventListener("change",event=>{
+    if(event.target?.name!=="colorSlot")return;
+    const value=event.target.value;
+    current.textContent=`Selected: ${blockedTimeColourName(value===""?null:Number(value))}`;
+  });
+}
 
 $("#auth-form").addEventListener("submit", async (event) => {
   event.preventDefault(); $("#auth-error").textContent = "";
@@ -4029,6 +5857,7 @@ $("#auth-form").addEventListener("submit", async (event) => {
     await api(resetToken ? "/api/auth/password-reset/confirm" : inviteToken ? "/api/auth/invitations/accept" : state.login ? "/api/auth/login" : "/api/auth/signup", {
       method: "POST", body: JSON.stringify(resetToken ? {token:resetToken,password:data.password} : inviteToken ? {token:inviteToken,password:data.password} : data)
     });
+    concealPasswordFields($("#auth-form"));
     if (inviteToken || resetToken) history.replaceState({}, "", "/");
     if (resetToken) { location.href="/"; return; }
     await bootstrap();
@@ -4037,9 +5866,10 @@ $("#auth-form").addEventListener("submit", async (event) => {
 $("#toggle-auth").addEventListener("click", () => {
   state.login = !state.login; $("#business-field").hidden = state.login; $("#business-field input").required = !state.login;
   $("#auth-form input[name=password]").autocomplete=state.login?"current-password":"new-password";
+  concealPasswordFields($("#auth-form"));
   $("#auth-title").textContent = state.login ? "Welcome back" : "Create your salon";
   $("#auth-subtitle").textContent = state.login ? "Sign in to continue your day." : "Set up your workspace in under a minute.";
-  $("#auth-form button").textContent = state.login ? "Sign in" : "Create workspace";
+  $("#auth-form button[type=submit]").textContent = state.login ? "Sign in" : "Create workspace";
   $("#toggle-auth").textContent = state.login ? "New to Pawsh? Create a workspace" : "Already have an account? Sign in";
 });
 $("#forgot-password").addEventListener("click",()=>{
@@ -4185,7 +6015,7 @@ async function switchLocation(locationId){
     // Identity first: a stale locationId or locationVersion reaching the next booking or settings
     // save would write against the location the user just left.
     state.me=await api("/api/me");
-    state.calendar.opened=false;state.calendar.monthAppointments=[];state.businessHours=[];resetAvailabilityLocationData();
+    state.calendar.opened=false;state.calendar.monthAppointments=[];state.blockedTimes=[];state.businessHours=[];resetAvailabilityLocationData();
     applyPermissions();
     const switchedTo=result?.locationName||state.me.business.locationName;
     // Fired at the exact moment the misconception forms. Three of the four Availability tabs are
@@ -4228,7 +6058,7 @@ document.addEventListener("keydown",event=>{if(event.key==="Escape"){if(!newActi
 $("#profile-form").addEventListener("submit",async event=>{event.preventDefault();const form=event.currentTarget,error=$("#profile-error"),button=form.querySelector("button[type=submit]");error.textContent="";button.disabled=true;try{await api("/api/me",{method:"PATCH",body:JSON.stringify({displayName:new FormData(form).get("displayName")})});state.me=await api("/api/me");renderAccountIdentity();toast("Profile updated");}catch(problem){error.textContent=problem.message;}finally{button.disabled=false;}});
 $("#profile-cancel").addEventListener("click",()=>{renderAccountIdentity();$("#profile-error").textContent="";});
 $("#profile-workspace-select").addEventListener("change",async event=>{try{await api("/api/workspaces/select",{method:"POST",body:JSON.stringify({businessId:event.target.value})});location.reload();}catch(error){toast(error.message);renderAccountIdentity();}});
-$("#password-form").addEventListener("submit",async event=>{event.preventDefault();const form=event.currentTarget,values=Object.fromEntries(new FormData(form)),error=$("#password-error"),button=form.querySelector("button[type=submit]");error.textContent="";if(values.newPassword!==values.confirmPassword){error.textContent="New passwords do not match";form.elements.confirmPassword.focus();return;}button.disabled=true;try{await api("/api/me/password",{method:"POST",body:JSON.stringify({currentPassword:values.currentPassword,newPassword:values.newPassword})});form.reset();toast("Password changed; other sessions signed out");}catch(problem){error.textContent=problem.message;}finally{button.disabled=false;}});
+$("#password-form").addEventListener("submit",async event=>{event.preventDefault();const form=event.currentTarget,values=Object.fromEntries(new FormData(form)),error=$("#password-error"),button=form.querySelector("button[type=submit]");error.textContent="";if(values.newPassword!==values.confirmPassword){error.textContent="New passwords do not match";form.elements.confirmPassword.focus();return;}button.disabled=true;try{await api("/api/me/password",{method:"POST",body:JSON.stringify({currentPassword:values.currentPassword,newPassword:values.newPassword})});form.reset();concealPasswordFields(form);toast("Password changed; other sessions signed out");}catch(problem){error.textContent=problem.message;}finally{button.disabled=false;}});
 const settingsCategories=[
   ["account","Account","canonical"],["staff","Staff","canonical"],["business","Business","functional"],["availability","Availability","canonical"],["appointment-schedule","Appointment schedule","placeholder"],["locations","Locations","placeholder"],["permissions","Roles & permissions","functional"],["services","Services","canonical"],["payroll","Payroll","placeholder"],["pet-options","Pet options","canonical"],["tax-payments","Tax & payments","functional"],["discounts","Coupons & discounts","functional"],["automated-messages","Automated messages","functional"],["sms-auto-reply","SMS auto-reply","placeholder"],["agreements","Agreements","placeholder"],["online-booking","Online booking","placeholder"],["intake-form","Intake form","placeholder"],["client-portal","Client portal","placeholder"],["loyalty","Loyalty program","placeholder"],["reviews","Review booster","placeholder"],["report-cards","Report card","placeholder"],["integrations","Integrations","placeholder"]
 ];
@@ -4997,16 +6827,11 @@ function availabilityLocationId(){return state.me?.business?.locationId||null;}
 function availabilityMonth(){return availabilityState.month||businessDate().slice(0,7);}
 function availabilityMonthShift(month,step){const [year,index]=month.split("-").map(Number),date=new Date(Date.UTC(year,index-1+step,1));return `${date.getUTCFullYear()}-${String(date.getUTCMonth()+1).padStart(2,"0")}`;}
 function availabilityMonthLength(month){const [year,index]=month.split("-").map(Number);return new Date(Date.UTC(year,index,0)).getUTCDate();}
-function availabilityMonthLabel(month){return new Intl.DateTimeFormat([],{month:"long",year:"numeric",timeZone:"UTC"}).format(dateAt(`${month}-01`));}
+function availabilityMonthLabel(month){return formatPrefLocalMonthYear(`${month}-01`);}
 function availabilityDateValue(month,day){return `${month}-${String(day).padStart(2,"0")}`;}
 // "Saturday 14 March 2026" rather than a bare date: the switch's accessible name has to say which
 // day it closes, or aria-checked is describing nothing anybody can identify.
-function availabilityDateLabel(localDate){
-  const date=dateAt(localDate);
-  const weekday=new Intl.DateTimeFormat([],{weekday:"long",timeZone:"UTC"}).format(date);
-  const month=new Intl.DateTimeFormat([],{month:"long",timeZone:"UTC"}).format(date);
-  return `${weekday} ${Number(localDate.slice(8,10))} ${month} ${localDate.slice(0,4)}`;
-}
+function availabilityDateLabel(localDate){return formatPrefLocalSpokenDate(localDate);}
 function availabilityGroomers(){return (availabilityState.hours||[]).filter(employee=>employee.active);}
 function availabilityEmployee(employeeId){return (availabilityState.hours||[]).find(employee=>employee.id===employeeId)||null;}
 function availabilityDay(employee,weekday){return (employee?.days||[]).find(day=>Number(day.weekday)===Number(weekday))||null;}
@@ -6565,10 +8390,10 @@ function renderTerminalCapture(){
     :data&&!data.inFlight?"Payment stopped"
     :"Taking payment";
   const cancel=$("[data-testid=\"terminal-capture-cancel\"]");
-  const receipt=$("[data-testid=\"terminal-capture-receipt\"]");
+  const viewInvoice=$("[data-testid=\"terminal-capture-invoice\"]");
   const refresh=$("[data-testid=\"terminal-capture-refresh\"]");
   cancel.hidden=!data?.inFlight;
-  receipt.hidden=!data?.settled;
+  viewInvoice.hidden=!data?.settled;
   refresh.hidden=Boolean(data?.settled);
 }
 
@@ -6648,11 +8473,13 @@ function setupTerminalCapture(){
     renderTerminalCapture();
     if(terminalCapture.data?.inFlight)scheduleTerminalCapturePoll();
   }));
-  $("[data-testid=\"terminal-capture-receipt\"]")?.addEventListener("click",()=>runDetached(async()=>{
+  // The control opens the INVOICE. `/receipt` is the endpoint that returns the invoice-and-payments
+  // payload both financial documents render from, so `receipt` here is that payload and not a Receipt.
+  $("[data-testid=\"terminal-capture-invoice\"]")?.addEventListener("click",()=>runDetached(async()=>{
     const invoiceId=terminalCapture.invoiceId;if(!invoiceId)return;
     const receipt=await api(`/api/invoices/${invoiceId}/receipt`);
     dialog.close();
-    setTimeout(()=>showFinancialDocument(receipt),50);
+    setTimeout(()=>showInvoiceDocument(receipt),50);
   }));
 }
 
@@ -11553,9 +13380,9 @@ function clientContextAppointmentRow(item,{upcoming}){
   const zone=item.schedulingTimezone||schedulingZone(),start=new Date(item.startAt);
   const services=(item.services||[]).map(service=>service.name).filter(Boolean);
   const groomers=(item.groomers||[]).map(groomer=>groomer.displayName).filter(Boolean);
-  // The weekday/month/day half stays on the browser's locale, as every other short date in this
-  // client does; the clock half is a time, so it reads in the workspace's 12/24-hour setting.
-  const when=`${new Intl.DateTimeFormat([],{weekday:"short",month:"short",day:"numeric",timeZone:zone}).format(start)} · ${formatPrefTime(start,zone)}`;
+  // Both halves read in the workspace's own shape: the weekday/month/day half through the
+  // preference layer's English names, the clock half in the 12/24-hour setting beside it.
+  const when=`${formatPrefShortWeekdayMonthDay(start,zone)} · ${formatPrefTime(start,zone)}`;
   const meta=[item.petName,groomers.join(", ")||item.employeeName].filter(Boolean).join(" · ");
   // Every upcoming appointment is scheduled, so a "scheduled" chip on every upcoming row is
   // decoration. An upcoming row that has already moved on is the fact worth showing, and history
@@ -12289,15 +14116,10 @@ function appointmentLifecycleMarkup(activity,{editable=false}={}){
       : "");
 }
 
-// Printing is the one mechanism the product has: a .print-root appended to <body>, which the
-// print stylesheet is the only thing that shows. No second window and no separate page.
+// Through `appendPrintRoot`, like every other printed document. The <h1> is prepended because
+// `printableAgenda` carries no title of its own.
 function printAppointment(item){
-  const root=document.createElement("section");
-  root.className="print-root";
-  root.innerHTML=`<h1>Pawsh appointment</h1>${printableAgenda([item])}`;
-  document.body.append(root);
-  globalThis.print();
-  setTimeout(()=>root.remove(),1000);
+  appendPrintRoot("print-root",`<h1>Pawsh appointment</h1>${printableAgenda([item])}`);
 }
 
 /**
@@ -12483,19 +14305,38 @@ function appointmentSurfaceMarkup(surface){
   // completed visit CLOSE GIVES UP THE PRIMARY SLOT, because opening the Ticket is what the
   // operator came for and dismissal is not, while on a cancelled or no-show visit there is nothing
   // to come for and Close keeps it.
-  const ticket=`<button type="button" class="${can.readOnly&&can.ticketPrimary?"primary":"secondary"} compact" data-testid="appointment-ticket">Ticket</button>`;
+  // WHICH CONTROL OWNS THE READ-ONLY FOOTER'S PRIMARY SLOT, decided once so that two buttons
+  // cannot both claim it. The bill takes it whenever there is one, because an operator opening a
+  // settled visit came to see what was charged; failing that the Ticket takes it on a completed
+  // visit; and on a cancelled or no-show visit, where there is nothing to come for, Close keeps it.
+  const primarySlot=can.invoice?"invoice":can.ticketPrimary?"ticket":"close";
+  const ticket=`<button type="button" class="${can.readOnly&&primarySlot==="ticket"?"primary":"secondary"} compact" data-testid="appointment-ticket">Ticket</button>`;
+  // The slot Take Payment gives up once the visit is billed. It OPENS the invoice rather than
+  // raising a second one, and it is the same dialog a client's transaction history opens, so
+  // there is one Invoice document with one title and one pair of print controls.
+  const invoice=can.invoice
+    ? `<button type="button" class="primary compact" data-testid="appointment-invoice"${
+      can.invoiceViewable?"":` disabled aria-disabled="true" title="You do not have permission to view invoices"`}>Invoice</button>`
+    : "";
   const foot=can.readOnly
     // Nothing on this appointment can move any more, so the footer offers the things that still
     // mean something rather than a row of controls the server would refuse.
     ? `<footer class="surface-foot"><div class="surface-foot-actions"></div>`
       +`<div class="surface-foot-actions">${print}`
-      +`<button type="button" class="${can.ticketPrimary?"secondary":"primary"} compact" data-testid="appointment-close">Close</button>`
-      +ticket+`</div></footer>`
+      +`<button type="button" class="${primarySlot==="close"?"primary":"secondary"} compact" data-testid="appointment-close">Close</button>`
+      +ticket+invoice+`</div></footer>`
     : `<footer class="surface-foot"><div class="surface-foot-actions">`
         +(can.cancel?`<button type="button" class="secondary compact destructive" data-testid="appointment-cancel">Cancel</button>`:"")
         +(can.cancel?`<button type="button" class="secondary compact" data-testid="appointment-no-show">No-show</button>`:"")
         +(can.bookAgain?`<button type="button" class="secondary compact" data-testid="appointment-book-again">Book Again</button>`:"")
       +`</div><div class="surface-foot-actions">${print}${ticket}`
+        // An invoice reaches this branch only if one exists while the visit is still moving, which
+        // no path produces today - `readOnly` is exactly completed-and-invoiced. It is interpolated
+        // here anyway so the rule is unconditional: AN INVOICE THAT EXISTS IS REACHABLE FROM ITS
+        // OWN APPOINTMENT, in every state, which is the whole of what went wrong. It cannot collide
+        // with Take Payment for the primary slot, because `checkout` requires no invoice and this
+        // requires one.
+        +invoice
         // Billing the visit stays the primary action while it is still unbilled; the Ticket is
         // available beside it.
         +(can.checkout?`<button type="button" class="primary compact" data-testid="appointment-take-payment">Take Payment</button>`:"")
@@ -12565,6 +14406,30 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
       // the button is absent rather than offered and refused. Absent, never disabled - the
       // precedent is calendarAction(), which withholds a transition the operator cannot make.
       checkout:status==="completed"&&!invoiced&&allowed("checkout.perform"),
+      // THE BILL THIS VISIT RAISED, AND IT IS A DOCUMENT RATHER THAN A TRANSITION. The moment an
+      // invoice exists `checkout` above goes false and Take Payment leaves the footer - correctly,
+      // because the server refuses a second checkout - but nothing replaced it. A visit whose own
+      // header reads "Paid · $0 due" therefore offered no route at all to the bill that says so,
+      // and the only way in was Client -> Transaction History: a detour through the client to
+      // reach a document that belongs to THIS appointment. Meanwhile the Ticket, which carries no
+      // money at all, stayed one button away.
+      //
+      // Present if and only if the invoice exists. Nothing can be disabled when no invoice was
+      // ever raised, so there the control is absent and absence is the honest answer.
+      invoice:Boolean(surface.item.invoiceId),
+      // `payments.view`, NOT `checkout.perform`. Reading a bill that already exists is not taking
+      // payment, and they are not the same person: a cashier settles the visit, a manager reads
+      // what was settled weeks later. Nothing here widens any role - it is the gate the client
+      // already puts on a client's Transactions list and on the profile's Invoices section.
+      //
+      // THE ONE CONTROL ON THIS SURFACE THAT IS DISABLED RATHER THAN ABSENT, and deliberately.
+      // `checkout` above is absent without its permission because withholding a transition the
+      // server would refuse is honest. An invoice is not a transition: it demonstrably exists,
+      // the billing chip in the header has already said so, and drawing nothing would tell the
+      // operator there is no invoice - a different statement, and a false one. The precedent for
+      // saying "yours to see, not yours to open" is the blocked-time footer, whose Update and
+      // Delete stay on screen carrying `disabled aria-disabled="true"` and a title that says why.
+      invoiceViewable:allowed("payments.view"),
       cancel:status==="scheduled"&&allowed("appointments.cancel"),
       bookAgain:allowed("appointments.create"),
       // NOT DERIVED AT ALL ANY MORE, and that is the point. The Ticket is the CRM document for the
@@ -12814,6 +14679,31 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
     // than opened through #modal. Guarded by the same key the calendar's own Checkout uses: two
     // concurrent renders of that screen is the failure advanceAppointment() documents.
     on("appointment-take-payment",()=>runDetached(()=>runOnce(`checkout:${id}`,()=>checkout(id))));
+    // THE INVOICE, OPENED THROUGH THE ONE DIALOG THAT OWNS IT.
+    //
+    // `showInvoiceDocument` already holds the Invoice's title and identity, Print Invoice, and the
+    // Print Receipt that appears once the settlement completed - and a settled invoice shows BOTH,
+    // because the receipt is a second document rather than a replacement for the bill. Reaching it
+    // from here therefore fetches the same `GET /api/invoices/:id/receipt` payload that the
+    // client's transaction history and the terminal-capture screen fetch, and hands it to the same
+    // renderer. A second invoice renderer here would be a second opinion about one document.
+    //
+    // THE PERMISSION IS CHECKED AGAIN, HERE, and not left to the button's `disabled` attribute.
+    // That attribute is a fact about a DOM node and can be removed in a console; this is a fact
+    // about the actor. The server refuses the read as well - this is the client refusing to ask.
+    //
+    // Through #modal, which opens ON TOP of this surface rather than replacing it, so the visit is
+    // still behind the bill; `throughModal` redraws the surface when it closes, because a refund
+    // or a void taken from inside that dialog changes the very billing chip that led the operator
+    // to press this. The read runs first and the modal is wired only once it has come back, so a
+    // failed fetch leaves no close-handler waiting on a dialog that never opened.
+    on("appointment-invoice",()=>runDetached(()=>runOnce(`invoice:${id}`,async()=>{
+      if(!allowed("payments.view"))return;
+      const invoiceId=surface.item.invoiceId;
+      if(!invoiceId)return;
+      const receipt=await api(`/api/invoices/${invoiceId}/receipt`);
+      throughModal(()=>showInvoiceDocument(receipt));
+    })));
     // Level 3, pushed the same way and guarded the same way: `openTicket` awaits its two note
     // reads after it pushes, and a second press inside that window would render and bind the
     // surface twice. Both entry points share the one key, so the header icon and the footer
@@ -12930,15 +14820,13 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
  * name, phone, email and the active location's single free-text address line. The receipt
  * resolves its own header through the invoice's appointment's location instead, because a
  * receipt is a document about one visit and the address on it has to be a fact about that visit.
- * The Ticket has no invoice to resolve through and does not want one.
+ * The Ticket has no invoice to resolve through and does not want one. Both end up in the same
+ * shape and through the same renderer - see `salonIdentityMarkup`.
  */
 function salonIdentity(){
   const business=state.me?.business;
-  // Blank is the same absence as null here: a line is drawn only when there is something on it,
-  // and a bare `Phone:` with nothing after it is never rendered.
-  const line=value=>String(value??"").trim();
-  return {name:line(business?.name),address:line(business?.address),
-    phone:line(business?.phone),email:line(business?.email)};
+  return salonIdentityOf({name:business?.name,phone:business?.phone,
+    email:business?.email,address:business?.address});
 }
 
 // A cell with nothing in it. One character, so an absent note reads as a filled-in blank rather
@@ -12991,17 +14879,6 @@ function ticketNoteCell(thread){
   if(!thread)return TICKET_PENDING;
   if(thread.failed)return TICKET_UNAVAILABLE;
   return thread.body||TICKET_EMPTY;
-}
-
-// Label and value on one line, the label carrying the weight. An absent line is not drawn.
-function ticketSalonMarkup(salon){
-  const line=(label,value)=>value
-    ? `<p class="ticket-salon-line"><span>${escape(label)}:</span> ${escape(value)}</p>`
-    : "";
-  return `<div class="ticket-salon" data-testid="ticket-salon">`
-    +`<p class="ticket-business">${escape(salon.name)}</p>`
-    +line("Phone",salon.phone)+line("Email",salon.email)+line("Address",salon.address)
-  +`</div>`;
 }
 
 // The visit's own two facts, opposite the salon block. The date is the APPOINTMENT'S date in the
@@ -13088,7 +14965,7 @@ function ticketDocumentMarkup(item,notes){
     +`<p class="ticket-doc-reference" data-testid="ticket-appointment-reference">`
       +`Appointment #: ${escape(ticketReference(item))}</p>`
     +`<div class="ticket-doc-head">`
-      +ticketSalonMarkup(salonIdentity())
+      +salonIdentityMarkup(salonIdentity(),"ticket-salon")
       +ticketVisitMarkup(item,model)
     +`</div>`
     +ticketServicesMarkup(model)
@@ -13121,18 +14998,12 @@ function ticketSurfaceMarkup(item,notes){
 /**
  * The sheet on paper.
  *
- * Printing is the one mechanism the product has: a `.print-root` appended to <body>, which the
- * print stylesheet is the only thing that shows. NO PREPENDED <h1> - `printAppointment` prepends
- * one because its body carries no title of its own, and this one opens on the appointment
- * reference and the salon's name.
+ * Through `appendPrintRoot`, like every other printed document, but with NO PREPENDED <h1> -
+ * `printAppointment` and the two financial documents prepend one because their bodies carry no
+ * title of their own, and this one opens on the appointment reference and the salon's name.
  */
 function printTicket(item,notes){
-  const root=document.createElement("section");
-  root.className="print-root print-ticket";
-  root.innerHTML=ticketDocumentMarkup(item,notes);
-  document.body.append(root);
-  globalThis.print();
-  setTimeout(()=>root.remove(),1000);
+  appendPrintRoot("print-root print-ticket",ticketDocumentMarkup(item,notes));
 }
 
 /**
@@ -13300,7 +15171,7 @@ $("#customer-prev").addEventListener("click",()=>loadCustomerDirectory(state.cus
 function printRangeDefaults(){if(state.calendar.view==="day"||state.calendar.view==="month")return [state.calendar.selectedDate,state.calendar.selectedDate];return [state.calendar.weekStart,dateShift(state.calendar.weekStart,6)];}
 function printableAgenda(items){const sorted=items.slice().sort((a,b)=>new Date(a.startAt)-new Date(b.startAt));return sorted.length?sorted.map(item=>{const model=appointmentPresentation(item);return `<article class="print-appointment"><header><strong>${escape(model.groomer)}</strong><span>${escape(model.dateLabel)} · ${escape(model.timeRange)}</span></header><div><p><b>Pet:</b> ${escape(petName({petName:model.petName}))}${model.breed?` · ${escape(model.breed)}`:""}</p><p><b>Services:</b> ${model.services.map(escape).join(", ")}</p><p><b>Client:</b> ${escape(model.customerName)}${item.customerPhone?` · ${escape(item.customerPhone)}`:""}</p>${item.notes?`<p><b>Appointment note:</b> ${escape(item.notes)}</p>`:""}</div></article>`;}).join(""):`<p>No appointments in this print range.</p>`;}
 async function printAgendaItems(form){const start=String(form.get("printStart")),end=String(form.get("printEnd")),days=Math.round((dateAt(end)-dateAt(start))/86400000)+1;if(!start||!end||days<1||days>31)throw new Error("Choose a print range from 1 to 31 days.");const groomerId=String(form.get("printGroomer")||""),items=filteredAppointments(await loadAppointmentRange(start,days));return groomerId?items.filter(item=>(item.groomers||[]).some(groomer=>groomer.id===groomerId)):items;}
-async function openPrintAgenda(){const [start,end]=printRangeDefaults(),groomers=selectedGroomers();openModal("Print agenda",`<div class="wide print-controls"><label>From<input type="date" name="printStart" value="${start}" required></label><label>To<input type="date" name="printEnd" value="${end}" required></label><label>Groomer<select name="printGroomer"><option value="">All selected groomers</option>${groomers.map(item=>`<option value="${item.id}">${escape(item.displayName)}</option>`).join("")}</select></label><button type="button" class="secondary compact" id="print-preview-update">Update preview</button></div><section id="print-agenda-preview" class="wide print-agenda-preview" aria-live="polite">Loading preview…</section>`,async form=>{const items=await printAgendaItems(form),printRoot=document.createElement("section");printRoot.className="print-root";printRoot.innerHTML=`<h1>Pawsh agenda</h1>${printableAgenda(items)}`;document.body.append(printRoot);globalThis.print();setTimeout(()=>printRoot.remove(),1000);},{cancelLabel:"Close",submitLabel:"Print"});const refreshPreview=async()=>{try{$("#print-agenda-preview").innerHTML=printableAgenda(await printAgendaItems(new FormData($("#modal-form"))));}catch(error){$("#modal-error").textContent=error.message;}};$("#print-preview-update").addEventListener("click",refreshPreview);await refreshPreview();}
+async function openPrintAgenda(){const [start,end]=printRangeDefaults(),groomers=selectedGroomers();openModal("Print agenda",`<div class="wide print-controls"><label>From<input type="date" name="printStart" value="${start}" required></label><label>To<input type="date" name="printEnd" value="${end}" required></label><label>Groomer<select name="printGroomer"><option value="">All selected groomers</option>${groomers.map(item=>`<option value="${item.id}">${escape(item.displayName)}</option>`).join("")}</select></label><button type="button" class="secondary compact" id="print-preview-update">Update preview</button></div><section id="print-agenda-preview" class="wide print-agenda-preview" aria-live="polite">Loading preview…</section>`,async form=>{const items=await printAgendaItems(form);appendPrintRoot("print-root",`<h1>Pawsh agenda</h1>${printableAgenda(items)}`);},{cancelLabel:"Close",submitLabel:"Print"});const refreshPreview=async()=>{try{$("#print-agenda-preview").innerHTML=printableAgenda(await printAgendaItems(new FormData($("#modal-form"))));}catch(error){$("#modal-error").textContent=error.message;}};$("#print-preview-update").addEventListener("click",refreshPreview);await refreshPreview();}
 function openCalendarSettings(){const preferences=calendarPreferences(),derived=state.businessHours.flatMap(period=>[String(period.startTime).slice(0,5),String(period.endTime).slice(0,5)]).map(value=>Number(value.slice(0,2))*60+Number(value.slice(3,5))),fallback=derived.length?[Math.min(...derived),Math.max(...derived)]:[480,1140],start=preferences.visibleStart??fallback[0],end=preferences.visibleEnd??fallback[1];openModal("Calendar settings",`<p class="wide settings-note">These preferences change only your calendar view. Salon business hours and booking rules remain unchanged.</p><label>Visible from<select name="visibleStart">${Array.from({length:33},(_,i)=>i*30+300).map(value=>`<option value="${value}" ${value===start?"selected":""}>${timeLabel(value)}</option>`).join("")}</select></label><label>Visible until<select name="visibleEnd">${Array.from({length:33},(_,i)=>i*30+480).map(value=>`<option value="${value}" ${value===end?"selected":""}>${timeLabel(value)}</option>`).join("")}</select></label><label>First day of week<select name="firstDay"><option value="sunday" ${preferences.firstDay==="sunday"?"selected":""}>Sunday</option><option value="monday" ${preferences.firstDay==="monday"?"selected":""}>Monday</option></select></label><label>Calendar density<select name="density"><option value="compact" ${preferences.density==="compact"?"selected":""}>Compact</option><option value="comfortable" ${preferences.density==="comfortable"?"selected":""}>Comfortable</option><option value="large" ${preferences.density==="large"?"selected":""}>Large</option></select></label><label class="wide">Appointment detail<select name="detail"><option value="compact" ${preferences.detail==="compact"?"selected":""}>Compact</option><option value="detailed" ${preferences.detail==="detailed"?"selected":""}>Detailed</option></select></label><button type="button" class="text-button wide" id="calendar-settings-reset">Reset to defaults</button>`,form=>{const next={visibleStart:Number(form.get("visibleStart")),visibleEnd:Number(form.get("visibleEnd")),firstDay:String(form.get("firstDay")),density:String(form.get("density")),detail:String(form.get("detail"))};if(next.visibleStart>=next.visibleEnd)throw new Error("Visible start must be before visible end.");state.calendar.preferences=next;globalThis.localStorage.setItem(calendarPreferenceKey(),JSON.stringify(next));state.calendar.weekStart=weekStart(state.calendar.selectedDate);applyCalendarPreferences();return ()=>loadCalendarWeek();},{cancelLabel:"Cancel",submitLabel:"Apply changes"});$("#calendar-settings-reset").addEventListener("click",()=>{globalThis.localStorage.removeItem(calendarPreferenceKey());state.calendar.preferences=null;$("#modal").close();applyCalendarPreferences();state.calendar.weekStart=weekStart(state.calendar.selectedDate);runDetached(loadCalendarWeek);});}
 function applyCalendarPreferences(){const preferences=calendarPreferences(),shell=$("#calendar");shell.dataset.calendarDensity=preferences.density;shell.dataset.calendarDetail=preferences.detail;}
 function calendarStep(direction){if(state.calendar.view==="day")return selectCalendarDate(dateShift(state.calendar.selectedDate,direction));if(state.calendar.view==="week")return selectCalendarDate(dateShift(state.calendar.weekStart,direction*7));const date=dateAt(`${state.calendar.month}-01`);date.setUTCMonth(date.getUTCMonth()+direction);state.calendar.month=date.toISOString().slice(0,7);state.calendar.selectedDate=`${state.calendar.month}-01`;state.calendar.weekStart=weekStart(state.calendar.selectedDate);return loadCalendarWeek();}
@@ -13332,7 +15203,7 @@ if (inviteToken || resetToken) {
   const emailLabel=$('#auth-form input[name="email"]').closest("label"); emailLabel.hidden=true; emailLabel.querySelector("input").required=false;
   $("#auth-title").textContent=resetToken?"Reset your password":"Join your salon";
   $("#auth-subtitle").textContent=resetToken?"Choose a new secure password.":"Choose a secure password to accept your invitation.";
-  $("#auth-form button").textContent=resetToken?"Update password":"Accept invitation";
+  $("#auth-form button[type=submit]").textContent=resetToken?"Update password":"Accept invitation";
   $("#toggle-auth").hidden=true;$("#forgot-password").hidden=true;
   $("#auth-form input[name=password]").autocomplete="new-password";
 }

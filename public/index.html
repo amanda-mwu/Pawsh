@@ -28,7 +28,7 @@
       </div>
       <form id="auth-form" data-testid="auth-form">
         <label>Email<input data-testid="login-email" name="email" type="email" autocomplete="off" required></label>
-        <label>Password<input data-testid="login-password" name="password" type="password" minlength="8" maxlength="256" autocomplete="new-password" required></label>
+        <div class="password-field"><label>Password<input data-testid="login-password" name="password" type="password" minlength="8" maxlength="256" autocomplete="new-password" required></label><button type="button" class="password-reveal" data-testid="login-password-reveal" aria-pressed="false" aria-label="Show password"><svg class="reveal-eye" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.2 12S6 5.8 12 5.8 21.8 12 21.8 12 18 18.2 12 18.2 2.2 12 2.2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="reveal-eye-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.8 5.1A11 11 0 0 1 12 4.9c6 0 9.8 7.1 9.8 7.1a19.6 19.6 0 0 1-3.5 4.2M6.4 7.4A19.4 19.4 0 0 0 2.2 12S6 19.1 12 19.1a10.9 10.9 0 0 0 4.1-.8M10 10a2.9 2.9 0 0 0 4.1 4.1M3.2 3.2 20.8 20.8"/></svg></button></div>
         <label id="business-field">Salon name<input data-testid="signup-business-name" name="businessName" type="text" autocomplete="off" required></label>
         <button data-testid="auth-submit" class="primary" type="submit">Create workspace</button>
         <p id="auth-error" class="error" role="alert"></p>
@@ -171,9 +171,9 @@
           <section class="profile-section" aria-labelledby="security-heading">
             <div><h3 id="security-heading">Security</h3><p>Changing your password signs out your other Pawsh sessions.</p></div>
             <form id="password-form" class="profile-form">
-              <label>Current password<input data-testid="current-password" name="currentPassword" type="password" required maxlength="256" autocomplete="current-password"></label>
-              <label>New password<input data-testid="new-password" name="newPassword" type="password" required minlength="8" maxlength="256" autocomplete="new-password"></label>
-              <label>Confirm new password<input data-testid="confirm-password" name="confirmPassword" type="password" required minlength="8" maxlength="256" autocomplete="new-password"></label>
+              <div class="password-field"><label>Current password<input data-testid="current-password" name="currentPassword" type="password" required maxlength="256" autocomplete="current-password"></label><button type="button" class="password-reveal" data-testid="current-password-reveal" aria-pressed="false" aria-label="Show password"><svg class="reveal-eye" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.2 12S6 5.8 12 5.8 21.8 12 21.8 12 18 18.2 12 18.2 2.2 12 2.2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="reveal-eye-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.8 5.1A11 11 0 0 1 12 4.9c6 0 9.8 7.1 9.8 7.1a19.6 19.6 0 0 1-3.5 4.2M6.4 7.4A19.4 19.4 0 0 0 2.2 12S6 19.1 12 19.1a10.9 10.9 0 0 0 4.1-.8M10 10a2.9 2.9 0 0 0 4.1 4.1M3.2 3.2 20.8 20.8"/></svg></button></div>
+              <div class="password-field"><label>New password<input data-testid="new-password" name="newPassword" type="password" required minlength="8" maxlength="256" autocomplete="new-password"></label><button type="button" class="password-reveal" data-testid="new-password-reveal" aria-pressed="false" aria-label="Show password"><svg class="reveal-eye" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.2 12S6 5.8 12 5.8 21.8 12 21.8 12 18 18.2 12 18.2 2.2 12 2.2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="reveal-eye-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.8 5.1A11 11 0 0 1 12 4.9c6 0 9.8 7.1 9.8 7.1a19.6 19.6 0 0 1-3.5 4.2M6.4 7.4A19.4 19.4 0 0 0 2.2 12S6 19.1 12 19.1a10.9 10.9 0 0 0 4.1-.8M10 10a2.9 2.9 0 0 0 4.1 4.1M3.2 3.2 20.8 20.8"/></svg></button></div>
+              <div class="password-field"><label>Confirm new password<input data-testid="confirm-password" name="confirmPassword" type="password" required minlength="8" maxlength="256" autocomplete="new-password"></label><button type="button" class="password-reveal" data-testid="confirm-password-reveal" aria-pressed="false" aria-label="Show password"><svg class="reveal-eye" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.2 12S6 5.8 12 5.8 21.8 12 21.8 12 18 18.2 12 18.2 2.2 12 2.2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="reveal-eye-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.8 5.1A11 11 0 0 1 12 4.9c6 0 9.8 7.1 9.8 7.1a19.6 19.6 0 0 1-3.5 4.2M6.4 7.4A19.4 19.4 0 0 0 2.2 12S6 19.1 12 19.1a10.9 10.9 0 0 0 4.1-.8M10 10a2.9 2.9 0 0 0 4.1 4.1M3.2 3.2 20.8 20.8"/></svg></button></div>
               <p id="password-error" class="error" role="alert"></p>
               <div class="profile-actions"><button class="primary compact" type="submit">Change password</button></div>
             </form>
@@ -272,7 +272,7 @@
     <div class="drawer-foot square-capture-foot">
       <button type="button" class="text-button destructive" data-testid="terminal-capture-cancel">Cancel payment</button>
       <button type="button" class="secondary compact" data-testid="terminal-capture-refresh">Check the terminal</button>
-      <button type="button" class="primary compact" data-testid="terminal-capture-receipt" hidden>View receipt</button>
+      <button type="button" class="primary compact" data-testid="terminal-capture-invoice" hidden>View invoice</button>
       <button type="button" class="secondary compact" data-testid="terminal-capture-close">Close</button>
     </div>
   </dialog>

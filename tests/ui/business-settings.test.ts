@@ -835,6 +835,15 @@ interface FormatModule {
   formatPrefWeekdayTime(instant: Date, zone?: string): string;
   formatPrefLocalDate(localDate: string): string;
   formatPrefLocalWeekdayDate(localDate: string): string;
+  formatPrefWeekdayMonthDay(instant: Date, zone?: string): string;
+  formatPrefWeekdayLongMonthDay(instant: Date, zone?: string): string;
+  formatPrefShortWeekdayMonthDay(instant: Date, zone?: string): string;
+  formatPrefLocalMonthDay(localDate: string): string;
+  formatPrefLocalMonthDayYear(localDate: string): string;
+  formatPrefLocalMonthYear(localDate: string): string;
+  formatPrefLocalShortWeekday(localDate: string): string;
+  formatPrefLocalShortWeekdayMonthDay(localDate: string): string;
+  formatPrefLocalSpokenDate(localDate: string): string;
 }
 interface WeightModule {
   state: { me: Record<string, unknown> };
@@ -864,7 +873,11 @@ function sliceModule<T>(startAnchor: string, endAnchor: string, exports: string,
 function loadFormatModule(business: Record<string, unknown>): FormatModule {
   return sliceModule<FormatModule>("const PREF_WEEKDAYS=[", "function wallParts(",
     "formatPrefDate, formatPrefTime, formatPrefClock, formatPrefDateTime, formatPrefDateAndTime,"
-    + " formatPrefWeekdayTime, formatPrefLocalDate, formatPrefLocalWeekdayDate", business);
+    + " formatPrefWeekdayTime, formatPrefLocalDate, formatPrefLocalWeekdayDate,"
+    + " formatPrefWeekdayMonthDay, formatPrefWeekdayLongMonthDay, formatPrefShortWeekdayMonthDay,"
+    + " formatPrefLocalMonthDay, formatPrefLocalMonthDayYear, formatPrefLocalMonthYear,"
+    + " formatPrefLocalShortWeekday, formatPrefLocalShortWeekdayMonthDay,"
+    + " formatPrefLocalSpokenDate", business);
 }
 function loadWeightModule(me: Record<string, unknown>): WeightModule {
   return sliceModule<WeightModule>("const WEIGHT_OUNCES_PER=", "function petTypeIdFor(",
@@ -940,6 +953,82 @@ describe("client formatting driven by the workspace's preferences", () => {
   it("falls back to the pre-0047 shape when the record says nothing", () => {
     const bare = loadFormatModule({ business: {} });
     expect(bare.formatPrefDateTime(instant, "UTC")).toBe("Wednesday, 09/02/2026 at 3:30 PM");
+  });
+
+  /**
+   * The labels that SPELL A MONTH OUT rather than number it.
+   *
+   * The calendar range, the `#today` line, the appointment surface's `<h2>` and the availability
+   * switch's accessible name all name their month, so `Date format` has nothing to say about them
+   * — there is no field order to choose. They were the last things in the client still asking the
+   * browser what September is called, which is how a German-configured laptop titled an
+   * appointment "Mittwoch, 2. September" while every other date on that screen was en-US.
+   *
+   * THE SHAPES ARE THE SHAPES THEY ALREADY HAD. Each assertion below is what `en-US` produced
+   * before the conversion, so an operator sees no change and only the locale dependence is gone.
+   * `tests/ui/client-locale.test.ts` is what keeps it that way.
+   */
+  describe("labels that name their month", () => {
+    // A calendar date rather than an instant, and deliberately one where the two can disagree.
+    const localDate = "2026-09-02";
+
+    it("keeps the month names out of the browser's hands, in both settings", () => {
+      for (const dateFormat of ["MM/DD/YYYY", "DD/MM/YYYY"]) {
+        const reader = workspace(dateFormat, "12");
+        expect(reader.formatPrefWeekdayMonthDay(instant)).toBe("Wednesday, Sep 2");
+        expect(reader.formatPrefWeekdayLongMonthDay(instant)).toBe("Wednesday, September 2");
+        expect(reader.formatPrefShortWeekdayMonthDay(instant)).toBe("Wed, Sep 2");
+        expect(reader.formatPrefLocalMonthDay(localDate)).toBe("Sep 2");
+        expect(reader.formatPrefLocalMonthDayYear(localDate)).toBe("Sep 2, 2026");
+        expect(reader.formatPrefLocalMonthYear(localDate)).toBe("September 2026");
+        expect(reader.formatPrefLocalShortWeekday(localDate)).toBe("Wed");
+        expect(reader.formatPrefLocalShortWeekdayMonthDay(localDate)).toBe("Wed, Sep 2");
+        expect(reader.formatPrefLocalSpokenDate("2026-03-14")).toBe("Saturday 14 March 2026");
+      }
+    });
+
+    it("resolves an instant in the zone it is given", () => {
+      const reader = workspace("MM/DD/YYYY", "12");
+      expect(reader.formatPrefWeekdayLongMonthDay(instant, "Asia/Tokyo"))
+        .toBe("Thursday, September 3");
+      expect(reader.formatPrefShortWeekdayMonthDay(instant, "Asia/Tokyo")).toBe("Thu, Sep 3");
+    });
+
+    // A CALENDAR DATE IS NOT AN INSTANT. The calendar range and the week column heads read
+    // `YYYY-MM-DD` strings, and putting one through the instant path is the off-by-one-day class
+    // of bug: an operator east of the anchor would open the week of Sep 2 and read "Sep 3".
+    it("reads a calendar date without a zone anywhere near it", () => {
+      const tokyo = loadFormatModule({
+        business: { dateFormat: "MM/DD/YYYY", hourFormat: "12", timezone: "Asia/Tokyo" }
+      });
+      expect(tokyo.formatPrefLocalMonthDay(localDate)).toBe("Sep 2");
+      expect(tokyo.formatPrefLocalShortWeekday(localDate)).toBe("Wed");
+      expect(tokyo.formatPrefLocalMonthYear("2026-01-01")).toBe("January 2026");
+    });
+
+    it("hands back anything that is not a calendar date untouched", () => {
+      const reader = workspace("MM/DD/YYYY", "12");
+      expect(reader.formatPrefLocalMonthDay("")).toBe("");
+      expect(reader.formatPrefLocalMonthYear("2026-09")).toBe("2026-09");
+      expect(reader.formatPrefLocalSpokenDate("not a date")).toBe("not a date");
+    });
+
+    it("names every month and every weekday the way en-US does", () => {
+      // December is the index the off-by-one lands on, and the twelve are asserted whole rather
+      // than sampled: a shifted array is a defect that only shows in one month of the year.
+      const reader = workspace("MM/DD/YYYY", "12");
+      const months = Array.from({ length: 12 }, (_, index) =>
+        reader.formatPrefLocalMonthYear(`2026-${String(index + 1).padStart(2, "0")}-01`));
+      expect(months).toEqual([
+        "January 2026", "February 2026", "March 2026", "April 2026", "May 2026", "June 2026",
+        "July 2026", "August 2026", "September 2026", "October 2026", "November 2026",
+        "December 2026"
+      ]);
+      // 2026-03-01 is a Sunday, so seven consecutive days walk the whole array from its zero.
+      const weekdays = Array.from({ length: 7 }, (_, index) =>
+        reader.formatPrefLocalShortWeekday(`2026-03-${String(index + 1).padStart(2, "0")}`));
+      expect(weekdays).toEqual(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]);
+    });
   });
 });
 

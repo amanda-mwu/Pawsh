@@ -103,10 +103,12 @@ documentation readiness.
 # Tax and payments, and the Square Terminal integration
 
 This feature splits into a part a tester can exercise on a local machine and a part
-that cannot exist without a Square account. Record the first part as **PASS**,
-**FRICTION**, or **BLOCKED** as usual. Record every item in the second part as
-**BLOCKED — Square Sandbox required**, and never as PASS or FAIL: an unconfigured
-Pawsh cannot produce the state those flows operate on, so there is nothing to judge.
+that needs a Square connection. Record the first part as **PASS**, **FRICTION**, or
+**BLOCKED** as usual. For the second part, do not record a blanket blockage: the
+classified section below says, item by item, what is already proven locally, what
+Sandbox can reach without hardware, what genuinely needs a physical Terminal, and what
+remains unvalidated. Judge each against its own classification, and record an item as
+blocked only when the classification says it is.
 
 ## Reachable now, with no Square credentials
 
@@ -152,22 +154,77 @@ Pawsh cannot produce the state those flows operate on, so there is nothing to ju
   crashes or returns a raw error, and that no token, secret, or key appears anywhere on
   screen or in the browser console.
 
-## Blocked until a Square sandbox account exists
+## Square coverage, classified
 
-Each of these needs a real Square connection before any of its state can exist. Record
-them as **BLOCKED — Square Sandbox required**.
+This section used to record every item below as **BLOCKED — Square Sandbox required**,
+which was wrong in two directions: several of these are already proven in this repository
+with no Square at all, and most of the rest are reachable through Square's Sandbox using
+its documented Terminal test device ids, without any physical hardware. Each item is now
+classified as **locally validated**, **Sandbox-reachable**, **hardware-only**, or **still
+unvalidated**, and the reason is stated so the classification can be argued with.
 
-- The terminal drawer's device controls — Get a code, Check pairing, Pair again, and
-  Remove. The drawer only lists Square devices for a connected processor, so with no
-  connection the controls never render and there is nothing to operate.
-- The capture dialog's close and Escape guard during a live payment. That dialog opens
-  only from a terminal checkout that has actually started.
-- The OAuth connect, callback, and scheduled token refresh.
-- Terminal device pairing, including the pairing code and its expiry.
-- A real Terminal checkout, its tip, and its receipt.
-- Refunds against a provider-backed payment, including the tip-last split.
-- The needs-review state as produced by real Square responses rather than by a fixture.
-- The recovery sweep judged against actual Square state.
-- Webhook delivery, redelivery, and signature verification from Square's own signer.
-- Square's real idempotency and retry behaviour, including whether a replayed request
-  returns the original result and for how long.
+Sandbox constraints worth knowing before writing any of these: an approved Sandbox Terminal
+payment is capped at **$25**, and there is **no** Terminal test device id for a card
+decline — decline semantics go through the Payments API instead.
+
+### Locally validated — no Square connection required
+
+These are properties of Pawsh, not of Square, and Square could not have proven them.
+
+- **The terminal in-flight conflict.** A manual tender is refused while a capture is live
+  against the same invoice. `tests/database/square-terminal.test.ts:826`, `:882`, `:906`,
+  the last a genuine two-writer race against the invoice row lock.
+- **The device pairing state machine and code expiry**, including that a paired device
+  never leaks its code.
+- **The tip-last refund split and refund headroom algebra**, exhaustively.
+- **The needs-review parking decision**, and dead-lettering after the drain gives up.
+- **A cancelled checkout that nonetheless completed**, where the payment wins over the
+  checkout. This is a race Square documents, and the invariant is ours: Sandbox may
+  confirm the contract, but it must not replace this test.
+- **Webhook signature verification** against the documented algorithm, including the
+  rejection of non-canonical base64 and the timing-safe comparison.
+- **Refund attribution** — that the initiating operator survives from the persisted refund
+  row when settlement arrives later with no session.
+
+### Sandbox-reachable — no hardware required
+
+These need Sandbox credentials, not a device. Each has a documented simulation path.
+
+- **A Terminal checkout, its tip, and its receipt**, via the completion and 20%-tip test
+  device ids.
+- **A checkout that times out**, via the immediate-timeout device id — never by waiting on
+  a clock.
+- **A device that is offline or never picked up**, and a checkout cancelled by the buyer.
+- **The capture dialog's close and Escape guard during a live payment**, using the
+  not-picked-up device id to hold a checkout pending.
+- **Refunds against a provider-backed payment**, through the Refunds API. This needs no
+  Terminal at all — a completed Sandbox payment can be created directly. Terminal refunds
+  are Interac/CAD only, which is exactly why Pawsh calls the Refunds API.
+- **The recovery sweep judged against real Square state.**
+- **Square's idempotency behaviour** — whether replaying a stored key returns the original
+  object. This is the single most load-bearing external assumption Pawsh makes, and it
+  should be the first Sandbox test written.
+- **OAuth connect, callback and revoke.** A Sandbox personal access token covers
+  everything downstream of the browser round trip.
+
+### Hardware-only — genuinely requires a physical Terminal
+
+Three items, and no more than three.
+
+- **Device-code pairing with real hardware.** A person types the code into a physical
+  Terminal; no Sandbox mechanism transitions a device code to paired.
+- **The on-device buyer experience** — the tip screen rendered from the presets Pawsh
+  sends, the receipt prompt, and the physical card read. Square's firmware, not Pawsh's
+  code and not an API behaviour.
+- **A genuine card decline at a Terminal.** Decline *semantics* are Sandbox-reachable
+  through the Payments API; only a decline *at a device* is hardware-only.
+
+### Still unvalidated
+
+- **Real webhook delivery, redelivery and Square's own signer.** Square refuses a
+  notification URL that is not public HTTPS, so this needs a tunnel or a staging host
+  rather than Sandbox alone. The signing algorithm itself is proven locally.
+- **Square's retry and backoff schedule, and its auto-disable after sustained failure** —
+  observable only over real time against a real endpoint.
+- **Forcing a refund to rejected or failed, or holding one pending**, in Sandbox. Square
+  documents no way to do it, so those branches stay covered by the local stub.

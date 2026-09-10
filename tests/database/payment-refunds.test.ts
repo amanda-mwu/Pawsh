@@ -88,6 +88,9 @@ describeDatabase("Payment refunds", () => {
   let square: ReturnType<typeof squareStub>;
   let ownerCookie: string;
   let rivalCookie: string;
+  /** A receptionist who holds `checkout.perform` and is not the owner, so attribution is telling. */
+  let staffCookie: string;
+  let staffUserId: string;
   let businessId: string;
   let locationId: string;
   let ownerId: string;
@@ -343,6 +346,8 @@ describeDatabase("Payment refunds", () => {
       insert into sessions(user_id,token_hash,expires_at)
       values (${staff!.userId},${tokenHash(staffToken)},now()+interval '1 day')
     `;
+    staffUserId = staff!.userId;
+    staffCookie = `pawsh_session=${staffToken}`;
 
     await connect(ownerCookie);
     deviceId = await pairTerminal("Refund counter");
@@ -1228,5 +1233,214 @@ describeDatabase("Payment refunds", () => {
     `;
     expect(actions.map((row) => row.action))
       .toEqual(["payment.refund.request", "payment.refund.completed"]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Who asked for it, on every path that finishes it
+  // ---------------------------------------------------------------------------
+
+  /**
+   * A refund is asked for by a person and finished by something else.
+   *
+   * The request path finishes it inside the request. The webhook drain and the sweep finish it in a
+   * worker tick: there is no session there, no cookie, and nothing that could answer "who did this"
+   * except the row itself. `payment_refunds.requested_by` is written once when the refund is
+   * claimed and is the ONLY carrier of that answer, which is why `completePaymentRefund` and
+   * `failPaymentRefund` take their `actorId` from the row rather than from anything ambient.
+   *
+   * These tests are written so that sourcing the actor from a request context would fail rather
+   * than pass by coincidence. THE REFUND IS ASKED FOR BY THE RECEPTIONIST AND THE PAYMENT WAS TAKEN
+   * BY THE OWNER, so the two candidate answers are different users: an implementation that reached
+   * for the session, for the payment's actor, or for the business owner would produce `ownerId`,
+   * and one that reached for nothing at all would produce null. Both are asserted against
+   * explicitly, on every path, because a null actor on a money event is the failure that looks like
+   * success until somebody has to answer for the money.
+   */
+  async function settlementAudit(
+    refundId: string, action: "payment.refund.completed" | "payment.refund.failed"
+  ): Promise<{ action: string; actorId: string | null }> {
+    const rows = await db<{ action: string; actorId: string | null }[]>`
+      select action, actor_id from audit_events
+      where business_id=${businessId} and resource_type='payment_refund'
+        and resource_id=${refundId} and action=${action}
+    `;
+    expect(rows, `no ${action} audit event for refund ${refundId}`).toHaveLength(1);
+    return rows[0]!;
+  }
+
+  async function refundRequestedBy(refundId: string): Promise<string | null> {
+    const [row] = await db<{ requestedBy: string | null }[]>`
+      select requested_by from payment_refunds where business_id=${businessId} and id=${refundId}
+    `;
+    return row!.requestedBy;
+  }
+
+  /** The one assertion every path makes: the row and the audit name the same initiating person. */
+  function expectAttributedToInitiator(
+    audit: { actorId: string | null }, requestedBy: string | null
+  ): void {
+    expect(requestedBy).toBe(staffUserId);
+    expect(audit.actorId).not.toBeNull();
+    // Not the owner, who took the payment and owns the business: the live answer a context-sourced
+    // actor would most plausibly produce here.
+    expect(audit.actorId).not.toBe(ownerId);
+    expect(audit.actorId).toBe(requestedBy);
+    expect(audit.actorId).toBe(staffUserId);
+  }
+
+  /** A refund asked for by the receptionist against a payment the owner took. */
+  async function staffRefund(paymentId: string, amountMinor: number): Promise<string> {
+    const issued = await refund(
+      paymentId, { amountMinor, expectedRefundableMinor: amountMinor }, staffCookie
+    );
+    expect(issued.statusCode, issued.body).toBe(201);
+    return issued.json().id as string;
+  }
+
+  it("attributes a refund settled on the request path to the person who asked for it", async () => {
+    // PATH 1 of 3: direct / request-path initiation. Square answers COMPLETED to the create, so
+    // `reconcileRefund` settles it inside the request that claimed it.
+    square.state.refundOutcome = "COMPLETED";
+    const payment = await terminalPayment({ serviceMinor: 5_000, tipMinor: 0 });
+    const refundId = await staffRefund(payment.paymentId, 5_000);
+
+    const [row] = await refundRows(payment.paymentId);
+    expect(row!.status).toBe("completed");
+    expectAttributedToInitiator(
+      await settlementAudit(refundId, "payment.refund.completed"),
+      await refundRequestedBy(refundId)
+    );
+  });
+
+  it("attributes a webhook-settled refund to the person who asked, with no session anywhere", async () => {
+    // PATH 2 of 3: webhook-driven completion. `POST /webhooks/square` is unauthenticated and the
+    // drain runs outside any request, so nothing between Square's notification and the audit row
+    // has ever seen the receptionist. The only place their identity survives is the refund row.
+    square.state.refundOutcome = "PENDING";
+    const payment = await terminalPayment({ serviceMinor: 4_000, tipMinor: 0 });
+    const refundId = await staffRefund(payment.paymentId, 4_000);
+
+    const [pending] = await refundRows(payment.paymentId);
+    const providerRefundId = pending!.providerRefundId!;
+    expect(providerRefundId).toBeTruthy();
+    square.settleRefund({ refundId: providerRefundId, status: "COMPLETED" });
+
+    await refundWebhook(providerRefundId);
+    await drainUntilQuiet();
+
+    const [settled] = await refundRows(payment.paymentId);
+    expect(settled!.status).toBe("completed");
+    expectAttributedToInitiator(
+      await settlementAudit(refundId, "payment.refund.completed"),
+      await refundRequestedBy(refundId)
+    );
+  });
+
+  it("attributes a webhook-driven failure to the person who asked, not to nobody", async () => {
+    // The same absence of a session, on the branch that says the customer did NOT get their money.
+    // A failed refund is the row somebody is later asked to explain, so an unattributed one is
+    // worse than an unattributed success.
+    square.state.refundOutcome = "PENDING";
+    const payment = await terminalPayment({ serviceMinor: 3_000, tipMinor: 0 });
+    const refundId = await staffRefund(payment.paymentId, 3_000);
+
+    const [pending] = await refundRows(payment.paymentId);
+    const providerRefundId = pending!.providerRefundId!;
+    square.settleRefund({ refundId: providerRefundId, status: "REJECTED" });
+
+    await refundWebhook(providerRefundId);
+    await drainUntilQuiet();
+
+    const [failed] = await refundRows(payment.paymentId);
+    expect(failed!.status).toBe("failed");
+    expectAttributedToInitiator(
+      await settlementAudit(refundId, "payment.refund.failed"),
+      await refundRequestedBy(refundId)
+    );
+  });
+
+  it("attributes a sweep-settled refund to the person who asked, with no request at all", async () => {
+    // PATH 3 of 3: sweep / recovery-driven completion. `sweepPendingRefunds` is called here exactly
+    // as the worker tick calls it - no injected request, no cookie, no HTTP request in the process
+    // at all - and no notification is ever delivered. If attribution came from a request context
+    // there would be no context to come from.
+    square.state.refundOutcome = "PENDING";
+    const payment = await terminalPayment({ serviceMinor: 2_500, tipMinor: 0 });
+    const refundId = await staffRefund(payment.paymentId, 2_500);
+
+    const [pending] = await refundRows(payment.paymentId);
+    square.settleRefund({ refundId: pending!.providerRefundId!, status: "COMPLETED" });
+
+    await refundDue(refundId);
+    await sweepRefunds();
+
+    const [settled] = await refundRows(payment.paymentId);
+    expect(settled!.status).toBe("completed");
+    expectAttributedToInitiator(
+      await settlementAudit(refundId, "payment.refund.completed"),
+      await refundRequestedBy(refundId)
+    );
+  });
+
+  it("attributes a sweep-driven failure to the person who asked", async () => {
+    square.state.refundOutcome = "PENDING";
+    const payment = await terminalPayment({ serviceMinor: 2_000, tipMinor: 0 });
+    const refundId = await staffRefund(payment.paymentId, 2_000);
+
+    const [pending] = await refundRows(payment.paymentId);
+    square.settleRefund({ refundId: pending!.providerRefundId!, status: "FAILED" });
+
+    await refundDue(refundId);
+    await sweepRefunds();
+
+    const [failed] = await refundRows(payment.paymentId);
+    expect(failed!.status).toBe("failed");
+    expectAttributedToInitiator(
+      await settlementAudit(refundId, "payment.refund.failed"),
+      await refundRequestedBy(refundId)
+    );
+  });
+
+  it("keeps the initiator on the row when the refund outlives the session that asked for it", async () => {
+    // The strongest form of the invariant. The receptionist asks for the refund and then their
+    // session is destroyed - they log out, or it expires - before Square says anything. The sweep
+    // finishes it afterwards. Nothing that could be called "the current user" exists any more, and
+    // the audit trail still names them.
+    // A session of its own, so destroying it says nothing about the shared one the other tests
+    // use and this test does not depend on running last.
+    const token = crypto.randomUUID();
+    await db`
+      insert into sessions(user_id,token_hash,expires_at)
+      values (${staffUserId},${tokenHash(token)},now()+interval '1 day')
+    `;
+    const expiring = `pawsh_session=${token}`;
+
+    square.state.refundOutcome = "PENDING";
+    const payment = await terminalPayment({ serviceMinor: 1_500, tipMinor: 0 });
+    const issued = await refund(
+      payment.paymentId, { amountMinor: 1_500, expectedRefundableMinor: 1_500 }, expiring
+    );
+    expect(issued.statusCode, issued.body).toBe(201);
+    const refundId = issued.json().id as string;
+
+    const [pending] = await refundRows(payment.paymentId);
+    square.settleRefund({ refundId: pending!.providerRefundId!, status: "COMPLETED" });
+
+    await db`delete from sessions where token_hash=${tokenHash(token)}`;
+    const rejected = await app.inject({
+      method: "GET", url: `/api/payments/${payment.paymentId}/refunds`,
+      headers: { cookie: expiring }
+    });
+    expect(rejected.statusCode).toBe(401);
+
+    await refundDue(refundId);
+    await sweepRefunds();
+
+    const [settled] = await refundRows(payment.paymentId);
+    expect(settled!.status).toBe("completed");
+    expectAttributedToInitiator(
+      await settlementAudit(refundId, "payment.refund.completed"),
+      await refundRequestedBy(refundId)
+    );
   });
 });

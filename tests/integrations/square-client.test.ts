@@ -101,6 +101,41 @@ describe("Square client", () => {
     expect(url.search).not.toContain("sq0csb");
   });
 
+  /**
+   * `session=false` is a PRODUCTION REQUIREMENT, and it is not a Sandbox problem.
+   *
+   * Square's own wording for the authorization URL is that for production applications the
+   * parameter "must be set to false to help ensure that sellers with multiple Square accounts use
+   * the correct account to authorize your application", and that "this value is ignored in the
+   * Sandbox". Ignored, not rejected: the Sandbox does not refuse the parameter, it simply has no
+   * login step to force. So there is nothing to make conditional on the environment. Sending it in
+   * both is one code path, correct in the one environment where it matters, inert in the other.
+   *
+   * What Sandbox does change is an OPERATOR step rather than a request: because the parameter has
+   * no effect there, whoever runs a Sandbox authorization has to already be signed in to the
+   * Sandbox Seller Dashboard in that browser, or the authorization page has no seller to show.
+   * That is a runbook line, not a contract difference, and it is deliberately not expressed in
+   * code.
+   *
+   * This test exists because the failure it guards is invisible. Dropping the parameter breaks
+   * nothing locally, nothing in Sandbox, and nothing in the first production authorization either
+   * - it breaks the one where a seller with several Square accounts is silently reauthorised on
+   * whichever account their browser happened to be holding, which is the account Pawsh would then
+   * take money into.
+   */
+  it("sends session=false in both environments, because production requires it and Sandbox ignores it", () => {
+    for (const environment of ["sandbox", "production"] as const) {
+      const { square } = client([{ body: "{}" }], environment);
+      const url = new URL(square.authorizeUrl({
+        state: "state-value", redirectUri: "https://app.pawsh.example/api/integrations/square/callback"
+      }));
+      expect(url.searchParams.get("session"), environment).toBe("false");
+      // Square's default is `true`. An absent parameter is therefore not a neutral omission: it is
+      // the opposite setting, chosen silently.
+      expect(url.search, environment).toContain("session=false");
+    }
+  });
+
   it("parses the authorization-code exchange", async () => {
     const { square, calls } = client([{ body: await fixture("oauth-token.json") }]);
     const grant = await square.exchangeAuthorizationCode({

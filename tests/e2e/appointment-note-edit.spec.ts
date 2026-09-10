@@ -166,15 +166,25 @@ test("a note changed elsewhere refuses the save and lets the operator choose", a
     .toBe("Front desk: harness is in the van, keys with Grace.");
 });
 
-test("without appointments.edit the note is text and there is nothing to press", async ({
+test("without appointments.edit the note is text and Edit says why it cannot be pressed", async ({
   page,
   request,
   tenant
 }) => {
   const appointment = await createAppointment(request, tenant, { localStart: `${tenant.anchor}T09:00` });
   await writeNoteElsewhere(request, appointment.id, "Nervous around clippers.");
-  // A groomer reads the note and does not edit it. Withheld rather than offered and refused —
-  // the rule the rest of this surface already follows.
+  // A groomer reads the note and does not edit it.
+  //
+  // THIS USED TO ASSERT THAT EDIT WAS ABSENT, and that was the defect rather than the rule. Five
+  // controls on this surface — this one, the groomer pencil, Adjust services, Cancel and No-show —
+  // rendered as `""` for a role without their permission, so a groomer got a screen with nothing
+  // on it and nothing saying why. What a control's PERMISSION withholds is now drawn disabled with
+  // the key named, which is what the blocked-time drawer and this surface's own Invoice button
+  // already did. What the VISIT's state withholds is still absent, and
+  // `tests/ui/appointment-permission-affordances.test.ts` holds both halves of that line.
+  //
+  // The editor itself stays out of reach, which is the part that actually matters here: no
+  // textarea, no Save, and the note still reads as text.
   const member = await createMember(
     request,
     `no-appointment-edit-${tenant.runId}@pawsh-test.example`,
@@ -185,7 +195,10 @@ test("without appointments.edit the note is text and there is nothing to press",
 
   await expect(recordNote(page).getByTestId("appointment-booking-note"))
     .toHaveText("Nervous around clippers.");
-  await expect(page.getByTestId("appointment-note-edit")).toHaveCount(0);
+  const edit = page.getByTestId("appointment-note-edit");
+  await expect(edit).toBeVisible();
+  await expect(edit).toBeDisabled();
+  await expect(edit).toHaveAttribute("title", /appointments\.edit/);
   await expect(recordNote(page).locator("textarea")).toHaveCount(0);
   await expect(page.getByTestId("appointment-note-save")).toHaveCount(0);
 });

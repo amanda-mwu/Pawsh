@@ -1098,9 +1098,14 @@ function monthNeutralStatus(item){return ["cancelled","no_show"].includes(item.s
 function renderMonthCalendar(){
   const target=$("#calendar-list");if(!target||!state.calendar.month)return;
   const first=`${state.calendar.month}-01`,start=weekStart(first),days=Array.from({length:42},(_,index)=>dateShift(start,index)),today=businessDate(),visible=filteredAppointments(state.calendar.monthAppointments.length?state.calendar.monthAppointments:state.appointments);
+  // The month cell's `+` is the toolbar's `+ Add booking` in another place, so it answers to the
+  // same question - and, like the toolbar's, it is absent rather than disabled when the answer is
+  // no: 42 greyed pluses down a month grid is chrome, not an explanation. The refusal is spoken
+  // where the gesture is actually attempted, on `#slot-menu` and in `openBookingDialog`.
+  const booking=calendarBookingAvailable();
   target.className="calendar-month-view";target.setAttribute("aria-label","Monthly appointment schedule");target.style.removeProperty("--groomer-count");target.style.removeProperty("min-width");
   const headings=(calendarPreferences().firstDay==="monday"?["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]:["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]).map(day=>`<div class="calendar-month-weekday">${day}</div>`).join("");
-  const cells=days.map(day=>{const items=visible.filter(item=>appointmentLocalValue(item).slice(0,10)===day).sort((a,b)=>new Date(a.startAt)-new Date(b.startAt)),outside=day.slice(0,7)!==state.calendar.month,periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(day).getUTCDay()),closed=state.businessHours.length>0&&!periods.length,booked=items.filter(item=>!monthNeutralStatus(item)),revenue=booked.reduce((total,item)=>total+(item.services||[]).reduce((sum,service)=>sum+Number(service.priceMinor||0),0),0),ordered=[...booked,...items.filter(monthNeutralStatus)],shown=ordered.slice(0,MONTH_EVENT_LIMIT),dayLabel=formatPrefLocalWeekdayDate(day);return `<div class="calendar-month-day ${outside?"outside":""} ${closed?"closed":""} ${day===today?"today":""} ${day===state.calendar.selectedDate?"selected":""}" data-month-cell="${day}"><div class="month-day-head">${booked.length?`<span class="month-day-total"><span class="month-day-money">(${escape(money(revenue))}, </span>${booked.length} pet${booked.length===1?"":"s"}<span class="month-day-money">)</span></span>`:`<span class="month-day-total"></span>`}<button type="button" class="calendar-month-add" data-month-book-date="${day}" aria-label="Create appointment on ${escape(dayLabel)}">+</button><button type="button" class="calendar-month-date" data-month-open-date="${day}" aria-label="Open ${escape(dayLabel)} in day view">${Number(day.slice(8,10))}</button></div><div class="calendar-month-events">${shown.map(item=>{const model=appointmentPresentation(item),neutral=monthNeutralStatus(item),slot=neutral?"":groomerColorSlot((item.groomers||[])[0]?.id||item.employeeId);return `<span class="month-appointment-wrap ${neutral?"neutral":""}" data-appointment-id="${item.id}" ${slot===""?"":`data-groomer-slot="${slot}"`}><button type="button" class="calendar-month-event" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><time>${escape(schedulingTime(item))}</time><span class="month-event-name">${escape(model.customerName)}</span></button></span>`;}).join("")}</div>${ordered.length>MONTH_EVENT_LIMIT?`<button type="button" class="calendar-month-more" data-month-open-date="${day}">+${ordered.length-MONTH_EVENT_LIMIT} more</button>`:""}</div>`;}).join("");
+  const cells=days.map(day=>{const items=visible.filter(item=>appointmentLocalValue(item).slice(0,10)===day).sort((a,b)=>new Date(a.startAt)-new Date(b.startAt)),outside=day.slice(0,7)!==state.calendar.month,periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(day).getUTCDay()),closed=state.businessHours.length>0&&!periods.length,booked=items.filter(item=>!monthNeutralStatus(item)),revenue=booked.reduce((total,item)=>total+(item.services||[]).reduce((sum,service)=>sum+Number(service.priceMinor||0),0),0),ordered=[...booked,...items.filter(monthNeutralStatus)],shown=ordered.slice(0,MONTH_EVENT_LIMIT),dayLabel=formatPrefLocalWeekdayDate(day);return `<div class="calendar-month-day ${outside?"outside":""} ${closed?"closed":""} ${day===today?"today":""} ${day===state.calendar.selectedDate?"selected":""}" data-month-cell="${day}"><div class="month-day-head">${booked.length?`<span class="month-day-total"><span class="month-day-money">(${escape(money(revenue))}, </span>${booked.length} pet${booked.length===1?"":"s"}<span class="month-day-money">)</span></span>`:`<span class="month-day-total"></span>`}${booking?`<button type="button" class="calendar-month-add" data-month-book-date="${day}" aria-label="Create appointment on ${escape(dayLabel)}">+</button>`:""}<button type="button" class="calendar-month-date" data-month-open-date="${day}" aria-label="Open ${escape(dayLabel)} in day view">${Number(day.slice(8,10))}</button></div><div class="calendar-month-events">${shown.map(item=>{const model=appointmentPresentation(item),neutral=monthNeutralStatus(item),slot=neutral?"":groomerColorSlot((item.groomers||[])[0]?.id||item.employeeId);return `<span class="month-appointment-wrap ${neutral?"neutral":""}" data-appointment-id="${item.id}" ${slot===""?"":`data-groomer-slot="${slot}"`}><button type="button" class="calendar-month-event" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><time>${escape(schedulingTime(item))}</time><span class="month-event-name">${escape(model.customerName)}</span></button></span>`;}).join("")}</div>${ordered.length>MONTH_EVENT_LIMIT?`<button type="button" class="calendar-month-more" data-month-open-date="${day}">+${ordered.length-MONTH_EVENT_LIMIT} more</button>`:""}</div>`;}).join("");
   target.innerHTML=headings+cells;$("#calendar-range").textContent=formatPrefLocalMonthYear(first);
   $$('[data-month-open-date]').forEach(button=>button.addEventListener("click",()=>{state.calendar.view="day";updateCalendarViewControls();selectCalendarDate(button.dataset.monthOpenDate);}));
   $$('[data-month-book-date]').forEach(button=>button.addEventListener("click",()=>{state.calendar.bookingPreset=`${button.dataset.monthBookDate}T09:00`;state.calendar.bookingGroomerId=null;actions["new-appointment"]();}));bindCalendarInteractions();
@@ -1116,7 +1121,7 @@ function renderWeekCalendar(){
   target.style.minWidth=`${64+laneCount*WEEK_LANE_WIDTH}px`;const [start,end]=calendarHours();const slots=(end-start)/30;
   const header=`<div class="week-corner" style="grid-column:1;grid-row:1/span 2">Time</div>${days.map((day,index)=>`<button type="button" class="week-day-head ${day===state.calendar.selectedDate?"selected":""}" data-calendar-date="${day}" style="grid-column:${index*groomers.length+2}/span ${groomers.length};grid-row:1"><strong>${formatPrefLocalShortWeekday(day)}</strong> ${formatPrefLocalMonthDay(day)}</button>`).join("")}${days.flatMap((day,dayIndex)=>groomers.map((groomer,groomerIndex)=>`<div class="week-groomer-head ${groomerIndex===0?"week-day-start":""}" data-groomer-slot="${groomerColorSlot(groomer.id)}" style="grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:2" title="${escape(groomer.displayName)}">${escape(groomer.displayName)}</div>`)).join("")}`;
   let cells="";
-  for(let slot=0;slot<slots;slot++){const minutes=start+slot*30,row=slot+3;cells+=`<div class="week-time" style="grid-column:1;grid-row:${row}">${timeLabel(minutes)}</div>`;for(let dayIndex=0;dayIndex<7;dayIndex++){const day=days[dayIndex],periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(day).getUTCDay()),open=!periods.length&&!state.businessHours.length||periods.some(period=>{const from=Number(String(period.startTime).slice(0,2))*60+Number(String(period.startTime).slice(3,5)),to=Number(String(period.endTime).slice(0,2))*60+Number(String(period.endTime).slice(3,5));return minutes>=from&&minutes<to;});for(let groomerIndex=0;groomerIndex<groomers.length;groomerIndex++){const groomer=groomers[groomerIndex],preset=`${day}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`;cells+=`<button type="button" aria-label="${day}, ${timeLabel(minutes)}, ${escape(groomer.displayName)}, ${open?"create appointment":"closed"}" class="week-slot ${groomerIndex===0?"week-day-start ":""}${open?"":"closed"}" ${open?`data-slot="${preset}" data-slot-groomer="${groomer.id}"`:"disabled"} style="grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${row}"></button>`;}}}
+  for(let slot=0;slot<slots;slot++){const minutes=start+slot*30,row=slot+3;cells+=`<div class="week-time" style="grid-column:1;grid-row:${row}">${timeLabel(minutes)}</div>`;for(let dayIndex=0;dayIndex<7;dayIndex++){const day=days[dayIndex],periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(day).getUTCDay()),open=!periods.length&&!state.businessHours.length||periods.some(period=>{const from=Number(String(period.startTime).slice(0,2))*60+Number(String(period.startTime).slice(3,5)),to=Number(String(period.endTime).slice(0,2))*60+Number(String(period.endTime).slice(3,5));return minutes>=from&&minutes<to;});for(let groomerIndex=0;groomerIndex<groomers.length;groomerIndex++){const groomer=groomers[groomerIndex],preset=`${day}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`,slotAttributes=calendarSlotAttributes(open,preset,groomer.id);cells+=`<button type="button" aria-label="${day}, ${timeLabel(minutes)}, ${escape(groomer.displayName)}${slotAttributes.label}" class="week-slot ${groomerIndex===0?"week-day-start ":""}${open?"":"closed"}" ${slotAttributes.hooks} style="grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${row}"></button>`;}}}
   // Drawn before the appointment cards so that, at equal specificity, a booking painted over a
   // block still reads as the booking. A groomer with no column here draws no band: the filter that
   // chose the columns is the filter the API was already asked with.
@@ -1143,7 +1148,7 @@ function renderDayCalendar(){
   target.className="day-grid";target.setAttribute("aria-label","Daily appointment schedule by groomer");target.style.setProperty("--groomer-count",columns);target.style.minWidth=`${64+columns*190}px`;
   if(!groomers.length){target.className="calendar-empty-groomers";target.innerHTML="<p><strong>No groomers selected.</strong><br>Choose groomers to display.</p>";$("#calendar-range").textContent=formatPrefLocalWeekdayDate(state.calendar.selectedDate);return;}
   let content=`<div class="day-corner" style="grid-column:1;grid-row:1">Time</div>${groomers.map((groomer,index)=>`<div class="day-groomer" data-groomer-slot="${groomerColorSlot(groomer.id)}" style="grid-column:${index+2};grid-row:1">${escape(groomer.displayName)}</div>`).join("")}`;
-  for(let slot=0;slot<slots;slot++){const minutes=start+slot*30,row=slot+2,periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(state.calendar.selectedDate).getUTCDay()),open=!periods.length&&!state.businessHours.length||periods.some(period=>{const from=Number(String(period.startTime).slice(0,2))*60+Number(String(period.startTime).slice(3,5)),to=Number(String(period.endTime).slice(0,2))*60+Number(String(period.endTime).slice(3,5));return minutes>=from&&minutes<to;});content+=`<div class="day-time" style="grid-column:1;grid-row:${row}">${timeLabel(minutes)}</div>`;for(let index=0;index<groomers.length;index++){const groomer=groomers[index],preset=`${state.calendar.selectedDate}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`;content+=`<button type="button" class="day-slot ${open?"":"closed"}" ${open?`data-slot="${preset}" data-slot-groomer="${groomer.id}"`:`disabled`} style="grid-column:${index+2};grid-row:${row}" aria-label="${escape(state.calendar.selectedDate)}, ${timeLabel(minutes)}, ${escape(groomer.displayName)}, ${open?"create appointment":"closed"}"></button>`;}}
+  for(let slot=0;slot<slots;slot++){const minutes=start+slot*30,row=slot+2,periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(state.calendar.selectedDate).getUTCDay()),open=!periods.length&&!state.businessHours.length||periods.some(period=>{const from=Number(String(period.startTime).slice(0,2))*60+Number(String(period.startTime).slice(3,5)),to=Number(String(period.endTime).slice(0,2))*60+Number(String(period.endTime).slice(3,5));return minutes>=from&&minutes<to;});content+=`<div class="day-time" style="grid-column:1;grid-row:${row}">${timeLabel(minutes)}</div>`;for(let index=0;index<groomers.length;index++){const groomer=groomers[index],preset=`${state.calendar.selectedDate}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`,slotAttributes=calendarSlotAttributes(open,preset,groomer.id);content+=`<button type="button" class="day-slot ${open?"":"closed"}" ${slotAttributes.hooks} style="grid-column:${index+2};grid-row:${row}" aria-label="${escape(state.calendar.selectedDate)}, ${timeLabel(minutes)}, ${escape(groomer.displayName)}${slotAttributes.label}"></button>`;}}
   // Same two clamps as the week grid, one column each. A block whose groomer has no column on
   // screen is not drawn, because there is nowhere honest to draw it.
   // Walked per column rather than per block, for the same reason the week grid is: a lane count is
@@ -1213,6 +1218,62 @@ let calendarDrag=null;
  */
 function appointmentsLocked(){return state.me?.business?.appointmentLock==="enabled";}
 function appointmentMoveAllowed(){return allowed("appointments.edit")&&!appointmentsLocked();}
+/**
+ * WHAT AN EMPTY SLOT CAN BECOME FOR THIS SESSION, and why booking takes three permissions.
+ *
+ * The calendar toolbar has always gated `+ Add booking` and `Block time`. The GRID did not: every
+ * empty half-hour was drawn as a button labelled "create appointment", and pressing one opened
+ * `#slot-menu` - static markup, no gate at all - offering a groomer an enabled Add and an enabled
+ * Block. Add then reached `openBookingDialog`, whose prefetch is refused, and the operator was
+ * left with a 403, an unhandled rejection and no dialog. Two entry points into the same two
+ * actions, one gated and one not, is what produced the stray floating "+".
+ *
+ * BOOKING NEEDS THE READS AS WELL AS THE WRITE. `openBookingDialog` cannot draw anything until it
+ * has the client list and the pet list, so `customers.view` and `pets.view` are as load-bearing as
+ * `appointments.create`: a session missing any one of the three cannot complete a booking, and
+ * offering it the gesture is offering something that cannot work.
+ *
+ * BLOCKING IS `calendar.blocks_create`, which is what `POST /api/blocked-times` requires. The
+ * toolbar's Block time still reads `appointments.edit` in `index.html`; the two agree for every
+ * built-in role, and correcting the toolbar is a separate change to a control this defect is not
+ * about.
+ */
+function calendarBookingAvailable(){return allowed("appointments.create")&&allowed("customers.view")&&allowed("pets.view");}
+function calendarBlockingAvailable(){return allowed("calendar.blocks_create");}
+/** An empty slot is an affordance only while it can still become something. */
+function calendarSlotActionable(){return calendarBookingAvailable()||calendarBlockingAvailable();}
+/**
+ * One empty half-hour, as the two grids draw it - written once so the week and the day cannot
+ * disagree about when a slot is a control.
+ *
+ * A slot that opens nothing is drawn the way a slot outside business hours already is: still a
+ * cell, still in the grid, `disabled`, and carrying no `data-slot` for `bindCalendarInteractions`
+ * to bind a menu to. And "create appointment" leaves its accessible name, because that clause is a
+ * PROMISE about what pressing it does - a screen reader announcing it over a cell that opens a
+ * menu of two refusals is the same defect as the visible "+", spoken instead of drawn.
+ */
+function calendarSlotAttributes(open,preset,groomerId){
+  const actionable=open&&calendarSlotActionable();
+  return {
+    label:open?(actionable?", create appointment":""):", closed",
+    hooks:actionable?`data-slot="${preset}" data-slot-groomer="${groomerId}"`:"disabled"
+  };
+}
+/**
+ * WHY, in a sentence an operator can act on - the missing key included.
+ *
+ * "You do not have permission" alone tells somebody to go and ask for something they cannot name.
+ * The keys are the same strings Settings -> Roles & permissions is built from, so naming them is
+ * what lets the person asked find the switch. Null when nothing is missing, so one predicate
+ * decides both whether a control is refused and what the refusal says.
+ */
+function bookingRefusalReason(){
+  const missing=["appointments.create","customers.view","pets.view"].filter(permission=>!allowed(permission));
+  return missing.length?`You do not have permission to book appointments (${missing.join(", ")})`:null;
+}
+function blockingRefusalReason(){
+  return calendarBlockingAvailable()?null:"You do not have permission to block time (calendar.blocks_create)";
+}
 // Drag is a fine-pointer affordance on top of that. On touch the same move is one tap away through
 // the card menu's Move action, and an accidental drag across a working schedule is expensive to
 // undo, so coarse pointers keep the menu path only.
@@ -2560,11 +2621,13 @@ function appointmentLifecycleValues(item,activity){
   return {checkedIn,finished,minutes,stored};
 }
 
-// The Invoice and the Receipt, through `appendPrintRoot` below. The <h1> is prepended here because
+// The Invoice and the Receipt, through `previewPrintRoot` below. The <h1> is prepended here because
 // neither financial body carries a title of its own; the Ticket prepends nothing, because it opens
 // on its own reference.
 function printFinancialRoot(title,body,className){
-  appendPrintRoot(className,`<h1>${escape(title)}</h1>${body}`);
+  // The title is handed to the preview as well as prepended to the body, so the window over the
+  // document and the document under it say the same name rather than only the second one saying it.
+  previewPrintRoot(className,`<h1>${escape(title)}</h1>${body}`,title);
 }
 /**
  * THE PRINTING MECHANISM ITSELF, STATED ONCE.
@@ -2587,6 +2650,51 @@ function appendPrintRoot(className,html){
   document.body.append(root);
   globalThis.print();
   setTimeout(()=>root.remove(),1000);
+}
+/**
+ * THE DOCUMENT ON SCREEN BEFORE IT IS ON PAPER.
+ *
+ * Pressing Print Invoice, Print Receipt, Ticket or Print used to hand the operator straight to the
+ * browser's own print dialog, with no chance to see what was about to come out of the printer and
+ * no way back except that dialog's Cancel. The agenda has never worked that way - `openPrintAgenda`
+ * has always drawn the document into `#print-agenda-preview` and reached `appendPrintRoot` only
+ * when the operator pressed Print - so this is that precedent, offered to the four documents that
+ * did not have it.
+ *
+ * IT TAKES EXACTLY WHAT `appendPrintRoot` TAKES AND HANDS THE SAME TWO VALUES BACK TO IT. That is
+ * the whole guarantee that the preview and the paper cannot drift: there is no second composition
+ * step and no second copy of the markup to keep in step - the `html` on screen IS the `html` that
+ * is appended, and the `className` that decides which document it is travels with it. The print
+ * stylesheet is untouched, so what reaches paper is what reached paper before.
+ *
+ * `#stacked-dialog` rather than `#modal`, because every one of these controls is pressed from
+ * INSIDE a dialog - the Invoice workspace, the Check Out surface, the Ticket, the appointment
+ * detail - and the operator has to land back on the one they came from. `#modal` is not the
+ * Invoice any more, but it still hosts the client history the Invoice is reached through, so
+ * borrowing it would close a window the preview is standing over.
+ *
+ * THE PREVIEW CARRIES THE DOCUMENT'S OWN IDENTITY. It used to be headed "Print preview" for all
+ * four documents, so the only thing on screen that said WHICH document was about to be printed was
+ * the <h1> inside the body - and the Ticket has no <h1> at all, so for the Ticket nothing said it.
+ * A window offering to put a document on paper has to name the document it is holding: an operator
+ * who reached Print Receipt and is looking at a preview headed `Invoice #1042` has been told,
+ * before the paper comes out, that they pressed the wrong control. `documentTitle` is the same
+ * string the document itself is titled by at every other point in its life - `invoiceDocumentTitle`,
+ * `paymentReceiptTitle`, the Ticket's own reference - so the preview cannot name it anything the
+ * rest of the product does not.
+ */
+function previewPrintRoot(className,html,documentTitle){
+  return openStackedDialog({
+    title:documentTitle?`Print preview: ${documentTitle}`:"Print preview",
+    body:`<section class="print-preview" data-testid="print-preview" `
+      +`data-print-root-class="${escapeAttr(className)}">${html}</section>`,
+    dismissLabel:"Close",
+    confirmLabel:"Print",
+    // The X in the head is the same dismissal as Close: one way out, drawn twice, because a
+    // document on screen reads as a window and a window closes from its corner.
+    headCloseLabel:"Close print preview",
+    onConfirm:()=>{appendPrintRoot(className,html);}
+  });
 }
 // THE INVOICE, IN EVERY SETTLEMENT STATE. Unpaid, part-paid and settled all print the same
 // statement under the same name, because what a client is handed when they ask what the visit cost
@@ -3645,13 +3753,37 @@ function salonIdentityMarkup(salon,testid){
 }
 
 /**
+ * WHICH PET A SERVICE LINE WAS FOR, when the line's own source names one.
+ *
+ * `GET /api/invoices/:id/receipt` resolves this per item, from THE LINE'S OWN
+ * `source_appointment_service_id` - never from the invoice's appointment. Those differ for a
+ * manual line and for a line that was repointed, so there is deliberately NO fallback here: a
+ * line whose own source names no pet renders no pet, rather than borrowing the visit's and
+ * stamping it onto a line that is not about it.
+ *
+ * GATED ON PRESENCE, exactly as the Receipt gates `provider` and `providerPaymentId`. `petName` is
+ * a non-empty string or `null`, never `""` and never a placeholder, so an absent pet draws
+ * NOTHING - no empty parenthetical, no dangling "(for )". A line with no pet has to look
+ * deliberate rather than broken.
+ */
+function receiptItemPetMarkup(item){
+  const name=String(item?.petName??"").trim();
+  return name?` <small class="receipt-item-pet">(for ${escape(name)})</small>`:"";
+}
+
+/**
  * THE INVOICE'S BODY: items, the discount breakdown, the totals, and every payment record against
  * it with whatever correction that record still allows.
  *
- * ONE BODY, THREE HOSTS. The modal shows it, a settled Check Out shows it - because a settled
- * checkout IS the bill, and rendering a second, thinner version of it beside the real one is how
- * the two drift - and Print Invoice puts the same body on paper. `bindReceiptActions` binds
- * whichever copy is on screen.
+ * ONE BODY, THREE HOSTS. The Invoice workspace shows it in its left-hand column, a settled Check
+ * Out shows it - because a settled checkout IS the bill, and rendering a second, thinner version
+ * of it beside the real one is how the two drift - and Print Invoice puts the same body on paper.
+ * `bindReceiptActions` binds whichever copy is on screen.
+ *
+ * The workspace REPLACED THE MODAL as the first of those hosts and is not a fourth one. It frames
+ * this statement, states the visit above it and where the invoice stands beside it, and carries
+ * the document's actions in its own footer - and it itemises nothing and totals nothing itself,
+ * because that is this function's and only this function's.
  *
  * THE HOSTS ARE THE INVOICE'S. This is the money statement of an invoice in every settlement
  * state: an invoice with nothing paid against it has one too, and "No payment recorded" below is
@@ -3691,7 +3823,9 @@ function receiptBodyMarkup(receipt) {
         // `redemption_reversal` that puts the money back on the client's balance. The method
         // travels on the button so the confirmation can say what will actually happen.
         :`<button type="button" class="text-button void-payment" data-payment-id="${payment.id}" data-payment-provider="" data-payment-method="${escapeAttr(payment.method)}">Void record</button>`;
-    return `<div><span>${escape(receiptPaymentLabel(payment))} · ${escape(payment.status)}</span><strong>${money(payment.amountMinor)}</strong>${action}</div>`
+    // A member of the Payment records group, indented under its heading like a service line is
+    // under Services. The refunds that hang off it keep their own treatment.
+    return `<div class="receipt-line" data-testid="receipt-payment"><span>${escape(receiptPaymentLabel(payment))} · ${escape(payment.status)}</span><strong>${money(payment.amountMinor)}</strong>${action}</div>`
       +receiptRefundsFor(receipt,payment.id).map(receiptRefundRow).join("");
   }).join("");
 /**
@@ -3714,26 +3848,39 @@ function receiptDiscountName(row){
  * The order is what makes the compounding legible - the second line took its percentage off what
  * the first line left - so it is rendered as the server sent it and never re-sorted.
  *
- * An invoice with no rows at all is one from before the breakdown existed, or one that took
- * nothing off, and it renders the single line this receipt has always rendered.
+ * An invoice with no rows at all is one from before the breakdown existed, and it renders the
+ * single line this receipt has always rendered.
+ *
+ * A GROUP NOW, UNDER ITS OWN HEADING, because the steps and the sum are a section of the statement
+ * rather than four more rows in a column of equal ones. The heading names the section, the steps
+ * are indented under it, and the sum that closes it is not.
+ *
+ * NOTHING AT ALL WHEN NOTHING CAME OFF. This used to draw a permanent `Discount -$0.00` on every
+ * bill that took nothing off - one of the equal-weight rows that made the statement hard to scan,
+ * and under a "Discounts" heading it would announce a section about nothing. Same rule the
+ * refunded line below already keeps and the same rule the Receipt's purchase summary keeps: an
+ * adjustment that did not happen is drawn as absent rather than as a zero. NO FIGURE MOVED - the
+ * bill has no discount to state, and it no longer states one.
  */
 function receiptDiscountLines(receipt,invoice){
   const rows=Array.isArray(receipt.discounts)?receipt.discounts:[];
+  if(!rows.length&&!Number(invoice.discountMinor||0))return "";
+  const heading=`<h4 class="receipt-group" data-testid="receipt-group-discounts">Discounts</h4>`;
   if(!rows.length){
-    return `<div data-testid="receipt-discount"><span>Discount</span><strong>-${money(invoice.discountMinor)}</strong></div>`;
+    return heading+`<div class="receipt-line" data-testid="receipt-discount"><span>Discount</span><strong>-${money(invoice.discountMinor)}</strong></div>`;
   }
-  // Indented, and only when a sum follows them: two lines both reading "Discount" - one a step,
-  // one the total - is the one way this breakdown can be misread.
-  const step=rows.length>1?` class="receipt-discount-step"`:"";
-  const lines=rows.map(row=>`<div${step} data-testid="receipt-discount"><span>${escape(receiptDiscountName(row))}`
+  // EVERY step is indented now, not only the steps of a breakdown that has a sum under it. The
+  // indent says "a line inside the Discounts group"; what tells a step from the total is the
+  // weight and the outdent of the sum row, which is a stronger signal than the indent ever was.
+  const lines=rows.map(row=>`<div class="receipt-line receipt-discount-step" data-testid="receipt-discount"><span>${escape(receiptDiscountName(row))}`
     // The rate is worth repeating on a percentage line: "-$8.00" alone does not say that it was
     // 10% of what was left, which is the whole reason two lines can produce two different totals.
     +(row.kindSnapshot==="percentage"?` <small class="receipt-discount-rate">${escape(taxPayPercent(row.rateBasisPointsSnapshot))}%</small>`:"")
     +`</span><strong>-${money(row.appliedMinor)}</strong></div>`).join("");
   // The sum, only when there is more than one thing to add up. `invoice_discounts` sums to
   // `discount_minor` exactly, so this is the same number the tax underneath was taken after.
-  return lines+(rows.length>1
-    ?`<div data-testid="receipt-discount-total"><span>Total discount</span><strong>-${money(invoice.discountMinor)}</strong></div>`
+  return heading+lines+(rows.length>1
+    ?`<div class="receipt-group-total" data-testid="receipt-discount-total"><span>Total discount</span><strong>-${money(invoice.discountMinor)}</strong></div>`
     :"");
 }
   // Shown only when there is one. A permanent "Refunded $0.00" row would read as a fact about the
@@ -3743,7 +3890,66 @@ function receiptDiscountLines(receipt,invoice){
     :"";
   // The head of the document, before any money: who printed it, then who it is about.
   const salon=salonIdentityMarkup(invoiceSalonIdentity(invoice),"receipt-salon");
-  return `<div class="wide receipt" data-testid="receipt">${salon}<p>${escape(clientName(invoice))}</p>${receipt.items.map(item=>`<div><span>${escape(item.description)}</span><strong>${money(item.amountMinor)}</strong></div>`).join("")}<div><span>Subtotal</span><strong>${money(invoice.subtotalMinor)}</strong></div>${receiptDiscountLines(receipt,invoice)}<div><span>Tax</span><strong>${money(invoice.taxMinor)}</strong></div><div><span>Tip</span><strong>${money(invoice.tipMinor)}</strong></div><div class="receipt-total"><span>Total</span><strong>${money(invoice.totalMinor)}</strong></div><div><span>Balance</span><strong>${money(invoice.balanceMinor)}</strong></div>${refundedLine}<h4>Payment records</h4>${payments||"<p>No payment recorded.</p>"}</div>`;
+
+  /*
+   * ── THE SHAPE OF THE STATEMENT ─────────────────────────────────────────────────────────────
+   *
+   * GROUPED SECTIONS, NOT A LEDGER OF EQUAL ROWS. Every line used to be one bare `<div>` carrying
+   * the same rule above it and the same weight as the line beside it, so `Full Groom`,
+   * `Subtotal`, two discounts, `Total discount`, `Tax`, `Tip`, `Total` and `Balance` read as one
+   * undifferentiated column and finding what the visit came to meant reading all of it. Four
+   * things changed here and NO FIGURE DID:
+   *
+   *   THE ROWS ARE GROUPED. Services, Discounts and Payment records each sit under a heading that
+   *       names them, their members are indented, and the sum that closes a group is not. Payment
+   *       records were already a section and now read as one rather than as more of the same
+   *       column - which is also what keeps them visually separate from the calculation.
+   *   THERE IS ONE EMPHASISED FINAL TOTAL and it is called `Invoice total`. It is the only line
+   *       carrying `.receipt-total`. `Balance` follows it in a weight of its own because it
+   *       answers a different question - what is owed NOW, after everything tendered against this
+   *       bill - and a statement whose total and balance shout equally says neither.
+   *   THE GENERIC `Subtotal` IS GONE. A row reading `Subtotal $85.00` immediately above a row
+   *       reading `Total $85.00` is one figure under two names, and a reader looking for the
+   *       difference finds none. What replaces it is `Service subtotal`, drawn ONLY when a
+   *       discount, a tax or a tip actually moves it - the one case where it explains anything,
+   *       and the rule `paymentReceiptPurchaseMarkup` already keeps for the same reason.
+   *   THE RULES ARE WHERE A READER NEEDS THEM. One separator closes the services, one closes the
+   *       calculation. A rule between every pair of rows carries no information at all.
+   *
+   * STILL ONE STATEMENT WITH THREE HOSTS. The Invoice workspace, the settled Check Out panel and
+   * the print root all draw THIS function, so the restructure reached all three identically -
+   * which is exactly what `tests/e2e/ticket-surface.spec.ts` compares, cell for cell.
+   *
+   * EVERY MONEY ROW IS STILL A DIRECT `<div>` CHILD OF `.receipt`, and the grouping is carried by
+   * headings and classes rather than by wrapper elements. That is deliberate: the cross-host
+   * comparison walks `.receipt`'s own `<div>` children, and burying the rows one level deeper
+   * would have left that comparison reading nothing and passing vacuously.
+   */
+  const items=Array.isArray(receipt.items)?receipt.items:[];
+  const services=items.map(item=>
+    `<div class="receipt-line" data-testid="receipt-item"><span>${escape(item.description)}`
+      +receiptItemPetMarkup(item)
+      +`</span><strong>${money(item.amountMinor)}</strong></div>`).join("");
+  // Only when something downstream moves it. With no discount, no tax and no tip the subtotal and
+  // the total are the same figure, and a bill that states one number under two names invites the
+  // reader to hunt for a difference that is not there.
+  const moved=Boolean(Number(invoice.discountMinor||0)||Number(invoice.taxMinor||0)||Number(invoice.tipMinor||0));
+  return `<div class="wide receipt" data-testid="receipt">${salon}<p>${escape(clientName(invoice))}</p>`
+    +(services?`<h4 class="receipt-group" data-testid="receipt-group-services">Services</h4>${services}`:"")
+    +(moved
+      ? `<div class="receipt-subtotal" data-testid="receipt-service-subtotal"><span>Service subtotal</span><strong>${money(invoice.subtotalMinor)}</strong></div>`
+      : "")
+    +receiptDiscountLines(receipt,invoice)
+    // Tax and tip are single facts rather than sections, so they carry no heading and no indent:
+    // they sit at the statement's own level, between the discounts and the figure they feed.
+    +`<div data-testid="receipt-tax"><span>Tax</span><strong>${money(invoice.taxMinor)}</strong></div>`
+    +`<div data-testid="receipt-tip"><span>Tip</span><strong>${money(invoice.tipMinor)}</strong></div>`
+    +`<div class="receipt-total" data-testid="receipt-invoice-total"><span>Invoice total</span><strong>${money(invoice.totalMinor)}</strong></div>`
+    +`<div class="receipt-balance" data-testid="receipt-balance"><span>Balance</span><strong>${money(invoice.balanceMinor)}</strong></div>`
+    +refundedLine
+    +`<h4 class="receipt-group" data-testid="receipt-group-payments">Payment records</h4>`
+    +(payments||"<p>No payment recorded.</p>")
+  +`</div>`;
 }
 
 /**
@@ -3779,6 +3985,85 @@ function paymentReceiptLine(label,value,testid){
   return text
     ? `<div data-testid="${escapeAttr(testid)}"><span>${escape(label)}</span><strong>${escape(text)}</strong></div>`
     : "";
+}
+
+/**
+ * WHAT WAS PURCHASED, ON THE EVIDENCE THAT IT WAS PAID FOR.
+ *
+ * A Receipt is evidence of a completed settlement, and a client holding one may reasonably ask
+ * what the settlement was FOR. Itemised detail does not make this an operational document: a
+ * service name and its price are what the client bought and already agreed to, and every figure
+ * here is one the ledger holds. What it must never become is a SECOND INVOICE - so this is a
+ * SUMMARY, and the differences from `receiptBodyMarkup` are deliberate, not accidental:
+ *
+ *   NO DISCOUNT BREAKDOWN. The Invoice draws `receiptDiscountLines` - every step in applied
+ *       order, with its percentage, and a sum beneath them - because the Invoice's job is to make
+ *       compounding legible to somebody querying the bill. The Receipt draws ONE line carrying
+ *       `invoice.discountMinor`, the same aggregate those steps sum to. A client checking what
+ *       they paid needs to see that something came off; the arithmetic of how is the bill's.
+ *   NO BALANCE, NO PAYMENT HISTORY, NO CORRECTIONS. A balance is what is still owed and this
+ *       document exists only where nothing is - `receiptBalanceOutstanding` saw to that - and
+ *       Void and Refund are operator corrections that belong on the bill. The one balance line
+ *       this document has is in `totals` below and is a statement about the settlement.
+ *   NO ROW IS DRAWN FOR A FIGURE OF ZERO. "Where applicable", which is the same rule every other
+ *       optional line on this document already follows: `paymentReceiptLine` draws nothing for an
+ *       absent value, and the Invoice's own `refundedLine` is withheld at zero for the reason a
+ *       permanent "Tip $0.00" would be worse than none - on a document a client keeps, a zeroed
+ *       row reads as a fact about the visit rather than as the absence of one.
+ *
+ * NOTHING OPERATIONAL CROSSES OVER. Internal notes, workflow and service notes, appointment edit
+ * history and status history are the SHOP'S OWN COPY OF THE WORK. They are the Ticket's, they are
+ * reached from the Ticket's surface, and no amount of "the client might find it useful" makes an
+ * internal work record something to hand across a counter. This function reads `receipt.items`
+ * and four figures off `receipt.invoice` and touches nothing else on the payload - which is also
+ * why piping the Ticket's model in here later would render nothing rather than leak.
+ *
+ * THE PET IS HERE NOW, AND IT IS THE LINE'S OWN. This used to say the pet was unreachable, and it
+ * was: `invoice_items` carries no pet name and the receipt endpoint joined no further than the
+ * invoice, its business, its customer and its location. The endpoint now resolves `petName` per
+ * item through the line's OWN `source_appointment_service_id`, and one read feeds both financial
+ * documents, so this summary states it too - a household with two dogs on one bill gets two
+ * `Full Groom` lines, and without the pet a client holding this cannot tell which is which.
+ * `receiptItemPetMarkup` is the shared renderer and it is gated on presence: a manual line, or a
+ * line whose source is unreachable, sends `null` and draws no pet at all rather than borrowing the
+ * visit's. Still no join of its own, still nothing invented.
+ *
+ * SUBTOTAL IS DRAWN ONLY WHEN SOMETHING MOVED IT. With no discount, no tax and no tip a subtotal
+ * and a total are the same number twice, and a summary that states one figure under two names is
+ * a summary that invites a reader to look for the difference.
+ *
+ * NO SECTION AT ALL WHEN THERE ARE NO ITEMS. An empty heading over nothing states nothing, and
+ * the tender composition below stands on its own exactly as it did before this existed.
+ */
+function paymentReceiptPurchaseMarkup(receipt){
+  const invoice=receipt.invoice;
+  const items=Array.isArray(receipt.items)?receipt.items:[];
+  if(!items.length)return "";
+  const lines=items.map(item=>
+    `<div class="payment-receipt-item" data-testid="payment-receipt-item">`
+      +`<span>${escape(item.description)}${receiptItemPetMarkup(item)}</span>`
+      +`<strong>${money(item.amountMinor)}</strong></div>`).join("");
+  // One rule for every adjustment, so "only when there is one" cannot be got right for tax and
+  // wrong for tip. The sign travels with the label because only the discount carries one.
+  const adjustment=(label,minor,testid,sign)=>Number(minor||0)
+    ? `<div data-testid="${testid}"><span>${escape(label)}</span>`
+      +`<strong>${sign}${money(minor)}</strong></div>`
+    : "";
+  const adjustments=adjustment("Discount",invoice.discountMinor,"payment-receipt-discount","-")
+    +adjustment("Tax",invoice.taxMinor,"payment-receipt-tax","")
+    +adjustment("Tip",invoice.tipMinor,"payment-receipt-tip","");
+  return `<section class="payment-receipt-purchase" data-testid="payment-receipt-purchase">`
+    +`<h4>Purchased</h4>`
+    +lines
+    +(adjustments
+      ? `<div data-testid="payment-receipt-subtotal"><span>Subtotal</span>`
+        +`<strong>${money(invoice.subtotalMinor)}</strong></div>`+adjustments
+      : "")
+    // Plain-weight beside `Total settled`, which keeps `.receipt-total`. This document's subject
+    // is the settlement, so the settlement's figure is the one that carries the emphasis.
+    +`<div class="payment-receipt-purchase-total" data-testid="payment-receipt-invoice-total">`
+      +`<span>Total</span><strong>${money(invoice.totalMinor)}</strong></div>`
+  +`</section>`;
 }
 
 /**
@@ -3890,6 +4175,9 @@ function paymentReceiptMarkup(receipt){
       : "");
   return `<div class="wide payment-receipt" data-testid="payment-receipt">${salon}`
     +`<p data-testid="payment-receipt-client">${escape(clientName(invoice))}</p>`
+    // WHAT WAS BOUGHT, ABOVE HOW IT WAS TENDERED. A reader asks what for before they ask by what
+    // means, and the settlement figure underneath reads as the discharge of the total above it.
+    +paymentReceiptPurchaseMarkup(receipt)
     // Named, because a bare list of two amounts under a client's name is not self-describing.
     +(records?`<h4>Payment methods</h4>`:"")
     +records+totals
@@ -3921,7 +4209,8 @@ function paymentReceiptRefunds(receipt,payment){
 }
 
 // Scoped to the copy of the receipt that was just rendered, for the same reason the client summary
-// column's bindings are: the modal's copy and a settled Check Out's copy can both be in the DOM.
+// column's bindings are: the workspace's copy and a settled Check Out's copy can both be in the
+// DOM at once.
 function bindReceiptActions(root,receipt){
   const invoice=receipt.invoice;
   root.querySelectorAll(".void-payment").forEach(button=>button.addEventListener("click",()=>
@@ -3937,6 +4226,44 @@ function bindReceiptActions(root,receipt){
 }
 
 /**
+ * THE CAPABILITIES THIS PRODUCT DOES NOT HAVE YET, NAMED ON THE CONTROLS THAT WILL USE THEM.
+ *
+ * Send Receipt and Ask for Review exist nowhere in Pawsh today: no control, no route, no
+ * template, no delivery record, and no notification type - `notification_intents` carries
+ * `appointment_reminder` and the two rabies expirations and nothing else. Both are PLANNED.
+ * Building either is a feature, not a layout, so they are drawn and they do nothing.
+ *
+ * DISABLED WITH A REASON, NOT HIDDEN, because the standing rule on this repository is that an
+ * unavailable capability is disabled rather than hidden: an operator holding a settled invoice
+ * and looking for how to send it should find the control saying it is not built yet, rather than
+ * hunting a screen that silently omits it. The reason is a visible line under the group rather
+ * than only a `title`, because a `title` is unreachable from a keyboard and unreadable on a
+ * phone.
+ *
+ * THREE NEIGHBOURING CONTROLS ARE UNAVAILABLE FOR THREE DIFFERENT REASONS, AND THE SENTENCES
+ * MUST NOT BLUR INTO EACH OTHER. Each names what is actually true:
+ *
+ *   Print Receipt, ABSENT on an unsettled invoice
+ *       a state of THIS INVOICE. The capability exists; the document does not yet, because the
+ *       settlement has not completed. Nothing is drawn, because there is nothing to disable.
+ *
+ *   Invoice, DISABLED without `payments.view` (on the appointment footer)
+ *       a state of THIS ACTOR. The document exists and somebody else may open it.
+ *       "You do not have permission to view invoices."
+ *
+ *   Send Receipt and Ask for Review, DISABLED always
+ *       a state of THE PRODUCT. Nobody can do this, on any invoice, in any role, because the
+ *       feature has not been built yet - and it is coming. The sentence below therefore says
+ *       NOT YET and PLANNED, and says it is true for everyone. It must never read as a refusal
+ *       or as a permission the operator is missing: an operator told "you do not have
+ *       permission" would go and ask an owner for a role that would not help them, and an
+ *       operator told it was unavailable for this invoice would go and try another one.
+ */
+const INVOICE_UNAVAILABLE_REASON="Not built yet. Sending a receipt and asking for a review are "
+  +"planned for a later release, and until they arrive nobody can send from Pawsh, on any "
+  +"invoice. Print the Receipt and hand or send it yourself.";
+
+/**
  * BOTH DOCUMENTS ARE REACHABLE FROM AN INVOICE OPENED AWAY FROM CHECK OUT.
  *
  * The data to reproduce a Receipt is persisted - `GET /api/invoices/:id/receipt` returns every
@@ -3947,43 +4274,288 @@ function bindReceiptActions(root,receipt){
  *
  * SAME TWO GATES, SAME TWO ANSWERS AS THE CHECK OUT FOOTER, because they are the same two
  * documents. Print Invoice is here whenever an invoice is: an obligation is printable in every
- * settlement state. Print Receipt is here only when the settlement COMPLETED, and is ABSENT rather
- * than disabled until then - the deliberate decision this product already made about an unsettled
- * invoice, kept here so the two surfaces cannot say different things about the same invoice.
+ * settlement state, and it does not go away when the invoice is settled - a client may still ask
+ * for the bill. Print Receipt is here only when the settlement COMPLETED, it appears BESIDE Print
+ * Invoice rather than instead of it, and it is ABSENT rather than disabled until then - the
+ * deliberate decision this product already made about an unsettled invoice, kept here so the two
+ * surfaces cannot say different things about the same invoice.
+ *
+ * The two unavailable controls follow, and the sentence that says why follows them, emitted by
+ * this same function so that a reason and the controls it explains cannot drift apart.
  */
 function invoiceDocumentActionsMarkup(receipt){
-  return `<div class="wide document-actions" data-testid="invoice-document-actions">`
+  const unavailable=(testid,label)=>
+    `<button type="button" class="secondary compact" data-testid="${testid}" disabled`
+      +` aria-disabled="true" title="${escapeAttr(INVOICE_UNAVAILABLE_REASON)}">${escape(label)}</button>`;
+  return `<div class="surface-foot-actions" data-testid="invoice-document-actions">`
     +`<button type="button" class="secondary compact" data-testid="invoice-print-invoice">Print Invoice</button>`
     +(receiptSettlementComplete(receipt)
       ? `<button type="button" class="secondary compact" data-testid="invoice-print-receipt">Print Receipt</button>`
       : "")
+    +unavailable("invoice-send-receipt","Send Receipt")
+    +unavailable("invoice-ask-review","Ask for Review")
+  +`</div>`
+  +`<p class="fine invoice-unavailable-note" data-testid="invoice-unavailable-note">`
+    +`${escape(INVOICE_UNAVAILABLE_REASON)}</p>`;
+}
+
+/**
+ * THE VISIT, ABOVE THE MONEY.
+ *
+ * `GET /api/invoices/:id/receipt` is the FINANCIAL authority and carries no lifecycle at all - the
+ * invoice row, its items, its payments, its refunds and its discounts, and nothing about when the
+ * dog arrived or left. So the client asks `GET /api/appointments/:id` for those, off the
+ * `appointmentId` the invoice payload already carries, and this block is drawn only once that read
+ * has landed. It is NOT drawn as "not recorded" while the read is in flight or after it is
+ * refused: an operator told a visit has no check-in time when the client simply could not read the
+ * appointment has been told something false.
+ *
+ * Client and the invoice date come off the financial payload and are therefore always here. Every
+ * value is produced by the helper that already produces it elsewhere - `activityStamp`,
+ * `lifecycleDurationLabel`, `formatPrefDate`, `clientName`, `petName` - so this block cannot state
+ * a time the appointment surface would state differently.
+ *
+ * IT RETURNS THE PAIRS AND NOT THE LIST AROUND THEM, so the late read can replace the CONTENTS of
+ * one <dl> instead of redrawing the workspace. Redrawing the whole surface a moment after it
+ * opened detaches whatever the operator had already put focus or a pointer on, and reflows a
+ * financial document under a reader who has started reading it, for two lines that arrived late.
+ */
+function invoiceVisitFactsMarkup(receipt,appointment){
+  const invoice=receipt.invoice;
+  const pair=(testid,label,value,recorded=true)=>
+    `<div><dt>${escape(label)}</dt>`
+      +`<dd data-testid="${escapeAttr(testid)}"${recorded?"":` class="is-unrecorded"`}>${escape(value)}</dd></div>`;
+  const facts=[
+    pair("invoice-fact-client","Client",clientName(invoice)),
+    pair("invoice-fact-date","Invoiced",formatPrefDate(new Date(invoice.createdAt)))
+  ];
+  if(appointment){
+    const model=appointmentPresentation(appointment);
+    const {checkedIn,finished,minutes}=appointmentLifecycleValues(appointment,null);
+    facts.push(pair("invoice-fact-pet","Pet",petName({petName:model.petName})));
+    facts.push(pair("invoice-fact-checked-in","Checked in",
+      checkedIn?activityStamp(checkedIn):"not recorded",Boolean(checkedIn)));
+    facts.push(pair("invoice-fact-checked-out","Checked out",
+      finished?activityStamp(finished):"not recorded",Boolean(finished)));
+    facts.push(pair("invoice-fact-duration","Duration",
+      lifecycleDurationLabel(minutes),minutes!==null));
+  }
+  return facts.join("");
+}
+
+/**
+ * WHERE THIS INVOICE STANDS, IN THE RIGHT-HAND COLUMN.
+ *
+ * NOT A SECOND MONEY RENDERER. Every figure here is read through the function that already owns
+ * that reading - `settledComponentsMinor` for what the tender components came to, which is the
+ * same reading the Check Out progress line and the Receipt's Total settled use, and
+ * `invoice.totalMinor` / `invoice.balanceMinor` / `receipt.refundedMinor` straight off the
+ * payload. Nothing is summed here that is summed anywhere else.
+ *
+ * THE STATE IS DRIVEN BY THE SAME TWO GATES THE FOOTER USES, so the panel and the footer cannot
+ * disagree about one invoice. Note the fourth row: a zero-total invoice - which the server creates
+ * `paid` with `balance_minor = 0` and NO payment rows - is neither settled nor owing, and says so
+ * rather than claiming a settlement that never happened. That is the same case
+ * `receiptHasPayment` refuses a Receipt for.
+ *
+ * SETTLED, NOT PAID, and never "Payment 1 of N": one invoice has one completed settlement, which
+ * may have been tendered in several components, and the components are listed on the statement to
+ * the left under the payment records the ledger holds.
+ */
+function invoiceSettlementPanelMarkup(receipt){
+  const invoice=receipt.invoice;
+  const settledMinor=settledComponentsMinor(receipt);
+  const state=receiptSettlementComplete(receipt)
+    ? {tone:"is-settled",title:"Settlement complete",
+      note:"Nothing is outstanding. The Receipt evidences what was tendered against this invoice."}
+    : receiptBalanceOutstanding(receipt)
+      ? receiptHasPayment(receipt)
+        ? {tone:"is-part",title:"Settlement in progress",
+          note:`${money(invoice.balanceMinor)} of this invoice is still to settle.`}
+        : {tone:"is-owing",title:"Not yet settled",
+          note:`${money(invoice.balanceMinor)} is owed on this invoice.`}
+      : {tone:"is-settled",title:"Nothing to settle",
+        note:"This visit came to nothing, so no settlement was taken against it."};
+  const figure=(testid,label,value)=>
+    `<div class="invoice-summary-row" data-testid="${escapeAttr(testid)}">`
+      +`<span>${escape(label)}</span><strong>${escape(value)}</strong></div>`;
+  return `<div class="invoice-state ${state.tone}" data-testid="invoice-state" role="status">`
+      +`<p class="invoice-state-title" data-testid="invoice-state-title">${escape(state.title)}</p>`
+      +`<p class="invoice-state-note">${escape(state.note)}</p>`
+    +`</div>`
+    +`<div class="invoice-summary-figures">`
+      +figure("invoice-summary-total","Invoice total",money(invoice.totalMinor))
+      // Drawn once anything has been tendered. A permanent "Total settled $0.00" beside an
+      // untouched bill would read as a settlement of nothing rather than as no settlement.
+      +(settledMinor?figure("invoice-summary-settled","Total settled",money(settledMinor)):"")
+      +(receipt.refundedMinor
+        ?figure("invoice-summary-refunded","Refunded",`-${money(receipt.refundedMinor)}`):"")
+      +figure("invoice-summary-balance","Balance",money(invoice.balanceMinor))
+    +`</div>`;
+}
+
+/**
+ * THE INVOICE AS A WORKSPACE, AND IT IS AN INVOICE WHATEVER HAS BEEN PAID AGAINST IT.
+ *
+ * An invoice opened from a client's transaction history is headed "Invoice #1042" unpaid,
+ * part-paid and settled alike; settlement moves the balance and adds a payment record, and neither
+ * of those is a change of document. There is no Receipt branch on the TITLE because the Receipt is
+ * not this document - it is a second document, reached by its own control in the footer.
+ *
+ * THE MONEY STATEMENT IS STILL `receiptBodyMarkup`, UNTOUCHED. That renderer's own header states
+ * the contract - one body, several hosts - and this is one of those hosts, not a thinner copy of
+ * it beside the real one. Items, the discount breakdown, tax, tip, total, balance, every payment
+ * record with its tender and its refunds, and every correction control the actor is allowed, all
+ * come from it verbatim, which is why nothing about the figures, the void rules or the refund
+ * conventions moved when the container did.
+ *
+ * WHAT IS NEW IS THE CONTAINER. A head that names the document and its settlement status, a left
+ * column carrying the visit and the statement, a right column carrying where the invoice stands,
+ * and a footer whose actions are the document's own - reached without scrolling past the bottom of
+ * a sheet of simulated paper, which is what the 650px form dialog made an operator do.
+ */
+function invoiceWorkspaceMarkup(receipt,appointment){
+  const invoice=receipt.invoice;
+  return `<div class="surface-shell invoice-shell" data-testid="invoice-workspace">`
+    +`<header class="surface-head invoice-head">`
+      +`<div class="surface-head-text">`
+        +`<h2 id="invoice-surface-title" data-testid="invoice-document-title">`
+          +`${escape(invoiceDocumentTitle(receipt))}</h2>`
+        +`<p class="invoice-head-meta">`
+          +`<span class="badge invoice-status-badge" data-testid="invoice-status">`
+            +`${escape(invoiceStatusLabel(invoice.status))}</span></p>`
+      +`</div>`
+      +`<div class="surface-head-actions">`
+        +`<button type="button" class="surface-close" data-surface-close aria-label="Close invoice">`
+          +`&#215;</button>`
+      +`</div>`
+    +`</header>`
+    +`<div class="surface-body invoice-body">`
+      +`<div class="invoice-statement" data-testid="invoice-statement">`
+        +`<dl class="invoice-facts" data-testid="invoice-facts">`
+          +invoiceVisitFactsMarkup(receipt,appointment)
+        +`</dl>`
+        +receiptBodyMarkup(receipt)
+      +`</div>`
+      +`<aside class="invoice-summary" data-testid="invoice-summary" aria-label="Settlement">`
+        +invoiceSettlementPanelMarkup(receipt)
+      +`</aside>`
+    +`</div>`
+    +`<footer class="surface-foot invoice-foot">`
+      +`<p class="checkout-balance" data-testid="invoice-balance" role="status" aria-live="polite">`
+        +`Balance ${escape(money(invoice.balanceMinor))}</p>`
+      +invoiceDocumentActionsMarkup(receipt)
+    +`</footer>`
   +`</div>`;
 }
 
-// THE INVOICE IN A DIALOG, AND IT IS AN INVOICE WHATEVER HAS BEEN PAID AGAINST IT. An invoice
-// opened from a client's transaction history is headed "Invoice #1042" unpaid, part-paid and
-// settled alike; settlement moves the balance and adds a payment record, and neither of those is
-// a change of document. There is no Receipt branch on the TITLE here because the Receipt is not
-// this document - it is a second document, reached by its own control in the footer below.
-function showInvoiceDocument(receipt){
-  openModal(invoiceDocumentTitle(receipt),
-    receiptBodyMarkup(receipt)+invoiceDocumentActionsMarkup(receipt),async()=>{});
-  const host=$("#modal-fields");
-  // Each control prints ONE document, chosen by the operator rather than worked out from what has
-  // been paid - the same discipline the Check Out footer follows.
-  host.querySelector('[data-testid="invoice-print-invoice"]')
+// Every control on the rendered copy of the workspace, bound to the copy it was rendered into -
+// the same discipline `bindReceiptActions` keeps, and for the same reason: a void taken from the
+// Invoice redraws it, and the handler must belong to the markup on screen rather than to the one
+// it replaced. Each print control produces ONE document, chosen by the operator rather than worked
+// out from what has been paid, which is the discipline the Check Out footer follows too.
+function bindInvoiceWorkspace(root,receipt){
+  root.querySelector('[data-testid="invoice-print-invoice"]')
     ?.addEventListener("click",()=>printInvoiceDocument(receipt));
-  host.querySelector('[data-testid="invoice-print-receipt"]')
+  root.querySelector('[data-testid="invoice-print-receipt"]')
     ?.addEventListener("click",()=>printPaymentReceipt(receipt));
-  bindReceiptActions(host,receipt);
+  bindReceiptActions(root,receipt);
+}
+
+/**
+ * Opens the Invoice workspace, from whichever door the operator used.
+ *
+ * A LEVEL ON THE SURFACE STACK, so the browser supplies the top layer, the backdrop, Escape and
+ * focus containment, and so CLOSING RETURNS THE OPERATOR TO WHERE THEY CAME FROM. Reached from the
+ * appointment it sits above the visit and pops back onto it, reloading the level beneath because a
+ * void or a refund taken here changes the billing chip that led the operator to press Invoice.
+ * Reached from a client's transaction history there is no level beneath, so the caller hands in
+ * `onClose` and the history it came from is reopened.
+ *
+ * `receiptHost` IS TAKEN AND GIVEN BACK. A refund or a void re-reads the invoice and asks whoever
+ * is hosting it to redraw in place rather than closing and stacking a second copy; while this
+ * workspace is open it is that host, and on the way out the previous host - a settled Check Out
+ * underneath, when there is one - gets its own claim back rather than being dropped.
+ */
+function showInvoiceDocument(receipt,{restoreFocus=null,onClose=null}={}){
+  const dialog=$("#invoice-surface");
+  const source=restoreFocus||document.activeElement;
+  const view={receipt,appointment:null};
+  const previousHost=receiptHost;
+  const level={
+    id:"invoice-surface",dialog,restoreFocus:source,
+    onClose(){
+      receiptHost=previousHost;
+      runDetached(async()=>{
+        await appointmentStack.levels.at(-1)?.reload?.();
+        onClose?.();
+      });
+    }
+  };
+
+  // Where focus goes after a redraw, exactly as the Ticket does it: the workspace is one document
+  // and redraws whole, so whatever was focused is detached by the redraw and focus would fall to
+  // <body> - which strands a keyboard inside a modal that is still on screen.
+  const focusAfterDraw=()=>{
+    const active=document.activeElement;
+    if(!active||!dialog.contains(active))return null;
+    return active.dataset?.testid?`[data-testid="${active.dataset.testid}"]`:"[data-surface-close]";
+  };
+
+  const bind=()=>{
+    dialog.querySelector("[data-surface-close]")
+      ?.addEventListener("click",()=>runDetached(()=>popStackLevel()));
+    bindInvoiceWorkspace(dialog,view.receipt);
+  };
+
+  const draw=()=>{
+    const wanted=focusAfterDraw();
+    dialog.innerHTML=invoiceWorkspaceMarkup(view.receipt,view.appointment);
+    bind();
+    if(wanted)(dialog.querySelector(wanted)||dialog.querySelector("[data-surface-close]"))?.focus();
+  };
+
+  draw();
+  pushStackLevel(level);
+  receiptHost=next=>{
+    if(!appointmentStack.levels.includes(level))return false;
+    view.receipt=next;draw();return true;
+  };
+
+  /**
+   * The visit behind the invoice, read after the document is already on screen.
+   *
+   * The financial payload is what the Invoice IS, so it opens on that and nothing waits for this.
+   * The read is gated on `appointments.view` because it is a different resource with a different
+   * permission, and a cashier who may see money need not be able to see the visit; a refusal or a
+   * failure leaves `appointment` null and the lifecycle facts simply absent, which is honest -
+   * absent is not the same claim as "not recorded".
+   */
+  runDetached(async()=>{
+    if(!allowed("appointments.view")||!receipt.invoice?.appointmentId)return;
+    let appointment=null;
+    try{appointment=await api(`/api/appointments/${receipt.invoice.appointmentId}`);}
+    catch{return;}
+    if(!appointmentStack.levels.includes(level))return;
+    view.appointment=appointment;
+    // The FACTS ROW ONLY, and not `draw()`. The document is already on screen and may already
+    // be being read; replacing the whole surface for two late lines would detach whatever the
+    // operator had focused and reflow the money under them. A redraw that DOES have to be whole
+    // - a void, a refund - goes through `receiptHost` above and restores focus as it does.
+    const facts=dialog.querySelector('[data-testid="invoice-facts"]');
+    if(facts)facts.innerHTML=invoiceVisitFactsMarkup(view.receipt,appointment);
+  });
+  return level;
 }
 
 // Re-reads the receipt and shows it again, which is how every refund outcome comes back to the
 // operator: the row it produced is on the receipt, whatever that row says.
 //
-// The 50ms hand-off is the same one the rest of this file uses when one dialog replaces another;
-// closing and reopening `#modal` in the same tick leaves the browser without a frame to run the
-// close transition in.
+// BOTH HOSTS REDRAW IN PLACE NOW - the settled Check Out panel and the Invoice workspace both
+// register as `receiptHost` while they are open - so the reopen below is the last resort for a
+// correction taken from somewhere neither is standing. The 50ms hand-off is the same one the rest
+// of this file uses when one dialog replaces another; opening a surface in the same tick as a
+// dialog closes leaves the browser without a frame to run the close transition in.
 let receiptHost=null;
 async function reopenReceipt(invoiceId,message){
   const receipt=await api(`/api/invoices/${invoiceId}/receipt`);
@@ -4139,9 +4711,25 @@ async function refreshRefund(refundId,invoiceId){
   });
 }
 
-async function voidPayment(paymentId,invoiceId,provider,method,amountMinor=0) {
-  const reason=prompt("Reason for voiding this payment record:");
-  if(!reason)return;
+/**
+ * VOIDING A PAYMENT RECORD, ASKED IN ONE OF PAWSH'S OWN DIALOGS.
+ *
+ * This used to be two native browser dialogs in a row - a `prompt` for the reason and then a
+ * `confirm` for the warning - which the browser draws itself, titles "127.0.0.1:3000 says", and
+ * puts nowhere near the receipt the operator is correcting. They are now ONE stacked dialog
+ * carrying both halves: the warning is the sentence at the top and the reason is the field under
+ * it, so the operator reads what voiding will do to the money BEFORE typing why.
+ *
+ * `#stacked-dialog` because this is pressed from inside the Invoice, which IS `#modal`.
+ *
+ * WHAT DID NOT CHANGE. The three warning sentences are the same three sentences and are chosen the
+ * same way. A terminal payment still only toasts and still sends nothing. A reason is still
+ * required and is still sent verbatim - no trim, no floor of its own - so the server's own
+ * `trim().min(3).max(500)` remains the one authority on what a reason has to be, and its refusal
+ * still comes back as a toast. Dismissing still sends nothing at all; confirming still sends
+ * exactly one `payment.void` through `financialMutation`, with the same body.
+ */
+function voidPayment(paymentId,invoiceId,provider,method,amountMinor=0) {
   // A credit payment is the one case where voiding DOES move money - back onto the client's
   // balance, as a `redemption_reversal` written in the void's own transaction - so the sentence
   // says so rather than reassuring the operator that nothing was refunded.
@@ -4157,15 +4745,37 @@ async function voidPayment(paymentId,invoiceId,provider,method,amountMinor=0) {
     : onCredit
       ? `Void this credit payment? The ${money(amountMinor)} goes back to this client's credit balance.`
       : "Void this Pawsh payment record? This does not refund external funds.";
+  // Asked before the dialog rather than after the reason, because a payment that cannot be voided
+  // at all should not first be asked why it is being voided.
   if(provider){toast(warning);return;}
-  if(!confirm(warning))return;
-  await runOnce(`void:${paymentId}`,async()=>{
-    try{
-      await financialMutation(`/api/payments/${paymentId}/void`,`payment.void`,{reason});
-      await reopenReceipt(invoiceId,onCredit
-        ?`Payment record voided; ${money(amountMinor)} returned to the client's credit balance.`
-        :"Payment record voided; no external refund was issued");
-    }catch(error){toast(error.message);}
+  openStackedDialog({
+    title:"Void payment record",
+    body:`<p data-testid="void-payment-warning">${escape(warning)}</p>`
+      +`<label class="stacked-field">Reason for voiding this payment record`
+      +`<input type="text" name="voidReason" data-testid="field-voidReason" required></label>`
+      +`<p class="error" role="alert"></p>`,
+    dismissLabel:"Cancel",
+    confirmLabel:"Void payment",
+    onConfirm:async host=>{
+      const errorLine=host.querySelector(".error");errorLine.textContent="";
+      const reason=host.querySelector('[name="voidReason"]').value;
+      // The gate `prompt` gave for free: it returned null when dismissed and "" when left blank,
+      // and both aborted. Same gate, same abort, said out loud - a dialog that closed itself and
+      // did nothing was the one thing the native prompt could not explain.
+      if(!reason){errorLine.textContent="Give a reason for voiding this payment record.";return false;}
+      await runOnce(`void:${paymentId}`,async()=>{
+        try{
+          await financialMutation(`/api/payments/${paymentId}/void`,`payment.void`,{reason});
+          // Deferred one tick for the reason the refund dialog defers its own: `reopenReceipt`
+          // closes and reopens `#modal`, and doing that underneath a stacked dialog that is about
+          // to close leaves two dialogs changing at once.
+          setTimeout(()=>runDetached(()=>reopenReceipt(invoiceId,onCredit
+            ?`Payment record voided; ${money(amountMinor)} returned to the client's credit balance.`
+            :"Payment record voided; no external refund was issued")),0);
+        }catch(error){toast(error.message);}
+      });
+      return true;
+    }
   });
 }
 
@@ -4882,9 +5492,19 @@ async function showCustomerHistory(id) {
     // The row is an invoice row and the control opens that invoice, in every status. It used to
     // read "Receipt" once anything had been paid and open a page titled the same way, which is the
     // paid-implies-Receipt rule this client no longer has anywhere.
+    //
+    // AND CLOSING THE INVOICE COMES BACK HERE. This history list is `#modal`, and the Invoice is a
+    // surface that takes the whole viewport, so the list has to be dismissed for the Invoice to
+    // stand on its own - which used to mean an operator who closed the Invoice was returned to the
+    // client card rather than to the transactions they were working through. `onClose` reopens the
+    // list they came from, so the door closes back onto the room it opened out of.
     $$(".history-invoice").forEach(button=>button.addEventListener("click",async()=>{
       const receipt=await api(`/api/invoices/${button.dataset.invoiceId}/receipt`);
-      $("#modal").close();setTimeout(()=>showInvoiceDocument(receipt),50);
+      const source=button;
+      $("#modal").close();
+      setTimeout(()=>showInvoiceDocument(receipt,{
+        restoreFocus:source,onClose:()=>runDetached(()=>showCustomerHistory(id))
+      }),50);
     }));
   }catch(error){toast(error.message);}
 }
@@ -5402,9 +6022,34 @@ function closeSlotMenu() {
   const menu=$("#slot-menu");
   if(menu&&!menu.hidden){menu.hidden=true;delete menu.dataset.slot;delete menu.dataset.slotGroomer;}
 }
+/**
+ * The menu is STATIC MARKUP in `index.html`, so its two items carried no gate of any kind: a
+ * groomer was offered an enabled Add and an enabled Block on every empty half-hour of the grid.
+ *
+ * Synced on open rather than once at sign-in, for the same reason `syncNewActionAvailability` is:
+ * `reconcilePermissions()` can change what this session holds while the page is still up, and a
+ * menu built from a stale answer is the defect in a smaller shape.
+ *
+ * DISABLED RATHER THAN REMOVED, here. The slot itself is already withheld when NEITHER action is
+ * available, so a menu that opens at all is a menu with something on it - and the item that is not
+ * available has to say why, because its neighbour being pressable is what makes its own absence
+ * read as a bug rather than a rule.
+ */
+function syncSlotMenuAvailability() {
+  const menu=$("#slot-menu");
+  if(!menu)return;
+  for(const [action,reason] of [["add",bookingRefusalReason()],["block",blockingRefusalReason()]]){
+    const item=menu.querySelector(`[data-slot-action="${action}"]`);
+    if(!item)continue;
+    item.disabled=Boolean(reason);
+    item.setAttribute("aria-disabled",String(Boolean(reason)));
+    if(reason)item.title=reason;else item.removeAttribute("title");
+  }
+}
 function openSlotMenu(slot) {
   const menu=$("#slot-menu");
   closeCalendarMenus();
+  syncSlotMenuAvailability();
   menu.dataset.slot=slot.dataset.slot;
   menu.dataset.slotGroomer=slot.dataset.slotGroomer||"";
   menu.hidden=false;
@@ -5414,7 +6059,9 @@ function openSlotMenu(slot) {
   const top=below+size.height>globalThis.innerHeight-8
     ? Math.max(8,anchor.top-size.height-4) : below;
   menu.style.left=`${left}px`;menu.style.top=`${top}px`;
-  menu.querySelector("button")?.focus();
+  // The first item that can actually be pressed, so opening the menu does not land the keyboard on
+  // a refusal. `openSlotMenu` is only reached when at least one of the two is available.
+  (menu.querySelector("button:not(:disabled)")||menu.querySelector("button"))?.focus();
 }
 
 function renderBookingClientPane() {
@@ -5646,9 +6293,18 @@ async function applyBookingDefaults() {
   updateBookingPricePreview();
 }
 
-function openStackedDialog({title,body,confirmLabel,dismissLabel,onConfirm,onDismiss}) {
+/**
+ * `headCloseLabel` puts an X in the dialog's head, and is opt-in because most stacked dialogs are
+ * a question with two answers and do not want a third control saying the same thing as Cancel. A
+ * dialog that reads as a WINDOW - the print preview - does: a window closes from its corner.
+ * It is wired to the dismiss button's own handler rather than to a second one, so there is one
+ * dismissal however it is reached, and setting the heading's text above clears the X the previous
+ * dialog appended, so it cannot outlive the dialog that asked for it.
+ */
+function openStackedDialog({title,body,confirmLabel,dismissLabel,onConfirm,onDismiss,headCloseLabel}) {
   const dialog=$("#stacked-dialog");
-  $("#stacked-dialog-title").textContent=title;
+  const heading=$("#stacked-dialog-title");
+  heading.textContent=title;
   $("#stacked-dialog-body").innerHTML=body;
   const confirm=$('[data-testid="stacked-dialog-confirm"]');
   const dismiss=$('[data-testid="stacked-dialog-dismiss"]');
@@ -5661,6 +6317,16 @@ function openStackedDialog({title,body,confirmLabel,dismissLabel,onConfirm,onDis
     finally{confirm.disabled=false;}
   };
   dismiss.onclick=()=>{dialog.close();onDismiss?.();};
+  if(headCloseLabel){
+    const close=document.createElement("button");
+    close.type="button";
+    close.className="surface-close stacked-dialog-close";
+    close.dataset.testid="stacked-dialog-close";
+    close.setAttribute("aria-label",headCloseLabel);
+    close.innerHTML="&#215;";
+    close.onclick=dismiss.onclick;
+    heading.append(close);
+  }
   dialog.showModal();
   return dialog;
 }
@@ -5732,11 +6398,42 @@ function applyBookingPet(petId) {
   return applyBookingDefaults();
 }
 
+/**
+ * THE PREFETCH IS THE DIALOG'S FIRST ACT, AND IT USED TO BE ABLE TO END THE INTERACTION SILENTLY.
+ *
+ * `Promise.all` of four reads, awaited before `showModal()`. Reached without `customers.view` it
+ * rejected on the 403 - before anything was shown - and every caller is a click listener that is
+ * not `async`, does not await, and has no `.catch`; there is no `unhandledrejection` handler
+ * either. The operator pressed Add and NOTHING happened: no dialog, no toast, no error. Just a
+ * console rejection they will never see.
+ *
+ * Two guards, and they answer different questions. The FIRST is the permission itself, checked
+ * before a single request goes out: it costs no round trip, it names what is missing, and it holds
+ * for every door into this dialog including the ones the calendar does not draw - the toolbar,
+ * the + New menu, Book Again on a client. The SECOND is everything else that can go wrong with
+ * four network reads, which stays a report rather than an unhandled rejection. Neither one hides
+ * anything: the operator is told, in a toast, which is where this client says what it could not do.
+ *
+ * The dialog is not opened on either path. A half-populated booking form is worse than no form -
+ * it offers a client list that is empty because the read failed, not because the salon has no
+ * clients - and `showModal()` is what makes the difference, so nothing runs before this returns.
+ */
 function openBookingDialog(options={}) {
   return runOnce("open:booking-dialog",async()=>{
-    const [customers,pets,employees,services]=await Promise.all([
-      api("/api/customers"),api("/api/pets"),api("/api/employees"),api("/api/services")
-    ]);
+    const refusal=bookingRefusalReason();
+    if(refusal){toast(refusal);return;}
+    let customers,pets,employees,services;
+    try{
+      [customers,pets,employees,services]=await Promise.all([
+        api("/api/customers"),api("/api/pets"),api("/api/employees"),api("/api/services")
+      ]);
+    }catch(error){
+      // A 403 here means this session's permissions moved under it - `api()` has already re-read
+      // `/api/me`, so the affordances redraw on their own - and the sentence says which key it is
+      // rather than repeating the server's generic refusal.
+      toast(error.status===403?bookingRefusalReason()||error.message:error.message);
+      return;
+    }
     Object.assign(state,{customers,pets,employees,services});
     resetBookingState(options);
     $("#booking-error").textContent="";
@@ -5981,7 +6678,7 @@ $("#account-change-password").addEventListener("click",()=>{closeAccountMenu();s
 document.addEventListener("click",event=>{if(!accountMenu.hidden&&!$(".account-control").contains(event.target))closeAccountMenu();});
 document.addEventListener("click",event=>{if(!event.target.closest(".calendar-actions-menu")&&!event.target.closest("#slot-menu"))closeCalendarMenus();});
 $("#slot-menu").addEventListener("click",event=>{
-  const action=event.target.closest("[data-slot-action]");if(!action)return;
+  const action=event.target.closest("[data-slot-action]");if(!action||action.disabled)return;
   const menu=$("#slot-menu"),preset=menu.dataset.slot||null,groomerId=menu.dataset.slotGroomer||null;
   closeSlotMenu();
   if(action.dataset.slotAction==="add")openBookingDialog({preset,groomerId});
@@ -14028,7 +14725,12 @@ function appointmentActivityMarkup(state){
 // it closes levels and never opens them - so Back and the Android back gesture dismiss exactly
 // one level, and a reload at any depth lands on the view beneath with the stack closed.
 // ---------------------------------------------------------------------------
-const APPOINTMENT_STACK_IDS=["appointment-detail","appointment-checkout","appointment-ticket"];
+// The Invoice is on this stack too, and is the one level that can be level 1 on its own: reached
+// from a client's transaction history there is no visit underneath it, and reached from the
+// appointment footer there is. Both are ordinary levels of the same stack, which is what makes
+// Escape, the browser Back button and the Android back gesture behave the same way at every door.
+const APPOINTMENT_STACK_IDS=["appointment-detail","appointment-checkout","appointment-ticket",
+  "invoice-surface"];
 const appointmentStack={levels:[]};
 // history.back() calls this module made itself. The resulting popstate is already accounted for,
 // and without this the last level's own dismissal would fall through to the view router and
@@ -14149,6 +14851,40 @@ function appointmentBillingChip(item){
   return {label:`${invoiceStatusLabel(item.invoiceStatus)}${item.invoiceBalanceMinor?` · ${money(item.invoiceBalanceMinor)} due`:""}`,tone:"owing"};
 }
 
+/** The invoice statuses that mean money is still to collect. Mirrors `invoiceStatusAfterSettlement`. */
+const OUTSTANDING_INVOICE_STATUSES=["draft","open","partially_paid"];
+
+/**
+ * IS THERE STILL MONEY TO COLLECT ON THIS VISIT'S BILL?
+ *
+ * READ OFF THE PROJECTION'S OWN FINANCIAL COLUMNS - `invoiceStatus` and `invoiceBalanceMinor` -
+ * and off nothing else. The defect this exists for is what the footer used to ask instead: whether
+ * an invoice RECORD existed. Voiding the payment on a settled visit leaves the record exactly
+ * where it was and puts $79.01 back on the bill, so "an invoice exists" answered `true` and Take
+ * Payment stayed gone. The billing chip beside it read `Open · $79.01 due` off these very columns
+ * the whole time; the operator could see the money and had no way to take it.
+ *
+ * BOTH COLUMNS, AND THEY CANNOT DISAGREE. `applyInvoiceSettlement` writes `balance_minor` and
+ * `status` in one statement, and `invoiceStatusAfterSettlement` derives the status FROM the
+ * balance - so this is one fact read twice rather than two facts hedged against each other. It
+ * also means a client holding half a refresh cannot offer to collect against a settled bill.
+ *
+ * A REFUNDED INVOICE IS NOT OUTSTANDING and needs no special case here. `refunded` and
+ * `partially_refunded` are only ever reached with `balanceMinor === 0`; money going back does not
+ * raise the balance, precisely so a refund does not put the bill in front of whoever chases
+ * outstanding ones. If a later VOID does raise it, the same function renames the invoice
+ * `open` or `partially_paid` - an outstanding status - and this answers `true`, which is correct:
+ * somebody now has to collect it.
+ *
+ * A `void` INVOICE CANNOT REACH THIS. The appointment projection joins `inv.status<>'void'`, so a
+ * voided bill leaves `invoiceStatus` null and the visit reads as uninvoiced.
+ */
+function appointmentInvoiceOutstanding(item){
+  if(!item.invoiceStatus)return false;
+  return OUTSTANDING_INVOICE_STATUSES.includes(item.invoiceStatus)
+    &&Number(item.invoiceBalanceMinor||0)>0;
+}
+
 // Minutes as an operator says them. Under an hour is the raw count; an hour and over is split,
 // because "75 min" makes the reader do the division every single time.
 function lifecycleDurationLabel(minutes){
@@ -14190,10 +14926,11 @@ function appointmentLifecycleMarkup(activity,{editable=false}={}){
       : "");
 }
 
-// Through `appendPrintRoot`, like every other printed document. The <h1> is prepended because
+// Through `previewPrintRoot`, like every other printed document. The <h1> is prepended because
 // `printableAgenda` carries no title of its own.
 function printAppointment(item){
-  appendPrintRoot("print-root",`<h1>Pawsh appointment</h1>${printableAgenda([item])}`);
+  previewPrintRoot("print-root",`<h1>Pawsh appointment</h1>${printableAgenda([item])}`,
+    "Pawsh appointment");
 }
 
 /**
@@ -14218,8 +14955,9 @@ function printAppointment(item){
 function appointmentRecordNoteMarkup(surface){
   const {item,permissions:can,note}=surface;
   const head=`<div class="work-block-head"><h3>Appointment note</h3>`
-    +(can.editAppointmentNote&&!note.open
-      ? `<button type="button" class="secondary compact" data-testid="appointment-note-edit">`
+    +(can.editAppointmentNoteOffered&&!note.open
+      ? `<button type="button" class="secondary compact" data-testid="appointment-note-edit"${
+        can.editAppointmentNote?"":appointmentPermissionRefusal("edit the appointment note","appointments.edit")}>`
         +`${item.notes?"Edit":"Add"}</button>`
       : "")
     +`</div>`;
@@ -14283,6 +15021,39 @@ function appointmentNotesBlockMarkup(surface){
   +`</div>`;
 }
 
+/**
+ * A REFUSAL IS NOT A FAILURE, AND IT MUST NOT BE OFFERED A RETRY.
+ *
+ * The client rail fired `/history`, `/notes` and `/agreements` with no gate on any of them. For a
+ * groomer all three are 403, `loadClient`'s bare `catch{}` threw the status away, and the rail drew
+ * "The client record could not be loaded. Retry" - a sentence that says a transient failure and a
+ * button that promises the next attempt might work. It never could: pressing Retry re-sent the same
+ * three refusals, each of which cost `api()` a `/api/me` re-read and a full calendar re-render.
+ *
+ * What is drawn instead says which permission is missing and offers nothing to press. The rest of
+ * the surface - times, services, money, the visit's own notes - is unaffected, because none of it
+ * came from these three reads.
+ */
+/**
+ * The attributes that turn an appointment control into a refusal, written once.
+ *
+ * `disabled aria-disabled="true"` plus a title is the pattern the blocked-time drawer's Update and
+ * Delete established and the Invoice button on the appointment footer already follows, so five
+ * more controls join it rather than inventing a sixth shape. The permission key travels in the
+ * sentence because a member who reads "you do not have permission" and cannot name the permission
+ * has been told they are stuck, not what to ask for.
+ */
+function appointmentPermissionRefusal(action,permission){
+  return ` disabled aria-disabled="true" title="You do not have permission to ${action} (${permission})"`;
+}
+
+function clientRailRefusalMarkup(){
+  return `<div class="rail-status" data-testid="appointment-client-refused">`
+    +`<p class="note-empty">Client records are not part of this role.</p>`
+    +`<p class="fine">Seeing a client's history, notes and agreements needs `
+      +`<strong>Access Clients Tab</strong> (customers.view).</p></div>`;
+}
+
 function appointmentSurfaceMarkup(surface){
   const {item,model,activity,photos,cards,permissions:can}=surface;
   const billing=appointmentBillingChip(item);
@@ -14319,17 +15090,23 @@ function appointmentSurfaceMarkup(surface){
 
   // The rail is clientSummaryMarkup() verbatim, written in after open by
   // renderClientSummaryPane(). It is a <details> so the phone layout can collapse it.
+  //
+  // "Loading client…" is a CLAIM that something is being fetched, so it is drawn only when
+  // something is. Without `customers.view` the three reads behind this rail never go out and the
+  // refusal is on screen from the first paint - not after three 403s have come back.
   const rail=`<details class="surface-rail" data-testid="appointment-client-rail" open>`
     +`<summary class="surface-rail-toggle">`
       +`<span class="service-section-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></span>`
       +`<span>Client</span></summary>`
-    +`<div class="surface-rail-body"><p class="note-empty">Loading client…</p></div>`
+    +`<div class="surface-rail-body">${can.viewClient
+      ?`<p class="note-empty">Loading client…</p>`:clientRailRefusalMarkup()}</div>`
   +`</details>`;
 
   const work=`<section class="appointment-work">`
     +`<div class="work-block"><div class="work-block-head"><h3>Groomer</h3>`
-      +(can.move
-        ? `<button type="button" class="icon-action" data-testid="appointment-groomer-edit" aria-label="Change groomer or time">&#9998;</button>`
+      +(can.moveOffered
+        ? `<button type="button" class="icon-action" data-testid="appointment-groomer-edit" aria-label="Change groomer or time"${
+          can.move?"":appointmentPermissionRefusal("change the groomer or the time","appointments.edit")}>&#9998;</button>`
         : "")
       +`</div><p data-testid="appointment-groomer">${escape(model.groomer)}</p>`
       +appointmentLockNoteMarkup("appointment-detail-lock-note")+`</div>`
@@ -14339,8 +15116,9 @@ function appointmentSurfaceMarkup(surface){
       +(model.warning?`<p class="detail-warning">${escape(model.warning)}</p>`:"")
     +`</div>`
     +`<div class="work-block appointment-services-block"><div class="work-block-head"><h3>Services</h3>`
-      +(can.adjustServices
-        ? `<button type="button" class="secondary compact" data-testid="appointment-adjust-services">Adjust services</button>`
+      +(can.adjustServicesOffered
+        ? `<button type="button" class="secondary compact" data-testid="appointment-adjust-services"${
+          can.adjustServices?"":appointmentPermissionRefusal("change the services on this appointment","appointments.edit")}>Adjust services</button>`
         : "")
       +`</div>${serviceRows}`
       +`<div class="appointment-service-total"><span>Total</span><strong>${model.durationMinutes} min${
@@ -14379,18 +15157,35 @@ function appointmentSurfaceMarkup(surface){
   // completed visit CLOSE GIVES UP THE PRIMARY SLOT, because opening the Ticket is what the
   // operator came for and dismissal is not, while on a cancelled or no-show visit there is nothing
   // to come for and Close keeps it.
-  // WHICH CONTROL OWNS THE READ-ONLY FOOTER'S PRIMARY SLOT, decided once so that two buttons
-  // cannot both claim it. The bill takes it whenever there is one, because an operator opening a
-  // settled visit came to see what was charged; failing that the Ticket takes it on a completed
-  // visit; and on a cancelled or no-show visit, where there is nothing to come for, Close keeps it.
-  const primarySlot=can.invoice?"invoice":can.ticketPrimary?"ticket":"close";
+  // WHICH CONTROL OWNS THE FOOTER'S PRIMARY SLOT, decided once so that two buttons cannot both
+  // claim it. MONEY OWED OUTRANKS THE DOCUMENT: if there is a balance the operator may collect,
+  // taking it is what they came for and the bill is one press away beside it. Failing that the
+  // bill takes the slot whenever there is one, because an operator opening a settled visit came to
+  // see what was charged; failing that the Ticket takes it on a completed visit; and on a
+  // cancelled or no-show visit, where there is nothing to come for, Close keeps it.
+  const primarySlot=can.checkout?"checkout":can.invoice?"invoice":can.ticketPrimary?"ticket":"close";
   const ticket=`<button type="button" class="${can.readOnly&&primarySlot==="ticket"?"primary":"secondary"} compact" data-testid="appointment-ticket">Ticket</button>`;
-  // The slot Take Payment gives up once the visit is billed. It OPENS the invoice rather than
-  // raising a second one, and it is the same dialog a client's transaction history opens, so
-  // there is one Invoice document with one title and one pair of print controls.
+  // It OPENS the invoice rather than raising a second one, and it is the same workspace a client's
+  // transaction history opens, so there is one Invoice document with one title and one pair of
+  // print controls.
+  //
+  // STILL DRAWN WHEN TAKE PAYMENT IS BESIDE IT, and it gives up the primary slot rather than the
+  // footer. AN UNSETTLED INVOICE IS STILL A DOCUMENT: it is printable in every settlement state,
+  // it holds the payment history including the record that was just voided, and the operator who
+  // has just voided a payment is exactly the one who may want to look at what is left. Withdrawing
+  // it whenever money is owed would rebuild the defect above from the other side - a bill that
+  // demonstrably exists, with no route to it from the visit that raised it.
   const invoice=can.invoice
-    ? `<button type="button" class="primary compact" data-testid="appointment-invoice"${
+    ? `<button type="button" class="${primarySlot==="invoice"?"primary":"secondary"} compact" data-testid="appointment-invoice"${
       can.invoiceViewable?"":` disabled aria-disabled="true" title="You do not have permission to view invoices"`}>Invoice</button>`
+    : "";
+  // Billing the visit, or collecting what is still owed on a bill already raised. ONE CONTROL FOR
+  // BOTH, interpolated into both footers, because `readOnly` is a statement about the VISIT no
+  // longer moving - its times, its groomer, its services - and a bill that is still owed is not a
+  // visit that is still moving. A completed invoiced appointment is read-only in exactly that
+  // sense while its money is still open, which is why this cannot live in the mutable branch alone.
+  const takePayment=can.checkout
+    ? `<button type="button" class="primary compact" data-testid="appointment-take-payment">Take Payment</button>`
     : "";
   const foot=can.readOnly
     // Nothing on this appointment can move any more, so the footer offers the things that still
@@ -14398,10 +15193,12 @@ function appointmentSurfaceMarkup(surface){
     ? `<footer class="surface-foot"><div class="surface-foot-actions"></div>`
       +`<div class="surface-foot-actions">${print}`
       +`<button type="button" class="${primarySlot==="close"?"primary":"secondary"} compact" data-testid="appointment-close">Close</button>`
-      +ticket+invoice+`</div></footer>`
+      +ticket+invoice+takePayment+`</div></footer>`
     : `<footer class="surface-foot"><div class="surface-foot-actions">`
-        +(can.cancel?`<button type="button" class="secondary compact destructive" data-testid="appointment-cancel">Cancel</button>`:"")
-        +(can.cancel?`<button type="button" class="secondary compact" data-testid="appointment-no-show">No-show</button>`:"")
+        +(can.cancelOffered?`<button type="button" class="secondary compact destructive" data-testid="appointment-cancel"${
+          can.cancel?"":appointmentPermissionRefusal("cancel appointments","appointments.cancel")}>Cancel</button>`:"")
+        +(can.cancelOffered?`<button type="button" class="secondary compact" data-testid="appointment-no-show"${
+          can.cancel?"":appointmentPermissionRefusal("mark an appointment as a no-show","appointments.cancel")}>No-show</button>`:"")
         +(can.bookAgain?`<button type="button" class="secondary compact" data-testid="appointment-book-again">Book Again</button>`:"")
       +`</div><div class="surface-foot-actions">${print}${ticket}`
         // An invoice reaches this branch only if one exists while the visit is still moving, which
@@ -14411,9 +15208,9 @@ function appointmentSurfaceMarkup(surface){
         // with Take Payment for the primary slot, because `checkout` requires no invoice and this
         // requires one.
         +invoice
-        // Billing the visit stays the primary action while it is still unbilled; the Ticket is
+        // Billing the visit stays the primary action while there is money to take; the Ticket is
         // available beside it.
-        +(can.checkout?`<button type="button" class="primary compact" data-testid="appointment-take-payment">Take Payment</button>`:"")
+        +takePayment
         +(can.editNote?`<button type="button" class="primary compact" data-testid="appointment-save">Save</button>`:"")
       +`</div></footer>`;
 
@@ -14444,7 +15241,7 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
   const surface={
     item,model:appointmentPresentation(item),
     activity:{items:null,failed:false},photos:{data:null,failed:false},cards:{data:null,failed:false},
-    client:{loaded:false,failed:false},permissions:null,
+    client:{loaded:false,failed:false,refused:false},permissions:null,
     // The appointment note's editor, held on the surface rather than in the DOM so a redraw
     // underneath it - a closing modal, a reload after a transition - restores what the operator
     // was typing instead of retyping the field from the row. `baseVersion` is the version of the
@@ -14474,12 +15271,69 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
     const status=surface.item.status,invoiced=Boolean(surface.item.invoiceStatus);
     return {
       readOnly:["cancelled","no_show"].includes(status)||(status==="completed"&&invoiced),
+      /*
+       * WHETHER THE VISIT ALLOWS IT AND WHETHER THE PERSON MAY DO IT ARE TWO DIFFERENT QUESTIONS,
+       * AND THIS SURFACE USED TO ANSWER THEM WITH ONE FLAG.
+       *
+       * Five controls - the groomer pencil, Adjust services, the appointment note's Edit, Cancel
+       * and No-show - were rendered as `""` whenever either half was false. A groomer opened an
+       * appointment and got a screen with nothing on it and nothing saying why: not one disabled
+       * control, not one reason, no way to learn that the missing piece was a permission rather
+       * than a broken page.
+       *
+       * So each is split. The `*Offered` half is the STATE of the visit and keeps the existing
+       * rule exactly - absent, never disabled - because withholding a transition the server would
+       * refuse is honest and a control that could never apply here explains nothing. The plain
+       * half is the PERMISSION, and a control the visit allows but this role may not use is drawn
+       * `disabled aria-disabled="true"` with a title naming the key, which is what the blocked-time
+       * drawer's Update and Delete do and what the Invoice button on this very footer does.
+       *
+       * THE APPOINTMENT LOCK STAYS ON THE STATE SIDE. It is a workspace setting rather than a
+       * permission - nobody's role changes when it goes on - and `appointmentLockNoteMarkup` is
+       * already drawn in this block to say so in a full sentence. A disabled pencil under it would
+       * be the same fact twice.
+       */
+      moveOffered:status==="scheduled"&&!appointmentsLocked(),
       move:status==="scheduled"&&appointmentMoveAllowed(),
+      adjustServicesOffered:["checked_in","in_service"].includes(status),
       adjustServices:["checked_in","in_service"].includes(status)&&allowed("appointments.edit"),
-      // Only a completed appointment can be checked out, and only once: the server says so, so
-      // the button is absent rather than offered and refused. Absent, never disabled - the
-      // precedent is calendarAction(), which withholds a transition the operator cannot make.
-      checkout:status==="completed"&&!invoiced&&allowed("checkout.perform"),
+      /*
+       * TAKE PAYMENT IS ABOUT MONEY STILL OWED, NOT ABOUT WHETHER A BILL WAS EVER RAISED.
+       *
+       * This used to read `!invoiced`, and the presence of an invoice RECORD was what withheld it.
+       * That was right for the only transition it was thinking about - the server refuses a second
+       * checkout, so offering one would be offering a refusal - and wrong for every state that
+       * arrives afterwards. Void the payment on a settled visit and the invoice goes back to
+       * `Open` with the whole balance owing; the chip in the header says so; and the footer went
+       * on showing `Invoice` with no way at all to take the money. The operator was stranded on
+       * the one screen that had just told them $79.01 was due.
+       *
+       * THREE STATES, ONE RULE:
+       *
+       *   A. no invoice                  Take Payment - and Check Out raises the bill.
+       *   B. invoice, balance outstanding Take Payment - and Check Out COLLECTS AGAINST THAT
+       *                                   INVOICE. `checkoutMode` returns "collect" whenever the
+       *                                   receipt it loaded still has a balance, and the collect
+       *                                   path never posts `/checkout` at all: it tenders against
+       *                                   `co.receipt.invoice`. There is no second invoice to
+       *                                   raise, and the screen says so in its own words -
+       *                                   "Invoice N is already raised... only the payment is
+       *                                   still open".
+       *   C. invoice, settled            No Take Payment. Nothing is owed, the server would refuse
+       *                                   a tender against a settled invoice, and `Invoice` takes
+       *                                   the primary slot below.
+       *
+       * NOTHING HERE WIDENS WHAT THE SERVER ALLOWS OR WEAKENS A GUARD. Take Payment opens
+       * `checkout()`, the same screen the calendar's own Checkout action opens, under the same
+       * `checkout:<id>` key; the tender it composes goes to `POST /api/invoices/:id/payments`,
+       * which holds the invoice row lock, refuses a status that cannot accept payment, refuses a
+       * second tender while a card is on a terminal for this invoice
+       * (`TERMINAL_CAPTURE_IN_FLIGHT`), and refuses a request composed against a balance that has
+       * since moved. Those guards are the route's and this reaches them by the front door.
+       */
+      checkout:status==="completed"
+        &&(!invoiced||appointmentInvoiceOutstanding(surface.item))
+        &&allowed("checkout.perform"),
       // THE BILL THIS VISIT RAISED, AND IT IS A DOCUMENT RATHER THAN A TRANSITION. The moment an
       // invoice exists `checkout` above goes false and Take Payment leaves the footer - correctly,
       // because the server refuses a second checkout - but nothing replaced it. A visit whose own
@@ -14504,7 +15358,10 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
       // saying "yours to see, not yours to open" is the blocked-time footer, whose Update and
       // Delete stay on screen carrying `disabled aria-disabled="true"` and a title that says why.
       invoiceViewable:allowed("payments.view"),
+      cancelOffered:status==="scheduled",
       cancel:status==="scheduled"&&allowed("appointments.cancel"),
+      // The rail this opens is `customers.view`-gated, and so is Book Again's own dialog.
+      viewClient:allowed("customers.view"),
       bookAgain:allowed("appointments.create"),
       // NOT DERIVED AT ALL ANY MORE, and that is the point. The Ticket is the CRM document for the
       // visit - who, which pet, which services - so it needs no completion, no invoice and no
@@ -14526,6 +15383,9 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
       // records what the client asked for is corrected long after the visit has settled, and
       // `PATCH /api/appointments/:id` accepts it in every status including completed and
       // invoiced. So this is gated on the permission and on nothing else.
+      // Offered in every status - see the note on the markup - so the state half is unconditional
+      // and only the permission decides whether it is pressable.
+      editAppointmentNoteOffered:true,
       editAppointmentNote:allowed("appointments.edit")
     };
   };
@@ -14629,6 +15489,9 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
   const drawRail=()=>{
     const host=dialog.querySelector(".surface-rail-body");
     if(!host)return;
+    // Refused, not failed: nothing to retry, so nothing is offered. Checked first, because a
+    // refusal that fell through to the branch below would carry that branch's Retry.
+    if(surface.client.refused){host.innerHTML=clientRailRefusalMarkup();return;}
     if(surface.client.failed){
       // A failed rail must not take the main column with it: times, services and money are what
       // this surface was opened for, and they are already on screen.
@@ -14685,8 +15548,13 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
   };
 
   const loadClient=async()=>{
-    surface.client={loaded:false,failed:false};
     clientSummaryRail=null;
+    // THE THREE READS DO NOT GO OUT AT ALL without the permission they need. Gating the rail here
+    // rather than only at its call site keeps Retry, a reopened surface and a reload on the same
+    // rule, and it is what removes the three 403s - and the three `/api/me` reconciliations and
+    // three calendar re-renders `api()` spends on them - from opening an appointment.
+    if(!allowed("customers.view")){surface.client={loaded:false,failed:true,refused:true};drawRail();return;}
+    surface.client={loaded:false,failed:false,refused:false};
     drawRail();
     try{
       const [data,notes,agreements]=await Promise.all([
@@ -14707,13 +15575,37 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
       // Registered only once there is a client to draw, so an unrelated renderClientProfile()
       // while the fetch is in flight cannot write somebody else's record into this rail.
       clientSummaryRail={host:()=>$("#appointment-detail .surface-rail-body"),returnView};
-    }catch{surface.client.failed=true;}
+    }catch(error){
+      // The STATUS is what decides which of the two sentences the rail draws, so it is read here
+      // instead of being swallowed. A 403 arriving despite the gate above means the session's
+      // permissions moved while this surface was open, and it is still a refusal, not a failure.
+      surface.client.failed=true;
+      surface.client.refused=error?.status===403;
+    }
     if(!stale())drawRail();
   };
 
+  /*
+   * THE SERVER FIRST, AND THE CALENDAR ONLY IF THE SERVER CANNOT BE REACHED.
+   *
+   * This used to read `calendarAppointmentById(id)` first and fall back to the route. Every caller
+   * of this function is a redraw AFTER a mutation - a checkout, a cancellation, a void or a refund
+   * taken inside the Invoice workspace - and the calendar cache is a snapshot that a concurrent
+   * `refresh()` has not necessarily replaced yet. So the one moment the surface most needed the
+   * truth was the one moment it was most likely to redraw from a stale copy: void a payment, and
+   * `reopenReceipt` fires `refresh()` DETACHED while the workspace's `onClose` awaits this - a
+   * race the cached branch could and did lose, leaving a footer drawn from `invoiceStatus: "paid",
+   * invoiceBalanceMinor: 0` over an invoice that had just gone back to `Open` with $79.01 owing.
+   *
+   * IT IS THE SAME PROJECTION EITHER WAY. `GET /api/appointments/:id` answers out of
+   * `appointmentCalendarRows`, the very query that fills the calendar, so nothing about the shape
+   * changes - only how fresh it is. The cache stays as the fallback for a read that FAILED,
+   * because redrawing from a stale appointment is better than blanking a surface the operator is
+   * standing on.
+   */
   const reload=async()=>{
     if(stale())return;
-    const next=calendarAppointmentById(id)||await api(`/api/appointments/${id}`).catch(()=>null);
+    const next=await api(`/api/appointments/${id}`).catch(()=>null)||calendarAppointmentById(id);
     if(stale())return;
     if(next)surface.item=next;
     surface.model=appointmentPresentation(surface.item);
@@ -14753,7 +15645,7 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
     // than opened through #modal. Guarded by the same key the calendar's own Checkout uses: two
     // concurrent renders of that screen is the failure advanceAppointment() documents.
     on("appointment-take-payment",()=>runDetached(()=>runOnce(`checkout:${id}`,()=>checkout(id))));
-    // THE INVOICE, OPENED THROUGH THE ONE DIALOG THAT OWNS IT.
+    // THE INVOICE, OPENED THROUGH THE ONE SURFACE THAT OWNS IT.
     //
     // `showInvoiceDocument` already holds the Invoice's title and identity, Print Invoice, and the
     // Print Receipt that appears once the settlement completed - and a settled invoice shows BOTH,
@@ -14766,17 +15658,17 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
     // That attribute is a fact about a DOM node and can be removed in a console; this is a fact
     // about the actor. The server refuses the read as well - this is the client refusing to ask.
     //
-    // Through #modal, which opens ON TOP of this surface rather than replacing it, so the visit is
-    // still behind the bill; `throughModal` redraws the surface when it closes, because a refund
-    // or a void taken from inside that dialog changes the very billing chip that led the operator
-    // to press this. The read runs first and the modal is wired only once it has come back, so a
-    // failed fetch leaves no close-handler waiting on a dialog that never opened.
+    // PUSHED AS A LEVEL rather than opened through #modal, which is what the Invoice used to be a
+    // dialog in. The visit is still behind the bill, closing the Invoice pops back onto it, and
+    // the level's own `onClose` reloads this surface - because a refund or a void taken from
+    // inside the Invoice changes the very billing chip that led the operator to press this. The
+    // read runs first, so a failed fetch pushes no level at all.
     on("appointment-invoice",()=>runDetached(()=>runOnce(`invoice:${id}`,async()=>{
       if(!allowed("payments.view"))return;
       const invoiceId=surface.item.invoiceId;
       if(!invoiceId)return;
       const receipt=await api(`/api/invoices/${invoiceId}/receipt`);
-      throughModal(()=>showInvoiceDocument(receipt));
+      showInvoiceDocument(receipt);
     })));
     // Level 3, pushed the same way and guarded the same way: `openTicket` awaits its two note
     // reads after it pushes, and a second press inside that window would render and bind the
@@ -15072,12 +15964,17 @@ function ticketSurfaceMarkup(item,notes){
 /**
  * The sheet on paper.
  *
- * Through `appendPrintRoot`, like every other printed document, but with NO PREPENDED <h1> -
+ * Through `previewPrintRoot`, like every other printed document, but with NO PREPENDED <h1> -
  * `printAppointment` and the two financial documents prepend one because their bodies carry no
  * title of their own, and this one opens on the appointment reference and the salon's name.
+ *
+ * It is still named to the PREVIEW, in the exact words the Ticket surface heads itself with. The
+ * body's reference line is inside the scroller and can be scrolled away from; the window's own
+ * heading cannot, and this is the one document whose preview had no title anywhere at all.
  */
 function printTicket(item,notes){
-  appendPrintRoot("print-root print-ticket",ticketDocumentMarkup(item,notes));
+  previewPrintRoot("print-root print-ticket",ticketDocumentMarkup(item,notes),
+    `Ticket #: ${ticketReference(item)}`);
 }
 
 /**

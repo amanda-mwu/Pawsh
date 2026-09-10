@@ -329,6 +329,17 @@
   <dialog id="appointment-detail" class="fullscreen-surface" aria-labelledby="appointment-detail-title" data-testid="appointment-detail-surface"></dialog>
   <dialog id="appointment-checkout" class="fullscreen-surface" aria-labelledby="appointment-checkout-title" data-testid="checkout-surface"></dialog>
   <dialog id="appointment-ticket" class="fullscreen-surface ticket-surface" aria-labelledby="appointment-ticket-title" data-testid="ticket-surface"></dialog>
+  <!-- The Invoice, as a fourth surface on the same stack rather than as a dialog of its own kind.
+       It was a #modal - a 650px form dialog with a two-column field grid, a footer belonging to a
+       form, and an inert green Save - which is the wrong container for a financial document an
+       operator reads, scans and acts on. It is a WORKSPACE, so it takes the frame the other three
+       workspaces take: one shell, a head that names the document, a two-column body, a footer
+       whose actions are the document's own.
+       ONE SURFACE, EVERY DOOR. The appointment footer, a client's transaction history and the
+       terminal-capture screen all open THIS element off the same GET /api/invoices/:id/receipt
+       payload, so there is one Invoice with one title and one pair of print controls however the
+       operator arrived at it. -->
+  <dialog id="invoice-surface" class="fullscreen-surface invoice-surface" aria-labelledby="invoice-surface-title" data-testid="invoice-surface"></dialog>
   <dialog id="modal" data-testid="modal">
     <form id="modal-form">
       <div class="modal-head"><div><p class="eyebrow">Pawsh workflow</p><h3 id="modal-title">Dialog</h3></div><button type="button" class="close" aria-label="Close">×</button></div>

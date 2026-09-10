@@ -525,7 +525,7 @@ test("a coupon is redeemed at checkout, and the receipt names what came off",
     // Named by the coupon, not by the word "Discount": what came off and why is the whole point
     // of the breakdown.
     await expect(receipt.getByTestId("receipt-discount")).toHaveText("Ten off-$10.00");
-    await expect(receipt).toContainText("Subtotal$85.00");
+    await expect(receipt).toContainText("Service subtotal$85.00");
     // A single line needs no sum under it.
     await expect(receipt.getByTestId("receipt-discount-total")).toHaveCount(0);
 
@@ -569,7 +569,7 @@ test("two discounts on one bill compound, and the receipt shows the steps in app
     // The sum appears once there is more than one thing to add up, and it is the figure the tax
     // underneath was taken after.
     await expect(receipt.getByTestId("receipt-discount-total")).toHaveText("Total discount-$28.50");
-    await expect(receipt).toContainText("Subtotal$85.00");
+    await expect(receipt).toContainText("Service subtotal$85.00");
   });
 
 test("a coupon the client cannot use is refused in the server's own words",
@@ -594,8 +594,16 @@ test("a coupon the client cannot use is refused in the server's own words",
     await page.getByTestId("field-couponCode").fill("");
     await page.getByTestId("checkout-submit").click();
     await expect(page.getByTestId("receipt")).toBeVisible();
-    // No coupon, no breakdown row: the receipt renders the line it has always rendered.
-    await expect(page.getByTestId("receipt").getByTestId("receipt-discount")).toHaveText("Discount-$0.00");
+    // NO COUPON, NO DISCOUNTS SECTION AT ALL. This used to assert a permanent `Discount -$0.00`
+    // row, which was one of the equal-weight rows that made the statement hard to scan - and under
+    // the grouped statement a "Discounts" heading over a zero would announce a section about
+    // nothing. An adjustment that did not happen is drawn as absent, the rule the refunded line and
+    // the Receipt's own summary already keep. Nothing else about the bill moved: it took nothing
+    // off, and it no longer says it took nothing off twice.
+    const statement = page.getByTestId("receipt");
+    await expect(statement.getByTestId("receipt-discount")).toHaveCount(0);
+    await expect(statement).not.toContainText("Discount");
+    await expect(statement.locator("h4.receipt-group")).toHaveText(["Services", "Payment records"]);
   });
 
 test("a cashier who may not grant money off can still honour a coupon",

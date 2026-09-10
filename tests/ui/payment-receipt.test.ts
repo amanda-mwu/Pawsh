@@ -43,12 +43,20 @@ import { describe, expect, it } from "vitest";
  * `tests/ui/business-settings.test.ts` already use, widened to cover the print path and the
  * checkout footer.
  *
- * The DOM stub is deliberately tiny and exact. `printFinancialRoot` and `printTicket` only ever
- * create a section, set `className` and `innerHTML`, append it and call `print()`, so a recording
- * `document` reproduces the whole of what they do. `querySelector` is stubbed to answer for a test
- * id ONLY when that id is present in the markup it was handed — which is the property the footer
- * tests turn on: a control that was not rendered cannot be bound, and a handler that was never
- * bound cannot print.
+ * The DOM stub is deliberately tiny and exact. `printFinancialRoot` and `printTicket` compose a
+ * document and hand it to `appendPrintRoot`, which only ever creates a section, sets `className`
+ * and `innerHTML`, appends it and calls `print()`, so a recording `document` reproduces the whole
+ * of what they do. `querySelector` is stubbed to answer for a test id ONLY when that id is present
+ * in the markup it was handed — which is the property the footer tests turn on: a control that was
+ * not rendered cannot be bound, and a handler that was never bound cannot print.
+ *
+ * BETWEEN THE TWO NOW SITS THE PREVIEW, and this file's stub of it CONFIRMS IMMEDIATELY. Every
+ * question below is about WHICH DOCUMENT reaches paper — an Invoice, a Receipt, never a Ticket,
+ * never a Receipt for a settlement that did not complete — and inserting a click into thirty
+ * assertions would not sharpen one of them. That the preview happens at all, that dismissing it
+ * prints nothing, and that Print is the only thing that reaches `appendPrintRoot`, is
+ * `tests/ui/print-preview.test.ts`. The previews are still recorded here, so a document that
+ * skipped the preview entirely would show up as a missing record rather than as nothing.
  */
 const source = readFileSync("public/app.js", "utf8");
 
@@ -81,10 +89,18 @@ const RENDERERS = slice(
   "function salonIdentityOf(",
   "\n// Scoped to the copy of the receipt that was just rendered"
 );
-/** The print controls under an Invoice opened away from Check Out, and the dialog that hosts it. */
+/**
+ * The Invoice workspace: its footer controls, its visit facts, its settlement panel, the shell
+ * that holds them, and the bindings that make its two print controls print.
+ *
+ * `showInvoiceDocument` itself is NOT in this slice. It is surface plumbing - a stack level, a
+ * focus policy, a `receiptHost` claim and the appointment read behind the visit facts - and none
+ * of that decides which document a control produces. What does is `invoiceWorkspaceMarkup` and
+ * `bindInvoiceWorkspace`, both of which are in here and both of which are run.
+ */
 const DOCUMENT_ACTIONS = slice(
-  "function invoiceDocumentActionsMarkup(",
-  "\n// Re-reads the receipt and shows it again"
+  "const INVOICE_UNAVAILABLE_REASON=",
+  "\n/**\n * Opens the Invoice workspace"
 );
 /** The Ticket's own print path, so "never the Ticket" is asserted against the real function. */
 const TICKET_PRINT = slice("function printTicket(item,notes){", "\n/**\n * Opens the Ticket.");
@@ -127,13 +143,16 @@ interface ClientModule {
   printInvoiceDocument(receipt: unknown): void;
   printPaymentReceipt(receipt: unknown): void;
   printTicket(item: unknown, notes: unknown): void;
-  showInvoiceDocument(receipt: unknown): void;
+  invoiceWorkspaceMarkup(receipt: unknown, appointment: unknown): string;
+  openInvoiceWorkspace(receipt: unknown): void;
   bindCheckoutPrintControls(dialog: unknown, co: unknown): void;
   /** Every `.print-root` the client appended to the body, in order. */
   printed: PrintedRoot[];
   /** How many times the client asked the browser to print. */
   prints: { count: number };
-  /** The last dialog `showInvoiceDocument` opened, and the handlers it bound into it. */
+  /** Every print preview the client opened, in order. */
+  previews: { title: string; body: string; confirmLabel: string; dismissLabel: string }[];
+  /** The last Invoice workspace rendered, and the handlers bound into it. */
   modal: ModalRecord;
   modalHandlers: Record<string, () => void>;
 }
@@ -171,6 +190,14 @@ function loadClient(options: { money?: string } = {}): ClientModule {
     const checkoutMoneyMarkup = (co) =>
       "<!--money-->" + (checkoutMode(co) === "settled" ? receiptBodyMarkup(co.receipt) : checkoutSettlementProgressMarkup(co));
     const appointmentPresentation = () => ({dateLabel:"Wed 2 Sep"});
+    // Mirrors INVOICE_STATUS_LABELS, which lives above the slices.
+    const invoiceStatusLabel = (status) =>
+      ({draft:"Draft",open:"Open",partially_paid:"Partially paid",paid:"Paid",
+        partially_refunded:"Partly refunded",refunded:"Refunded",void:"Void"})[status]
+        || String(status || "").replaceAll("_", " ");
+    // The Ticket's own reference, which its print PREVIEW is now titled by. Eight hex characters
+    // in the client, and the same eight here.
+    const ticketReference = (item) => String(item.id).slice(0, 8);
 
     // THE DOM, recorded rather than emulated. Both print paths do exactly four things to it.
     const printed = [];
@@ -196,6 +223,29 @@ function loadClient(options: { money?: string } = {}): ClientModule {
       }
     });
     const openModal = (title, body) => { modal.title = title; modal.body = body; };
+    // THE INVOICE WORKSPACE, RENDERED AND BOUND, WITHOUT ITS SURFACE.
+    //
+    // \`showInvoiceDocument\` opens a <dialog> on the surface stack, claims
+    // \`receiptHost\` and reads the appointment behind the invoice. None of that
+    // decides which document a control produces. This renders the very markup that surface
+    // renders and runs the very bindings it runs, so a control the workspace did not draw is
+    // still a control that cannot be bound and cannot print. A null appointment is the state the
+    // workspace opens in at every door: the visit facts arrive later, and no money line and no
+    // print control depends on them.
+    const openInvoiceWorkspace = (receipt) => {
+      modal.body = invoiceWorkspaceMarkup(receipt, null);
+      for(const key of Object.keys(modalHandlers)) delete modalHandlers[key];
+      bindInvoiceWorkspace(queryHost(() => modal.body, modalHandlers), receipt);
+    };
+    // The preview, recorded and then confirmed. See the header note: this file is about which
+    // document reaches paper, and \`tests/ui/print-preview.test.ts\` is about the step itself.
+    const previews = [];
+    const openStackedDialog = (options) => {
+      previews.push({title:options.title, body:options.body,
+        confirmLabel:options.confirmLabel, dismissLabel:options.dismissLabel});
+      options.onConfirm();
+      return null;
+    };
     const $ = () => queryHost(() => modal.body, modalHandlers);
     // The Invoice's own corrections are bound by their own function and tested by their own spec.
     const bindReceiptActions = () => {};
@@ -209,8 +259,9 @@ ${PRINT_BINDINGS}
     receiptHasPayment, receiptSettlementComplete, invoiceDocumentTitle, paymentReceiptTitle,
     paymentReceiptMarkup, receiptBodyMarkup, checkoutMode, checkoutSurfaceMarkup,
     checkoutSettlementProgressMarkup, invoiceDocumentActionsMarkup, printInvoiceDocument,
-    printPaymentReceipt, printTicket, showInvoiceDocument, bindCheckoutPrintControls,
-    printed, prints, modal, modalHandlers
+    printPaymentReceipt, printTicket, invoiceWorkspaceMarkup, openInvoiceWorkspace,
+    bindCheckoutPrintControls,
+    printed, prints, previews, modal, modalHandlers
   };`;
   const factory = new Function(
     "escape",
@@ -323,6 +374,10 @@ function receiptFixture(payments: Payment[], invoice: Record<string, unknown> = 
       totalMinor: 9201,
       // Settled by default, so a fixture has to SAY it is still owing to be treated as owing.
       balanceMinor: Math.max(0, 9201 - settled),
+      // The two non-money invoice columns the workspace head and its visit facts read. Neither
+      // is a figure and neither gates a document, and a fixture may override either.
+      status: settled >= 9201 ? "paid" : settled ? "partially_paid" : "open",
+      createdAt: "2026-09-02T18:00:00.000Z",
       ...invoice
     },
     items: [],
@@ -350,6 +405,18 @@ function testids(markup: string): string[] {
 }
 
 /**
+ * What the Invoice workspace CALLS ITSELF, read off its own heading.
+ *
+ * The document used to be titled by the dialog it was opened in, so a test could read the
+ * title off the harness. It is a surface now and titles itself, which is stricter: this reads
+ * the <h2> the surface is labelled by, so a workspace that renamed itself once something had
+ * been paid would be caught by the same assertion that used to watch the dialog.
+ */
+function workspaceTitle(markup: string): string {
+  return /data-testid="invoice-document-title">([^<]*)</u.exec(markup)?.[1] ?? "";
+}
+
+/**
  * The rendered value of one labelled line, or `null` when the line was not drawn at all.
  *
  * The whole row is matched rather than the value alone, so a label with an empty `<strong>` after
@@ -371,6 +438,95 @@ function tenderLines(markup: string): string[] {
       /<div class="payment-receipt-tender" data-testid="payment-receipt-tender"><span>([^<]*)<\/span><strong>([^<]*)<\/strong><\/div>/gu
     )
   ].map((match) => `${match[1]} | ${match[2]}`);
+}
+
+/** The purchased lines of the settlement, as `description | amount` pairs in document order. */
+function itemLines(markup: string): string[] {
+  return [
+    ...markup.matchAll(
+      /<div class="payment-receipt-item" data-testid="payment-receipt-item"><span>([\s\S]*?)<\/span><strong>([^<]*)<\/strong><\/div>/gu
+    )
+    // The label may carry a `<small>` naming the pet, so it is read as markup and flattened here
+    // rather than matched as a run of plain text - a line with a pet would otherwise not be seen
+    // at all, and every "lists every service line" assertion would quietly count one fewer.
+  ].map((match) => `${match[1]!.replace(/<[^>]+>/gu, "").replace(/\s+/gu, " ").trim()} | ${match[2]}`);
+}
+
+/**
+ * Two service lines off `invoice_items`, which is all that table holds that a reader wants.
+ *
+ * `description` is `service_name_snapshot` and the amount is `amount_minor`.
+ *
+ * `petName` IS THE SHAPE THE ENDPOINT NOW SENDS, and this fixture carries BOTH of its cases,
+ * deliberately: a non-empty string when the line's OWN `source_appointment_service_id` resolves to
+ * an appointment service whose appointment names a pet, and `null` - never `""`, never a
+ * placeholder - when the line has no source or the source row is unreachable. A manual line is
+ * exactly that second case, and the second line here is one.
+ *
+ * The pet is still not read from the invoice's appointment, and this fixture cannot be used to
+ * pretend otherwise: the two lines disagree about it, so a renderer that fell back to a
+ * visit-level pet would stamp `Barfi` onto `Nail Trim` and be caught.
+ */
+function purchaseItems(): Record<string, unknown>[] {
+  return [
+    { id: "1e000001-0000-4000-8000-00000000000a", description: "Full Groom - Standard",
+      quantity: 1, unitPriceMinor: 7500, amountMinor: 7500, linePosition: 1, petName: "Barfi" },
+    { id: "1e000002-0000-4000-8000-00000000000b", description: "Nail Trim",
+      quantity: 1, unitPriceMinor: 1000, amountMinor: 1000, linePosition: 2, petName: null }
+  ];
+}
+
+/**
+ * THE SHOP'S OWN COPY OF THE WORK, HUNG ON A RECEIPT PAYLOAD SO ITS ABSENCE MEANS SOMETHING.
+ *
+ * Asserting that a Receipt does not say "Appointment note" against a fixture that never carried
+ * one proves nothing at all: the assertion would pass on a renderer that piped the entire Ticket
+ * model through, simply because the fixture was empty. So every operational field the Ticket
+ * draws, or that an appointment projection carries, is present here with a SENTINEL value, at
+ * every level a careless change might reach for one - the receipt root, the invoice, and the
+ * items. A renderer that started reading any of them fails the sweep by name.
+ *
+ * The values are deliberately unmistakable. A sentinel that could occur naturally on a receipt
+ * would make a passing sweep meaningless.
+ */
+const TICKET_ONLY: Record<string, string> = {
+  notes: "TICKET-ONLY-appointment-note-do-not-print",
+  internalNote: "TICKET-ONLY-internal-note-do-not-print",
+  serviceNotes: "TICKET-ONLY-service-note-do-not-print",
+  petNote: "TICKET-ONLY-pet-note-do-not-print",
+  clientNote: "TICKET-ONLY-client-note-do-not-print",
+  groomerNote: "TICKET-ONLY-groomer-note-do-not-print",
+  editHistory: "TICKET-ONLY-edit-history-do-not-print",
+  statusHistory: "TICKET-ONLY-status-history-do-not-print"
+};
+
+/** Every label the Ticket puts on paper. None of them is a heading this document may grow. */
+const TICKET_LABELS = [
+  "Appointment note", "Latest Note", "Breed", "Groomer", "Duration",
+  "Appointment #", "Status history", "Edit history", "Internal note"
+];
+
+/**
+ * A receipt that ACTUALLY ITEMISES, and whose payload also carries the operational fields above.
+ *
+ * `receiptFixture` sends `items: []` - every settlement in this file predates the purchase summary
+ * and none of them needed one - so a fixture that itemises is built here rather than by changing
+ * what thirty existing assertions are handed.
+ *
+ * `status` is NOT overridden from `TICKET_ONLY`: the invoice's own settlement status is a
+ * financial field this payload legitimately carries and the workspace head reads it. The
+ * operational status history, which is the Ticket's, is the sentinel above.
+ */
+function itemisedFixture(
+  payments: Payment[],
+  invoice: Record<string, unknown> = {}
+): Record<string, unknown> {
+  const base = receiptFixture(payments, { ...TICKET_ONLY, ...invoice });
+  return {
+    ...base,
+    ...TICKET_ONLY,
+    items: purchaseItems().map((item) => ({ ...item, ...TICKET_ONLY }))
+  };
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════
@@ -480,7 +636,8 @@ describe("2. a settled Invoice still exposes Print Invoice", () => {
     expect(client.printed[0]!.innerHTML).toContain("<h1>Invoice #1042</h1>");
     // The statement, not the evidence: the bill's own figures and its payment history.
     expect(client.printed[0]!.innerHTML).toContain('data-testid="receipt"');
-    expect(client.printed[0]!.innerHTML).toContain("<span>Total</span>");
+    // The statement's one emphasised final figure, by the name it now carries.
+    expect(client.printed[0]!.innerHTML).toContain("<span>Invoice total</span>");
     expect(client.printed[0]!.innerHTML).not.toContain('data-testid="payment-receipt"');
   });
 
@@ -944,9 +1101,16 @@ describe("every money figure on the Receipt is written by money()", () => {
   const stampedClient = () =>
     loadClient({ money: `(minor) => ${JSON.stringify(STAMP)} + String(Number(minor || 0))` });
 
-  /** The same split settlement the refund tests use: 4000 of credit, 5201 on a card, 1000 back. */
+  /**
+   * The same split settlement the refund tests use: 4000 of credit, 5201 on a card, 1000 back.
+   *
+   * ITEMISED, so the purchase summary's figures are swept by the same sentinel. Every figure the
+   * summary states is one this formatter wrote - a renderer that formatted a price itself would
+   * put a dollar sign on a peso receipt exactly as one that formatted a tender amount itself
+   * would, and the summary is where this document now has the most figures to get wrong.
+   */
   const refundedReceipt = () => ({
-    ...receiptFixture([creditPayment(), keyedCardPayment()]),
+    ...itemisedFixture([creditPayment(), keyedCardPayment()]),
     refunds: [{
       id: "re000001-0000-4000-8000-000000000005",
       paymentId: "ca2d0007-0000-4000-8000-000000000004",
@@ -996,8 +1160,23 @@ describe("the Receipt is not a second host for the Invoice's money statement", (
     expect(markup).not.toContain('class="wide receipt"');
     expect(markup).not.toContain('data-testid="receipt"');
     expect(markup).toContain('<div class="wide payment-receipt" data-testid="payment-receipt">');
-    for (const figure of ["Subtotal", "Discount", "Tax", "Tip", ">Total<"]) {
-      expect(markup, figure).not.toContain(figure);
+    /*
+     * THIS SWEEP USED TO FORBID `Subtotal`, `Discount`, `Tax`, `Tip` AND `Total` BY NAME, and it
+     * no longer can: the Receipt now states what was purchased, by a ruling recorded in ADR-011,
+     * and those five labels are part of what it states. Section 6.1 holds the summary itself.
+     *
+     * The sweep is re-aimed rather than deleted, because its SUBJECT was never the figures. It
+     * was that this document is not a second HOST for `receiptBodyMarkup` - and the things below
+     * are what only that renderer produces: the payment history, the operator corrections against
+     * it, the compounding discount breakdown, and a balance line while nothing is owed. A Receipt
+     * that grew any of them would have been fused with the bill rather than summarised from it.
+     */
+    for (const invoiceOnly of [
+      "Payment records", "No payment recorded", "Void record", "refund-payment",
+      "receipt-discount-step", "receipt-discount-total", "receipt-discount-rate",
+      "payment-receipt-balance"
+    ]) {
+      expect(markup, invoiceOnly).not.toContain(invoiceOnly);
     }
   });
 
@@ -1030,8 +1209,11 @@ describe("the Invoice remains an Invoice after settlement", () => {
       ["in progress", receiptFixture([cashPayment()], { balanceMinor: 5201 })],
       ["settled by split tender", receiptFixture([creditPayment(), keyedCardPayment()])]
     ] as [string, unknown][]) {
-      client.showInvoiceDocument(receipt);
-      expect(client.modal.title, label).toBe("Invoice #1042");
+      client.openInvoiceWorkspace(receipt);
+      expect(workspaceTitle(client.modal.body), label).toBe("Invoice #1042");
+      // The statement is the SHARED renderer, drawn into the workspace exactly as it is drawn
+      // onto paper and into a settled Check Out. The Receipt is a different document and is
+      // never on this surface - it is reached by its own control in the footer.
       expect(client.modal.body, label).toContain('data-testid="receipt"');
       expect(client.modal.body, label).not.toContain('data-testid="payment-receipt"');
     }
@@ -1070,7 +1252,7 @@ describe("a settled visit reached from transaction history can reprint both docu
     // The capability, not the wording: the data to reproduce a Receipt is persisted, so a client
     // asking for proof of payment a week later gets it from the invoice they are looking at.
     const client = loadClient();
-    client.showInvoiceDocument(receiptFixture([creditPayment(), keyedCardPayment()]));
+    client.openInvoiceWorkspace(receiptFixture([creditPayment(), keyedCardPayment()]));
     expect(Object.keys(client.modalHandlers).sort())
       .toEqual(["invoice-print-invoice", "invoice-print-receipt"]);
 
@@ -1078,13 +1260,13 @@ describe("a settled visit reached from transaction history can reprint both docu
     expect(client.printed).toHaveLength(1);
     expect(client.printed[0]!.innerHTML).toContain("<h1>Receipt #1042</h1>");
     expect(client.printed[0]!.innerHTML).toContain("Total settled");
-    // The dialog behind it did not change document.
-    expect(client.modal.title).toBe("Invoice #1042");
+    // The workspace behind it did not change document.
+    expect(workspaceTitle(client.modal.body)).toBe("Invoice #1042");
   });
 
-  it("reprints the Invoice from the same dialog, under the same title", () => {
+  it("reprints the Invoice from the same workspace, under the same title", () => {
     const client = loadClient();
-    client.showInvoiceDocument(receiptFixture([creditPayment(), keyedCardPayment()]));
+    client.openInvoiceWorkspace(receiptFixture([creditPayment(), keyedCardPayment()]));
     client.modalHandlers["invoice-print-invoice"]!();
     expect(client.printed[0]!.innerHTML).toContain("<h1>Invoice #1042</h1>");
     expect(client.printed[0]!.innerHTML).toContain('data-testid="receipt"');
@@ -1092,7 +1274,7 @@ describe("a settled visit reached from transaction history can reprint both docu
 
   it("binds no Receipt control at all on an invoice that is still owing", () => {
     const client = loadClient();
-    client.showInvoiceDocument(receiptFixture([cashPayment()], { balanceMinor: 5201 }));
+    client.openInvoiceWorkspace(receiptFixture([cashPayment()], { balanceMinor: 5201 }));
     expect(Object.keys(client.modalHandlers)).toEqual(["invoice-print-invoice"]);
   });
 });
@@ -1171,5 +1353,378 @@ describe("the Check Out surface says when a settlement is unfinished", () => {
     // The credit line is a different sentence about a different figure — what is left ON ACCOUNT
     // after this component — and it keeps its own wording.
     expect(source).toContain("credit will remain");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// TASK 4 — the Receipt states WHAT WAS PURCHASED, and still states nothing operational.
+//
+// A Receipt is evidence of a completed settlement, and a client holding one may reasonably ask
+// what the settlement was FOR. It may now say so. Itemised detail does not make it an operational
+// document — and the line between the two is the whole subject of this section:
+//
+//   MAY be on it   service or item name, price, discounts, tax, tip, the tender components, a
+//                  refund attributed to the component it reverses, and Total settled.
+//   MUST NOT be    internal notes, workflow or service notes, appointment edit history,
+//                  operational status history, or any other internal work record. Those are the
+//                  SHOP'S OWN COPY OF THE WORK. They are the Ticket's, and a document handed
+//                  across a counter is not where they belong.
+//
+// Every assertion below runs the real renderer. The absence assertions run it against
+// `itemisedFixture`, whose payload CARRIES every operational field by name — so a renderer that
+// later reached for one fails here rather than passing on an empty fixture.
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+describe("6.1 the Receipt states what was purchased", () => {
+  /**
+   * MUTATION THAT MUST FAIL THIS: delete `+paymentReceiptPurchaseMarkup(receipt)` from
+   * `paymentReceiptMarkup`. The document then evidences a settlement of $92.01 without ever
+   * saying what the $92.01 bought, which is the state this section exists to end.
+   */
+  it("lists every service line, in the order the invoice holds them", () => {
+    const markup = loadClient().paymentReceiptMarkup(
+      itemisedFixture([cashPayment({ amountMinor: 9201 })])
+    );
+    expect(itemLines(markup)).toEqual([
+      "Full Groom - Standard (for Barfi) | $75.00",
+      "Nail Trim | $10.00"
+    ]);
+    // Named, because a bare pair of amounts under a salon's address is not self-describing.
+    expect(markup).toContain("<h4>Purchased</h4>");
+  });
+
+  /**
+   * MUTATION THAT MUST FAIL THIS: drop the `name?` guard in `receiptItemPetMarkup`. The manual
+   * line then reads `Nail Trim (for )`, which is a broken template on a document a client keeps.
+   *
+   * WHY THE RECEIPT SHOWS THE PET AT ALL. `invoice_items` did not carry one and the endpoint did
+   * not join for one, so this document said nothing about pets and said in its own comment that
+   * the absence was deliberate. The endpoint resolves `petName` per item now, from one read that
+   * feeds both financial documents - so a household with two dogs on one bill no longer gets two
+   * identical `Full Groom` lines with nothing to tell them apart. It is a fact about what was
+   * purchased, which is exactly what this section is, and it is the client's own data.
+   */
+  it("names the pet on the line whose own source names one, and nothing on the line that does not", () => {
+    const markup = loadClient().paymentReceiptMarkup(
+      itemisedFixture([cashPayment({ amountMinor: 9201 })])
+    );
+    expect(markup).toContain('<small class="receipt-item-pet">(for Barfi)</small>');
+    // ONE parenthetical, on one line. No empty one, no dangling "(for )", no dash.
+    expect(markup.match(/\(for /gu)).toHaveLength(1);
+    expect(markup).not.toContain("(for )");
+    // And the pet is never borrowed from the line beside it: `Nail Trim` has no source pet, so it
+    // is drawn as a line about no pet rather than as a second line about Barfi.
+    expect(itemLines(markup)[1]).toBe("Nail Trim | $10.00");
+  });
+
+  it("states the discount, the tax and the tip that made the total", () => {
+    const markup = loadClient().paymentReceiptMarkup(
+      itemisedFixture([cashPayment({ amountMinor: 9201 })], {
+        subtotalMinor: 8500, discountMinor: 500, taxMinor: 701, tipMinor: 500, totalMinor: 9201
+      })
+    );
+    expect(lineValue(markup, "payment-receipt-subtotal")).toBe("Subtotal | $85.00");
+    expect(lineValue(markup, "payment-receipt-discount")).toBe("Discount | -$5.00");
+    expect(lineValue(markup, "payment-receipt-tax")).toBe("Tax | $7.01");
+    expect(lineValue(markup, "payment-receipt-tip")).toBe("Tip | $5.00");
+    expect(lineValue(markup, "payment-receipt-invoice-total")).toBe("Total | $92.01");
+  });
+
+  it("draws no row for a figure of zero — 'where applicable', the rule this document already uses", () => {
+    // A permanent "Tip $0.00" on a document a client keeps reads as a fact about the visit rather
+    // than as the absence of one, which is why `paymentReceiptLine` and the Invoice's own
+    // `refundedLine` are both withheld at zero. Same rule, same reason.
+    const markup = loadClient().paymentReceiptMarkup(
+      itemisedFixture([cashPayment({ amountMinor: 8500 })], {
+        subtotalMinor: 8500, discountMinor: 0, taxMinor: 0, tipMinor: 0,
+        totalMinor: 8500, balanceMinor: 0
+      })
+    );
+    for (const absent of ["payment-receipt-discount", "payment-receipt-tax", "payment-receipt-tip"]) {
+      expect(lineValue(markup, absent), absent).toBeNull();
+    }
+    // And with nothing to move it, no Subtotal either: a subtotal and a total that are the same
+    // number is one figure under two names, which invites a reader to look for the difference.
+    expect(lineValue(markup, "payment-receipt-subtotal")).toBeNull();
+    expect(lineValue(markup, "payment-receipt-invoice-total")).toBe("Total | $85.00");
+    // The items themselves are still there. This is a summary that shortened, not one that left.
+    expect(itemLines(markup)).toHaveLength(2);
+  });
+
+  it("draws no summary at all for a settlement whose invoice itemises nothing", () => {
+    // An empty heading over nothing states nothing, and the tender composition below stands on
+    // its own exactly as it did before the summary existed.
+    const markup = loadClient().paymentReceiptMarkup(
+      receiptFixture([cashPayment({ amountMinor: 9201 })])
+    );
+    expect(markup).not.toContain("<h4>Purchased</h4>");
+    expect(itemLines(markup)).toEqual([]);
+    expect(lineValue(markup, "payment-receipt-total-settled")).toBe("Total settled | $92.01");
+  });
+
+  it("is a SUMMARY, not a second copy of the Invoice's money statement", () => {
+    // The Invoice draws every discount step in applied order, with its rate, and a sum beneath
+    // them; it also carries the payment history and the operator corrections against it. The
+    // Receipt draws ONE aggregate discount line and no history at all. If these ever appear here,
+    // the two documents have been fused.
+    const markup = loadClient().paymentReceiptMarkup(
+      itemisedFixture([keyedCardPayment({ amountMinor: 9201 })], { discountMinor: 500 })
+    );
+    for (const invoiceOnly of [
+      "receipt-discount-step", "receipt-discount-total", "receipt-discount-rate",
+      "Payment records", "Void record", "refund-payment", 'class="wide receipt"'
+    ]) {
+      expect(markup, invoiceOnly).not.toContain(invoiceOnly);
+    }
+    // Exactly one discount line, carrying `invoice.discountMinor` — the figure those steps sum to.
+    expect(testids(markup).filter((id) => id === "payment-receipt-discount")).toHaveLength(1);
+  });
+
+  it("escapes an item description, which is a snapshot of operator-entered text", () => {
+    const markup = loadClient().paymentReceiptMarkup({
+      ...itemisedFixture([cashPayment({ amountMinor: 9201 })]),
+      items: [{ description: '<script>alert("x")</script>', amountMinor: 9201 }]
+    });
+    expect(markup).not.toContain("<script>");
+    expect(markup).toContain("&lt;script&gt;");
+  });
+});
+
+describe("6.2 the Receipt still identifies itself as a Receipt", () => {
+  /**
+   * MUTATION THAT MUST FAIL THIS: change `paymentReceiptTitle` to return `Invoice #...`, or point
+   * `printPaymentReceipt` at `invoiceDocumentTitle`. A larger document is a document more easily
+   * mistaken for the bill, and the one thing that tells a client which of the two they are holding
+   * is the name at the top of it.
+   */
+  it("puts its own name on the paper, on the preview over it, and nowhere says Invoice", () => {
+    const client = loadClient();
+    client.printPaymentReceipt(itemisedFixture([creditPayment(), keyedCardPayment()]));
+    const root = client.printed.at(-1);
+    expect(root!.className).toContain("print-payment-receipt");
+    expect(root!.innerHTML).toContain("<h1>Receipt #1042</h1>");
+    // The window over the document says the same name, so an operator who pressed the wrong
+    // control learns it before the paper comes out.
+    expect(client.previews.at(-1)!.title).toBe("Print preview: Receipt #1042");
+    // Not the bill, and not the work sheet.
+    expect(root!.innerHTML).not.toContain("Invoice #");
+    expect(root!.innerHTML).not.toContain(TICKET_SENTINEL);
+  });
+
+  it("keeps naming itself a Receipt now that it itemises — the summary did not retitle it", () => {
+    const client = loadClient();
+    const itemised = itemisedFixture([cashPayment({ amountMinor: 9201 })]);
+    expect(client.paymentReceiptTitle(itemised)).toBe("Receipt #1042");
+    // The itemised document and the bill are still two documents under two names off one payload.
+    expect(client.invoiceDocumentTitle(itemised)).toBe("Invoice #1042");
+    const markup = client.paymentReceiptMarkup(itemised);
+    expect(markup).toContain('data-testid="payment-receipt"');
+    expect(markup).not.toContain('data-testid="receipt"');
+  });
+});
+
+describe("6.3 Ticket-only operational content never reaches the Receipt", () => {
+  /**
+   * MUTATION THAT MUST FAIL THIS: draw one of the payload's operational fields on the summary —
+   * `+escape(receipt.invoice.notes||"")` inside `paymentReceiptPurchaseMarkup` is enough. The
+   * fixture CARRIES that field, so the sweep below sees it appear and fails by name.
+   *
+   * This is the assertion that would have caught someone piping the Ticket's model in here. Every
+   * field is present on the payload at three levels — root, invoice and item — and none of them
+   * may render.
+   */
+  it("prints not one of the operational fields its payload is carrying", () => {
+    const markup = loadClient().paymentReceiptMarkup(
+      itemisedFixture([creditPayment(), keyedCardPayment()])
+    );
+    for (const [field, sentinel] of Object.entries(TICKET_ONLY)) {
+      expect(markup, field).not.toContain(sentinel);
+    }
+    // Belt and braces: no sentinel of any kind, however it was reached.
+    expect(markup).not.toContain("TICKET-ONLY");
+  });
+
+  it("grows none of the Ticket's headings", () => {
+    const markup = loadClient().paymentReceiptMarkup(
+      itemisedFixture([creditPayment(), keyedCardPayment()])
+    );
+    for (const label of TICKET_LABELS) {
+      expect(markup, label).not.toContain(label);
+    }
+  });
+
+  it("keeps the operational fields off the PAPER as well as off the screen", () => {
+    // The renderer is one function with one output, but the assertion is worth making at the
+    // printed root too: this is the copy that leaves the building.
+    const client = loadClient();
+    client.printPaymentReceipt(itemisedFixture([cashPayment({ amountMinor: 9201 })]));
+    expect(client.printed.at(-1)!.innerHTML).not.toContain("TICKET-ONLY");
+  });
+
+  it("proves the sentinels are reachable, so their absence above means something", () => {
+    // The control for the three tests above. If `itemisedFixture` ever stopped carrying the
+    // fields, every sweep would pass vacuously — so one assertion reads them off the fixture.
+    const fixture = itemisedFixture([cashPayment({ amountMinor: 9201 })]) as {
+      notes: string; invoice: Record<string, string>; items: Record<string, string>[];
+    };
+    expect(fixture.notes).toContain("TICKET-ONLY");
+    expect(fixture.invoice.statusHistory).toContain("TICKET-ONLY");
+    expect(fixture.items[0]!.editHistory).toContain("TICKET-ONLY");
+  });
+});
+
+describe("6.4 split tender still renders correctly beneath the summary", () => {
+  /**
+   * MUTATION THAT MUST FAIL THIS: reduce `settledComponents` to the first recorded row. The
+   * settlement then evidences $40.00 of a $92.01 purchase and the two figures on the document
+   * contradict each other — which is precisely what a reader would be left to notice.
+   */
+  const split = () => itemisedFixture([creditPayment(), keyedCardPayment()]);
+
+  it("keeps ONE purchase summary above TWO tender components", () => {
+    const markup = loadClient().paymentReceiptMarkup(split());
+    expect(itemLines(markup)).toHaveLength(2);
+    expect(tenderLines(markup)).toEqual([
+      "Client credit | $40.00",
+      "Card | $52.01"
+    ]);
+    // One settlement, so one summary and one aggregate — never a summary per component.
+    expect(testids(markup).filter((id) => id === "payment-receipt-purchase")).toHaveLength(1);
+    expect(testids(markup).filter((id) => id === "payment-receipt-total-settled")).toHaveLength(1);
+  });
+
+  it("reads what was bought, then how it was tendered, then what it came to", () => {
+    const markup = loadClient().paymentReceiptMarkup(split());
+    const order = testids(markup);
+    expect(order.indexOf("payment-receipt-client"))
+      .toBeLessThan(order.indexOf("payment-receipt-purchase"));
+    expect(order.indexOf("payment-receipt-purchase"))
+      .toBeLessThan(order.indexOf("payment-receipt-payment"));
+    expect(order.indexOf("payment-receipt-payment"))
+      .toBeLessThan(order.indexOf("payment-receipt-total-settled"));
+  });
+
+  it("still says Total settled, never Total paid and never a series to count through", () => {
+    const markup = loadClient().paymentReceiptMarkup(split());
+    expect(lineValue(markup, "payment-receipt-total-settled")).toBe("Total settled | $92.01");
+    expect(markup).not.toContain("Total paid");
+    expect(markup).not.toMatch(/Payment \d+ of \d+/u);
+    // The purchased total and the settled total are two different statements about one visit and
+    // both are on the document. Neither replaced the other.
+    expect(lineValue(markup, "payment-receipt-invoice-total")).toBe("Total | $92.01");
+  });
+
+  it("keeps a refund under the component it reversed, with the summary untouched above it", () => {
+    const base = split();
+    const markup = loadClient().paymentReceiptMarkup({
+      ...base,
+      refunds: [{
+        id: "re000001-0000-4000-8000-000000000005",
+        paymentId: "ca2d0007-0000-4000-8000-000000000004",
+        amountMinor: 1000, status: "completed", settled: true, inFlight: false, failed: false,
+        label: "Refund"
+      }],
+      refundedMinor: 1000
+    });
+    const sections = markup.split('data-testid="payment-receipt-payment"');
+    // Three pieces: everything above the first component, then one per component. The refund is
+    // in the CARD's piece and not in the credit's.
+    expect(sections).toHaveLength(3);
+    expect(sections[1]).not.toContain("payment-receipt-refund");
+    expect(sections[2]).toContain("payment-receipt-refund");
+    // And the purchase summary — which is above both — is unchanged by a refund. What was bought
+    // is not what was given back.
+    expect(itemLines(markup)).toHaveLength(2);
+    expect(lineValue(markup, "payment-receipt-invoice-total")).toBe("Total | $92.01");
+    expect(lineValue(markup, "payment-receipt-refunded")).toBe("Refunded | -$10.00");
+  });
+});
+
+describe("6.5 `externalReference` is still excluded from the larger document", () => {
+  /**
+   * MUTATION THAT MUST FAIL THIS: add
+   * `paymentReceiptLine("Reference",payment.externalReference,"payment-receipt-external")`
+   * to the component block.
+   *
+   * The document grew, which makes this MORE important rather than less: `external_reference` is
+   * up to 200 characters of unconstrained free text an operator types, and a card number typed
+   * into it would now be printed on a longer sheet the salon does not control. The sentinel is the
+   * one this file already uses — a synthetic string with a digit run in it — rather than a
+   * card-shaped literal, which is a thing not to write down in a repository at all.
+   */
+  const SENTINEL_DIGITS = "8675309";
+  const OPERATOR_FREE_TEXT = `SENTINEL-DO-NOT-PRINT-${SENTINEL_DIGITS}-typed-by-an-operator`;
+
+  it("keeps operator free text off an itemised Receipt, on every payment shape that carries it", () => {
+    for (const payment of [
+      terminalPayment({ amountMinor: 9201, externalReference: OPERATOR_FREE_TEXT }),
+      keyedCardPayment({ amountMinor: 9201, externalReference: OPERATOR_FREE_TEXT }),
+      cashPayment({ amountMinor: 9201, externalReference: OPERATOR_FREE_TEXT }),
+      creditPayment({ amountMinor: 9201, externalReference: OPERATOR_FREE_TEXT })
+    ]) {
+      const markup = loadClient().paymentReceiptMarkup(itemisedFixture([payment]));
+      expect(markup, String(payment.method)).not.toContain(OPERATOR_FREE_TEXT);
+      // Digits alone, with the markup's own punctuation stripped, so a value broken across an
+      // attribute or an entity could not slip through the containment check above.
+      expect(markup.replace(/\D/gu, ""), String(payment.method)).not.toContain(SENTINEL_DIGITS);
+      // The document really did render — otherwise the two absences mean nothing.
+      expect(itemLines(markup), String(payment.method)).toHaveLength(2);
+    }
+  });
+
+  it("keeps it off the printed copy too, while still naming the processor the ruling kept", () => {
+    const client = loadClient();
+    client.printPaymentReceipt(itemisedFixture([
+      terminalPayment({ amountMinor: 9201, externalReference: OPERATOR_FREE_TEXT })
+    ]));
+    const printed = client.printed.at(-1)!.innerHTML;
+    expect(printed).not.toContain(SENTINEL_DIGITS);
+    // `provider` and `provider_payment_id` are the processor's own identifiers and they stay:
+    // this test is about the operator's free-text field, not about processor identity.
+    expect(lineValue(printed, "payment-receipt-provider")).toBe("Processor | Square");
+    expect(lineValue(printed, "payment-receipt-provider-payment-id"))
+      .toBe("Processor payment ID | sqpmt_9Rt4KvA1");
+  });
+});
+
+describe("6.6 `providerRefundId` is still excluded from the larger document", () => {
+  /**
+   * MUTATION THAT MUST FAIL THIS: add
+   * `paymentReceiptLine("Processor refund ID",refund.providerRefundId,"payment-receipt-refund-id")`
+   * to `paymentReceiptRefunds`.
+   *
+   * `GET /api/invoices/:id/receipt` strips this column before the browser sees it, on the same
+   * reasoning as `externalReference`: a screen has no use for it, and a value a client holds is a
+   * value a client can send back. This asserts the CLIENT would not draw it even if the projection
+   * changed under it, which is the only half of that guarantee a browser can hold.
+   */
+  const LEAKED = "sqrfd-LEAKED-0007";
+
+  const refunded = (extra: Record<string, unknown>) => ({
+    ...itemisedFixture([keyedCardPayment({ amountMinor: 9201 })]),
+    refunds: [{
+      id: "re000001-0000-4000-8000-000000000005",
+      paymentId: "ca2d0007-0000-4000-8000-000000000004",
+      amountMinor: 1000, status: "completed", settled: true, inFlight: false, failed: false,
+      label: "Refund", ...extra
+    }],
+    refundedMinor: 1000
+  });
+
+  it("draws no processor refund identifier under the component it reversed", () => {
+    const markup = loadClient().paymentReceiptMarkup(refunded({ providerRefundId: LEAKED }));
+    // The refund itself IS on the document — attribution survives — and its identifier is not.
+    expect(markup).toContain('data-testid="payment-receipt-refund"');
+    expect(lineValue(markup, "payment-receipt-refunded")).toBe("Refunded | -$10.00");
+    expect(markup).not.toContain(LEAKED);
+    expect(markup).not.toContain("LEAKED");
+  });
+
+  it("keeps it off the printed copy of the itemised document", () => {
+    const client = loadClient();
+    client.printPaymentReceipt(refunded({ providerRefundId: LEAKED }));
+    const printed = client.printed.at(-1)!.innerHTML;
+    expect(printed).toContain("<h4>Purchased</h4>");
+    expect(printed).not.toContain(LEAKED);
   });
 });

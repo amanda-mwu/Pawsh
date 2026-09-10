@@ -7,6 +7,7 @@ import {
   appointmentAction
 } from "./fixtures/tenant.js";
 import { chooseMethod } from "./helpers/checkout.js";
+import { voidRecord } from "./helpers/void-payment.js";
 import type { APIRequestContext, Dialog, Page } from "@playwright/test";
 
 /**
@@ -280,10 +281,19 @@ test("credit settles an invoice at checkout, and the receipt names it as a payme
     await expect(page.getByTestId("checkout-balance")).toHaveText("Balance $0.00");
     // The operator's words, not the raw column: `client credit` is what the receipt used to print.
     await expect(page.getByTestId("receipt")).toContainText("Client credit · recorded");
-    // Credit is a payment and never a discount. Routing it through the discount path would shrink
-    // the taxable base and under-collect tax on every redemption, so the bill's discount line has to
-    // still read nothing at all.
-    await expect(page.getByTestId("receipt-discount")).toContainText("-$0.00");
+    // CREDIT IS A PAYMENT AND NEVER A DISCOUNT. Routing it through the discount path would shrink
+    // the taxable base and under-collect tax on every redemption, so nothing came off this bill.
+    //
+    // This used to assert a `Discount -$0.00` row. The statement draws no Discounts section at all
+    // now when nothing was taken off, which says the same thing more strongly - there is no such
+    // section to read a figure out of - so the claim is made where it cannot be got wrong: the
+    // group is absent, and the services still total the full $85.00 the tax was taken on.
+    const statement = page.getByTestId("receipt");
+    await expect(statement.getByTestId("receipt-discount")).toHaveCount(0);
+    await expect(statement.locator("h4.receipt-group")).toHaveText(["Services", "Payment records"]);
+    await expect(statement.getByTestId("receipt-service-subtotal"))
+      .toContainText("Service subtotal$85.00");
+    await expect(statement.getByTestId("receipt-invoice-total")).toContainText("Invoice total$92.01");
 
     const ledger = await creditLedger(request, tenant.customerId);
     expect(ledger.balanceMinor).toBe(15000 - 9201);
@@ -349,21 +359,15 @@ test("voiding a credit payment says where the money goes, and the ledger shows t
     // Voiding asks for a reason and then confirms, so one handler answers both in order. The
     // confirmation for a credit payment says the money goes back on the balance rather than
     // reassuring the operator that nothing was refunded.
-    const messages: string[] = [];
-    const answer = (dialog: Dialog) => {
-      messages.push(dialog.message());
-      return dialog.accept(dialog.type() === "prompt" ? "Applied to the wrong visit" : "");
-    };
-    page.on("dialog", answer);
-    await page.getByTestId("checkout-surface").getByRole("button", { name: "Void record" }).click();
+    const stated = await voidRecord(
+      page,
+      page.getByTestId("checkout-surface").getByRole("button", { name: "Void record" }),
+      "Applied to the wrong visit"
+    );
     await expect(page.getByTestId("checkout-balance")).toHaveText("Balance $92.01");
-    expect(messages.some((message) => message.includes("goes back to this client's credit balance")))
-      .toBe(true);
-    // The handler stays registered across the close: the surface has its own leave guard, and this
-    // spec is not the place to assert which way that one falls.
+    expect(stated).toContain("goes back to this client's credit balance");
     await page.getByTestId("checkout-surface").getByRole("button", { name: "Close check out" }).click();
     await expect(page.getByTestId("checkout-surface")).toBeHidden();
-    page.off("dialog", answer);
 
     // The reversal is a row of its own, not an edit of the redemption: both stand, and the
     // redemption is chipped rather than struck through.

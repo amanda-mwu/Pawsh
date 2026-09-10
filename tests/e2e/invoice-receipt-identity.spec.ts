@@ -1,7 +1,11 @@
 import { test, expect, login, completeAppointment, createAppointment } from "./fixtures/tenant.js";
 import { openCheckout, chooseMethod, setPayAmount, checkoutSurface } from "./helpers/checkout.js";
-import { observePrinting, clearPrintRoots } from "./helpers/print.js";
-import type { APIRequestContext, Dialog, Page } from "@playwright/test";
+import { observePrinting, clearPrintRoots, printFromPreview } from "./helpers/print.js";
+import { voidRecord } from "./helpers/void-payment.js";
+import {
+  closeInvoice, invoiceStatement, invoiceSurface, invoiceTitle, openInvoiceFromHistory
+} from "./helpers/invoice.js";
+import type { APIRequestContext, Page } from "@playwright/test";
 
 /**
  * PAYMENT CHANGES AN INVOICE'S SETTLEMENT STATE, NOT ITS DOCUMENT IDENTITY.
@@ -20,6 +24,9 @@ import type { APIRequestContext, Dialog, Page } from "@playwright/test";
  *
  *   - A paid invoice opened from a client's transaction history is still headed `Invoice #1042`.
  *     Settlement moves the balance and adds a payment record; neither is a change of document.
+ *     The Invoice is a full-screen WORKSPACE rather than a form dialog now, and that is a change
+ *     of container and of nothing else: same payload, same statement, same title, same two
+ *     print controls under the same two gates.
  *   - Print Invoice is offered in EVERY settlement state, because a settled visit still has a bill
  *     and a client may still ask for it. It used to disappear at the first payment.
  *   - Print Receipt appears BESIDE it once the settlement has COMPLETED, never instead of it, and
@@ -101,6 +108,7 @@ test("an Invoice stays an Invoice, and a Receipt appears beside it once a paymen
     // exactly what it is.
     await expect(owing.getByTestId("checkout-print-invoice")).toBeVisible();
     await owing.getByTestId("checkout-print-invoice").click();
+    await printFromPreview(page);
     await expect(printRoot(page).locator("h1")).toHaveText(`Invoice #${invoice.invoiceNumber}`);
     await expect(printRoot(page)).toContainText("No payment recorded.");
     // THE SALON'S OWN IDENTITY AT THE HEAD OF IT, the same block the Ticket prints and through the
@@ -138,6 +146,7 @@ test("an Invoice stays an Invoice, and a Receipt appears beside it once a paymen
       .toHaveText("Settlement in progress · $40.00 recorded · $61.60 still to settle");
 
     await partial.getByTestId("checkout-print-invoice").click();
+    await printFromPreview(page);
     await expect(printRoot(page).locator("h1")).toHaveText(`Invoice #${invoice.invoiceNumber}`);
     // Still the whole statement, and still stating what is owed — which is the document that is
     // supposed to say that, and the reason the Receipt does not have to.
@@ -160,6 +169,7 @@ test("an Invoice stays an Invoice, and a Receipt appears beside it once a paymen
     await expect(settled.getByTestId("checkout-print-invoice")).toBeVisible();
 
     await settled.getByTestId("checkout-print-invoice").click();
+    await printFromPreview(page);
     await expect(printRoot(page).locator("h1")).toHaveText(`Invoice #${invoice.invoiceNumber}`);
     await clearPrintRoots(page);
 
@@ -167,6 +177,7 @@ test("an Invoice stays an Invoice, and a Receipt appears beside it once a paymen
     // the COMPOSITION of that one settlement — never a series the client is asked to count
     // through, and never one fused $101.60 payment that no row in `payments` corresponds to.
     await settled.getByTestId("checkout-print-receipt").click();
+    await printFromPreview(page);
     const receiptDoc = printRoot(page).getByTestId("payment-receipt");
     await expect(printRoot(page).locator("h1")).toHaveText(`Receipt #${invoice.invoiceNumber}`);
     // PRESENT, not "visible". `.print-root{display:none}` (styles.css) keeps every print document
@@ -196,8 +207,52 @@ test("an Invoice stays an Invoice, and a Receipt appears beside it once a paymen
     await expect(printRoot(page).getByTestId("ticket-document")).toHaveCount(0);
     // NOR THE INVOICE'S STATEMENT. A different document, not a retitled one.
     await expect(printRoot(page).locator(".receipt")).toHaveCount(0);
-    for (const owed of ["Subtotal", "Discount", "Tax"]) {
-      await expect(receiptDoc, owed).not.toContainText(owed);
+
+    // ---- WHAT WAS PURCHASED, ON THE EVIDENCE THAT IT WAS PAID FOR --------------------------
+    //
+    // A client holding a Receipt may reasonably ask what the settlement was FOR, and this
+    // document may now say so. THIS BLOCK USED TO ASSERT THE OPPOSITE - it swept `Subtotal`,
+    // `Discount` and `Tax` off the Receipt by name - and the ruling recorded in ADR-011 replaced
+    // that with a SUMMARY: the service lines, the figures that made the total, and the total.
+    //
+    // What has not changed is that this is not the Invoice. The sweep below is re-aimed at the
+    // things only `receiptBodyMarkup` produces, and every one of them is still absent.
+    const purchase = receiptDoc.getByTestId("payment-receipt-purchase");
+    await expect(purchase).toHaveCount(1);
+    await expect(purchase).toContainText("Purchased");
+    // THE SERVICE LINES OFF THE REAL PAYLOAD. `invoice_items.description` is
+    // `service_name_snapshot`, so this is the name of the service the appointment actually
+    // carried rather than anything this spec typed.
+    const items = receiptDoc.getByTestId("payment-receipt-item");
+    await expect(items).toHaveCount(1);
+    await expect(items.first()).toContainText("Full Groom");
+    await expect(items.first()).toContainText("$85.00");
+    // THE FIGURES THAT MADE THE TOTAL, all of which `raiseInvoice` above put on this invoice:
+    // $85.00 of service, $5.00 off, tax on what was left, and a $15.00 tip.
+    await expect(receiptDoc.getByTestId("payment-receipt-subtotal")).toContainText("$85.00");
+    await expect(receiptDoc.getByTestId("payment-receipt-discount")).toContainText("-$5.00");
+    await expect(receiptDoc.getByTestId("payment-receipt-tax")).toHaveCount(1);
+    await expect(receiptDoc.getByTestId("payment-receipt-tip")).toContainText("$15.00");
+    // The bill's own total, which is what the settlement underneath discharges. Both figures are
+    // on the document and neither replaced the other.
+    await expect(receiptDoc.getByTestId("payment-receipt-invoice-total")).toContainText("Total");
+    await expect(receiptDoc.getByTestId("payment-receipt-invoice-total")).toContainText("$101.60");
+    // ONE DISCOUNT LINE, NOT THE INVOICE'S BREAKDOWN. The bill draws every step in applied order
+    // with its rate; the Receipt draws the aggregate those steps sum to.
+    await expect(receiptDoc.getByTestId("payment-receipt-discount")).toHaveCount(1);
+    await expect(receiptDoc.locator(".receipt-discount-step")).toHaveCount(0);
+    await expect(receiptDoc.getByTestId("receipt-discount-total")).toHaveCount(0);
+    // A SUMMARY, NOT A SECOND BILL. The payment history, the operator corrections against it and
+    // the compounding discount breakdown are the Invoice's and stay there.
+    for (const invoiceOnly of ["Payment records", "Void record", "No payment recorded"]) {
+      await expect(receiptDoc, invoiceOnly).not.toContainText(invoiceOnly);
+    }
+    // NOTHING OPERATIONAL CROSSED OVER WITH THE ITEMISATION. Internal notes, the note threads and
+    // the visit's workflow facts are the shop's own copy of the work; a document handed across a
+    // counter is not where an internal work record belongs. The block below prints the Ticket and
+    // finds these there, so this is an absence with a positive control rather than a bare `not`.
+    for (const ticketOnly of ["Appointment note", "Latest Note", "Breed", "Duration", "Groomer"]) {
+      await expect(receiptDoc, ticketOnly).not.toContainText(ticketOnly);
     }
     // MANUAL CASH COMPONENTS, TRUTHFULLY. Method, amount, when each was taken, and each with its
     // own payment reference — and no processor and no processor payment id, because a cash payment
@@ -231,7 +286,14 @@ test("an Invoice stays an Invoice, and a Receipt appears beside it once a paymen
     await expect(ticket).toBeVisible();
     await expect(ticket.getByTestId("ticket-document")).not.toContainText("$");
     await expect(ticket.getByTestId("payment-receipt")).toHaveCount(0);
+    // THE POSITIVE CONTROL for the operational sweep on the Receipt above. These facts exist, and
+    // they exist HERE - so the Receipt not carrying them is a decision about where they belong
+    // rather than an assertion that passes because nothing in this tenant ever had them.
+    for (const ticketOnly of ["Breed", "Duration", "Groomer", "Appointment note"]) {
+      await expect(ticket.getByTestId("ticket-document"), ticketOnly).toContainText(ticketOnly);
+    }
     await ticket.getByTestId("ticket-print").click();
+    await printFromPreview(page);
     // Its own print root, its own markup: `.print-ticket` never carries a receipt or a figure.
     await expect(page.locator(".print-root.print-ticket")).toHaveCount(1);
     await expect(page.locator(".print-root.print-ticket")).not.toContainText("$");
@@ -245,16 +307,25 @@ test("an Invoice stays an Invoice, and a Receipt appears beside it once a paymen
     // its money back on the bill — so the settlement is no longer complete and the Receipt goes
     // with it. The INVOICE is unaffected throughout, which is the point of the two being
     // different documents: the bill is still printable at the exact moment the evidence is not.
-    const answer = (dialog: Dialog) =>
-      dialog.accept(dialog.type() === "prompt" ? "Keyed the wrong amount" : "");
-    page.on("dialog", answer);
-    await settled.getByRole("button", { name: "Void record" }).first().click();
+    await voidRecord(
+      page, settled.getByRole("button", { name: "Void record" }).first(), "Keyed the wrong amount"
+    );
     await expect(page.getByTestId("checkout-balance")).toHaveText("Balance $40.00");
     await expect(settled.getByTestId("checkout-print-receipt")).toHaveCount(0);
     await expect(settled.getByTestId("checkout-print-invoice")).toBeVisible();
 
     // The second void has to happen on the document itself: a checkout with a balance shows the
     // form for collecting it rather than the payment records.
+    //
+    // LEAVING ASKS THE CHECK OUT'S OWN LEAVE GUARD, and that one IS still a browser `confirm` —
+    // `level.guard` in `checkout()`, unchanged by the void dialog and deliberately so. It is
+    // asked here and only here in this spec because voiding one component of the settlement left
+    // the invoice part-settled: $40.00 owing with a recorded payment still standing, which is the
+    // branch that asks "$40.00 of this invoice is still to settle". This spec used to answer it by
+    // accident — the `page.on("dialog")` handler it kept registered for the void's own `prompt`
+    // and `confirm` was still installed at this line and accepted the guard too. The void no
+    // longer asks the browser anything, so the guard is answered on its own terms.
+    page.once("dialog", (dialog) => dialog.accept());
     await settled.locator("[data-surface-close]").click();
     await expect(checkoutSurface(page)).toBeHidden();
     await page.getByTestId("nav-customers").click();
@@ -265,19 +336,28 @@ test("an Invoice stays an Invoice, and a Receipt appears beside it once a paymen
     // A PAID INVOICE OPENED FROM HISTORY IS AN INVOICE. This is the assertion the old client
     // failed: it read "Receipt" on the row and opened a page headed `Receipt #1042`.
     await expect(modal.getByRole("button", { name: "Receipt" })).toHaveCount(0);
-    await modal.locator(`[data-testid="history-invoice"][data-invoice-id="${invoice.id}"]`).click();
-    await expect(page.locator("#modal-title")).toHaveText(`Invoice #${invoice.invoiceNumber}`);
-    await expect(modal.locator(".receipt")).toContainText("Balance$40.00");
+    const document_ = await openInvoiceFromHistory(page, invoice.id);
+    await expect(invoiceTitle(page)).toHaveText(`Invoice #${invoice.invoiceNumber}`);
+    await expect(invoiceStatement(page)).toContainText("Balance$40.00");
 
-    await modal.getByRole("button", { name: "Void record" }).click();
+    await voidRecord(
+      page, document_.getByRole("button", { name: "Void record" }), "Keyed the wrong amount"
+    );
     // The re-read comes back with nothing settled against the invoice, and the document is called
-    // exactly what it was called before anybody paid: nothing about the title moved at all.
-    await expect(page.locator("#modal-title")).toHaveText(`Invoice #${invoice.invoiceNumber}`);
-    page.off("dialog", answer);
+    // exactly what it was called before anybody paid: nothing about the title moved at all. The
+    // workspace redrew IN PLACE — it is the receipt host while it is open — rather than closing
+    // and stacking a second copy of itself over the first.
+    await expect(invoiceTitle(page)).toHaveText(`Invoice #${invoice.invoiceNumber}`);
+    await expect(invoiceSurface(page)).toHaveCount(1);
     // The voided records are still ON the page — the corrections happened and are part of the
     // history — they are simply no longer presented as money currently paid.
-    await expect(modal.locator(".receipt")).toContainText("voided");
-    await expect(modal.locator(".receipt")).toContainText("Balance$101.60");
+    await expect(invoiceStatement(page)).toContainText("voided");
+    await expect(invoiceStatement(page)).toContainText("Balance$101.60");
+    // AND THE SETTLEMENT SUMMARY AGREES WITH THE STATEMENT BESIDE IT. Both read the same two
+    // gates, so a workspace whose panel said "settled" over a $101.60 balance would be two
+    // readings of one invoice.
+    await expect(document_.getByTestId("invoice-state-title")).toHaveText("Not yet settled");
+    await expect(document_.getByTestId("invoice-print-receipt")).toHaveCount(0);
   });
 
 test("a client's transaction history opens the Invoice, in every settlement state",
@@ -295,9 +375,15 @@ test("a client's transaction history opens the Invoice, in every settlement stat
     // ONE ROW, AND IT DOES NOT SAY RECEIPT. The control opens an invoice, so it says Invoice.
     await expect(modal).toContainText(`Invoice ${unpaid.invoiceNumber}`);
     await expect(modal.getByRole("button", { name: "Receipt" })).toHaveCount(0);
-    await modal.getByRole("button", { name: "Invoice" }).click();
-    await expect(page.locator("#modal-title")).toHaveText(`Invoice #${unpaid.invoiceNumber}`);
-    await expect(modal.locator(".receipt")).toContainText("No payment recorded.");
+    await openInvoiceFromHistory(page, unpaid.id);
+    await expect(invoiceTitle(page)).toHaveText(`Invoice #${unpaid.invoiceNumber}`);
+    await expect(invoiceStatement(page)).toContainText("No payment recorded.");
+    // CLOSING IT COMES BACK TO THE TRANSACTIONS THE OPERATOR WAS WORKING THROUGH, not to the
+    // client card two steps behind them. The history list had to be dismissed for the Invoice to
+    // take the viewport, so the Invoice reopens it on the way out.
+    await closeInvoice(page);
+    await expect(modal).toBeVisible();
+    await expect(modal).toContainText("Transactions");
     await modal.getByRole("button", { name: "Cancel" }).click();
 
     // THE SAME CLIENT, A SETTLED VISIT, AND THE SAME CONTROL SAYS THE SAME WORD. The row used to
@@ -319,32 +405,52 @@ test("a client's transaction history opens the Invoice, in every settlement stat
     await expect(modal.getByRole("button", { name: "Receipt" })).toHaveCount(0);
     // Reached by invoice rather than by label, because BOTH rows now say the same word — which is
     // the change. The settled one opens under the same name the unpaid one did.
-    await modal.locator(`[data-testid="history-invoice"][data-invoice-id="${paid.id}"]`).click();
-    await expect(page.locator("#modal-title")).toHaveText(`Invoice #${paid.invoiceNumber}`);
+    const settledDocument = await openInvoiceFromHistory(page, paid.id);
+    await expect(invoiceTitle(page)).toHaveText(`Invoice #${paid.invoiceNumber}`);
     // Settlement changed the STATE and nothing else: the balance is gone and the payment record
     // is on the statement, under a title that never moved.
-    await expect(modal.locator(".receipt")).toContainText("Balance$0.00");
-    await expect(modal.locator(".receipt")).toContainText("recorded");
+    await expect(invoiceStatement(page)).toContainText("Balance$0.00");
+    await expect(invoiceStatement(page)).toContainText("recorded");
+    // The right-hand column says where it stands, in words, and in the settlement's own
+    // vocabulary — settled, never "paid", and never a numbered series of payments.
+    await expect(settledDocument.getByTestId("invoice-state-title"))
+      .toHaveText("Settlement complete");
+    await expect(settledDocument.getByTestId("invoice-summary-settled"))
+      .toContainText("Total settled");
+    await expect(settledDocument).not.toContainText("Total paid");
 
     // BOTH DOCUMENTS ARE REACHABLE HERE, WEEKS LATER. Everything needed to reproduce the Receipt
     // is persisted — the components, their references, their processor fields and their refunds —
     // so evidence of a completed settlement must not depend on still being in the browser session
     // that took the payment. This invoice was settled through the API and never through this page.
     await observePrinting(page);
-    await expect(modal.getByTestId("invoice-print-invoice")).toBeVisible();
-    await expect(modal.getByTestId("invoice-print-receipt")).toBeVisible();
+    await expect(settledDocument.getByTestId("invoice-print-invoice")).toBeVisible();
+    await expect(settledDocument.getByTestId("invoice-print-receipt")).toBeVisible();
 
-    await modal.getByTestId("invoice-print-invoice").click();
+    await settledDocument.getByTestId("invoice-print-invoice").click();
+    // THE PREVIEW NAMES THE DOCUMENT IT IS HOLDING. It used to be headed "Print preview" for
+    // every document, so nothing but the sheet inside it said which one was about to come out.
+    await expect(page.locator("#stacked-dialog-title"))
+      .toContainText(`Invoice #${paid.invoiceNumber}`);
+    await printFromPreview(page);
     await expect(printRoot(page).locator("h1")).toHaveText(`Invoice #${paid.invoiceNumber}`);
     await clearPrintRoots(page);
 
-    await modal.getByTestId("invoice-print-receipt").click();
+    await settledDocument.getByTestId("invoice-print-receipt").click();
+    // A RECEIPT PREVIEW IS NAMED AS A RECEIPT, and it is the Receipt that is in it — never the
+    // Ticket, which is the shop's work sheet and carries no money at all.
+    await expect(page.locator("#stacked-dialog-title"))
+      .toContainText(`Receipt #${paid.invoiceNumber}`);
+    await expect(page.getByTestId("print-preview")).toContainText("Total settled");
+    await expect(page.getByTestId("print-preview").getByTestId("ticket-document"))
+      .toHaveCount(0);
+    await printFromPreview(page);
     await expect(printRoot(page).locator("h1")).toHaveText(`Receipt #${paid.invoiceNumber}`);
     await expect(printRoot(page).getByTestId("payment-receipt-total-settled"))
       .toContainText("Total settled");
     await expect(printRoot(page).getByTestId("ticket-document")).toHaveCount(0);
-    // The dialog underneath did not change document while its own control printed a second one.
-    await expect(page.locator("#modal-title")).toHaveText(`Invoice #${paid.invoiceNumber}`);
+    // The workspace underneath did not change document while its own control printed a second.
+    await expect(invoiceTitle(page)).toHaveText(`Invoice #${paid.invoiceNumber}`);
     await clearPrintRoots(page);
   });
 
@@ -368,14 +474,17 @@ test("an unsettled invoice from transaction history prints the bill and offers n
     const customer = page.getByTestId("customer-card").filter({ hasText: "Emma Johnson" });
     await customer.getByTestId("client-row-actions").click();
     await customer.getByTestId("client-appointment-history").click();
-    const modal = page.getByTestId("modal");
-    await modal.locator(`[data-testid="history-invoice"][data-invoice-id="${unsettled.id}"]`).click();
+    const document_ = await openInvoiceFromHistory(page, unsettled.id);
 
-    await expect(page.locator("#modal-title")).toHaveText(`Invoice #${unsettled.invoiceNumber}`);
-    await expect(modal.getByTestId("invoice-print-invoice")).toBeVisible();
-    await expect(modal.getByTestId("invoice-print-receipt")).toHaveCount(0);
+    await expect(invoiceTitle(page)).toHaveText(`Invoice #${unsettled.invoiceNumber}`);
+    await expect(document_.getByTestId("invoice-print-invoice")).toBeVisible();
+    await expect(document_.getByTestId("invoice-print-receipt")).toHaveCount(0);
+    // ABSENT, NOT DISABLED — which is a different answer from the one Send Receipt gets two
+    // controls along. There is no Receipt to disable here; there is no send CAPABILITY there.
+    await expect(document_.getByTestId("invoice-send-receipt")).toBeDisabled();
 
-    await modal.getByTestId("invoice-print-invoice").click();
+    await document_.getByTestId("invoice-print-invoice").click();
+    await printFromPreview(page);
     await expect(printRoot(page).locator("h1")).toHaveText(`Invoice #${unsettled.invoiceNumber}`);
     await expect(printRoot(page).locator(".receipt")).toContainText("Balance$61.60");
     await expect(printRoot(page).getByTestId("payment-receipt")).toHaveCount(0);

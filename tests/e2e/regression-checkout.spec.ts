@@ -1,6 +1,6 @@
 import { test,expect,login,completeAppointment,appointmentAction } from "./fixtures/tenant.js";
 import { openCheckout,openAdjustment,chooseMethod,checkoutSurface } from "./helpers/checkout.js";
-import type { Dialog } from "@playwright/test";
+import { voidRecord } from "./helpers/void-payment.js";
 
 // The method radios offer the salon's own configured methods, which carry generated ids, so these
 // specs pick the one a groomer would read rather than the settlement type underneath it. Every new
@@ -142,7 +142,9 @@ test("@regression-checkout a settled checkout offers the receipt's own correctio
 
   const surface=checkoutSurface(page);
   await expect(surface.getByTestId("receipt")).toContainText("Balance$0.00");
-  const total=(await surface.getByTestId("receipt").textContent())!.match(/Total(\$[\d,.]+)/)![1]!;
+  // `Invoice total`, which is what the statement's one emphasised final figure is called. It was
+  // `Total` when a generic `Subtotal` sat directly above it saying the same thing.
+  const total=(await surface.getByTestId("receipt").textContent())!.match(/Invoice total(\$[\d,.]+)/)![1]!;
   await expect(page.getByTestId("checkout-balance")).toHaveText("Balance $0.00");
   // Never "Take payment" against a zero balance: coming back to that is a route to a double charge.
   await expect(page.getByTestId("checkout-submit")).toHaveCount(0);
@@ -152,17 +154,15 @@ test("@regression-checkout a settled checkout offers the receipt's own correctio
   await expect(page.getByTestId("checkout-print-receipt")).toBeVisible();
   await expect(page.getByTestId("checkout-print-invoice")).toBeVisible();
 
-  // Voiding asks for a reason and then confirms, so one handler answers both in order.
-  const answer=(dialog:Dialog)=>dialog.accept(dialog.type()==="prompt"?"Keyed the wrong amount":"");
-  page.on("dialog",answer);
-  await surface.getByRole("button",{name:"Void record"}).click();
+  // Voiding asks for the reason and states the warning in ONE of Pawsh's own dialogs, which is
+  // what replaced the browser `prompt` and `confirm` this spec used to answer in order.
+  await voidRecord(page,surface.getByRole("button",{name:"Void record"}),"Keyed the wrong amount");
   // The void puts the money back on the bill, so this screen goes back to collecting it - in
   // place, without closing the surface or stacking a modal copy of the same receipt on top of it.
   await expect(page.getByTestId("checkout-balance")).toHaveText(`Balance ${total}`);
   await expect(page.getByTestId("checkout-submit")).toBeVisible();
   await expect(page.getByTestId("checkout-done")).toHaveCount(0);
   await expect(page.getByTestId("modal")).toBeHidden();
-  page.off("dialog",answer);
 });
 
 test("@regression-checkout a double-pressed checkout opens one working surface and submits once",async({page,request,tenant})=>{

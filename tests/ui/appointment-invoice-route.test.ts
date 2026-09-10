@@ -15,9 +15,14 @@ import { describe, expect, it } from "vitest";
  *
  *   no invoice yet   Take Payment, gated on `checkout.perform`. No Invoice control at all, because
  *                    there is no document to disable.
- *   invoice exists   Invoice, gated on `payments.view` — reading a bill is not taking payment.
- *                    Take Payment is gone from the footer, which is correct: the server refuses a
- *                    second checkout.
+ *   invoice owing    Take Payment, with the Invoice reachable beside it in the secondary slot.
+ *   invoice settled  Invoice, gated on `payments.view` — reading a bill is not taking payment.
+ *                    Take Payment is gone from the footer, which is correct: nothing is owed and
+ *                    the server refuses a tender against a settled invoice.
+ *
+ * THE MIDDLE ROW ARRIVED SECOND, and its own defect is documented at the foot of this file: the
+ * footer used to ask whether an invoice RECORD existed rather than what state it was in, so a
+ * voided payment left the operator on a screen reading `Open · $79.01 due` with no way to take it.
  *
  * ─── WHY THIS FILE EXECUTES RATHER THAN GREPS ────────────────────────────────────────────────
  *
@@ -67,19 +72,30 @@ const RENDERERS = slice(
   "function salonIdentityOf(",
   "\n// Scoped to the copy of the receipt that was just rendered"
 );
-/** The Invoice dialog: its title, its body and its two print controls. */
+/**
+ * The Invoice workspace: its head, its visit facts, its settlement panel, its footer controls
+ * and the bindings that make the two print controls print. `showInvoiceDocument` itself is not
+ * in here - it is the surface plumbing, and this file is about which door reaches the Invoice
+ * and what the Invoice then offers.
+ */
 const DOCUMENT = slice(
-  "function invoiceDocumentActionsMarkup(",
-  "\n// Re-reads the receipt and shows it again"
+  "const INVOICE_UNAVAILABLE_REASON=",
+  "\n/**\n * Opens the Invoice workspace"
 );
 /** The billing chip, which is what tells the operator there is a bill to open. */
 const BILLING = slice(
   "function appointmentBillingChip(item){",
   "\n// Minutes as an operator says them."
 );
-/** The appointment detail surface, whose footer carries the financial control. */
+/**
+ * The appointment detail surface, whose footer carries the financial control.
+ *
+ * The slice opens at `appointmentPermissionRefusal` rather than at the surface itself: the two
+ * helpers above it — the disabled-with-reason attributes, and the client rail's refusal — are what
+ * the surface draws for a control or a rail this actor's role does not reach, and it calls both.
+ */
 const SURFACE = slice(
-  "function appointmentSurfaceMarkup(surface){",
+  "function appointmentPermissionRefusal(action,permission){",
   "\n/**\n * The appointment detail surface: level 1 of the stack."
 );
 /**
@@ -97,6 +113,29 @@ const FOOTER_BINDINGS = slice(
   "    // Check Out is level 2 of the stack now, not a modal over this one",
   "\n    // Level 3, pushed the same way"
 );
+/**
+ * `checkoutMode`, which is what decides whether Check Out RAISES a bill or COLLECTS against one.
+ *
+ * It is in this file because Take Payment on an appointment that already has an invoice is only
+ * safe if that screen collects; a footer offering it while Check Out would have posted a second
+ * `/checkout` would be a duplicate-invoice defect wearing a readability fix.
+ */
+const MODE = slice("function checkoutMode(co){", "\n/**\n * What the bill will come to");
+/**
+ * `reload`, lifted out of `openCalendarAppointment`'s closure by its own declaration.
+ *
+ * This is the one function that decides WHAT STATE the footer above is redrawn from, and every
+ * caller of it is a redraw after a mutation. Running it is the only way to assert that it asks the
+ * server rather than a calendar snapshot a concurrent refresh may not have replaced yet.
+ */
+const RELOAD = slice(
+  // Anchored on its first statement as well as its declaration: `bindAppointmentPhotos` above it
+  // has a `const reload=async()=>{` of its own, and slicing from that one would drag 67kB of
+  // unrelated client into this harness.
+  "  const reload=async()=>{\n    if(stale())return;",
+  "\n  // The shared #modal now opens ON TOP"
+);
+
 /** The Client → Transaction History route into the same dialog, which must not have moved. */
 const HISTORY_BINDING = slice(
   "    // The row is an invoice row and the control opens that invoice, in every status.",
@@ -113,10 +152,20 @@ interface Recorded {
   checkouts: string[];
   /** Every Ticket the surface was asked to open. */
   tickets: string[];
-  /** The dialog `showInvoiceDocument` opened, and the handlers it bound into it. */
+  /** The shared `#modal`, which no longer hosts the Invoice at all. */
   modal: { title: string; body: string; opens: number };
   modalHandlers: Record<string, () => void>;
-  /** Whether the invoice was opened through `#modal`, which is what redraws the surface after. */
+  /** The Invoice workspace a door opened, and the handlers bound into it. */
+  workspace: {
+    title: string;
+    body: string;
+    opens: number;
+    options: { onClose?: () => void } | null;
+  };
+  workspaceHandlers: Record<string, () => void>;
+  /** Every customer whose transaction history a closed Invoice reopened. */
+  historyReopens: string[];
+  /** How many times anything was opened through `#modal`. The Invoice never is any more. */
   throughModal: number;
   /** Every document a print control put on paper, in order. */
   printed: { document: string }[];
@@ -131,8 +180,20 @@ interface ClientModule extends Recorded {
   derivePermissions(surface: unknown): Record<string, unknown>;
   appointmentSurfaceMarkup(surface: unknown): string;
   bindAppointmentFooter(dialog: unknown, surface: unknown, id: string): void;
-  bindHistoryInvoices(rows: unknown[]): void;
+  bindHistoryInvoices(rows: unknown[], customerId: string): void;
   showInvoiceDocument(receipt: unknown): void;
+  checkoutMode(co: unknown): string;
+  reloadSurface(
+    surface: unknown,
+    id: string,
+    sources: {
+      server: unknown;
+      cache: unknown;
+      reads: string[];
+      draws: unknown[];
+      activityLoads: number;
+    }
+  ): Promise<void>;
   /** The receipt payload the stubbed `api` will answer any invoice read with. */
   receipts: Record<string, unknown>;
 }
@@ -167,6 +228,10 @@ function loadClient(): ClientModule {
     const grant = (...permissions) => { permissions.forEach((one) => granted.add(one)); };
     // Moving a visit is a different surface's concern and is never on for a completed one.
     const appointmentMoveAllowed = () => false;
+    // The workspace-wide lock, which decides whether the Move affordance is OFFERED at all -
+    // separately from whether this actor may use it. Off here; the two halves are pulled apart in
+    // tests/ui/appointment-permission-affordances.test.ts.
+    const appointmentsLocked = () => false;
 
     // The blocks of the surface that are not the footer, named rather than rendered. Each has its
     // own spec; interpolating a sentinel keeps a failure here pointing at the footer.
@@ -225,6 +290,25 @@ function loadClient(): ClientModule {
     });
     const openModal = (title, body) => { modal.title = title; modal.body = body; modal.opens += 1; };
     const $ = () => queryHost(() => modal.body, modalHandlers);
+
+    // THE INVOICE WORKSPACE, RECORDED. It is a full-screen surface now rather than a #modal, so
+    // what a door reaches is a rendered workspace and the controls bound into it. The markup and
+    // the bindings are the client's own; only the <dialog> around them is replaced, because a
+    // stack level is not what any test in this file is asking about.
+    const workspace = {title:'',body:'',opens:0,options:null};
+    const workspaceHandlers = {};
+    const showInvoiceDocument = (receipt, options) => {
+      workspace.body = invoiceWorkspaceMarkup(receipt, null);
+      workspace.title =
+        /data-testid="invoice-document-title">([^<]*)</u.exec(workspace.body)?.[1] ?? '';
+      workspace.opens += 1;
+      workspace.options = options ?? null;
+      for(const key of Object.keys(workspaceHandlers)) delete workspaceHandlers[key];
+      bindInvoiceWorkspace(queryHost(() => workspace.body, workspaceHandlers), receipt);
+    };
+    // Where a closed Invoice put the operator back. Recorded so "closing returns to the door it
+    // was opened from" is a behaviour rather than a comment.
+    const historyReopens = [];
     // The Invoice's own corrections are bound by their own function and tested by their own spec.
     const bindReceiptActions = () => {};
     const printInvoiceDocument = (receipt) => { printed.push({document:"invoice", receipt}); };
@@ -252,23 +336,45 @@ ${DERIVE}
 ${FOOTER_BINDINGS}
     }
 
-    // The Client → Transaction History route into the same dialog.
-    function bindHistoryInvoices(rows){
+    // \`reload\`, given the six things it closes over. \`api\` and \`calendarAppointmentById\` are
+    // the two sources it chooses between, and the choice between them is what is under test; the
+    // rest are recorded so that "the surface redrew from this" is an observation rather than an
+    // inference.
+    function reloadSurface(surface, id, sources){
+      const stale = () => false;
+      const calendarAppointmentById = () => sources.cache ?? null;
+      const api = async (path) => {
+        sources.reads.push(path);
+        if(!sources.server) throw new Error("appointment unreachable");
+        return sources.server;
+      };
+      const appointmentPresentation = (item) => ({status:item.status});
+      const draw = () => { sources.draws.push(surface.item); };
+      const loadActivity = async () => { sources.activityLoads += 1; };
+${RELOAD}
+      return reload();
+    }
+
+    // The Client → Transaction History route into the same document. The customer id is what
+    // the list belongs to, and what a closed Invoice has to come back to.
+    function bindHistoryInvoices(rows, id){
       const $$ = () => rows;
       const showPetDocuments = () => {};
+      const showCustomerHistory = (customerId) => { historyReopens.push(customerId); };
 ${HISTORY_BINDING}
     }
   `;
   const exported = `return {
     grant, derivePermissions, appointmentSurfaceMarkup, bindAppointmentFooter, bindHistoryInvoices,
+    checkoutMode, reloadSurface,
     showInvoiceDocument, receipts, reads, checkouts, tickets, toasts, detached, modal,
-    modalHandlers, printed,
+    modalHandlers, workspace, workspaceHandlers, historyReopens, printed,
     get throughModal(){ return throughModalCount; }
   };`;
   const factory = new Function(
     "escape",
     "escapeAttr",
-    [prelude, GATES, REFUNDS, RENDERERS, DOCUMENT, BILLING, SURFACE, exported].join("\n")
+    [prelude, GATES, MODE, REFUNDS, RENDERERS, DOCUMENT, BILLING, SURFACE, exported].join("\n")
   ) as (escape: unknown, escapeAttr: unknown) => ClientModule;
   return factory(escape, escapeAttr);
 }
@@ -306,7 +412,11 @@ function receiptFixture({ balanceMinor = 0 }: { balanceMinor?: number } = {}) {
       taxMinor: 701,
       tipMinor: 0,
       totalMinor: 9201,
-      balanceMinor
+      balanceMinor,
+      // The two non-money invoice columns the workspace head and its visit facts read.
+      status: balanceMinor ? "partially_paid" : "paid",
+      createdAt: "2026-09-02T18:00:00.000Z",
+      appointmentId: "ed2dd1b0-6c58-4a92-9a4f-0b6d9ee7c111"
     },
     items: [],
     discounts: [],
@@ -471,7 +581,7 @@ describe("the financial control on a completed appointment", () => {
     expect(markup).toContain('data-testid="appointment-ticket"');
   });
 
-  it("opens the one Invoice dialog, titled Invoice #N, over the visit that raised it", async () => {
+  it("opens the one Invoice workspace, titled Invoice #N, over the visit that raised it", async () => {
     const client = loadClient();
     client.grant("payments.view");
     client.receipts[INVOICE_ID] = receiptFixture();
@@ -484,13 +594,18 @@ describe("the financial control on a completed appointment", () => {
     // The existing endpoint, for THIS appointment's invoice, read exactly once.
     expect(client.reads).toEqual([`/api/invoices/${INVOICE_ID}/receipt`]);
     expect(client.toasts).toEqual([]);
-    // The existing dialog, with its existing title. Settlement moves a balance; it does not turn
+    // The one workspace, with its existing title. Settlement moves a balance; it does not turn
     // an Invoice into some other document, and this surface does not get to rename it.
-    expect(client.modal.opens).toBe(1);
-    expect(client.modal.title).toBe("Invoice #1042");
-    // Through #modal, which stands ON TOP of the visit and redraws it on close — a refund taken
-    // from inside the dialog changes the very chip that led the operator to press the button.
-    expect(client.throughModal).toBe(1);
+    expect(client.workspace.opens).toBe(1);
+    expect(client.workspace.title).toBe("Invoice #1042");
+    // AND NOT THROUGH #modal. The Invoice used to be a 650px form dialog opened over the visit;
+    // it is a level of the same surface stack now, so the shared form dialog is not touched at
+    // all and there is no `close` listener standing in for a stack pop.
+    expect(client.throughModal).toBe(0);
+    expect(client.modal.opens).toBe(0);
+    // The visit is what it comes back to, so the door hands in no reopen of its own: popping
+    // the level puts the appointment surface underneath back on screen by itself.
+    expect(client.workspace.options).toBeNull();
   });
 
   it("gives a settled invoice opened from the appointment BOTH print controls", async () => {
@@ -505,18 +620,27 @@ describe("the financial control on a completed appointment", () => {
     // Two documents, two controls, neither excluding the other. An invoice is printable in every
     // settlement state; the receipt evidences the settlement that completed. A paid visit has both
     // and the operator chooses, rather than the client choosing from what has been paid.
-    expect(client.modal.body).toContain('data-testid="invoice-print-invoice"');
-    expect(client.modal.body).toContain('data-testid="invoice-print-receipt"');
+    expect(client.workspace.body).toContain('data-testid="invoice-print-invoice"');
+    expect(client.workspace.body).toContain('data-testid="invoice-print-receipt"');
 
     // And each prints its own document. Bound handlers, run — a control that renders and prints
     // the wrong thing would pass a markup assertion.
-    fire(client.modalHandlers, "invoice-print-invoice");
-    fire(client.modalHandlers, "invoice-print-receipt");
+    fire(client.workspaceHandlers, "invoice-print-invoice");
+    fire(client.workspaceHandlers, "invoice-print-receipt");
     expect(client.printed.map((entry: { document: string }) => entry.document))
       .toEqual(["invoice", "receipt"]);
     // Nothing financial can reach the shop's work sheet.
     expect(JSON.stringify(client.printed)).not.toContain(TICKET_SENTINEL);
-    expect(client.modal.body).not.toContain(TICKET_SENTINEL);
+    expect(client.workspace.body).not.toContain(TICKET_SENTINEL);
+
+    // THE TWO CAPABILITIES PAWSH DOES NOT HAVE, DRAWN AND REFUSING. Send Receipt and Ask for
+    // Review exist nowhere in this product — no control, no route, no notification type — so
+    // they are disabled with a reason rather than hidden, and neither is bound to anything.
+    for (const unavailable of ["invoice-send-receipt", "invoice-ask-review"]) {
+      expect(client.workspace.body, unavailable).toContain(`data-testid="${unavailable}"`);
+      expect(client.workspaceHandlers[unavailable], unavailable).toBeUndefined();
+    }
+    expect(client.workspace.body).toContain('data-testid="invoice-unavailable-note"');
   });
 
   it("refuses to open the invoice without payments.view, in the handler and not in the markup", async () => {
@@ -543,7 +667,7 @@ describe("the financial control on a completed appointment", () => {
     fire(handlers, "appointment-invoice");
     await settle(client);
     expect(client.reads).toEqual([]);
-    expect(client.modal.opens).toBe(0);
+    expect(client.workspace.opens).toBe(0);
     expect(client.throughModal).toBe(0);
     // It refuses quietly rather than throwing: a control the operator was told is unavailable
     // should not answer a stray click with an error.
@@ -565,7 +689,9 @@ describe("the financial control on a completed appointment", () => {
   });
 });
 
-describe("the routes into the Invoice dialog", () => {
+const CUSTOMER_ID = "c0000000-0000-4000-8000-000000000001";
+
+describe("the routes into the Invoice workspace", () => {
   it("leaves Client → Transaction History opening the same document unchanged", async () => {
     const client = loadClient();
     client.grant("payments.view");
@@ -578,17 +704,42 @@ describe("the routes into the Invoice dialog", () => {
       }
     };
 
-    client.bindHistoryInvoices([row]);
+    client.bindHistoryInvoices([row], CUSTOMER_ID);
     expect(clicks).toHaveLength(1);
     await clicks[0]!();
 
     // Same endpoint, same renderer, same title. The appointment footer is a SECOND door into one
     // document, not a second document.
     expect(client.reads).toEqual([`/api/invoices/${INVOICE_ID}/receipt`]);
-    expect(client.modal.opens).toBe(1);
-    expect(client.modal.title).toBe("Invoice #1042");
-    expect(client.modal.body).toContain('data-testid="invoice-print-invoice"');
-    expect(client.modal.body).toContain('data-testid="invoice-print-receipt"');
+    expect(client.workspace.opens).toBe(1);
+    expect(client.workspace.title).toBe("Invoice #1042");
+    expect(client.workspace.body).toContain('data-testid="invoice-print-invoice"');
+    expect(client.workspace.body).toContain('data-testid="invoice-print-receipt"');
+  });
+
+  it("puts the operator back in the transaction history they opened it from", async () => {
+    // THE DOOR CLOSES BACK ONTO THE ROOM IT OPENED OUT OF. The history list is `#modal` and the
+    // Invoice takes the whole viewport, so the list has to be dismissed for the Invoice to stand
+    // on its own — which used to leave an operator who closed the Invoice back on the client
+    // card rather than on the transactions they were working through.
+    const client = loadClient();
+    client.grant("payments.view");
+    client.receipts[INVOICE_ID] = receiptFixture();
+    const clicks: Array<() => Promise<void>> = [];
+    const row = {
+      dataset: { invoiceId: INVOICE_ID },
+      addEventListener(event: string, handler: () => Promise<void>) {
+        if (event === "click") clicks.push(handler);
+      }
+    };
+
+    client.bindHistoryInvoices([row], CUSTOMER_ID);
+    await clicks[0]!();
+    expect(client.historyReopens).toEqual([]);
+
+    client.workspace.options?.onClose?.();
+    await settle(client);
+    expect(client.historyReopens).toEqual([CUSTOMER_ID]);
   });
 
   it("shows an unsettled invoice without a Receipt from either route", async () => {
@@ -609,8 +760,289 @@ describe("the routes into the Invoice dialog", () => {
     fire(handlers, "appointment-invoice");
     await settle(client);
 
-    expect(client.modal.title).toBe("Invoice #1042");
-    expect(client.modal.body).toContain('data-testid="invoice-print-invoice"');
-    expect(client.modal.body).not.toContain('data-testid="invoice-print-receipt"');
+    expect(client.workspace.title).toBe("Invoice #1042");
+    expect(client.workspace.body).toContain('data-testid="invoice-print-invoice"');
+    expect(client.workspace.body).not.toContain('data-testid="invoice-print-receipt"');
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// AFTER A VOID, THE VISIT OFFERS A WAY TO TAKE THE MONEY IT SAYS IS OWED.
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * The second defect on this footer, reported by the owner and reproduced exactly:
+ *
+ *   void the payment on a settled invoice
+ *     -> the invoice goes back to Open with $79.01 owing
+ *     -> the appointment chip correctly reads `Open · $79.01 due`
+ *     -> the footer still shows Invoice, and there is NO Take Payment
+ *
+ * The operator was stranded on the one screen that had just told them money was due. The cause was
+ * two lines that both asked whether an invoice RECORD existed rather than what state it was in:
+ * `checkout: status==="completed" && !invoiced && ...` and `invoice: Boolean(item.invoiceId)`.
+ * Voiding a payment does not remove the invoice, so `!invoiced` stayed false forever.
+ *
+ * THE THREE STATES, and they are decided from `invoiceStatus` and `invoiceBalanceMinor` - the two
+ * authoritative financial columns already on the appointment projection, and the same two the
+ * billing chip has always been drawn from:
+ *
+ *   A. no invoice                     Take Payment
+ *   B. invoice, balance outstanding   Take Payment, with Invoice still reachable beside it
+ *   C. invoice, settled               Invoice
+ *
+ * Four behaviours have a stated mutation that makes them fail, each run against this file and
+ * then reverted:
+ *
+ *   5. state B offers Take Payment      - restore `!invoiced`, which is the defect exactly
+ *   6. state B keeps Invoice reachable  - withhold `invoice` whenever a balance is outstanding
+ *   7. a zero balance takes no money    - drop the balance test from `appointmentInvoiceOutstanding`
+ *   8. the surface reloads from the server - put `calendarAppointmentById(id) ||` back in front of
+ *                                         the read, which is the stale-snapshot race itself
+ */
+
+/** A visit whose settled payment has just been voided: Open, whole balance back on the bill. */
+function voidedSurface() {
+  return appointmentSurface({
+    invoiceId: INVOICE_ID,
+    invoiceStatus: "open",
+    invoiceBalanceMinor: 7901
+  });
+}
+
+describe("a completed visit with money still owed on its invoice", () => {
+  /**
+   * MUTATION THAT MUST FAIL THIS: restore `checkout: status==="completed" && !invoiced && ...`.
+   */
+  it("offers Take Payment as the primary action once a void reopens the invoice", () => {
+    const client = loadClient();
+    client.grant("checkout.perform", "payments.view");
+    const surface = voidedSurface();
+    const { markup, handlers } = openSurface(client, surface);
+
+    // The chip already said so. Now the footer agrees with it.
+    expect(markup).toContain('data-testid="appointment-billing">Open · $79.01 due<');
+    expect(surface.permissions).toMatchObject({ invoice: true, checkout: true });
+
+    const take = control(markup, "appointment-take-payment");
+    expect(take).not.toBeNull();
+    expect(take).toContain("primary");
+    expect(handlers["appointment-take-payment"]).toBeInstanceOf(Function);
+  });
+
+  /**
+   * MUTATION THAT MUST FAIL THIS: withhold `invoice` whenever a balance is outstanding. The bill
+   * demonstrably exists and would again have no route from the visit that raised it - the first
+   * defect on this footer, rebuilt from the other side.
+   */
+  it("keeps the Invoice reachable beside it, in the secondary slot", () => {
+    const client = loadClient();
+    client.grant("checkout.perform", "payments.view");
+    const { markup, handlers } = openSurface(client, voidedSurface());
+
+    const invoice = control(markup, "appointment-invoice");
+    expect(invoice).not.toBeNull();
+    expect(invoice).toContain("secondary");
+    expect(invoice).not.toContain("disabled");
+    expect(handlers["appointment-invoice"]).toBeInstanceOf(Function);
+
+    // One primary control, and it is the money. Two buttons cannot both claim the slot.
+    expect(markup.match(/class="primary compact"/gu)).toHaveLength(1);
+  });
+
+  it("opens Check Out with the id of the visit, which is what the existing invoice hangs off", async () => {
+    const client = loadClient();
+    client.grant("checkout.perform", "payments.view");
+    const surface = voidedSurface();
+    const { handlers } = openSurface(client, surface);
+
+    fire(handlers, "appointment-take-payment");
+    await settle(client);
+    expect(client.checkouts).toEqual([surface.item.id]);
+    // And nothing financial was read by the footer itself: Check Out owns that read.
+    expect(client.reads).toEqual([]);
+  });
+
+  /**
+   * WHY OFFERING IT CANNOT RAISE A SECOND INVOICE, asserted against the function that decides.
+   *
+   * `checkout()` loads the receipt for `appointment.invoiceId` before it draws anything, and
+   * `checkoutMode` reads the balance off that receipt. "collect" is the mode that never posts
+   * `/api/appointments/:id/checkout` at all - it tenders against `co.receipt.invoice`. That the
+   * POST is genuinely never sent is proven in a browser by
+   * `tests/e2e/appointment-take-payment-after-void.spec.ts` and by the
+   * "@regression-checkout an existing invoice is collected against, not raised again" spec.
+   */
+  it("puts Check Out in COLLECT mode, the mode that never raises a second invoice", () => {
+    const client = loadClient();
+    // The state a void leaves behind: the invoice is there, and it has a balance again.
+    expect(client.checkoutMode({ receipt: receiptFixture({ balanceMinor: 7901 }) })).toBe("collect");
+    // Settled, and the same screen would show the bill rather than offer to take anything.
+    expect(client.checkoutMode({ receipt: receiptFixture() })).toBe("settled");
+    // No invoice at all is the only state in which it raises one.
+    expect(client.checkoutMode({ receipt: null })).toBe("build");
+  });
+
+  it("withholds Take Payment from an actor who may read the bill but not settle it", () => {
+    const client = loadClient();
+    client.grant("payments.view");
+    const { markup, handlers } = openSurface(client, voidedSurface());
+
+    // Absent, never disabled: the precedent this footer already keeps for a transition the server
+    // would refuse. The bill takes the primary slot instead, because it is the only thing offered.
+    expect(control(markup, "appointment-take-payment")).toBeNull();
+    expect(handlers["appointment-take-payment"]).toBeUndefined();
+    expect(control(markup, "appointment-invoice")).toContain("primary");
+  });
+
+  it("offers it on a partially paid invoice too, for the balance that is left", () => {
+    const client = loadClient();
+    client.grant("checkout.perform", "payments.view");
+    const surface = appointmentSurface({
+      invoiceId: INVOICE_ID,
+      invoiceStatus: "partially_paid",
+      invoiceBalanceMinor: 5201
+    });
+    const { markup } = openSurface(client, surface);
+    expect(surface.permissions).toMatchObject({ checkout: true, invoice: true });
+    expect(control(markup, "appointment-take-payment")).toContain("primary");
+    expect(markup).toContain('data-testid="appointment-billing">Partially paid · $52.01 due<');
+  });
+});
+
+describe("a completed visit with nothing owed", () => {
+  /**
+   * MUTATION THAT MUST FAIL THIS: drop the balance test from `appointmentInvoiceOutstanding`, so
+   * the status alone decides. A settled bill would then offer a tender the server refuses.
+   */
+  it("offers the Invoice and no Take Payment once the balance reaches zero again", () => {
+    const client = loadClient();
+    client.grant("checkout.perform", "payments.view");
+    const surface = settledSurface();
+    const { markup, handlers } = openSurface(client, surface);
+
+    expect(surface.permissions).toMatchObject({ invoice: true, checkout: false });
+    expect(control(markup, "appointment-take-payment")).toBeNull();
+    expect(handlers["appointment-take-payment"]).toBeUndefined();
+    expect(control(markup, "appointment-invoice")).toContain("primary");
+  });
+
+  it("treats a refunded invoice as settled rather than as owing", () => {
+    // Money going back never raises the balance - that is deliberate on the server, so a refund
+    // does not put the bill in front of whoever chases outstanding ones - and this footer must not
+    // reintroduce that by reading the status alone.
+    const client = loadClient();
+    client.grant("checkout.perform", "payments.view");
+    for (const invoiceStatus of ["refunded", "partially_refunded"]) {
+      const surface = appointmentSurface({
+        invoiceId: INVOICE_ID,
+        invoiceStatus,
+        invoiceBalanceMinor: 0
+      });
+      const { markup } = openSurface(client, surface);
+      expect(control(markup, "appointment-take-payment"), invoiceStatus).toBeNull();
+      expect(control(markup, "appointment-invoice"), invoiceStatus).toContain("primary");
+    }
+  });
+
+  /**
+   * MUTATION THAT MUST FAIL THIS: drop the balance test from `appointmentInvoiceOutstanding`, so
+   * the status alone decides.
+   *
+   * WHY THE RULE READS BOTH COLUMNS. The server cannot produce this row: `applyInvoiceSettlement`
+   * writes `balance_minor` and `status` in one statement and `invoiceStatusAfterSettlement` derives
+   * the status FROM the balance, so an `open` invoice always has a balance. A CLIENT can hold it —
+   * an appointment patched field by field, a projection half-refreshed — and the question this
+   * footer is answering is "may the operator press a button that takes money". Offering a tender
+   * against a bill whose own balance says $0.00 is the one wrong answer available here, so the
+   * figure is read as well as the word and the two have to agree.
+   */
+  it("takes no money against a bill whose balance says nothing is left, whatever the status says", () => {
+    const client = loadClient();
+    client.grant("checkout.perform", "payments.view");
+    for (const invoiceStatus of ["open", "partially_paid", "draft"]) {
+      const surface = appointmentSurface({
+        invoiceId: INVOICE_ID,
+        invoiceStatus,
+        invoiceBalanceMinor: 0
+      });
+      const { markup } = openSurface(client, surface);
+      expect(surface.permissions, invoiceStatus).toMatchObject({ checkout: false });
+      expect(control(markup, "appointment-take-payment"), invoiceStatus).toBeNull();
+      // The bill is still reachable: it exists, and the operator can still read and print it.
+      expect(control(markup, "appointment-invoice"), invoiceStatus).toContain("primary");
+    }
+  });
+
+  it("still offers Take Payment on a visit that was never invoiced at all", () => {
+    // State A, unchanged: the bill does not exist, so there is nothing to disable and nothing is
+    // drawn beside the action that raises it.
+    const client = loadClient();
+    client.grant("checkout.perform", "payments.view");
+    const surface = appointmentSurface();
+    const { markup } = openSurface(client, surface);
+    expect(surface.permissions).toMatchObject({ invoice: false, checkout: true });
+    expect(control(markup, "appointment-take-payment")).toContain("primary");
+    expect(control(markup, "appointment-invoice")).toBeNull();
+  });
+});
+
+describe("the surface redraws from authoritative state, not from a calendar snapshot", () => {
+  /** The two sources `reload` chooses between, and what it did with them. */
+  function sources(server: unknown, cache: unknown) {
+    return { server, cache, reads: [] as string[], draws: [] as unknown[], activityLoads: 0 };
+  }
+
+  /**
+   * MUTATION THAT MUST FAIL THIS: put `calendarAppointmentById(id) ||` back in front of the read.
+   *
+   * This is the race the owner hit. `reopenReceipt` fires `refresh()` DETACHED after a void while
+   * the Invoice workspace's `onClose` awaits this reload, so at the moment the footer is redrawn
+   * the calendar may still be holding the pre-void row - `paid`, nothing due - over an invoice
+   * that has just gone back to `Open` with $79.01 owing.
+   */
+  it("takes the server's answer over a calendar row a concurrent refresh has not replaced", async () => {
+    const client = loadClient();
+    client.grant("checkout.perform", "payments.view");
+    const surface = settledSurface();
+    const stale = { ...surface.item };
+    const fresh = { ...surface.item, invoiceStatus: "open", invoiceBalanceMinor: 7901 };
+    const recorded = sources(fresh, stale);
+
+    await client.reloadSurface(surface, String(surface.item.id), recorded);
+
+    expect(recorded.reads).toEqual([`/api/appointments/${surface.item.id}`]);
+    expect(surface.item).toMatchObject({ invoiceStatus: "open", invoiceBalanceMinor: 7901 });
+    // And the footer that follows offers the money, which is the whole point of asking.
+    expect(client.derivePermissions(surface)).toMatchObject({ checkout: true, invoice: true });
+    expect(recorded.draws).toHaveLength(1);
+    expect(recorded.activityLoads).toBe(1);
+  });
+
+  it("falls back to the calendar row when the read fails, rather than blanking the surface", async () => {
+    // An operator standing on this surface keeps what they were looking at. Redrawing from a stale
+    // appointment is worse than redrawing from a fresh one and better than redrawing from nothing.
+    const client = loadClient();
+    const surface = voidedSurface();
+    const cached = { ...surface.item, invoiceBalanceMinor: 5201, invoiceStatus: "partially_paid" };
+    const recorded = sources(null, cached);
+
+    await client.reloadSurface(surface, String(surface.item.id), recorded);
+
+    expect(recorded.reads).toEqual([`/api/appointments/${surface.item.id}`]);
+    expect(surface.item).toMatchObject({ invoiceStatus: "partially_paid" });
+    expect(recorded.draws).toHaveLength(1);
+  });
+
+  it("redraws what it already had when neither source answers", async () => {
+    const client = loadClient();
+    const surface = voidedSurface();
+    const before = surface.item;
+    const recorded = sources(null, null);
+
+    await client.reloadSurface(surface, String(surface.item.id), recorded);
+
+    expect(surface.item).toBe(before);
+    expect(recorded.draws).toEqual([before]);
   });
 });

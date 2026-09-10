@@ -7,7 +7,7 @@ import {
   type TenantFixture
 } from "./fixtures/tenant.js";
 import { openCheckout, chooseMethod, checkoutSurface } from "./helpers/checkout.js";
-import { observePrinting } from "./helpers/print.js";
+import { observePrinting, printFromPreview } from "./helpers/print.js";
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 
 /**
@@ -46,19 +46,32 @@ const detail = (page: Page): Locator => page.getByTestId("appointment-detail-sur
  *
  * `innerText` rather than `textContent`, so a print rule that introduced a `text-transform` inside
  * `.receipt` would show up here as a difference rather than passing unnoticed.
+ *
+ * THE GROUP HEADINGS ARE READ TOO, AND IN THEIR PLACE IN THE SEQUENCE. The statement is grouped
+ * now — Services, Discounts, Payment records — and the grouping is as much a part of what the three
+ * hosts must agree about as the figures are: a host that lost a heading, or drew the same rows
+ * under different ones, would be a second reading of one bill. They come back as `[[Services]]` so
+ * that a heading can never be confused with a row whose label happens to match.
+ *
+ * The rows stay direct `<div>` children of `.receipt` for exactly this reason. Wrapping each group
+ * in a container would put the money one level deeper, this walk would find nothing, and the
+ * comparison at the foot of this spec would pass by comparing three empty lists.
  */
 async function moneyStatement(host: Locator): Promise<string[]> {
   const receipt = host.locator(".receipt");
   await expect(receipt).toHaveCount(1);
   return receipt.evaluate((node) =>
     [...node.children]
-      .filter((row) => row.tagName === "DIV")
-      .map((row) =>
-        [...row.children]
+      .filter((row) => row.tagName === "DIV" || row.tagName === "H4")
+      .map((row) => {
+        const text = (element: Element) =>
+          (element as HTMLElement).innerText.replace(/\s+/gu, " ").trim();
+        if (row.tagName === "H4") return `[[${text(row)}]]`;
+        return [...row.children]
           .filter((cell) => cell.tagName === "SPAN" || cell.tagName === "STRONG")
-          .map((cell) => (cell as HTMLElement).innerText.replace(/\s+/gu, " ").trim())
-          .join(" | ")
-      )
+          .map(text)
+          .join(" | ");
+      })
   );
 }
 
@@ -182,8 +195,17 @@ test("one invoice, three hosts, one money statement — and the Ticket is not on
 
   // Host 1: the settled Check Out panel.
   const settled = await moneyStatement(checkoutSurface(page));
-  expect(settled).toContain("Subtotal | $85.00");
+  expect(settled).toContain("Service subtotal | $85.00");
   expect(settled).toContain("Balance | $0.00");
+  // The grouping, which every host has to agree about as well as the figures: this bill has a
+  // $5.00 discount on it, so all three sections are drawn and all three hosts must draw them.
+  expect(settled.filter((row) => row.startsWith("[["))).toEqual([
+    "[[Services]]", "[[Discounts]]", "[[Payment records]]"
+  ]);
+  // One emphasised final total, under the name the statement gives it, followed by what is owed.
+  expect(settled.indexOf("Invoice total | $101.60")).toBeGreaterThan(-1);
+  expect(settled.indexOf("Invoice total | $101.60"))
+    .toBeLessThan(settled.indexOf("Balance | $0.00"));
   // The operator's words, not the raw column. `client credit` is what the receipt used to print.
   expect(settled).toContain("Client credit · recorded | $40.00");
 
@@ -192,10 +214,12 @@ test("one invoice, three hosts, one money statement — and the Ticket is not on
   // the salon and the client above them, so nothing suppresses them anywhere.
   //
   // PRINT INVOICE, not Print Receipt. The invoice's money statement has three hosts - the settled
-  // Check Out panel, the modal and the Invoice print root - and Print Receipt is not one of them:
+  // Check Out panel, the Invoice workspace and the Invoice print root - and Print Receipt is not
+  // one of them:
   // it renders a different document, whose subject is the payments rather than the bill. Both
   // buttons are on this settled panel; this one is the one that prints this statement.
   await page.getByTestId("checkout-print-invoice").click();
+  await printFromPreview(page);
   const receiptPrint = page.locator(".print-root");
   await expect(receiptPrint).toHaveCount(1);
   await page.emulateMedia({ media: "print" });
@@ -215,18 +239,22 @@ test("one invoice, three hosts, one money statement — and the Ticket is not on
   await expect(ticket(page)).toBeVisible();
   await expect(ticket(page).locator(".receipt")).toHaveCount(0);
   await expect(ticket(page).getByTestId("ticket-document")).not.toContainText("$");
-  for (const absent of ["Subtotal", "Total", "Tax", "Balance", "Payment", "Invoice"]) {
+  for (const absent of [
+    "Service subtotal", "Subtotal", "Invoice total", "Total", "Tax", "Balance", "Payment", "Invoice"
+  ]) {
     await expect(ticket(page).getByTestId("ticket-document"), absent).not.toContainText(absent);
   }
   await page.getByTestId("ticket-print").click();
+  await printFromPreview(page);
   await expect(page.locator(".print-root.print-ticket .receipt")).toHaveCount(0);
   await expect(page.locator(".print-root.print-ticket")).not.toContainText("$");
   await page.evaluate(() => {
     for (const root of document.querySelectorAll(".print-root")) root.parentNode?.removeChild(root);
   });
 
-  // Host 3: the receipt modal, reached the way the front desk reaches it — a fresh read of the
-  // same invoice, rendered by the same function into the shared dialog.
+  // Host 3: the Invoice workspace, reached the way the front desk reaches it — a fresh read of
+  // the same invoice, rendered by the same function into a surface rather than into a dialog.
+  // The container changed and the statement did not, which is the whole of what this asserts.
   await page.keyboard.press("Escape");
   await expect(ticket(page)).toBeHidden();
   await page.getByTestId("checkout-done").click();
@@ -236,8 +264,9 @@ test("one invoice, three hosts, one money statement — and the Ticket is not on
   await row.getByTestId("client-appointment-history").click();
   const modal = page.getByTestId("modal");
   await modal.getByRole("button", { name: "Invoice" }).click();
-  await expect(modal.locator(".receipt")).toBeVisible();
-  const inModal = await moneyStatement(modal);
+  const document_ = page.getByTestId("invoice-surface");
+  await expect(document_.locator(".receipt")).toBeVisible();
+  const inModal = await moneyStatement(document_);
 
   // THE ASSERTION. Identical text for every money cell, in every host, in the order the server
   // sent it. A second renderer, a re-sum, a re-order, a second formatter or a print-time re-read
@@ -307,6 +336,7 @@ test("the work sheet: one row per pet-service pair, and the three notes", async 
 
   // The sheet is the sheet, on screen and on paper: one markup function, two hosts.
   await ticket(page).getByTestId("ticket-print").click();
+  await printFromPreview(page);
   const printRoot = page.locator(".print-root.print-ticket");
   await expect(printRoot).toHaveCount(1);
   await expect(printRoot.getByTestId("ticket-service-row")).toHaveCount(2);
@@ -384,6 +414,7 @@ test("the printed sheet lists the services in the order they were booked", async
   await expect(column(onScreen, 4)).toHaveText(booked.map((service) => service.name));
 
   await ticket(page).getByTestId("ticket-print").click();
+  await printFromPreview(page);
   const printRoot = page.locator(".print-root.print-ticket");
   await expect(printRoot).toHaveCount(1);
   const onPaper = printRoot.getByTestId("ticket-services");

@@ -1,5 +1,6 @@
 import { test, expect, login, completeAppointment } from "./fixtures/tenant.js";
-import { observePrinting, clearPrintRoots } from "./helpers/print.js";
+import { observePrinting, clearPrintRoots, printFromPreview } from "./helpers/print.js";
+import { closeInvoice, invoiceStatement, invoiceSurface, invoiceTitle } from "./helpers/invoice.js";
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 
 /**
@@ -12,13 +13,17 @@ import type { APIRequestContext, Locator, Page } from "@playwright/test";
  * detour through the client to reach a document that belongs to this appointment. Meanwhile the
  * Ticket, which carries no money at all, stayed one button away in every state.
  *
- * The route added is a DOOR, not a document. It opens the same `showInvoiceDocument` dialog that a
- * client's transaction history and the terminal-capture screen open, off the same
+ * The route added is a DOOR, not a document. It opens the same Invoice WORKSPACE that a client's
+ * transaction history and the terminal-capture screen open, off the same
  * `GET /api/invoices/:id/receipt` payload, so there is one Invoice with one title and one pair of
- * print controls however the operator arrived at it. What that dialog itself owes — Print Invoice
- * in every settlement state, Print Receipt only once the settlement completed, and BOTH once it
- * has — is held by `tests/e2e/invoice-receipt-identity.spec.ts`; this spec walks the new door and
- * checks the same two documents come out of it.
+ * print controls however the operator arrived at it. Reached from here it is a LEVEL OVER THE
+ * VISIT: the appointment is still underneath, and closing the Invoice pops back onto it.
+ *
+ * What that workspace itself owes — Print Invoice in every settlement state, Print Receipt only
+ * once the settlement completed, and BOTH once it has — is held by
+ * `tests/e2e/invoice-receipt-identity.spec.ts`, and what it SAYS is held deterministically by
+ * `tests/ui/invoice-workspace.test.ts`. This spec walks the door and checks the same two
+ * documents come out of it.
  *
  * The permission half is deterministic and lives in `tests/ui/appointment-invoice-route.test.ts`:
  * the control is gated on `payments.view` rather than `checkout.perform`, it is DISABLED rather
@@ -94,28 +99,44 @@ test("a settled appointment opens its own Invoice from the appointment footer",
     await expect(detail(page).getByTestId("appointment-ticket")).toHaveClass(/secondary/u);
     await expect(invoiceControl).toHaveClass(/primary/u);
 
-    // ---- The Invoice, in the one dialog that owns it -----------------------------------------
+    // ---- The Invoice, in the one workspace that owns it ---------------------------------------
     await invoiceControl.click();
-    const modal = page.getByTestId("modal");
-    await expect(modal).toBeVisible();
+    const document_ = invoiceSurface(page);
+    await expect(document_).toBeVisible();
     // SAME TITLE AS EVERY OTHER DOOR. Settlement moved a balance and added a payment record;
     // neither is a change of document, and this surface does not get to rename it.
-    await expect(page.locator("#modal-title")).toHaveText(`Invoice #${invoice.invoiceNumber}`);
-    await expect(modal.locator(".receipt")).toContainText("Balance$0.00");
-    // The visit is still behind the bill rather than replaced by it: #modal opens ON TOP of the
-    // appointment surface, so closing the invoice returns the operator to where they were.
-    await expect(detail(page)).toBeVisible();
+    await expect(invoiceTitle(page)).toHaveText(`Invoice #${invoice.invoiceNumber}`);
+    await expect(invoiceStatement(page)).toContainText("Balance$0.00");
+    // AND IT IS NOT THE FORM DIALOG ANY MORE. The Invoice used to be drawn into `#modal`, which
+    // gave a financial document a two-column field grid and a green Save that saved nothing.
+    await expect(page.getByTestId("modal")).toBeHidden();
+    // The whole viewport, used. A settled bill on a desktop had a 650px column of simulated
+    // paper and two controls below the bottom of it.
+    const width = await document_.locator(".surface-shell").evaluate((node) => node.clientWidth);
+    const viewport = page.viewportSize()!.width;
+    expect(width).toBeGreaterThan(viewport * 0.9);
+    // Two columns on a desktop: the statement on the left, where the invoice stands on the right.
+    await expect(document_.getByTestId("invoice-statement")).toBeVisible();
+    await expect(document_.getByTestId("invoice-summary")).toBeVisible();
+    const statement = await document_.getByTestId("invoice-statement").boundingBox();
+    const summary = await document_.getByTestId("invoice-summary").boundingBox();
+    expect(summary!.x).toBeGreaterThan(statement!.x);
 
     // ---- BOTH documents, neither replacing the other -----------------------------------------
-    await expect(modal.getByTestId("invoice-print-invoice")).toBeVisible();
-    await expect(modal.getByTestId("invoice-print-receipt")).toBeVisible();
+    await expect(document_.getByTestId("invoice-print-invoice")).toBeVisible();
+    await expect(document_.getByTestId("invoice-print-receipt")).toBeVisible();
+    // AND THE ACTIONS ARE REACHABLE WITHOUT SCROLLING PAST THE DOCUMENT. The footer is the
+    // shell's own row, outside the body's scroller, so it is on screen the moment the Invoice is.
+    await expect(document_.getByTestId("invoice-print-invoice")).toBeInViewport();
 
-    await modal.getByTestId("invoice-print-invoice").click();
+    await document_.getByTestId("invoice-print-invoice").click();
+    await printFromPreview(page);
     await expect(printRoot(page).locator("h1")).toHaveText(`Invoice #${invoice.invoiceNumber}`);
     await expect(printRoot(page).locator(".receipt")).toContainText("Balance$0.00");
     await clearPrintRoots(page);
 
-    await modal.getByTestId("invoice-print-receipt").click();
+    await document_.getByTestId("invoice-print-receipt").click();
+    await printFromPreview(page);
     await expect(printRoot(page).locator("h1")).toHaveText(`Receipt #${invoice.invoiceNumber}`);
     const receiptDoc = printRoot(page).getByTestId("payment-receipt");
     // PRESENT, not "visible". `.print-root{display:none}` keeps every print document off the
@@ -129,13 +150,16 @@ test("a settled appointment opens its own Invoice from the appointment footer",
     await expect(printRoot(page)).not.toContainText("Ticket");
     await clearPrintRoots(page);
 
-    // ---- And the Ticket is still its own separate document -----------------------------------
-    await modal.locator(".modal-actions .close").click();
-    await expect(modal).toBeHidden();
+    // ---- Closing it puts the operator back on the visit they came from -----------------------
+    await closeInvoice(page);
     await expect(detail(page)).toBeVisible();
+    await expect(page.getByTestId("appointment-billing")).toHaveText("Paid");
+
+    // ---- And the Ticket is still its own separate document -----------------------------------
     await detail(page).getByTestId("appointment-ticket").click();
     await expect(ticket(page)).toBeVisible();
     await ticket(page).getByTestId("ticket-print").click();
+    await printFromPreview(page);
     await expect(printRoot(page).getByTestId("ticket-document")).toHaveCount(1);
     // A work sheet, carrying no money at all: no invoice number, no settlement, no total.
     await expect(printRoot(page).getByTestId("payment-receipt")).toHaveCount(0);

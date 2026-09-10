@@ -1,5 +1,6 @@
 import { test, expect, login, createAppointment, completeAppointment, appointmentAction } from "../fixtures/tenant.js";
 import { openCheckout, openAdjustment, chooseMethod } from "../helpers/checkout.js";
+import { voidRecord } from "../helpers/void-payment.js";
 
 test("@smoke operations expose safety context and enforce the state machine",async({page,request,tenant})=>{
   const appointment=await createAppointment(request,tenant,{
@@ -47,22 +48,17 @@ test("@smoke @regression-checkout checkout totals persist and manual payment cor
   await page.getByTestId("checkout-submit").click();
   // A settled checkout IS the receipt, rendered in place rather than behind a second dialog.
   const receipt=surface.getByTestId("receipt");
-  await expect(receipt).toContainText("Subtotal$85.00");
+  await expect(receipt).toContainText("Service subtotal$85.00");
   await expect(receipt).toContainText("Discount-$5.00");
   await expect(receipt).toContainText("Tax$6.60");
   await expect(receipt).toContainText("Tip$15.00");
-  await expect(receipt).toContainText("Total$101.60");
+  await expect(receipt).toContainText("Invoice total$101.60");
   await expect(receipt).toContainText("Balance$0.00");
-  const dialogs:string[]=[];
-  page.on("dialog",async(dialog)=>{
-    dialogs.push(dialog.message());
-    if(dialog.type()==="prompt")await dialog.accept("Duplicate terminal entry");
-    else await dialog.accept();
-  });
-  await page.getByRole("button",{name:"Void record"}).click();
+  const stated=await voidRecord(page,page.getByRole("button",{name:"Void record"}),
+    "Duplicate terminal entry");
   // The void puts the money back on the bill, so Check Out returns to collecting it.
   await expect(page.getByTestId("checkout-balance")).toHaveText("Balance $101.60");
-  expect(dialogs.join(" ")).toContain("does not refund external funds");
+  expect(stated).toContain("does not refund external funds");
   const audit=await page.evaluate(async()=>(
     await fetch("/api/audit",{credentials:"include"})
   ).json() as Promise<Array<{action:string}>>);

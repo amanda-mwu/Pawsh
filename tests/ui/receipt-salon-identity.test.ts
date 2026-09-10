@@ -63,7 +63,13 @@ function loadReceiptModule(): ReceiptModule {
   return factory(escape, escapeAttr);
 }
 
-/** A settled receipt with nothing owing and no money rows, so the head is all that renders. */
+/**
+ * A settled receipt with nothing owing and one service line under it.
+ *
+ * It carries an item so that the head can be asserted to sit ABOVE the money — the statement draws
+ * its Services group only when it has services to group, so a receipt with none would put nothing
+ * below the head for the ordering assertions to be about.
+ */
 function receiptFixture(invoice: Record<string, unknown>) {
   return {
     invoice: {
@@ -77,7 +83,7 @@ function receiptFixture(invoice: Record<string, unknown>) {
       balanceMinor: 0,
       ...invoice
     },
-    items: [],
+    items: [{ description: "Full Groom", amountMinor: 8500, petName: null }],
     discounts: [],
     payments: [],
     refunds: [],
@@ -124,9 +130,12 @@ describe("the receipt's salon identity header", () => {
     // The order the ADR sets: who it is, how to reach them, where they are.
     expect([...header.matchAll(/<span>(\w+):<\/span>/g)].map((match) => match[1]))
       .toEqual(["Phone", "Email", "Address"]);
-    // The head sits above the client the statement is about, and above every money row.
+    // The head sits above the client the statement is about, and above every money row. The first
+    // of those rows is the Services group now rather than a generic `Subtotal`, which the
+    // statement no longer states when a `Service subtotal` says what it is a subtotal of.
     expect(markup.indexOf("salon-identity")).toBeLessThan(markup.indexOf("Emma Johnson"));
-    expect(markup.indexOf("Emma Johnson")).toBeLessThan(markup.indexOf("Subtotal"));
+    expect(markup.indexOf("Emma Johnson")).toBeLessThan(markup.indexOf("Services"));
+    expect(markup.indexOf("Services")).toBeLessThan(markup.indexOf("Full Groom"));
   });
 
   it("omits a line entirely rather than printing an empty one", () => {

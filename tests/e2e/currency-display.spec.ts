@@ -1,7 +1,7 @@
 import { test, expect, login, completeAppointment } from "./fixtures/tenant.js";
 import type { TenantFixture } from "./fixtures/tenant.js";
 import { openCheckout } from "./helpers/checkout.js";
-import { observePrinting, clearPrintRoots } from "./helpers/print.js";
+import { observePrinting, clearPrintRoots, printFromPreview } from "./helpers/print.js";
 import type { APIRequestContext, Locator } from "@playwright/test";
 
 /**
@@ -101,7 +101,7 @@ test("a workspace billing in a CLDR zero-decimal currency keeps its minor units 
 
     await login(page, tenant.ownerEmail);
 
-    // ---- Host 1: the invoice modal, off the client's own transaction history ----------------
+    // ---- Host 1: the Invoice workspace, off the client's own transaction history -------------
     await page.getByTestId("nav-customers").click();
     const customer = page.getByTestId("customer-card").filter({ hasText: "Emma Johnson" });
     await customer.getByTestId("client-row-actions").click();
@@ -111,16 +111,19 @@ test("a workspace billing in a CLDR zero-decimal currency keeps its minor units 
     // its document identity, so this control is named "Invoice" in every state and the page it
     // opens is headed `Invoice #N` even though this invoice is settled in full below.
     await modal.getByRole("button", { name: "Invoice" }).click();
-    await expect(page.locator("#modal-title")).toHaveText(`Invoice #${invoice.invoiceNumber}`);
+    const document_ = page.getByTestId("invoice-surface");
+    await expect(document_).toBeVisible();
+    await expect(document_.getByTestId("invoice-document-title"))
+      .toHaveText(`Invoice #${invoice.invoiceNumber}`);
 
     // CHARACTER FOR CHARACTER. Unpinned, `Intl` wrote "COP 85", "COP 7" and "COP 102" for three of
     // these — the tax and the total off by the subunit the invoice is actually stored in.
-    const inModal = await moneyCells(modal);
-    expect(inModal).toContain(`Subtotal | COP${NB}85.00`);
+    const inModal = await moneyCells(document_);
+    expect(inModal).toContain(`Service subtotal | COP${NB}85.00`);
     expect(inModal).toContain(`Discount | -COP${NB}5.00`);
     expect(inModal).toContain(`Tax | COP${NB}6.60`);
     expect(inModal).toContain(`Tip | COP${NB}15.00`);
-    expect(inModal).toContain(`Total | COP${NB}101.60`);
+    expect(inModal).toContain(`Invoice total | COP${NB}101.60`);
     expect(inModal).toContain(`Balance | COP${NB}0.00`);
     // Both halves of the mixed settlement, and each written the same way.
     expect(inModal).toContain(`Cash · recorded | COP${NB}40.00`);
@@ -130,6 +133,10 @@ test("a workspace billing in a CLDR zero-decimal currency keeps its minor units 
     for (const cell of inModal) {
       expect(cell.split(" | ")[1], cell).toMatch(TWO_DECIMALS);
     }
+    // Out of the workspace, and out of the transaction list it reopens behind itself.
+    await document_.locator("[data-surface-close]").click();
+    await expect(document_).toBeHidden();
+    await expect(modal).toBeVisible();
     await modal.getByRole("button", { name: "Cancel" }).click();
 
     // ---- Hosts 2 and 3: the settled Check Out panel and the printed document ----------------
@@ -143,6 +150,7 @@ test("a workspace billing in a CLDR zero-decimal currency keeps its minor units 
     // settled panel and renders the payment evidence instead, which states no subtotal, tax or
     // invoice total and so is not a host for these cells.
     await surface.getByTestId("checkout-print-invoice").click();
+    await printFromPreview(page);
     const printed = await moneyCells(page.locator(".print-root"));
     expect(printed).toEqual(inModal);
     await clearPrintRoots(page);
@@ -154,6 +162,7 @@ test("a workspace billing in a CLDR zero-decimal currency keeps its minor units 
     // the Invoice's coverage says nothing whatever about them. Unpinned, this is where a peso
     // workspace hands over "COP 102" for a settlement of 10160 minor units.
     await surface.getByTestId("checkout-print-receipt").click();
+    await printFromPreview(page);
     const receiptDoc = page.locator(".print-root").getByTestId("payment-receipt");
     await expect(receiptDoc).toHaveCount(1);
     await expect(receiptDoc.getByTestId("payment-receipt-total-settled"))

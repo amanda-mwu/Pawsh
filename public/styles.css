@@ -8,7 +8,55 @@ main{padding:42px 4.5vw;min-width:0}header{display:flex;justify-content:space-be
 dialog{border:0;border-radius:18px;padding:0;width:min(650px,calc(100vw - 30px));max-height:calc(100dvh - 20px);overflow:auto;box-shadow:var(--shadow);background:var(--paper)}dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(3px)}#modal-form{padding:28px}.modal-head,.modal-actions{display:flex;justify-content:space-between;align-items:start}.close{border:0;background:none;font-size:25px;color:var(--muted);min-width:44px;min-height:44px}.modal-actions{justify-content:flex-end;gap:10px;margin-top:20px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.form-grid .wide,.form-grid .breed-hint,.form-grid .breed-other-field{grid-column:1/-1}#toast{position:fixed;right:24px;bottom:24px;background:var(--tooltip);color:#fff;padding:12px 18px;border-radius:9px;opacity:0;transform:translateY(10px);transition:.2s;pointer-events:none}#toast.show{opacity:1;transform:none}
 #modal-error span{display:block;margin-bottom:10px}.conflict-override{display:block;color:#9a6410;font-weight:700}
 .permission-grid{border:1px solid var(--line);border-radius:10px;padding:15px;display:grid;grid-template-columns:1fr 1fr;gap:8px 15px}.permission-grid legend{font-weight:700;padding:0 6px}.permission-grid label{display:flex;align-items:center;gap:7px;margin:0;font-weight:500}.permission-grid input{width:auto}
-.card-actions{display:flex;gap:14px;border-top:1px solid var(--line);margin-top:14px;padding-top:8px}.pet-links{display:flex;flex-wrap:wrap;gap:5px;color:var(--muted)}.receipt>div,.payment-receipt>div,.payment-receipt-record>div{display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid var(--line)}.receipt-total{font-size:18px}
+.card-actions{display:flex;gap:14px;border-top:1px solid var(--line);margin-top:14px;padding-top:8px}.pet-links{display:flex;flex-wrap:wrap;gap:5px;color:var(--muted)}.payment-receipt>div,.payment-receipt-record>div,.payment-receipt-purchase>div{display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid var(--line)}.receipt-total{font-size:18px}
+/* == the Invoice's money statement: grouped sections, not a ledger of equal rows ==
+
+   `receiptBodyMarkup` is the Invoice's BODY and it has three hosts - the Invoice workspace, the
+   settled Check Out panel and the print root - so every rule here reaches all three, which is the
+   point rather than a side effect. It used to give every line the same rule above it and the same
+   weight as its neighbour: `Full Groom`, `Subtotal`, two discounts, `Total discount`, `Tax`,
+   `Tip`, `Total` and `Balance` read as one undifferentiated column, and finding what the visit
+   came to meant reading all of it.
+
+   THE ROWS KEEP THEIR GEOMETRY AND LOSE THEIR BLANKET RULE. A separator drawn between every pair
+   of rows carries no information; a separator that CLOSES something does. There are two of them
+   and they are the two the layout asks for: under the services, and under the calculation.
+
+   THE CLASSES ARE THE HIERARCHY. `.receipt-line` is a MEMBER of a group - a service, a discount
+   step, a payment record - and is indented under the heading naming it. An unclassed row is a
+   calculation line at the statement's own level: `Tax`, `Tip`. `.receipt-subtotal` and
+   `.receipt-group-total` CLOSE a group. `.receipt-total` is the one emphasised final figure, and
+   `.receipt-balance` answers a different question in a weight of its own beside it.
+
+   NO `text-transform` AND NO `letter-spacing` ANYWHERE IN HERE. `tests/e2e/ticket-surface.spec.ts`
+   compares the three hosts by `innerText`, and the print stylesheet deliberately introduces
+   neither inside `.receipt` for the same reason. Nothing here hides a row carrying a figure. */
+.receipt>div{display:flex;justify-content:space-between;padding:9px 0}
+/* A group's members, set in under the heading that names them. `.receipt>div` sets the vertical
+   padding and outranks a bare class, so the indent is written at this specificity to survive it -
+   the same reason `.receipt>.receipt-refund` below is. */
+.receipt>.receipt-line{padding-left:13px}
+/* The heading over a group. Small and quiet on purpose: it names a section, it is not a figure,
+   and nothing about it may compete with the total underneath. */
+.receipt>h4{margin:var(--space-3) 0 2px;font-size:12px;font-weight:600;color:var(--muted)}
+.receipt>h4:first-of-type{margin-top:var(--space-2)}
+/* The two separators. Each closes what is above it rather than dividing what is beside it. */
+.receipt>.receipt-subtotal,.receipt>.receipt-total{border-top:1px solid var(--line)}
+/* A group's sum: heavier than its members, lighter than the invoice total. */
+.receipt>.receipt-subtotal,.receipt>.receipt-group-total{font-weight:600}
+/* What is owed NOW, which is not what the visit came to. It is emphasised, and it is deliberately
+   NOT emphasised as a final total - there is exactly one of those and `.receipt-total` carries it.
+   The label is set back so the pair reads as "the bill came to this; this much of it is open". */
+.receipt>.receipt-balance{font-weight:600;padding-top:4px}
+.receipt>.receipt-balance>span{color:var(--muted)}
+/* One column for the figures, in every host rather than only in the workspace, so a reader scans
+   a single edge down the whole statement. */
+.receipt>div>strong{font-variant-numeric:tabular-nums}
+/* Which pet a service line was for, when the line's own source names one. Quiet, and beside the
+   service rather than under it; a line with no pet draws nothing at all. Shared with the Receipt's
+   purchase summary, which is why it is not scoped to `.receipt`. */
+.receipt-item-pet{color:var(--muted);font-weight:400}
+
 /* == refunds on a receipt ==
    A refund is a line UNDER the payment it came out of, indented and quieter, because the payment
    is still the fact - the customer's card really was charged that amount - and the refund is what
@@ -901,6 +949,15 @@ body.calendar-dragging .appointment-block[data-draggable="true"],body.calendar-d
    grid-column and grid-row never change until the server has actually moved it. It lifts above the
    sticky heads and stops taking pointer hits so the slot underneath stays findable. */
 .appointment-block.dragging{z-index:30;pointer-events:none;opacity:.92;box-shadow:0 10px 24px rgba(32,37,34,.28)}
+/* AN EMPTY SLOT THIS SESSION CANNOT ACT ON IS INERT, NOT REFUSED.
+   `.closed` is a slot outside business hours: hatched, `not-allowed`, a rule the operator can do
+   something about. A slot withheld because neither booking nor blocking is this role's job is a
+   different statement - there is nothing there to press and never was - so it keeps its place and
+   its grid rules and stops behaving like a control. Without these two it would inherit the global
+   `button:disabled` fade, which on a transparent cell shows up as the GRID LINES going pale across
+   the whole week, and it would still light up under the cursor as though it were pressable. */
+.week-slot:not(.closed):disabled,.day-slot:not(.closed):disabled{opacity:1;cursor:default}
+.week-slot:not(.closed):disabled:hover,.day-slot:not(.closed):disabled:hover{background:transparent}
 /* Hover tinting is suppressed mid-drag so the only lit cell is the one that would receive the drop. */
 body.calendar-dragging .week-slot:not(.closed):hover,body.calendar-dragging .day-slot:not(.closed):hover{background:transparent}
 .week-slot.drag-over,.day-slot.drag-over{background:var(--brand-tint);box-shadow:inset 0 0 0 2px var(--brand)}
@@ -1003,6 +1060,10 @@ label:has(> input[type="checkbox"]),label:has(> input[type="radio"]){
 .slot-menu{position:fixed;right:auto;min-width:150px;padding:6px}
 .slot-menu button{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border:0;border-radius:6px;background:none;color:var(--ink);font-size:14px;text-align:left}
 .slot-menu button:hover,.slot-menu button:focus-visible{background:var(--surface-2)}
+/* The same treatment `+ New` gives a menu item this session may not use: readable, plainly not
+   pressable, and no hover lift suggesting otherwise. The reason is on its `title`. */
+.slot-menu button:disabled{color:var(--muted);cursor:not-allowed}
+.slot-menu button:disabled:hover{background:none}
 .slot-menu-icon{color:var(--muted);font-size:15px;line-height:1}
 
 .booking-dialog{width:min(1180px,calc(100vw - 24px));max-height:calc(100dvh - 24px)}
@@ -1057,6 +1118,26 @@ label:has(> input[type="checkbox"]),label:has(> input[type="radio"]){
 .stacked-field{display:grid;gap:5px;margin-bottom:var(--space-3);font-size:12px;font-weight:600}
 .stacked-field textarea{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--paper);font:inherit;font-weight:400;resize:vertical}
 .stacked-dialog .fine{margin:0 0 6px;line-height:1.5}
+/* The head's X, pushed to the corner the operator closes a window from. Opt-in per dialog, so the
+   question-shaped stacked dialogs keep their two answers and nothing else. */
+.stacked-dialog-close{margin-left:auto}
+
+/* THE PRINT PREVIEW. The document is drawn here exactly as `appendPrintRoot` would append it, so
+   the dialog frames it and never reflows it: a fixed scroller at a width a statement reads at,
+   with the sheet on its own ground inside. Sized like `.print-agenda-preview`, which has previewed
+   the agenda this way since before the other four documents had a preview at all. */
+.stacked-dialog:has(.print-preview){width:min(760px,calc(100vw - 28px))}
+.print-preview{
+  max-height:60vh;margin-top:var(--space-2);padding:16px;
+  border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--paper);overflow:auto;
+}
+.print-preview h1{margin:0 0 12px;font-size:20px}
+/* CONTROLS, NOT FIGURES - the same two selectors the print stylesheet hides, and hidden here for
+   the same reason. Void and Refund live inside the Invoice body, they do not reach paper, and an
+   operator must not be offered a correction by a picture of a document. Every FIGURE prints and
+   every figure previews; `refund-exhausted` is a fact and is in neither list. */
+.print-preview .text-button,
+.print-preview .refund-refresh{display:none}
 
 @media(max-width:900px){
   .booking-body{grid-template-columns:1fr;overflow:auto}
@@ -2078,10 +2159,11 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
    a statement about the product rather than about this visit. */
 .checkout-running-total{margin:0 0 var(--space-3);padding:9px 11px;border-radius:var(--radius-md);background:var(--mint);color:var(--muted);font-size:12px;font-weight:600;line-height:1.5}
 .checkout-running-total:empty{display:none}
-/* One step of a discount breakdown, under the total it is part of. `.receipt>div` sets
-   `padding:9px 0` and outranks a bare class, so the indent is written at the same specificity -
-   the same reason `.receipt>.receipt-refund` above is. */
-.receipt>.receipt-discount-step{padding:9px 0 9px 13px}
+/* `.receipt-discount-step` IS A MARKER NOW AND NO LONGER AN INDENT. Every member of a group is
+   indented by `.receipt-line` at the top of this file, and a step is a member like any other; what
+   this class still does is say WHICH group the row belongs to, which is what the specs asserting
+   the Receipt is not a second host for the breakdown read. Two rules doing one indent is how the
+   two would eventually disagree. */
 /* The rate a percentage line took, beside the amount it took. "-$8.00" alone does not say it was
    10% of what the line above left, which is the whole reason the stacking order changes a total. */
 .receipt-discount-rate{color:var(--muted);font-weight:600}
@@ -2407,7 +2489,7 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
 
    NOTHING HERE STYLES `.receipt`. The financial documents are different documents with their own
    rules further down, so this block has no money rules to write and no identity lines to
-   suppress. (They are no longer Check Out's alone - both also print from the invoice dialog -
+   suppress. (They are no longer Check Out's alone - both also print from the Invoice workspace -
    but nothing here depended on where they were reached from.) */
 
 /* A thin bar carrying the reference and the dismissal, and nothing else. */
@@ -2455,8 +2537,9 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
    not one of those rows. That is also what keeps a money-row sweep honest, because anything
    walking the statement's div children is walking money and nothing else. */
 /* `overflow-wrap` restated because the Ticket's copy inherits it from `.ticket-doc` and the
-   Receipt has no such ancestor: the modal and the settled Check Out panel are both narrow on a
-   phone, and a long address or email must wrap rather than push the statement sideways. */
+   Receipt has no such ancestor: the Invoice workspace and the settled Check Out panel are both
+   narrow on a phone, and a long address or email must wrap rather than push the statement
+   sideways. */
 .receipt>.salon-identity,.payment-receipt>.salon-identity{padding:0 0 4px;overflow-wrap:anywhere}
 
 /* == The Receipt's tender composition ==
@@ -2470,6 +2553,24 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
 /* Said on the component that no money was collected for it. Muted, because it qualifies the line
    above rather than competing with it, and `.print-root .fine` already sizes it for paper. */
 .payment-receipt-record>.fine{margin:6px 0 0;color:var(--muted);font-size:12px;line-height:1.4}
+/* == The Receipt's purchase summary ==
+   What was bought, above how it was tendered. A <section> for the same reason a tender component
+   is one: `.payment-receipt>div` is a money row of this document's OWN totals, and a block shaped
+   like a row would put the whole summary into that sweep. Its rows take the statement's row
+   geometry from the shared rule at the top of this file rather than restating it, so an item line
+   and a tender line cannot drift apart.
+
+   NO SIZE OF ITS OWN. `.receipt-total` stays the Receipt's one emphasised figure and it belongs
+   to `Total settled`, because the settlement is this document's subject; the purchased total is
+   the bill's figure and reads as the thing that total discharges. Weight alone separates it from
+   the lines above it. */
+.payment-receipt-purchase{display:block}
+.payment-receipt-purchase>h4{margin:var(--space-3) 0 0}
+/* A column of prices reads as a column. The tender amounts already do this; the summary is the
+   first place this document has had several figures to line up under one another. */
+.payment-receipt-purchase>div>strong{font-variant-numeric:tabular-nums}
+.payment-receipt-purchase-total>span,.payment-receipt-purchase-total>strong{font-weight:700}
+
 /* Money going back OUT of this component, attributed to it rather than summed away. The same
    left rail the Invoice's refund rows carry, so a refund looks like a refund on both documents. */
 .payment-receipt-refund{
@@ -2478,12 +2579,156 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
 }
 .payment-receipt-refund strong{font-variant-numeric:tabular-nums}
 
-/* The print controls under an Invoice opened away from Check Out. A row, separated from the
-   statement above it, so the two documents are offered as two controls rather than folded into
-   the money. */
-.document-actions{
-  display:flex;flex-wrap:wrap;gap:var(--space-2);
-  margin-top:14px;padding-top:12px;border-top:1px solid var(--line);
+/* == Invoice workspace ==
+   The Invoice was a 650px `#modal`: a form dialog, with a two-column field grid, a footer
+   belonging to a form, and a centred column of simulated paper that an operator had to scroll
+   past the bottom of to reach the controls. It is a WORKSPACE now, and takes the frame the other
+   three workspaces take - `.fullscreen-surface` > `.surface-shell` > head / body / foot - so this
+   block adds NO new shell, no new head, no new footer and no new tokens. What is here is the
+   body's own two-column split and the two things that live in the right-hand column.
+
+   NOTHING HERE RESTYLES `.receipt`'s FIGURES. The money statement is the shared renderer and it
+   is drawn in the print root and in the settled Check Out panel too; every rule below that
+   touches it is scoped to `.invoice-statement`, so what reaches paper and what Check Out shows
+   are untouched. */
+
+/* Bill on the left, where it stands on the right. Same grammar as Check Out, and the rail is
+   narrower because it holds a state and four figures rather than a form. */
+.surface-body.invoice-body{grid-template-columns:minmax(0,1fr) 340px}
+.invoice-statement,.invoice-summary{
+  min-height:0;overflow-y:auto;padding:var(--space-4) clamp(16px,3vw,40px);
+  display:grid;gap:var(--space-4);align-content:start;
+}
+/* A statement reads badly at 900px of line length, so the document holds a measure and sits at
+   the start of a column that is allowed to be much wider than it. */
+.invoice-statement>.receipt{max-width:64ch;margin:0}
+.invoice-summary{border-left:1px solid var(--line);background:var(--surface-2)}
+
+/* The head. The status is a fact about this invoice and sits under its name rather than beside
+   it, so a long document title has the whole first line. */
+.invoice-head-meta{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;margin:0}
+.invoice-status-badge{background:var(--surface-2);color:var(--ink)}
+
+/* The visit, above the money. A definition list, because that is what it is. */
+.invoice-facts{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
+  gap:var(--space-2) var(--space-4);margin:0;max-width:64ch;
+}
+.invoice-facts>div{display:flex;flex-wrap:wrap;gap:6px;font-size:13px;line-height:1.5}
+.invoice-facts dt{font-weight:600}
+.invoice-facts dt::after{content:":"}
+.invoice-facts dd{margin:0;font-variant-numeric:tabular-nums}
+/* A value that is not there is set back in weight rather than wearing the ink of a recorded one -
+   the treatment `.appointment-lifecycle strong.is-unrecorded` already uses on the same fact. */
+.invoice-facts dd.is-unrecorded{color:var(--muted)}
+
+/* THE FIX FOR THE MONEY COLUMN, AND IT IS SCOPED TO THIS SCREEN.
+   `.receipt>div` is `justify-content:space-between`, so a row with THREE children - label, amount,
+   and a Refund or Void control - puts the amount in the MIDDLE of the row, at a different x from
+   Subtotal, Tax, Tip, Total and Balance directly above it. An explicit third track pins every
+   amount to the same edge whether or not a control follows it. Screen only: the print stylesheet
+   and the Check Out panel keep the geometry they had, and no figure moves - only where it sits. */
+.invoice-statement .receipt>div{
+  display:grid;grid-template-columns:minmax(0,1fr) auto auto;
+  align-items:baseline;column-gap:var(--space-3);
+}
+.invoice-statement .receipt>div>strong{font-variant-numeric:tabular-nums;white-space:nowrap}
+/* The refund row is the one statement child that is NOT a two-figure money line: it is a stacked
+   label, an amount and sometimes a Check refund button, and `.receipt>.receipt-refund` already
+   lays it out. It keeps that layout - the alignment fix above is for the rows a refund hangs
+   under, not for the refund itself. (`.salon-identity` is a <header>, never matched by
+   `.receipt>div`, so it needs no restoring.) */
+.invoice-statement .receipt>.receipt-refund{display:flex}
+/* NO `.invoice-statement .receipt>h4` RULE ANY MORE. The group headings are the statement's own
+   now and `.receipt>h4` states their spacing for every host; a second margin here would give the
+   workspace a different gap under the same heading from the one on paper, which is precisely the
+   host-by-host drift the money statement exists to prevent. */
+
+/* Where the invoice stands. A state, said in words, and the figures under it. */
+.invoice-state{
+  display:grid;gap:var(--space-1);
+  padding:var(--space-3);border:1px solid var(--line);
+  border-radius:var(--radius-lg);background:var(--paper);
+}
+/* Colour is never the only signal: each state's TITLE says what it is, and the rail is a second
+   reading of the same fact rather than the only one. */
+.invoice-state{border-left:3px solid var(--line)}
+.invoice-state.is-settled{border-left-color:var(--success)}
+.invoice-state.is-part{border-left-color:var(--warning)}
+.invoice-state.is-owing{border-left-color:var(--info)}
+.invoice-state-title{margin:0;font:600 15px/1.3 var(--font-sans)}
+.invoice-state-note{margin:0;color:var(--muted);font-size:12.5px;line-height:1.5}
+.invoice-summary-figures{display:grid}
+.invoice-summary-row{
+  display:grid;grid-template-columns:minmax(0,1fr) auto;
+  align-items:baseline;gap:var(--space-3);
+  padding:9px 0;border-top:1px solid var(--line);font-size:13px;
+}
+.invoice-summary-row:first-child{border-top:0}
+.invoice-summary-row strong{font-variant-numeric:tabular-nums;white-space:nowrap}
+.invoice-summary-row[data-testid="invoice-summary-refunded"] strong{color:var(--info)}
+.invoice-summary-row[data-testid="invoice-summary-balance"]{
+  border-top:1px solid var(--ink);font-weight:600;
+}
+
+/* The footer. Balance on the left, the document's own actions on the right, and the sentence
+   that says why two of them cannot be pressed on its own line under both.
+
+   `width`, NOT `flex-basis`, and that distinction cost a horizontal overflow. `.surface-foot`
+   is `flex-wrap:wrap`, and the narrow-viewport rule below turns it into a COLUMN - at which
+   point `flex-basis:100%` stops meaning "a full-width line" and starts meaning "as tall as the
+   footer", which in a wrapping column pushes the note into a SECOND COLUMN beside the buttons
+   and 107px off the right edge of a 360px phone. `width:100%` is the cross size in a column and
+   the base size in a row, so it means the same thing in both: the whole line. */
+.invoice-foot{align-items:baseline}
+.invoice-unavailable-note{width:100%;margin:0;order:1}
+/* Disabled here means "Pawsh cannot do this yet", which is a standing fact rather than work in
+   progress, so it does not take the shared `cursor:wait` a busy button takes. */
+.invoice-foot button:disabled{cursor:not-allowed;opacity:.55}
+
+/* == Responsive ==
+   Same two steps the other surfaces take, and the same reason: one scroller, never two nested. */
+@media(max-width:1199px){
+  .surface-body.invoice-body{grid-template-columns:minmax(0,1fr) 300px}
+}
+@media(max-width:900px){
+  /* `min-content` is load-bearing here for the reason stated on `.surface-body` above: in a grid
+     whose height is definite, `auto` tracks share the space and both stacked columns compress and
+     paint over each other. */
+  .surface-body.invoice-body{
+    grid-template-columns:minmax(0,1fr);grid-template-rows:min-content min-content;
+    align-content:start;overflow-y:auto;
+  }
+  /* State first. An operator who opened an invoice on a phone opened it to find out whether it is
+     paid; the itemisation is what they read next, not what they scroll past. */
+  .invoice-summary{order:1;overflow:visible;border-left:0;border-bottom:1px solid var(--line)}
+  .invoice-statement{order:2;overflow:visible}
+  .invoice-statement>.receipt,.invoice-facts{max-width:none}
+}
+@media(max-width:640px){
+  /* The shell turns its footer into a `column-reverse`, which would put this footer's explanatory
+     line above the buttons and the balance below them. The Invoice reads top-down instead:
+     balance, actions, then the sentence about the two that are unavailable. */
+  /* `nowrap` as well as `column`: a wrapping column is a multi-column layout, which is not what
+     a stacked footer is, and it is what put the explanatory line off the side of the screen. */
+  .invoice-foot{flex-direction:column;flex-wrap:nowrap;align-items:stretch}
+  .invoice-foot>.surface-foot-actions{flex-direction:column}
+  .invoice-foot>.surface-foot-actions>button{width:100%;min-height:48px}
+  .invoice-facts{grid-template-columns:minmax(0,1fr)}
+}
+/* THE ONE WAY OUT OF A FULL-SCREEN DOCUMENT, AT A SIZE A THUMB CAN HIT.
+   `.surface-close` is a fixed 40px square and does not read `--icon-btn`, so it never took the
+   44px floor the coarse-pointer override gives every other icon control. On the surfaces that
+   already had it that was a latent gap; on the Invoice it is the only dismissal a phone has -
+   Escape is not reachable - so it takes the floor here, at a coarse pointer AND on a narrow
+   window, which are two different readers rather than one condition stated twice. Scoped to
+   this surface: widening the shared rule would move the head of three other screens, and that
+   is a decision about those screens rather than about this one. */
+@media(pointer:coarse){
+  .invoice-head .surface-close{width:44px;height:44px;min-height:44px}
+}
+@media(max-width:640px){
+  .invoice-head .surface-close{width:44px;height:44px;min-height:44px}
 }
 
 .ticket-section{display:grid;gap:var(--space-2)}
@@ -2544,11 +2789,11 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
    row therefore stops relying on its tint and takes a rule under it instead.
 
    The `.print-root` rules below are the two FINANCIAL documents': the Invoice, which is the same
-   statement the invoice dialog shows and is printable in every settlement state, and the Receipt,
-   which is available once the settlement is COMPLETE - a recorded component AND nothing still
-   owed. Both print from the Check Out footer and from the invoice dialog; neither is Check Out's
-   alone. They change colour, border colour, font-size and break
-   behaviour only. They set no `text-transform`, no `content`, no `font-variant-numeric` and no
+   statement the Invoice workspace shows and is printable in every settlement state, and the
+   Receipt, which is available once the settlement is COMPLETE - a recorded component AND nothing
+   still owed. Both print from the Check Out footer and from the Invoice workspace; neither is
+   Check Out's alone. They change colour, border colour, font-size and break behaviour only. They
+   set no `text-transform`, no `content`, no `font-variant-numeric` and no
    `letter-spacing` inside `.receipt` or `.payment-receipt`, and they hide no element carrying a
    figure - the only hides are two controls. That is what keeps the printed figures
    character-identical to the ones on screen.
@@ -2584,6 +2829,15 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
   /* One payment is one block of facts and is never split across a page: half a payment on the
      second sheet is half a piece of evidence. */
   .print-root .payment-receipt-record{break-inside:avoid;page-break-inside:avoid}
+  /* The Receipt's own money rows, which the Invoice's equivalents have always had. A row broken
+     across a page break is a label on one sheet and its figure on the next. */
+  .print-root .payment-receipt>div,
+  .print-root .payment-receipt>.salon-identity,
+  .print-root .payment-receipt-purchase>div{break-inside:avoid;page-break-inside:avoid}
+  /* Keep a short purchase summary whole where the page allows it. `avoid` is a request rather
+     than a guarantee, so a summary longer than a page still breaks - between rows, never through
+     one, which the rule above holds. */
+  .print-root .payment-receipt-purchase{break-inside:avoid;page-break-inside:avoid}
 
   /* Controls, not figures. Hiding them cannot change a number. `refund-exhausted` is a FACT and
      is not in this list: it prints. */

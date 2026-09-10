@@ -82,10 +82,10 @@ test("@cross-browser completed checkout receipt renders prepared totals",async({
   await page.getByRole("button",{name:"Invoice"}).click();
 
   const receipt=page.getByTestId("receipt");
-  await expect(receipt).toContainText("Subtotal$85.00");
+  await expect(receipt).toContainText("Service subtotal$85.00");
   await expect(receipt).toContainText("Discount-$5.00");
   await expect(receipt).toContainText("Tax$6.60");
   await expect(receipt).toContainText("Tip$15.00");
-  await expect(receipt).toContainText("Total$101.60");
+  await expect(receipt).toContainText("Invoice total$101.60");
   await expect(receipt).toContainText("Balance$0.00");
 });

@@ -172,7 +172,17 @@ export const permissionPresets: Record<string, readonly Permission[]> = {
   ],
   receptionist: [
     "calendar.view", "appointments.view", "appointments.create", "appointments.edit",
-    "appointments.cancel", "customers.view", "customers.edit", "pets.view", "pets.edit",
+    "appointments.cancel",
+    // THE FRONT DESK BLOCKS TIME OUT, AND WENT ON DOING SO WHEN THE DEDICATED KEYS GRADUATED.
+    // `POST /api/blocked-times` was gated on `appointments.edit` from 0001 until the pair below
+    // started biting, which meant a Receptionist could block a groomer's lunch. Moving the route
+    // onto `calendar.blocks_create` without adding these two here would have taken that away from
+    // every Receptionist in every workspace and told nobody - the silent revocation 0043 and 0045
+    // were each written to prevent. Blocking out time is front-desk work, not a manager-only
+    // capability, so the preset gains the keys rather than the route keeping the looser gate.
+    // `migrations/0055_blocked_time_management.sql` does the same for roles that already exist.
+    "calendar.blocks_create", "calendar.blocks_edit",
+    "customers.view", "customers.edit", "pets.view", "pets.edit",
     "pets.care.view", "operations.check_in", "checkout.perform", "payments.view"
   ],
   manager: permissions
@@ -312,12 +322,13 @@ export const unenforcedPermissions: ReadonlySet<Permission> = new Set<Permission
   //
   // But roughly a dozen COULD be enforced today - `payments.edit` over void and refund,
   // `customers.contact_info` over the fields the customer projections return, `pets.breeds_edit`
-  // over four breed routes, `calendar.blocks_create` over one, `messages.view` over the message
-  // centre, and eight `settings.*` children over route families `settings.manage` holds. They are
-  // here anyway, and that is the shape of this change rather than an oversight: the catalog lands
-  // as a pure addition that alters no route, and each of those graduates in its own change that
-  // splits exactly one family and can be reviewed on its own. Until then, the honest thing to tell
-  // an owner is that the switch does not gate anything yet, because it does not.
+  // over four breed routes, `messages.view` over the message centre, and eight `settings.*`
+  // children over route families `settings.manage` holds. They are here anyway, and that is the
+  // shape of this change rather than an oversight: the catalog lands as a pure addition that
+  // alters no route, and each of those graduates in its own change that splits exactly one family
+  // and can be reviewed on its own. Until then, the honest thing to tell an owner is that the
+  // switch does not gate anything yet, because it does not. The `calendar.blocks_*` pair was on
+  // that list and has since taken its turn; see where it left this set below.
   //
   // The four scope keys - `appointments.view_all_staff`, `appointments.edit_all_staff`,
   // `customers.view_all`, `dashboard.all_staff` - are the sharpest and must graduate last, with a
@@ -331,8 +342,23 @@ export const unenforcedPermissions: ReadonlySet<Permission> = new Set<Permission
   "appointments.online_booking_accept",
   "checkout.split_tips",
   "payments.edit",
-  "calendar.blocks_create",
-  "calendar.blocks_edit",
+  // `calendar.blocks_create` AND `calendar.blocks_edit` GRADUATED HERE and are deliberately
+  // absent, the third and fourth of the 55 to do so after `settings.discounts` and
+  // `customers.credit_edit`. `POST /api/blocked-times` is gated on `calendar.blocks_create`
+  // alone - it no longer rides `appointments.edit` - so the switch an owner sets for it now
+  // decides who may take a half hour off a groomer's calendar.
+  //
+  // THEY LEAVE THIS LIST AS A PAIR, one seam apart from each other, and that is a decision rather
+  // than an oversight. `calendar.blocks_edit` is the key the edit and delete routes take, which
+  // land in the very next change; it is granted by the same migration, to the same roles, in the
+  // same commit as its twin. Splitting the graduation would mean shipping a role sheet on which
+  // half of one capability is marked "Not yet available in Pawsh" and the other half is not, for
+  // one seam, which tells an owner less than either answer on its own does.
+  //
+  // NEITHER MAY GO BACK ON THIS LIST. `unenforcedPermissions` drives `enforced: false` in the
+  // permission catalog, which the editor renders as "Not yet available in Pawsh". Leaving a key
+  // here once it refuses somebody tells an owner a switch does nothing while it is in fact
+  // refusing their staff.
 
   "customers.view_all",
   "customers.contact_info",

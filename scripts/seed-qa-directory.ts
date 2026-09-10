@@ -442,9 +442,9 @@ const summary = await sql.begin(async (tx) => {
     if (!appointment) continue;
     await tx`
       insert into appointment_services(business_id,appointment_id,service_id,service_name_snapshot,
-        duration_minutes_snapshot,price_minor_snapshot)
+        duration_minutes_snapshot,price_minor_snapshot,line_position)
       values (${businessId},${appointment.id},${service.id},${service.name},
-        ${service.baseDurationMinutes},${service.basePriceMinor})
+        ${service.baseDurationMinutes},${service.basePriceMinor},1)
     `;
     await tx`
       insert into appointment_employees(business_id,appointment_id,employee_id)

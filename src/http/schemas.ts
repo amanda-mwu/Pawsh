@@ -1108,8 +1108,130 @@ export const blockedTimeSchema = z.object({
   startDisambiguation: z.enum(["earlier", "later"]).optional(),
   endDisambiguation: z.enum(["earlier", "later"]).optional(),
   expectedLocationVersion: z.number().int().positive(),
-  reason: z.string().trim().min(1).max(500)
+  // THE NOTE IS OPTIONAL, AND THE EMPTY STRING IS STILL NOT A WAY TO SAY SO.
+  //
+  // `blocked_times.reason` has been nullable since 0001 and `blockedTimeUpdateSchema` has been
+  // able to clear it since the edit route landed, so requiring one HERE made a block reachable at
+  // `reason IS NULL` only by creating it labelled and then deleting the label. An operator
+  // blocking out a stretch of the afternoon often has nothing to add beyond the hours themselves,
+  // and the calendar already draws an unlabelled band as its time range alone.
+  //
+  // `.nullish()` over the same `.trim().min(1).max(500)` the edit route carries: absent and
+  // explicit `null` both mean no note, a non-empty string is trimmed and bounded, and `""` or
+  // whitespace fails `.min(1)` after `.trim()` exactly as it does on the edit. That refusal is
+  // the deliberate half - a blank text input is a field somebody has not filled in yet, and a
+  // schema that read it as "no note" would make an unsaved dialog and a decision the same
+  // request. `null` is the one way to say it, on both routes, and a client has to mean it.
+  reason: z.string().trim().min(1).max(500).nullish(),
+  // The band's colour, and THE SAME `colorSlotField` a groomer's is validated by - one palette,
+  // one bound, one place to widen it. `blocked_times.color_slot` carries 0040's durable 0-15
+  // check exactly as `employees.color_slot` does, and the real ceiling is `groomerPaletteSize`
+  // here, so adding an eleventh colour stays a constant and a stylesheet.
+  //
+  // Optional, and null is a real answer rather than a missing one: it means nobody chose, which
+  // the calendar draws as the default block band. Unlike a groomer's slot there is no hash
+  // fallback and there must not be one - a groomer's colour identifies a person across every
+  // screen, while a block's is a label an operator puts on one region of one day.
+  colorSlot: colorSlotField.nullish()
 });
+
+/**
+ * Editing a block that already exists.
+ *
+ * SHAPED ON `appointmentMoveSchema`, WHICH IS PAWSH'S RESCHEDULING BODY - the same `employeeId`,
+ * the same `YYYY-MM-DDTHH:MM` wall clock, the same per-bound disambiguation, the same
+ * `expectedLocationVersion`, the same `version`. A block is rescheduled the way an appointment is
+ * rescheduled, and a client that has learned one shape must not have to learn a second. It gains
+ * `localEnd` and `endDisambiguation` because a block states both of its bounds where an
+ * appointment derives its end from the services booked into it, and it gains `reason` and
+ * `colorSlot` because a block is the only calendar object that carries them.
+ *
+ * A TRUE PATCH: every field except `version` is optional, and that is load-bearing rather than
+ * convenience. `blocked_times` carries a wall clock (`scheduled_local_*`) DERIVED from the instant
+ * and the row's own `scheduling_timezone`, under migration 0051's check constraint - and a stored
+ * block may carry an older `scheduling_timezone` than its location carries today. An edit that
+ * changed only the reason but still resolved and rewrote the times would reinterpret that block's
+ * wall clock in the CURRENT zone and silently move it. Making the schedule omissible is what lets
+ * the route leave the time columns entirely alone when nobody asked to move anything.
+ *
+ * THE SCHEDULE IS ALL-OR-NOTHING: `employeeId`, `localStart`, `localEnd` and
+ * `expectedLocationVersion` are present together or absent together. Partial forms are refused
+ * rather than merged with the stored row because every one of them is a question with no honest
+ * answer - a `localStart` alone would have to invent an end, and a move without
+ * `expectedLocationVersion` would resolve a wall clock against a timezone the caller may never
+ * have seen. Who and when are one decision here, exactly as they are on `appointmentMoveSchema`,
+ * where they are simply both mandatory.
+ *
+ * `.strict()`, unlike its create twin. A misspelled key on an edit is a field the operator
+ * believes they changed and the server silently ignored; better a 400 that names it.
+ */
+export const blockedTimeUpdateSchema = z.object({
+  // The block's own optimistic-concurrency token, read back from the projection. Required on every
+  // edit including one that changes nothing, so "409" always means one thing: your copy is stale.
+  version: z.number().int().positive(),
+  employeeId: z.string().uuid().optional(),
+  localStart: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/).optional(),
+  localEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/).optional(),
+  startDisambiguation: z.enum(["earlier", "later"]).optional(),
+  endDisambiguation: z.enum(["earlier", "later"]).optional(),
+  expectedLocationVersion: z.number().int().positive().optional(),
+  // THREE WIRE FORMS, THREE DIFFERENT REQUESTS, AND THE EMPTY STRING IS NOT ONE OF THEM.
+  //
+  // Absent leaves the note alone. An explicit `null` CLEARS it - `blocked_times.reason` has been
+  // nullable since 0001 and a block whose label was typed by mistake had no way back to unlabelled
+  // while this field was `.optional()` over a `min(1)` string. A non-empty string sets it, trimmed
+  // and bounded exactly as the create route bounds it.
+  //
+  // `""` and `"   "` are REFUSED (400) rather than read as a clear, and that is the deliberate
+  // half. `.trim()` runs before `.min(1)`, so whitespace collapses to empty and fails the same
+  // check an empty string fails. A blank text input is a field somebody has not filled in yet; a
+  // schema that silently read it as "delete the note" would make an unsaved dialog and a deletion
+  // the same request. `null` is the one way to clear, and a client has to mean it.
+  reason: z.string().trim().min(1).max(500).nullish(),
+  // Absent leaves the colour alone; an explicit `null` clears it back to "nobody chose". The two
+  // are different requests and JSON can tell them apart, which is the reason this is `.nullish()`
+  // on a PATCH rather than `.optional()`.
+  colorSlot: colorSlotField.nullish()
+}).strict().superRefine((value, context) => {
+  const schedule = ["employeeId", "localStart", "localEnd", "expectedLocationVersion"] as const;
+  const supplied = schedule.filter((field) => value[field] !== undefined);
+  if (supplied.length > 0 && supplied.length < schedule.length) {
+    for (const field of schedule) {
+      if (value[field] === undefined) {
+        context.addIssue({
+          code: "custom", path: [field],
+          message: "Moving a block takes employeeId, localStart, localEnd and expectedLocationVersion together."
+        });
+      }
+    }
+  }
+  // A disambiguation without a bound to disambiguate is a client that thinks it is moving the
+  // block. Refused rather than dropped, so it finds out here.
+  if (value.startDisambiguation !== undefined && value.localStart === undefined) {
+    context.addIssue({ code: "custom", path: ["startDisambiguation"],
+      message: "startDisambiguation only applies when localStart is being changed." });
+  }
+  if (value.endDisambiguation !== undefined && value.localEnd === undefined) {
+    context.addIssue({ code: "custom", path: ["endDisambiguation"],
+      message: "endDisambiguation only applies when localEnd is being changed." });
+  }
+});
+
+/**
+ * The version a DELETE is claiming to have read.
+ *
+ * IN THE QUERY STRING, BECAUSE A DELETE HAS NO BODY ANYWHERE IN PAWSH. Every one of the two dozen
+ * delete routes in this API is bodyless and every client call is `{ method: "DELETE" }` with
+ * nothing attached; a request body on DELETE is also the one payload intermediaries are entitled
+ * to drop. Deleting a block is a lost-update risk in exactly the way editing one is - the block
+ * somebody is removing may have been moved onto a different hour since they last looked - so the
+ * token has to travel, and the query string is where it can.
+ *
+ * `z.coerce` because a query string carries text and nothing else.
+ */
+export const blockedTimeVersionQuerySchema = z.object({
+  version: z.coerce.number().int().positive()
+}).strict();
 
 export const operationalUpdateSchema = z.object({
   operationalNotes: z.string().max(10_000).nullish(),

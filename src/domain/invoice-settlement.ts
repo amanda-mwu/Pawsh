@@ -26,9 +26,31 @@ import { invoiceStatusAfterSettlement } from "./refunds.js";
  * A `draft` or `void` invoice keeps its status and its balance. Those are not settlement states
  * and a sum of payments has no business renaming them.
  *
- * The caller is expected to already hold `select ... from invoices ... for update`, or the lock on
- * the payment that reaches it. This function does not take the lock, because the callers take it
- * earlier and for more than this.
+ * IT TAKES THE INVOICE ROW LOCK ITSELF, in the same statement it reads the row with, and that is
+ * the point rather than a convenience. This function reads `balance_minor` and `status` and writes
+ * both back as literals; a read of those two that is not under `for update` is a lost update
+ * waiting for a second writer, because the value written is the value read and nothing revisits it.
+ *
+ * IT USED TO EXPECT THE CALLER TO HAVE TAKEN THE LOCK, and three of the four callers had - the
+ * manual payment route, the void route and the Terminal reconciler all take it before they call.
+ * `completePaymentRefund` did not: it locked the PAYMENT row, which is the right lock for counting
+ * refund headroom and no lock at all on the invoice. So a refund could read `balance_minor`, a
+ * payment could settle the invoice to zero and commit, and the refund's write would then land last
+ * and put the old balance back - an invoice claiming money on a bill that was already paid, and a
+ * salon collecting it twice. Requiring the lock by comment is what let one caller not take it.
+ *
+ * RE-TAKING A LOCK THE CALLER ALREADY HOLDS COSTS NOTHING. `for update` on a row this transaction
+ * has already locked does not wait and does not queue behind anyone; it is the same lock, already
+ * owned. The three callers that lock the invoice earlier - and lock it for more than this - are
+ * unaffected, and they keep their own locks because they read the invoice to DECIDE with before
+ * they get here.
+ *
+ * THE LOCK ORDER THIS ESTABLISHES IS PAYMENTS, THEN INVOICES, THEN CUSTOMERS. `POST
+ * /api/payments/:id/void` already took payment-then-invoice, so the refund transaction reaching
+ * here while holding the payment lock takes the pair in the same order. Nothing takes them the
+ * other way round: the payment route locks the invoice and then INSERTS a payment, which locks
+ * only the row it creates, and the Terminal reconciler locks the checkout, then the invoice, then
+ * inserts. There is no invoice-then-existing-payment path to deadlock against.
  */
 export interface InvoiceSettlement {
   totalMinor: number;
@@ -47,6 +69,7 @@ export async function applyInvoiceSettlement(
   const [invoice] = await tx<{ totalMinor: number; balanceMinor: number; status: string }[]>`
     select total_minor, balance_minor, status from invoices
     where business_id=${input.businessId} and id=${input.invoiceId}
+    for update
   `;
   if (!invoice) return null;
   const [paid] = await tx<{ paidMinor: number }[]>`

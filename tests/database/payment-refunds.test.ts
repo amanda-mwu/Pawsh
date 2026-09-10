@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
-import { createDatabase, type Database } from "../../src/db/client.js";
+import { createDatabase, setTenant, type Database } from "../../src/db/client.js";
 import { tokenHash } from "../../src/http/context.js";
 import { hashPassword } from "../../src/security/passwords.js";
 import { IntegrationKeyring } from "../../src/security/integration-encryption.js";
@@ -10,8 +10,10 @@ import {
   processSquareWebhooks, squareSignature, squareSignatureHeader
 } from "../../src/integrations/square/webhooks.js";
 import {
-  maxRefundSweepAttempts, paymentRefundIdempotencyKey
+  completePaymentRefund, maxRefundSweepAttempts, paymentRefundIdempotencyKey, readPaymentRefund
 } from "../../src/integrations/square/refunds.js";
+import { applyInvoiceSettlement } from "../../src/domain/invoice-settlement.js";
+import { backendPid, waitUntilBlockedBy } from "../support/concurrency.js";
 import { sweepPendingRefunds } from "../../src/integrations/square/sweep.js";
 import { SquareApiError } from "../../src/integrations/square/errors.js";
 import { squareStub } from "../support/square-stub.js";
@@ -162,8 +164,8 @@ describeDatabase("Payment refunds", () => {
     await db`
       insert into appointment_services
         (business_id,appointment_id,service_id,service_name_snapshot,
-         duration_minutes_snapshot,price_minor_snapshot)
-      values (${businessId},${appointment!.id},${serviceId},'Full groom',60,${priceMinor})
+         duration_minutes_snapshot,price_minor_snapshot,line_position)
+      values (${businessId},${appointment!.id},${serviceId},'Full groom',60,${priceMinor},1)
     `;
     const created = await app.inject({
       method: "POST", url: `/api/appointments/${appointment!.id}/checkout`,
@@ -757,6 +759,134 @@ describeDatabase("Payment refunds", () => {
     expect(resettled.balanceMinor).toBe(0);
     expect(resettled.status).toBe("partially_refunded");
   });
+
+  // ---------------------------------------------------------------------------
+  // Concurrency
+  // ---------------------------------------------------------------------------
+
+  it("does not put a settled invoice back in debt when a payment lands mid-refund", async () => {
+    /**
+     * THE LOST UPDATE THIS EXISTS TO PIN.
+     *
+     * `completePaymentRefund` locked the PAYMENT row and nothing else. `applyInvoiceSettlement`
+     * then read `invoices.balance_minor` with no lock on it and wrote the same number back as a
+     * literal. Between those two statements a manual payment could take `for update` on the
+     * invoice, settle it to zero, and commit - and the refund's write, landing afterwards, put the
+     * old balance back. The invoice claimed money on a bill that had already been paid in full,
+     * and the next person to look at it would collect it a second time.
+     *
+     * THE INTERLEAVING IS PINNED, NOT HOPED FOR. This test holds the invoice row lock itself -
+     * the same lock, at the same point, that `POST /api/invoices/:id/payments` takes at the top of
+     * its transaction - launches the refund completion, and waits until that transaction is
+     * demonstrably blocked on this backend before recording the payment. That wait is what makes
+     * the result a fact rather than a coin toss:
+     *
+     *   - Against the OLD code the refund does not block on the lock at all. It reads the balance
+     *     unlocked, gets 2000, and only blocks when it reaches its `update invoices`. The wait
+     *     therefore ends AFTER the stale read, the payment then commits, and the refund's update
+     *     overwrites it. Observed failure: balance_minor 2000 and status partially_paid on an
+     *     invoice whose recorded payments already cover its total.
+     *   - Against the fixed code the refund blocks on `select ... for update` INSIDE
+     *     `applyInvoiceSettlement`, before it has read anything, and resumes against the balance
+     *     the payment left.
+     *
+     * The fixture is the ordinary way an invoice comes to carry both a live balance and a
+     * refundable card payment: cash and card together, then the cash record voided because it was
+     * never handed over.
+     */
+    square.state.refundOutcome = "PENDING";
+    const invoice = await invoiceFor(6_000);
+    const cash = await app.inject({
+      method: "POST", url: `/api/invoices/${invoice.id}/payments`,
+      headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
+      payload: { amountMinor: 2_000, expectedBalanceMinor: 6_000, method: "cash" }
+    });
+    expect(cash.statusCode, cash.body).toBe(201);
+    const started = await app.inject({
+      method: "POST", url: `/api/invoices/${invoice.id}/terminal-checkouts`,
+      headers: { cookie: ownerCookie }, payload: { deviceId }
+    });
+    expect(started.statusCode, started.body).toBe(201);
+    const [checkout] = await db<{ id: string; squareCheckoutId: string }[]>`
+      select id, square_checkout_id from square_terminal_checkouts
+      where business_id=${businessId} and id=${started.json().id}
+    `;
+    square.completeCheckout({
+      checkoutId: checkout!.squareCheckoutId, amountMinor: 4_000, tipMinor: 0
+    });
+    await app.inject({
+      method: "POST", url: `/api/square/terminal-checkouts/${checkout!.id}/refresh`,
+      headers: { cookie: ownerCookie }
+    });
+    const [card] = await db<{ id: string }[]>`
+      select id from payments where business_id=${businessId} and invoice_id=${invoice.id}
+        and provider='square'
+    `;
+    const voided = await app.inject({
+      method: "POST", url: `/api/payments/${cash.json().id}/void`,
+      headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
+      payload: { reason: "Cash was never handed over" }
+    });
+    expect(voided.statusCode, voided.body).toBe(200);
+    expect(await invoiceRow(invoice.id)).toMatchObject({
+      balanceMinor: 2_000, status: "partially_paid"
+    });
+
+    const issued = await refund(card!.id, {
+      amountMinor: 4_000, expectedRefundableMinor: 4_000, reason: "Card back to the customer"
+    });
+    expect(issued.statusCode, issued.body).toBe(201);
+    const [pending] = await refundRows(card!.id);
+    expect(pending!.status).toBe("pending");
+    const refundRow = (await readPaymentRefund(db, {
+      businessId, refundId: pending!.id
+    }))!;
+
+    // Square has confirmed the refund. This is the function the webhook drain, the sweep and the
+    // operator's refresh all converge on once it has.
+    let completion: Promise<unknown> | undefined;
+    await db.begin(async (tx) => {
+      await setTenant(tx, businessId);
+      const pid = await backendPid(tx);
+      const [locked] = await tx<{ balanceMinor: number }[]>`
+        select balance_minor from invoices
+        where business_id=${businessId} and id=${invoice.id} for update
+      `;
+      expect(locked!.balanceMinor).toBe(2_000);
+
+      completion = completePaymentRefund(db, refundRow, refundRow.providerRefundId!);
+      completion.catch(() => {});
+      await waitUntilBlockedBy(db, { pid });
+
+      // Exactly what `POST /api/invoices/:id/payments` does under this lock: insert the tender
+      // component, then resolve the invoice through the one shared resolver.
+      await tx`
+        insert into payments
+          (business_id, invoice_id, amount_minor, method, external_reference, recorded_by)
+        values (${businessId}, ${invoice.id}, ${2_000}, 'cash', null, ${ownerId})
+      `;
+      const settled = await applyInvoiceSettlement(tx, {
+        businessId, invoiceId: invoice.id, recomputeBalance: true
+      });
+      expect(settled).toMatchObject({ balanceMinor: 0, status: "paid" });
+    });
+    expect(await completion!).toBe("completed");
+
+    // THE MONEY, NOT THE STATUS CODE. Six thousand billed, six thousand recorded, four thousand
+    // sent back to the card, and nothing left owing.
+    const after = await invoiceRow(invoice.id);
+    expect(after.totalMinor).toBe(6_000);
+    expect(after.balanceMinor).toBe(0);
+    expect(after.status).toBe("partially_refunded");
+    const recorded = await db<{ amountMinor: number }[]>`
+      select amount_minor from payments
+      where business_id=${businessId} and invoice_id=${invoice.id} and status='recorded'
+    `;
+    expect(recorded.map((row) => row.amountMinor).sort((a, b) => a - b)).toEqual([2_000, 4_000]);
+    const [settledRefund] = await refundRows(card!.id);
+    expect(settledRefund).toMatchObject({ status: "completed", amountMinor: 4_000 });
+    square.state.refundOutcome = "COMPLETED";
+  }, 20_000);
 
   // ---------------------------------------------------------------------------
   // Tenancy

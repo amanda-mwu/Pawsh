@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type postgres from "postgres";
 import { z, type ZodType } from "zod";
 import type { Config } from "../config.js";
-import { setTenant, type Database } from "../db/client.js";
+import { setTenant, type Database, type SqlExecutor } from "../db/client.js";
 import { DocumentStorageError, sha256, type DocumentStorage } from "../storage/documents.js";
 import { canTransition, invoiceSettledStatuses, type AppointmentStatus } from "@pawsh/domain";
 import { applyDiscounts, calculateInvoice } from "@pawsh/domain";
@@ -19,10 +19,15 @@ import {
 } from "../domain/date-format.js";
 import { canonicalHash } from "../domain/canonical.js";
 import { applyInvoiceSettlement } from "../domain/invoice-settlement.js";
+// A type-only module in practice: `terminal.ts` imports nothing at runtime but `node:crypto`,
+// so this brings no Square client, no HTTP and no configuration into the core route file. The
+// checkouts table is core schema; what is Square-specific is the vocabulary, and that stays
+// behind this one function.
+import { readLiveTerminalCheckout } from "../integrations/square/terminal.js";
 import { refundPresentation, type RefundStatus } from "../domain/refunds.js";
 import { safePdfFilename } from "../domain/filenames.js";
 import { maxPhotoBytes, readPhotoShape, safePhotoFilename } from "../domain/images.js";
-import { localDateBounds, localDateForInstant, resolveWallTime, validateTimeZone } from "../domain/time.js";
+import { formatWallTime, localDateBounds, localDateForInstant, resolveWallTime, validateTimeZone } from "../domain/time.js";
 import { can, permissionGroups, permissionHints, permissionLabels, permissionPresets, permissions,
   unenforcedPermissions, type Permission } from "@pawsh/domain";
 import { effectivePermissions, hasEffectivePermission } from "../db/effective-permissions.js";
@@ -32,6 +37,7 @@ import {
   idParams, loginSchema,
   normalizeEmail, normalizePhone, paymentSchema, petSchema, serviceSchema, signupSchema,
   transitionSchema, appointmentTimesSchema, appointmentRecordSchema, businessSettingsSchema, workingHoursSchema, blockedTimeSchema,
+  blockedTimeUpdateSchema, blockedTimeVersionQuerySchema,
   operationalUpdateSchema, voidPaymentSchema, appointmentMoveSchema, appointmentServicesSchema,
   passwordResetRequestSchema, passwordResetConfirmSchema, invitationSchema,
   invitationAcceptSchema, ownershipTransferSchema, petProfileUpdateSchema, petCareUpdateSchema,
@@ -269,8 +275,13 @@ function publicDocumentActivity(row: DocumentActivityRow) {
 
 export interface SchedulingHooks {
   afterLocationLock?: (input:{operation:"create"|"reschedule";businessId:string;timezone:string;version:number})=>Promise<void>;
+  // `block_create` and `block_update` are the blocked-time mutations, which take the SAME
+  // per-employee scheduling lock the booking routes take and for the same reason: the
+  // block/appointment invariant is bidirectional, so both directions have to be decided inside one
+  // lock or a concurrent booking interleaves past the check. Widening this union is what lets a
+  // test hold a block and a booking at the gate together and release them into a genuine race.
   beforeLock?: (input: {
-    operation: "create" | "reschedule";
+    operation: "create" | "reschedule" | "block_create" | "block_update";
     businessId: string;
     employeeIds: readonly string[];
   }) => Promise<void>;
@@ -631,11 +642,19 @@ function appointmentCalendarRows(db: Database, scope: SqlFragment) {
         from appointment_employees assignment join employees staff on staff.id=assignment.employee_id
         where assignment.business_id=a.business_id and assignment.appointment_id=a.id),
         json_build_array(json_build_object('id',e.id,'displayName',e.display_name))) as groomers,
+      -- IN THE OPERATOR'S ORDER, WHICH IS WHAT MAKES THIS PROJECTION THE TICKET'S SOURCE.
+      -- GET /api/appointments/:id and the calendar list both come through here, and the Ticket
+      -- renders whatever array they hand it. This aggregate carried no ordering at all, so the
+      -- sheet listed a two-service visit either way round depending on which random uuid sorted
+      -- first. aps.line_position (0054) is the order the services were booked in; aps.id is a
+      -- tie-break the unique key makes unreachable, kept so a hand-written row cannot reintroduce
+      -- an arbitrary result. The client MUST NOT re-sort this: ticketServicesMarkup and
+      -- appointmentPresentation render the array as given, and that is the contract.
       coalesce(json_agg(json_build_object(
         'id', aps.id, 'name', aps.service_name_snapshot, 'durationMinutes',
         aps.duration_minutes_snapshot, 'priceMinor', aps.price_minor_snapshot,
         'serviceId', aps.service_id
-      )) filter (where aps.id is not null), '[]') as services,
+      ) order by aps.line_position, aps.id) filter (where aps.id is not null), '[]') as services,
       -- What checkout will charge for the work itself, from the same immutable snapshots the
       -- invoice is built from. The checkout modal opens before the invoice exists, so anything
       -- it has to express as a share of the visit - a tip preset, most obviously - needs this
@@ -658,6 +677,78 @@ function appointmentCalendarRows(db: Database, scope: SqlFragment) {
     where ${scope}
     group by a.id,c.id,p.id,e.id,l.id,inv.id order by a.start_at,a.employee_id,a.id
   `;
+}
+
+/**
+ * THE ONE PROJECTION OF A BLOCKED TIME, shared by every route that answers with one.
+ *
+ * `POST`, `GET`, `PATCH` and the create/edit responses all paint onto the same calendar grid, so
+ * they must be one answer rather than four that agree today. This used to be two copies of the
+ * same select list - one inlined in the create route's CTE, one in the read route - which is
+ * exactly how a projection drifts by a field: `version` would have had to be added to both, and a
+ * client that patched its local copy from a create response and refetched a moment later would
+ * have rendered the same block two ways.
+ *
+ * THE WALL CLOCK IS TEXT, DERIVED FROM THE INSTANT. `scheduled_local_start` and
+ * `scheduled_local_end` are `timestamp without time zone`, so postgres.js parses them with
+ * `new Date(x)`, reading a zone-less string in the API HOST's timezone and serialising an instant
+ * that moves with the machine the server runs on. That is migration 0051's defect - the one that
+ * printed a 10:00 groom as 17:00 - on the one field a calendar column has to place. `to_char`
+ * keeps it text end to end, which is the only form the driver cannot reinterpret, and deriving it
+ * from `start_at` and the block's OWN `scheduling_timezone` states the same wall clock on every
+ * host without depending on 0051's check constraint holding.
+ *
+ * `version` IS PART OF THE CONTRACT, not an internal column that leaked. It is the token `PATCH`
+ * and `DELETE` require back, so a client that cannot read it cannot edit a block at all; 0055 left
+ * it off the projection because no route consumed it yet, and the routes that consume it land
+ * here.
+ *
+ * `scope` carries the tenant predicate. Every caller supplies `block.business_id`, and there is no
+ * default: a projection that could be asked for "every block" would be one edit away from being.
+ */
+function blockedTimeRows(sql: SqlExecutor, scope: SqlFragment) {
+  return sql`
+    select block.id, block.employee_id, block.location_id, block.reason, block.color_slot,
+      block.version,
+      block.start_at, block.end_at, block.scheduling_timezone,
+      employee.display_name as employee_name,
+      to_char(block.start_at at time zone block.scheduling_timezone,'YYYY-MM-DD"T"HH24:MI')
+        as scheduled_local_start,
+      to_char(block.end_at at time zone block.scheduling_timezone,'YYYY-MM-DD"T"HH24:MI')
+        as scheduled_local_end
+    from blocked_times block
+    join employees employee on employee.business_id=block.business_id and employee.id=block.employee_id
+    where ${scope}
+    order by block.start_at, block.employee_id, block.id
+  `;
+}
+
+/**
+ * A blocked time as an audit payload: the WHOLE row, not the projection.
+ *
+ * `audit_events.resource_id` carries no foreign key, deliberately, so the trail outlives the row
+ * it describes - which is the only reason a hard-deleted block is still accountable at all. That
+ * only pays off if the `before` payload of the delete carries enough to say what was removed, so
+ * this captures every column an operator or an auditor could need to reconstruct it: both bounds
+ * as instants AND as the salon's wall clock, the timezone those two are related by, the groomer,
+ * the location, the reason, the colour and the version the row died at.
+ *
+ * The activity read exposes a deliberately narrower whitelist on top of this; see the route. The
+ * payload is wider than the whitelist ON PURPOSE - what is recorded is a matter of accountability,
+ * what is returned is a matter of what a client needs.
+ */
+function blockedTimeAuditPayload(row: {
+  employeeId: string; locationId: string; startAt: Date; endAt: Date; schedulingTimezone: string;
+  localStart: string; localEnd: string; reason: string | null; colorSlot: number | null;
+  version: number;
+}) {
+  return {
+    employeeId: row.employeeId, locationId: row.locationId,
+    startAt: row.startAt, endAt: row.endAt,
+    schedulingTimezone: row.schedulingTimezone,
+    scheduledLocalStart: row.localStart, scheduledLocalEnd: row.localEnd,
+    reason: row.reason, colorSlot: row.colorSlot, version: row.version
+  };
 }
 
 // Bounded appointment history projection carrying the service snapshots the profile views render,
@@ -693,7 +784,7 @@ async function appointmentHistoryPage(
         coalesce((select json_agg(json_build_object(
           'id',aps.id,'serviceId',aps.service_id,'name',aps.service_name_snapshot,
           'durationMinutes',aps.duration_minutes_snapshot,'priceMinor',aps.price_minor_snapshot
-        ) order by aps.id) from appointment_services aps
+        ) order by aps.line_position, aps.id) from appointment_services aps
           where aps.business_id=a.business_id and aps.appointment_id=a.id),'[]') as services,
         coalesce((select json_agg(json_build_object('id',staff.id,'displayName',staff.display_name)
           order by staff.display_name)
@@ -1208,6 +1299,100 @@ async function findSchedulingConflicts(
           && tstzrange(${input.startAt},${input.endAt},'[)')
     order by appointment.start_at,appointment.id
   `;
+}
+
+/**
+ * THE OTHER HALF OF THE BLOCK/APPOINTMENT INVARIANT, WHICH UNTIL NOW ONLY HELD ONE WAY.
+ *
+ * A booking that lands on a block is refused - `TIME_BLOCKED`, hard since seam 2a. A block laid
+ * on a booking was not refused at all, so the very state the booking path exists to prevent was
+ * reachable by approaching it from the other side: block the hour an appointment already sits in,
+ * or create the block an hour over and move it there. The calendar then draws a groomer as both
+ * unavailable and booked at once, the availability authority refuses every subsequent booking that
+ * touches the window, and nothing in the product can say which of the two is the truth.
+ *
+ * IT REUSES `findSchedulingConflicts` WHOLE, RATHER THAN THE STATUS LITERAL. The occupancy
+ * definition is not just `status in ('scheduled','checked_in','in_service')`: it is that set AND
+ * the join through `appointment_employees` (so a second assigned groomer counts) AND
+ * `tstzrange(...,'[)')` half-open overlap (so touching is not overlapping). Copying any part of
+ * that would create a second definition free to drift from the scheduling authority's, and the two
+ * directions of one invariant disagreeing is worse than either being wrong on its own. Calling the
+ * authority's own function makes drift impossible by construction: change the occupancy rule once
+ * and both directions move together.
+ *
+ * `excludeAppointmentId` is deliberately not passed. It exists so a reschedule does not conflict
+ * with itself; a blocked time is not an appointment and has nothing to exclude.
+ *
+ * NOT SCOPED TO A LOCATION, because neither side of this invariant is. `findSchedulingConflicts`
+ * refuses double-booking a groomer across the whole business, and `refuseStaffAvailability`
+ * subtracts a groomer's blocks without consulting which shop they were filed at - one person
+ * cannot be in two places at once, and a location column does not change that. Scoping this one
+ * read to a location would be exactly the second definition the paragraph above rules out.
+ *
+ * THE CALLER MUST HOLD THE PER-EMPLOYEE SCHEDULING LOCK ALREADY. This read decides nothing on its
+ * own: outside `lockSchedulingResources` a booking committed between the read and the write walks
+ * straight through it.
+ */
+async function refuseBlockOverAppointments(
+  tx: Transaction,
+  input: { businessId: string; employeeId: string; startAt: Date; endAt: Date; timeZone: string }
+): Promise<{
+  code: "BLOCK_TIME_APPOINTMENT_CONFLICT"; error: string;
+  conflicts: SchedulingConflict[]; canOverride: false;
+} | null> {
+  const conflicts = await findSchedulingConflicts(tx, {
+    businessId: input.businessId, employeeId: input.employeeId,
+    startAt: input.startAt, endAt: input.endAt
+  });
+  if (!conflicts.length) return null;
+  // Read only on the refusal path. The happy path stays one query, and a block for a groomer id
+  // the foreign key would reject reaches the same 23503 it always did rather than a new 404.
+  const [employee] = await tx<{ displayName: string }[]>`
+    select display_name from employees
+    where business_id=${input.businessId} and id=${input.employeeId}
+  `;
+  return {
+    code: "BLOCK_TIME_APPOINTMENT_CONFLICT",
+    error: blockedTimeConflictMessage(
+      employee?.displayName ?? "That groomer", conflicts, input.timeZone
+    ),
+    conflicts,
+    // A CONSTANT, NOT A PERMISSION LOOKUP, and that is the whole point. `SCHEDULING_CONFLICT`
+    // computes this field because `appointments.override_conflict` really does let a manager
+    // double-book. There is no permission that lets anybody lay a block over a booking, so there
+    // is nothing to look up. It is stated rather than omitted so a client reading the field gets
+    // the answer `TIME_BLOCKED` gives it in the mirror case instead of `undefined`, and cannot
+    // render a "Block anyway" the server would refuse.
+    canOverride: false
+  };
+}
+
+/**
+ * The refusal in a salon owner's words, naming the booking that is in the way and where it is.
+ *
+ * The wall clock is the block's own scheduling timezone, because that is the grid the operator is
+ * looking at: an instant reads as the wrong hour and the ISO string in `conflicts` is for the
+ * client, not for the person. A block may span days, so the end date is printed only when it
+ * differs from the start's.
+ */
+function blockedTimeConflictMessage(
+  employeeName: string,
+  conflicts: readonly SchedulingConflict[],
+  timeZone: string
+): string {
+  const first = conflicts[0]!;
+  const start = formatWallTime(first.startsAt, timeZone);
+  const end = formatWallTime(first.endsAt, timeZone);
+  const window = start.slice(0, 10) === end.slice(0, 10)
+    ? `on ${start.slice(0, 10)} from ${start.slice(11)} to ${end.slice(11)}`
+    : `from ${start.slice(0, 10)} ${start.slice(11)} to ${end.slice(0, 10)} ${end.slice(11)}`;
+  const others = conflicts.length - 1;
+  const rest = others === 0 ? ""
+    : others === 1 ? " and one more inside that window"
+    : ` and ${others} more inside that window`;
+  return `${employeeName} has an appointment booked ${window}${rest}.`
+    + " Blocked time cannot cover a booked appointment."
+    + " Move or cancel the appointment first, or block a different stretch of time.";
 }
 
 async function authorizeConflictOverride(
@@ -5351,11 +5536,74 @@ export function registerRoutes(
     `;
   });
 
+  /**
+   * Blocks a stretch of one groomer's calendar out, so nothing can be booked into it.
+   *
+   * GATED ON `calendar.blocks_create`, WHICH IS A GRADUATION AND NOT A TIGHTENING. This route
+   * rode `appointments.edit` from the day it was written; the dedicated key has sat in the
+   * catalog unenforced since 0045 describing exactly this route. It is enforced now, and
+   * `migrations/0055_blocked_time_management.sql` granted it to every role that held
+   * `appointments.edit` - relationally, so a renamed built-in and a salon's own front-desk role
+   * are both covered - which is what keeps this from being a silent revocation. The Receptionist
+   * preset gains it in the same change for workspaces created after the migration. The set of
+   * people who can block out time is deliberately identical either side of this: Owner, Manager
+   * and Receptionist yes, Groomer no, exactly as before.
+   *
+   * Its twin `calendar.blocks_edit` gates the edit and delete routes, which land next. It is
+   * granted by the same migration to the same roles so the capability does not arrive in halves.
+   *
+   * A BLOCK WRITTEN HERE IS NOW HARD. `availabilityOverrideMayBypass` no longer lets
+   * `availabilityOverride` clear a `TIME_BLOCKED` refusal, so what this route writes is a
+   * constraint the booking path cannot be talked past - only moved or deleted. The refusal says
+   * so itself through `canOverride: false`.
+   *
+   * AND THE INVARIANT RUNS BOTH WAYS NOW. A block may not be laid over a booked appointment either:
+   * `BLOCK_TIME_APPOINTMENT_CONFLICT`, 409, equally hard and with no override of its own. The check
+   * runs against the same occupancy definition the booking path uses - it calls
+   * `findSchedulingConflicts` rather than restating it - while holding the same per-employee
+   * scheduling lock, inside the transaction that does the insert. `PATCH` carries the twin of this
+   * guard so the state is not reachable by creating the block an hour over and moving it.
+   *
+   * THE RESPONSE IS THE READ ROUTE'S PROJECTION, FIELD FOR FIELD, and that is load-bearing rather
+   * than tidiness. It used to be `returning *`, which handed postgres.js the raw
+   * `scheduled_local_*` columns - `timestamp without time zone`, which the driver parses with
+   * `new Date(x)` in the API HOST's timezone and then serialises as an instant. On a UTC host
+   * serving a UTC-8 salon, creating a 12:00 block answered `...T20:00:00.000Z`: migration 0051's
+   * defect, the one that printed a 10:00 groom as 17:00, on the one field a calendar column has
+   * to place. The wall clock is TEXT via `to_char`, computed from the instant and the block's own
+   * `scheduling_timezone`, which is the only form the driver cannot reinterpret - and it is the
+   * same expression `GET /api/blocked-times` uses, so a client that paints the created block
+   * optimistically and a client that refetches the window cannot disagree about where it goes.
+   *
+   * The local columns are still WRITTEN from the resolved instant in SQL, never bound from the
+   * operator's submitted string: the string is what `resolveWallTime` has just interpreted, and
+   * binding it back would record a wall clock that was never checked against the zone.
+   */
   app.post("/api/blocked-times", {
-    preHandler: [authenticate, requirePermission("appointments.edit")]
+    preHandler: [authenticate, requirePermission("calendar.blocks_create")]
   }, async (request, reply) => {
     const context = auth(request);
     const input = body(blockedTimeSchema, request.body);
+    // OMITTED AND EXPLICITLY NULL BOTH MEAN "NO NOTE". THE EMPTY STRING MEANS NEITHER.
+    //
+    //   reason omitted     -> null   the operator typed nothing and the client sent nothing
+    //   reason: null       -> null   the operator cleared the field before saving
+    //   "  Staff meeting " -> text   trimmed by the schema and bounded at 1-500
+    //   "" or "   " (spaces) -> 400    refused by the schema, NEVER coerced to null here
+    //
+    // `??` IS THE RIGHT OPERATOR HERE AND WAS THE WRONG ONE ON THE EDIT ROUTE, which is worth
+    // saying out loud because the two lines otherwise look interchangeable. `PATCH` has three
+    // answers to give - leave the note alone, clear it, set it - so it has to know whether the
+    // key was sent AT ALL and reads that with `Object.hasOwn`. A create has no "leave it alone":
+    // there is no stored note yet to leave. Absent and `null` are therefore the SAME request on
+    // this route, and collapsing them with `??` states that rather than hiding it behind however
+    // zod happens to represent an omission.
+    //
+    // The empty string never reaches this line - `.trim().min(1)` in `blockedTimeSchema` has
+    // already refused it - and that is deliberate rather than incidental. Reading a blank input
+    // as "no note" would make an unsaved dialog and a decision the same request; `null` is the
+    // one way to say it, on create exactly as on edit, and a client has to mean it.
+    const reason = input.reason ?? null;
     const [location] = await db<{ timezone:string; version:number }[]>`
       select timezone,version from locations where business_id=${context.businessId} and id=${input.locationId} and active
     `;
@@ -5364,14 +5612,631 @@ export function registerRoutes(
     const start=resolveWallTime(input.localStart,location.timezone,input.startDisambiguation);
     const end=resolveWallTime(input.localEnd,location.timezone,input.endDisambiguation);
     if (start.instant >= end.instant) return reply.code(400).send({ error:"Blocked time must end after it starts" });
-    const [created] = await db`
-      insert into blocked_times (business_id,employee_id,location_id,start_at,end_at,scheduling_timezone,
-        scheduled_local_start,scheduled_local_end,reason,created_by)
-      values (${context.businessId},${input.employeeId},${input.locationId},${start.instant},${end.instant},${start.timeZone},
-        ${start.instant}::timestamptz at time zone ${start.timeZone},
-        ${end.instant}::timestamptz at time zone ${start.timeZone},${input.reason},${context.userId}) returning *
+    const created = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      // THE LOCK, THEN THE CHECK, THEN THE WRITE - ONE TRANSACTION, THE SCHEDULING AUTHORITY'S OWN
+      // LOCK. `lockSchedulingResources` is the per-employee `pg_advisory_xact_lock` the four
+      // booking call sites take; taking it here puts a block being created and a booking being
+      // taken for the same groomer in the same queue, which is the only arrangement in which
+      // either can trust what it just read. Exactly one employee is locked: a create names one
+      // groomer and moves nobody else's calendar.
+      await schedulingHooks.beforeLock?.({
+        operation: "block_create", businessId: context.businessId, employeeIds: [input.employeeId]
+      });
+      await lockSchedulingResources(tx, context.businessId, [input.employeeId]);
+      const conflict = await refuseBlockOverAppointments(tx, {
+        businessId: context.businessId, employeeId: input.employeeId,
+        startAt: start.instant, endAt: end.instant, timeZone: start.timeZone
+      });
+      if (conflict) return { kind: "appointmentConflict", conflict } as const;
+      const [written] = await tx<{ id:string; version:number; localStart:string; localEnd:string }[]>`
+        insert into blocked_times (business_id,employee_id,location_id,start_at,end_at,scheduling_timezone,
+          scheduled_local_start,scheduled_local_end,reason,color_slot,created_by,updated_by)
+        values (${context.businessId},${input.employeeId},${input.locationId},${start.instant},${end.instant},${start.timeZone},
+          ${start.instant}::timestamptz at time zone ${start.timeZone},
+          ${end.instant}::timestamptz at time zone ${start.timeZone},${reason},
+          ${input.colorSlot ?? null}::smallint,${context.userId},${context.userId})
+        returning id,version,
+          to_char(start_at at time zone scheduling_timezone,'YYYY-MM-DD"T"HH24:MI') as local_start,
+          to_char(end_at at time zone scheduling_timezone,'YYYY-MM-DD"T"HH24:MI') as local_end
+      `;
+      // THE FIRST ENTRY IN THE BLOCK'S OWN HISTORY. Until this line `blocked_times` was the only
+      // calendar object Pawsh wrote without an audit event, which was survivable while a block was
+      // write-once - `created_by`/`created_at` said everything there was to say - and stops being
+      // survivable the moment the row can be edited and deleted. `record()` is the ONLY writer of
+      // `audit_events` in this codebase and stays that way; nothing here inserts into that table
+      // directly, and nothing backfills a synthetic event for a block written before this line
+      // existed. See `GET /api/blocked-times/:id/activity` for how those older blocks get a
+      // Created entry without one being invented in the database.
+      //
+      // NO `eventType`, DELIBERATELY. That argument also writes `outbox_events`, and for nine
+      // named types `product_analytics_events` as well. Nothing consumes a block downstream - no
+      // notification, no report, no analytics question anybody has asked - so naming one would
+      // enrol blocked times in a pipeline purely because the helper offers the parameter.
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "blocked_time.create", resourceType: "blocked_time", resourceId: written!.id,
+        after: blockedTimeAuditPayload({
+          employeeId: input.employeeId, locationId: input.locationId,
+          startAt: start.instant, endAt: end.instant, schedulingTimezone: start.timeZone,
+          localStart: written!.localStart, localEnd: written!.localEnd,
+          reason, colorSlot: input.colorSlot ?? null, version: written!.version
+        })
+      });
+      const [projected] = await blockedTimeRows(
+        tx, tx`block.business_id=${context.businessId} and block.id=${written!.id}`
+      );
+      return { kind: "created", block: projected } as const;
+    });
+    if (created.kind === "appointmentConflict") {
+      return reply.code(409).send(created.conflict);
+    }
+    return reply.code(201).send(created.block);
+  });
+
+  /**
+   * The blocked times over one calendar window, so the grid can SHOW what it already enforces.
+   *
+   * A block has been enforceable since 0001 and renderable never. `POST /api/blocked-times`
+   * writes one, `refuseStaffAvailability` subtracts it at step 5 of the availability authority and
+   * refuses the window with `TIME_BLOCKED` - and the only read of the table in this file was
+   * inside that refusal. Dragging an appointment onto a blocked half hour was therefore correctly
+   * refused by a region the calendar drew nothing for, which reads as the software being wrong
+   * rather than as the time being spoken for. This is the missing read path and nothing else: it
+   * does not edit, delete, or change what a block does to scheduling.
+   *
+   * A SEPARATE ENDPOINT RATHER THAN A FIELD ON `GET /api/appointments`. That route answers with a
+   * bare JSON array and has three consumers (the web calendar, the mobile app, and
+   * `GET /api/appointments/:id`, which shares its projection field for field). Folding blocks in
+   * would mean either wrapping the array in an object - a breaking change to a shipped contract
+   * for every one of them - or attaching salon-wide rows to individual appointments, which they
+   * are not. Blocks and appointments are also different cardinalities over the same window and
+   * are fetched in parallel by one paint, so the round trip saved is not a round trip.
+   *
+   * `calendarQuerySchema` IS REUSED VERBATIM, which is the point: the calendar builds one query
+   * string - `localDate`, `days`, `employeeIds` - and sends the identical string to both
+   * endpoints, so the two answers cannot describe different windows. `mode` is accepted and
+   * ignored, because this read is ALWAYS an overlap read; see below.
+   *
+   * OVERLAP, NOT START-OF-DAY, and deliberately unlike this route's appointment twin in its
+   * default mode. An appointment is a booking, keyed by when it starts; a block is a region the
+   * grid paints. A block running 22:00 to 02:00 occupies the top of the following column, and a
+   * start-keyed read would omit it there - reproducing the exact defect this endpoint exists to
+   * fix, one column over. The predicate is half-open on the INSTANTS (`start_at < to and
+   * end_at > from`), matching `mode=overlap` on the appointments route: a block ending exactly as
+   * the window opens does not overlap it, and instants stay correct even for a block whose own
+   * `scheduling_timezone` differs from the location's current one.
+   *
+   * Scoped to `business_id` AND the session's active `location_id`, exactly as the appointments
+   * calendar is. One shop's lunch break is not the other shop's, and the grid being painted is one
+   * shop's grid.
+   *
+   * Gated on `appointments.view`, the permission that already gates the calendar this renders on.
+   * Every built-in preset that grants `calendar.view` grants it too, so no role can reach the grid
+   * and be refused the blocks drawn on it. `calendar.blocks_create` and `calendar.blocks_edit` now
+   * gate WRITING a block, on the create route above and on the edit routes that follow it; SEEING
+   * one deliberately stays on `appointments.view`, because a block a groomer may not edit is still
+   * a region their calendar has to draw and a refusal they have to be able to understand.
+   */
+  app.get("/api/blocked-times", {
+    preHandler: [authenticate, requirePermission("appointments.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const query = body(calendarQuerySchema, request.query);
+    const [location] = await db<{ id: string; timezone: string }[]>`
+      select id,timezone from locations where business_id=${context.businessId} and id=${context.locationId}::uuid and active
     `;
-    return reply.code(201).send(created);
+    if (!location) return reply.code(404).send({ error: "Active location not found" });
+    // The window, derived exactly as GET /api/appointments derives it, so "the same eight days"
+    // means the same eight days on both answers.
+    const localDate = query.localDate ?? localDateForInstant(new Date(), location.timezone);
+    const days = query.days ?? 8;
+    const from = localDateBounds(localDate, location.timezone).from;
+    const endLocal = new Date(Date.UTC(Number(localDate.slice(0,4)),Number(localDate.slice(5,7))-1,Number(localDate.slice(8,10))+days));
+    const to = localDateBounds(endLocal.toISOString().slice(0,10), location.timezone).from;
+    // The projection, the wall-clock treatment and the ordering all live in `blockedTimeRows`, so
+    // this route and the create and edit routes cannot answer with different shapes for the same
+    // block. Only the window and the optional groomer filter belong to this route.
+    return blockedTimeRows(db, db`
+      block.business_id=${context.businessId} and block.location_id=${location.id}
+        and ${query.employeeIds?.length
+          ? db`block.employee_id in ${db(query.employeeIds as string[])}`
+          : db`true`}
+        and block.start_at < ${to} and block.end_at > ${from}
+    `);
+  });
+
+  /**
+   * Changing a block that already exists: its groomer, its hours, its reason, its colour.
+   *
+   * GATED ON `calendar.blocks_edit`, the twin 0055 granted alongside `calendar.blocks_create` to
+   * every role that could already block time out. Owner, Manager and Receptionist hold it;
+   * Groomer does not. Editing and deleting share the key deliberately: a role that may create a
+   * block but not fix the one it just got wrong is not a coherent thing to ship.
+   *
+   * ------------------------------------------------------------------------------------------
+   * THE WALL CLOCK. Three rules, and every one of them is migration 0051 speaking.
+   *
+   * `blocked_times` stores the authoritative instants AND a denormalised local pair, related by
+   * the row's own `scheduling_timezone` under a check constraint 0051 added after a write path
+   * bound an operator's local string straight into the naive column and the driver read it back
+   * in the API host's zone - a 12:30 booking persisted as 19:30.
+   *
+   *   1. `input.localStart` is NEVER bound into `scheduled_local_start`. The local pair is
+   *      computed in SQL from the resolved instant, exactly as the create route computes it. The
+   *      submitted string is what `resolveWallTime` has just interpreted; binding it back would
+   *      store a wall clock nothing checked against the zone.
+   *   2. Any statement that touches `start_at`/`end_at` sets `scheduling_timezone` and BOTH local
+   *      columns in the same statement. A stored block may carry an older `scheduling_timezone`
+   *      than its location carries today, and recomputing the local pair in the current zone while
+   *      leaving the old timezone in place violates 0051's constraint outright.
+   *   3. A PATCH that changes only `reason` or `colorSlot` does not touch the time columns AT ALL.
+   *      This is why the schedule is omissible in `blockedTimeUpdateSchema` and why the metadata
+   *      branch below is a separate statement rather than a rewrite of every column: a block whose
+   *      stored timezone predates a location's move would otherwise be silently rescheduled by an
+   *      operator correcting a typo in its reason.
+   *
+   * ------------------------------------------------------------------------------------------
+   * CONCURRENCY. `version` is required and compared before anything else is decided, and a
+   * mismatch is a 409 - `STALE_BLOCKED_TIME`, the shape and spelling
+   * `PATCH /api/appointments/:id/schedule` uses for `STALE_APPOINTMENT`. A block is a scheduling
+   * constraint: while it stands the availability authority refuses every booking that touches it,
+   * so two managers resolving by whoever clicks last leaves the loser's screen showing a
+   * constraint that is not there any more. THE VERSION IS CHECKED BEFORE THE NO-OP TEST, so a 409
+   * means one thing and only one thing: your copy is stale.
+   *
+   * ------------------------------------------------------------------------------------------
+   * A PATCH THAT CHANGES NOTHING IS A NO-OP, and that is a decision rather than an accident.
+   *
+   * The alternative - bump the version, stamp `updated_at`/`updated_by`, write an audit row - was
+   * considered and rejected on both of the columns' own terms.
+   *
+   *   `version` EXISTS TO TELL A HOLDER THEIR COPY IS STALE. Moving it for a write that changed no
+   *   field makes that statement false: every other open editor is invalidated, each refetches,
+   *   and each gets back a row identical to the one it already had. The token would then be
+   *   reporting "somebody saved" rather than "the block you are looking at is not the block that
+   *   is stored", which is the only question a caller asks it.
+   *
+   *   THE ACTIVITY FEED IS A RECORD OF WHAT HAPPENED. "Nothing happened" is not an entry; it is
+   *   noise that pushes real edits past the read's limit and sends an operator hunting for a
+   *   change that was never made. A dialog that saves on close would write one of these every time
+   *   somebody opened a block to look at it.
+   *
+   * So an unchanged PATCH answers 200 with the current projection and leaves `version`,
+   * `updated_at`, `updated_by` and `audit_events` untouched. The response is honest about it: the
+   * version in it has not moved, which is the truth.
+   *
+   * WHAT COUNTS AS UNCHANGED is measured against what is STORED, never against which fields the
+   * request carried. Re-sending a block's current groomer and hours is not a move. Re-sending them
+   * when the location has since been given a different timezone IS one, because the same wall
+   * clock in a different zone is a different instant - and the comparison includes
+   * `scheduling_timezone` for exactly that reason.
+   *
+   * ------------------------------------------------------------------------------------------
+   * A MOVE MAY NOT LAND ON A BOOKING, AND NEITHER MAY A CREATE. The guard arrives on both routes
+   * together, because on this one alone it would be worthless: the same overlap is reachable by
+   * creating the block an hour over and moving it there. It is checked against the RESULTING
+   * interval - the groomer, instants and zone after the change is applied - under the same
+   * per-employee scheduling lock the booking routes take, inside this transaction. See the block
+   * at the check itself for the lock set a cross-groomer move takes and for why a stale request
+   * answers `STALE_BLOCKED_TIME` rather than the conflict.
+   *
+   * AND NOTHING HERE CAN BYPASS `TIME_BLOCKED`. There is no override flag on this route, no
+   * "force" parameter, and `availabilityOverrideMayBypass` is untouched: a block stays HARD, and
+   * the way to free a blocked half hour is to move or delete the block - which is what this route
+   * is for.
+   */
+  app.patch("/api/blocked-times/:id", {
+    preHandler: [authenticate, requirePermission("calendar.blocks_edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const input = body(blockedTimeUpdateSchema, request.body);
+    const outcome = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [current] = await tx<{
+        employeeId: string; locationId: string; startAt: Date; endAt: Date;
+        schedulingTimezone: string; reason: string | null; colorSlot: number | null;
+        version: number; localStart: string; localEnd: string;
+      }[]>`
+        select employee_id,location_id,start_at,end_at,scheduling_timezone,reason,color_slot,version,
+          to_char(start_at at time zone scheduling_timezone,'YYYY-MM-DD"T"HH24:MI') as local_start,
+          to_char(end_at at time zone scheduling_timezone,'YYYY-MM-DD"T"HH24:MI') as local_end
+        from blocked_times
+        where business_id=${context.businessId} and id=${id}
+        for update
+      `;
+      // Scoped to the tenant, so another salon's block id reaches this line as an id that does not
+      // exist and leaves by the same 404 a made-up uuid does. Pawsh does not answer 403 here: that
+      // would confirm the id names something real somewhere else.
+      if (!current) return { kind: "missing" } as const;
+      if (current.version !== input.version) return { kind: "stale" } as const;
+
+      let moved: {
+        employeeId: string; startAt: Date; endAt: Date; timeZone: string;
+        localStart: string; localEnd: string;
+      } | null = null;
+      if (input.localStart !== undefined) {
+        // `blockedTimeUpdateSchema` refuses a partial schedule, so these three are present exactly
+        // when `localStart` is. The assertions restate what that `superRefine` already guaranteed;
+        // the compiler cannot see through a refinement.
+        const employeeId = input.employeeId!;
+        const localEnd = input.localEnd!;
+        const expectedLocationVersion = input.expectedLocationVersion!;
+        // The block stays at its own location. Moving one between shops is not something the
+        // schema or the calendar has a story for - one shop's grid is one shop's grid - so the
+        // location is read from the row rather than accepted from the caller.
+        const [location] = await tx<{ timezone: string; version: number }[]>`
+          select timezone,version from locations
+          where business_id=${context.businessId} and id=${current.locationId} and active
+        `;
+        if (!location) return { kind: "locationMissing" } as const;
+        if (location.version !== expectedLocationVersion) return { kind: "staleLocation" } as const;
+        const [employee] = await tx<{ id: string }[]>`
+          select id from employees where business_id=${context.businessId} and id=${employeeId}
+        `;
+        // The composite foreign key would refuse a groomer from another salon anyway, but as a
+        // 23503 the error handler renders "violates a data integrity rule", which tells an
+        // operator nothing. Checked here so the answer names the thing that was wrong.
+        if (!employee) return { kind: "employeeMissing" } as const;
+        const start = resolveWallTime(input.localStart, location.timezone, input.startDisambiguation);
+        const end = resolveWallTime(localEnd, location.timezone, input.endDisambiguation);
+        if (start.instant >= end.instant) return { kind: "backwards" } as const;
+        moved = {
+          employeeId, startAt: start.instant, endAt: end.instant,
+          timeZone: start.timeZone, localStart: input.localStart, localEnd
+        };
+      }
+
+      const scheduleChanged = moved !== null && (
+        moved.employeeId !== current.employeeId
+        || moved.startAt.getTime() !== current.startAt.getTime()
+        || moved.endAt.getTime() !== current.endAt.getTime()
+        || moved.timeZone !== current.schedulingTimezone
+      );
+      // OMITTED AND EXPLICITLY NULL ARE TWO DIFFERENT REQUESTS, TOLD APART BY THE KEY.
+      //
+      // `reason` absent means "leave the note alone"; `reason: null` means "clear it". The two are
+      // distinguished by whether the request carried the key AT ALL, read off the parsed body with
+      // `Object.hasOwn` rather than by testing the value for `undefined`. Both spellings happen to
+      // agree here - the body is `.strict()`, JSON has no `undefined` literal, and zod leaves an
+      // omitted optional off the output object entirely - but only one of them SAYS what the
+      // distinction is. A `=== undefined` test reads as a value check and would quietly become one
+      // if the schema ever gained a default or the parse ever started materialising the key.
+      //
+      // And the clear is not a special case below it: `null` flows into `nextReason` like any
+      // other value, so `metadataChanged` measures it against what is STORED exactly as it
+      // measures a rename. Clearing a note that is already null is therefore the no-op this route
+      // already promises - same 200, same projection, no version bump, no stamps, no audit row.
+      const nextReason = Object.hasOwn(input, "reason") ? input.reason ?? null : current.reason;
+      const nextColorSlot = input.colorSlot === undefined ? current.colorSlot : input.colorSlot;
+      const metadataChanged = nextReason !== current.reason || nextColorSlot !== current.colorSlot;
+      if (!scheduleChanged && !metadataChanged) return { kind: "unchanged" } as const;
+
+      // THE APPOINTMENT GUARD, ON THE SAME `scheduleChanged` THE STATEMENT BRANCH BELOW USES.
+      //
+      // Reusing that flag rather than computing a second one is the point: it is measured against
+      // what is STORED, not against which fields the request carried, so re-sending a block's
+      // current groomer and hours does not take a lock or run a check, while re-sending them after
+      // the location was re-zoned does - the same wall clock in a different zone is a different
+      // instant, and that IS a move. A second determination here could disagree with the one that
+      // decides which UPDATE runs, and then the route would guard an interval it did not write.
+      //
+      // A METADATA-ONLY PATCH DOES NOT TAKE THE LOCK, DELIBERATELY. The block's interval is
+      // identical before and after a colour or reason edit, so there is no window being introduced
+      // or moved and nothing for a concurrent booking to race; the `for update` above already
+      // serialises two operators editing the same block. Taking a per-employee scheduling lock to
+      // change a colour would queue every booking for that groomer behind it for no invariant.
+      //
+      // BOTH ENDS OF A CROSS-GROOMER MOVE ARE LOCKED, IN ONE SORTED ACQUISITION. Locking only the
+      // destination would leave a booking on the outgoing groomer free to land in the interval the
+      // block is vacating - harmless - but locking only the outgoing one would let a booking on the
+      // DESTINATION commit between this check and the write, which is the overlap this whole seam
+      // exists to prevent. Both go into a single `lockSchedulingResources` call so its dedup-and-
+      // sort applies across the pair: two moves swapping the same two groomers acquire in the same
+      // order and cannot deadlock, and a same-groomer move collapses to one lock.
+      //
+      // THE VERSION CHECK HAS ALREADY RUN, TWENTY LINES ABOVE, AND THAT ORDER IS THE DECISION. A
+      // request that is both stale and overlapping answers `STALE_BLOCKED_TIME`, not
+      // `BLOCK_TIME_APPOINTMENT_CONFLICT`. A stale caller's coordinates were composed against a
+      // block that has since moved, so any conflict computed from them describes a placement
+      // nobody is proposing any more; naming appointments that may be irrelevant sends an operator
+      // to cancel a booking they did not need to touch. "Refresh and try again" is true whatever
+      // else is wrong, and it keeps the promise the route already makes - that a 409 with this code
+      // means one thing only. The stale request also never reaches the lock.
+      if (scheduleChanged) {
+        await schedulingHooks.beforeLock?.({
+          operation: "block_update", businessId: context.businessId,
+          employeeIds: [current.employeeId, moved!.employeeId]
+        });
+        await lockSchedulingResources(
+          tx, context.businessId, [current.employeeId, moved!.employeeId]
+        );
+        const conflict = await refuseBlockOverAppointments(tx, {
+          businessId: context.businessId, employeeId: moved!.employeeId,
+          startAt: moved!.startAt, endAt: moved!.endAt, timeZone: moved!.timeZone
+        });
+        if (conflict) return { kind: "appointmentConflict", conflict } as const;
+      }
+
+      const [updated] = scheduleChanged
+        ? await tx<{ version: number }[]>`
+            update blocked_times set
+              employee_id=${moved!.employeeId},
+              start_at=${moved!.startAt}, end_at=${moved!.endAt},
+              scheduling_timezone=${moved!.timeZone},
+              scheduled_local_start=${moved!.startAt}::timestamptz at time zone ${moved!.timeZone},
+              scheduled_local_end=${moved!.endAt}::timestamptz at time zone ${moved!.timeZone},
+              reason=${nextReason}, color_slot=${nextColorSlot}::smallint,
+              version=version+1, updated_by=${context.userId}, updated_at=now()
+            where business_id=${context.businessId} and id=${id} and version=${input.version}
+            returning version
+          `
+        : await tx<{ version: number }[]>`
+            update blocked_times set
+              reason=${nextReason}, color_slot=${nextColorSlot}::smallint,
+              version=version+1, updated_by=${context.userId}, updated_at=now()
+            where business_id=${context.businessId} and id=${id} and version=${input.version}
+            returning version
+          `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "blocked_time.update", resourceType: "blocked_time", resourceId: id,
+        before: blockedTimeAuditPayload(current),
+        after: blockedTimeAuditPayload({
+          employeeId: moved?.employeeId ?? current.employeeId,
+          locationId: current.locationId,
+          startAt: scheduleChanged ? moved!.startAt : current.startAt,
+          endAt: scheduleChanged ? moved!.endAt : current.endAt,
+          schedulingTimezone: scheduleChanged ? moved!.timeZone : current.schedulingTimezone,
+          localStart: scheduleChanged ? moved!.localStart : current.localStart,
+          localEnd: scheduleChanged ? moved!.localEnd : current.localEnd,
+          reason: nextReason, colorSlot: nextColorSlot, version: updated!.version
+        })
+      });
+      return { kind: "updated" } as const;
+    });
+    if (outcome.kind === "missing") return reply.code(404).send({ error: "Blocked time not found" });
+    if (outcome.kind === "locationMissing") return reply.code(404).send({ error: "Location not found" });
+    if (outcome.kind === "employeeMissing") return reply.code(404).send({ error: "Groomer not found" });
+    if (outcome.kind === "stale") {
+      return reply.code(409).send({
+        code: "STALE_BLOCKED_TIME",
+        error: "Blocked time changed or no longer exists. Refresh and try again."
+      });
+    }
+    if (outcome.kind === "staleLocation") {
+      return reply.code(409).send({
+        code: "STALE_LOCATION_SETTINGS",
+        error: "Location settings changed. Refresh and try again."
+      });
+    }
+    if (outcome.kind === "backwards") {
+      return reply.code(400).send({ error: "Blocked time must end after it starts" });
+    }
+    if (outcome.kind === "appointmentConflict") {
+      return reply.code(409).send(outcome.conflict);
+    }
+    // The same projection the create and read routes answer with, re-read after the commit so an
+    // unchanged PATCH and a changed one return the identical shape.
+    const [block] = await blockedTimeRows(
+      db, db`block.business_id=${context.businessId} and block.id=${id}`
+    );
+    return block;
+  });
+
+  /**
+   * Removing a block, so the half hour it was holding is bookable again.
+   *
+   * A HARD DELETE, NOT A DEACTIVATION, and unlike the `active=false` retirement services,
+   * employees and discounts use. Those are referenced by rows that must go on rendering - an
+   * invoice line naming a retired service, a report card naming a departed groomer - so their
+   * identity has to survive. Nothing references a `blocked_times` row: it is consulted by the
+   * availability authority while it exists and by nothing at all afterwards. A soft-deleted block
+   * would mean every reader of the table growing an `and not deleted` clause, and one reader
+   * forgetting to would go on refusing bookings for a block the calendar had stopped drawing.
+   *
+   * IT STAYS AUDITABLE ANYWAY. `audit_events.resource_id` carries no foreign key, so the trail
+   * outlives the row, and the `before` payload written here is the WHOLE prior row - both bounds
+   * as instants and as the salon's wall clock, the timezone relating them, the groomer, the
+   * location, the reason, the colour and the version it died at. What was removed is recoverable
+   * from the log, which is the property that makes a hard delete acceptable here.
+   * `GET /api/blocked-times/:id/activity` goes on answering for a deleted block for that reason.
+   *
+   * CONCURRENCY-AWARE, exactly as the edit is. `?version=` is required and a mismatch is the same
+   * `STALE_BLOCKED_TIME` 409. Deleting is the more dangerous of the two: the block somebody is
+   * removing may have been moved onto a different hour since they last looked at it, and a
+   * last-write-wins delete would take away a constraint the deleter never saw. The version travels
+   * in the query string because every delete route in this API is bodyless; see
+   * `blockedTimeVersionQuerySchema`.
+   */
+  app.delete("/api/blocked-times/:id", {
+    preHandler: [authenticate, requirePermission("calendar.blocks_edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const query = body(blockedTimeVersionQuerySchema, request.query);
+    const outcome = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [current] = await tx<{
+        employeeId: string; locationId: string; startAt: Date; endAt: Date;
+        schedulingTimezone: string; reason: string | null; colorSlot: number | null;
+        version: number; localStart: string; localEnd: string;
+      }[]>`
+        select employee_id,location_id,start_at,end_at,scheduling_timezone,reason,color_slot,version,
+          to_char(start_at at time zone scheduling_timezone,'YYYY-MM-DD"T"HH24:MI') as local_start,
+          to_char(end_at at time zone scheduling_timezone,'YYYY-MM-DD"T"HH24:MI') as local_end
+        from blocked_times
+        where business_id=${context.businessId} and id=${id}
+        for update
+      `;
+      if (!current) return { kind: "missing" } as const;
+      if (current.version !== query.version) return { kind: "stale" } as const;
+      await tx`
+        delete from blocked_times
+        where business_id=${context.businessId} and id=${id} and version=${query.version}
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "blocked_time.delete", resourceType: "blocked_time", resourceId: id,
+        before: blockedTimeAuditPayload(current)
+      });
+      return { kind: "deleted" } as const;
+    });
+    if (outcome.kind === "missing") return reply.code(404).send({ error: "Blocked time not found" });
+    if (outcome.kind === "stale") {
+      return reply.code(409).send({
+        code: "STALE_BLOCKED_TIME",
+        error: "Blocked time changed or no longer exists. Refresh and try again."
+      });
+    }
+    return reply.code(204).send();
+  });
+
+  /**
+   * Everything that has happened to one block.
+   *
+   * STRUCTURALLY `GET /api/appointments/:id/activity`: tenant-scoped, the same actor-name join
+   * through `users -> business_memberships -> employees` so an entry reads as the groomer's name
+   * rather than a login, the same `order by created_at desc, id desc` with the same 200-row limit,
+   * and the same discipline of whitelisting SCALARS out of the audit payload rather than returning
+   * the raw jsonb. The payload is written by this server and is wider than what is returned - it
+   * carries the whole prior row so a delete is recoverable - and handing a client the raw
+   * `before_data` would publish an internal record shape as an API contract.
+   *
+   * The exposed whitelist is `startAt`, `endAt`, `employeeId`, `reason`, `colorSlot` and
+   * `version`, each as a `from`/`to` pair, which is what a feed needs to say what changed.
+   * `startAt` and `endAt` are INSTANTS, as they are on the appointment feed; the block's own
+   * `schedulingTimezone` comes from the projection the caller is already holding.
+   *
+   * `reason` AND `fromReason`/`toReason` ARE TWO DIFFERENT THINGS, and the appointment feed's
+   * naming is kept rather than improved so the two feeds read alike. `reason` is
+   * `audit_events.reason` - the operator's stated justification for an ACTION, which these routes
+   * never collect, so it is always null here. `fromReason`/`toReason` are the block's own label,
+   * the text an operator writes on the band.
+   *
+   * GATED ON `appointments.view`, the permission `GET /api/blocked-times` uses. Reading a block's
+   * history is reading the calendar, not writing it; `calendar.blocks_edit` gates the change.
+   *
+   * ------------------------------------------------------------------------------------------
+   * THE DERIVED `Created` ENTRY, AND WHY NOTHING SYNTHETIC IS WRITTEN TO `audit_events`.
+   *
+   * Blocks written before the create route started calling `record()` have no create event and
+   * never will. The obvious fix - backfill one per row in a migration - was rejected: it would put
+   * rows in the audit log that describe something the audit log did not observe, and every later
+   * reader of that table, including any future export or investigation, would have to know which
+   * entries were manufactured. `record()` is the only writer of `audit_events` and stays that way.
+   *
+   * So the entry is DERIVED HERE, at read time, from the two columns that have always been true:
+   * `blocked_times.created_by` and `created_at`. It is emitted only when no real
+   * `blocked_time.create` event exists for the row, so a block created after the wiring shows its
+   * real event and never both.
+   *
+   * IT IS FLAGGED, and the flag is the point. `derived: true` says this entry was reconstructed
+   * from columns rather than read from the log; every real entry carries `derived: false`. A
+   * reader can tell what was observed from what was inferred without comparing ids.
+   *
+   * IT CARRIES NO FIELD VALUES, DELIBERATELY. The columns attest WHO created the block and WHEN,
+   * and nothing else - the row may have been edited since, and reporting today's hours inside an
+   * entry labelled "Created" would state as history something nobody recorded. Every `from`/`to`
+   * pair on a derived entry is null, which is the honest shape of "we know this happened and not
+   * what it said".
+   *
+   * ------------------------------------------------------------------------------------------
+   * IT ANSWERS FOR A DELETED BLOCK. The live row is not required: a hard delete removes the block
+   * and leaves its trail, and a history that vanished with the thing it is a history of would make
+   * the delete unauditable through the API. NON-DISCLOSURE IS PRESERVED because both halves are
+   * scoped to the tenant - another salon's block id finds no live row here and no events here, and
+   * leaves by the same 404 a made-up uuid does.
+   */
+  app.get("/api/blocked-times/:id/activity", {
+    preHandler: [authenticate, requirePermission("appointments.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [block] = await db<{ createdAt: Date; authorName: string | null }[]>`
+      select block.created_at,
+        coalesce(author_employee.display_name,author_user.display_name,author_user.email) as author_name
+      from blocked_times block
+      left join users author_user on author_user.id=block.created_by
+      left join business_memberships author_membership
+        on author_membership.business_id=block.business_id and author_membership.user_id=block.created_by
+      left join employees author_employee
+        on author_employee.business_id=author_membership.business_id
+        and author_employee.membership_id=author_membership.id
+      where block.business_id=${context.businessId} and block.id=${id}
+    `;
+    const rows = await db<{
+      id: string; action: string; createdAt: Date; reason: string | null;
+      actorName: string | null; beforeData: Record<string, unknown> | null;
+      afterData: Record<string, unknown> | null;
+    }[]>`
+      select event.id,event.action,event.created_at,event.reason,
+        event.before_data,event.after_data,
+        coalesce(actor_employee.display_name,actor_user.display_name,actor_user.email) as actor_name
+      from audit_events event
+      left join users actor_user on actor_user.id=event.actor_id
+      left join business_memberships actor_membership
+        on actor_membership.business_id=event.business_id and actor_membership.user_id=event.actor_id
+      left join employees actor_employee
+        on actor_employee.business_id=actor_membership.business_id
+        and actor_employee.membership_id=actor_membership.id
+      where event.business_id=${context.businessId}
+        and event.resource_type='blocked_time' and event.resource_id=${id}
+      order by event.created_at desc,event.id desc limit 200
+    `;
+    if (!block && !rows.length) return reply.code(404).send({ error: "Blocked time not found" });
+    const scalar = (value: unknown): string | number | null =>
+      typeof value === "string" || typeof value === "number" ? value : null;
+    const items: {
+      id: string; action: string; createdAt: Date; actorName: string | null;
+      reason: string | null; derived: boolean;
+      fromEmployeeId: string | number | null; toEmployeeId: string | number | null;
+      fromStartAt: string | number | null; toStartAt: string | number | null;
+      fromEndAt: string | number | null; toEndAt: string | number | null;
+      fromReason: string | number | null; toReason: string | number | null;
+      fromColorSlot: string | number | null; toColorSlot: string | number | null;
+      fromVersion: string | number | null; toVersion: string | number | null;
+    }[] = rows.map((row) => ({
+      id: row.id,
+      action: row.action,
+      createdAt: row.createdAt,
+      actorName: row.actorName,
+      reason: row.reason,
+      derived: false,
+      fromEmployeeId: scalar(row.beforeData?.employeeId),
+      toEmployeeId: scalar(row.afterData?.employeeId),
+      fromStartAt: scalar(row.beforeData?.startAt),
+      toStartAt: scalar(row.afterData?.startAt),
+      fromEndAt: scalar(row.beforeData?.endAt),
+      toEndAt: scalar(row.afterData?.endAt),
+      fromReason: scalar(row.beforeData?.reason),
+      toReason: scalar(row.afterData?.reason),
+      fromColorSlot: scalar(row.beforeData?.colorSlot),
+      toColorSlot: scalar(row.afterData?.colorSlot),
+      fromVersion: scalar(row.beforeData?.version),
+      toVersion: scalar(row.afterData?.version)
+    }));
+    if (block && !rows.some((row) => row.action === "blocked_time.create")) {
+      // Oldest, so it lands at the end of a newest-first list. The id is prefixed rather than
+      // borrowed from anywhere: it names a thing that has no row in `audit_events`, and a client
+      // keying on it must not be able to collide with a real event's uuid.
+      items.push({
+        id: `derived:${id}:created`,
+        action: "blocked_time.create",
+        createdAt: block.createdAt,
+        actorName: block.authorName,
+        reason: null,
+        derived: true,
+        fromEmployeeId: null, toEmployeeId: null,
+        fromStartAt: null, toStartAt: null,
+        fromEndAt: null, toEndAt: null,
+        fromReason: null, toReason: null,
+        fromColorSlot: null, toColorSlot: null,
+        fromVersion: null, toVersion: null
+      });
+    }
+    return { items };
   });
 
   app.put("/api/business/working-hours", {
@@ -8649,7 +9514,7 @@ export function registerRoutes(
         select service.id,service.name,service.base_duration_minutes,service.base_price_minor
         from appointment_services history join services service on service.id=history.service_id and service.business_id=history.business_id
         where history.business_id=${context.businessId} and history.appointment_id=${lastPaid.id} and service.active
-        order by history.id`
+        order by history.line_position, history.id`
       : [];
     // The source is reported rather than inferred from an empty list, so the interface can say
     // "no paid visit yet" instead of silently presenting an empty selection as a considered default.
@@ -8995,7 +9860,7 @@ export function registerRoutes(
           price_minor_snapshot as price_minor
         from appointment_services
         where business_id=${businessId} and appointment_id=${card.appointmentId}
-        order by id
+        order by line_position, id
       `,
       db<{ id: string; phase: string; width: number | null; height: number | null }[]>`
         select id,phase,width,height from appointment_photos
@@ -9478,9 +10343,13 @@ export function registerRoutes(
         employeeIds, startAt, endAt, locationClosed: false
       });
       // An `availabilityOverride` is a judgement about a groomer's ORDINARY hours, so it bypasses
-      // exactly the three refusals it always could. `availabilityOverrideMayBypass` holds the list
-      // and the reasoning; the one addition here - an explicit `working = false` on this date -
-      // is not an ordinary-hours restriction and is not bypassable by it.
+      // exactly the two refusals that are about ordinary hours - the weekday staff grid and the
+      // salon's weekday hours - and none of the three that are not.
+      // `availabilityOverrideMayBypass` holds the list and the reasoning. Two of those three are
+      // deliberate statements somebody made about a specific thing rather than defaults that
+      // failed to cover the window: an explicit `working = false` on this date, and a blocked
+      // time. Neither is retractable by a flag on a booking request; the block is retractable by
+      // moving or deleting the block, which is a visible, attributable edit.
       if (refusal && !(input.availabilityOverride && availabilityOverrideMayBypass(refusal.reason))) {
         throw staffAvailabilityError(refusal, callerMayOverrideAvailability);
       }
@@ -9521,14 +10390,21 @@ export function registerRoutes(
       for(const employeeId of employeeIds)await tx`
         insert into appointment_employees(business_id,appointment_id,employee_id)
         values (${context.businessId},${appointment.id},${employeeId})`;
-      for (const service of catalog) {
+      // `catalog` IS THE OPERATOR'S ORDER. `resolveServicePrices` ends with
+      // `input.serviceIds.map(...)`, so the array comes back in the order the request listed the
+      // services in rather than in whatever order the catalog rows were read. The loop index is
+      // therefore the position the operator chose, and `line_position` (0054) records it - one
+      // based, matching `invoice_items.line_position`, which checkout numbers from this same read.
+      for (const [index, service] of catalog.entries()) {
         await tx`
           insert into appointment_services
             (business_id, appointment_id, service_id, service_name_snapshot,
-             duration_minutes_snapshot, price_minor_snapshot,pricing_class_snapshot,weight_tier_snapshot,resolution_source_snapshot)
+             duration_minutes_snapshot, price_minor_snapshot,pricing_class_snapshot,weight_tier_snapshot,resolution_source_snapshot,
+             line_position)
           values
             (${context.businessId}, ${appointment.id}, ${service.serviceId}, ${service.name},
-             ${service.durationMinutes}, ${service.priceMinor!},${service.pricingClass},${service.weightTierCode},${service.resolutionSource})
+             ${service.durationMinutes}, ${service.priceMinor!},${service.pricingClass},${service.weightTierCode},${service.resolutionSource},
+             ${index + 1})
         `;
       }
       await record(tx, {
@@ -10072,13 +10948,19 @@ export function registerRoutes(
       const catalog=await resolveServicePrices(tx,{businessId:context.businessId,petId:appointment.petId,serviceIds:input.serviceIds});
       const unresolved=catalog.find(service=>service.status!=="resolved");
       if(unresolved)throw new Error(unresolved.status==="weight_required"?"Weight required to determine pricing.":`${unresolved.name} price is unresolved.`);
+      // THE DELETE IS WHAT MAKES `appointment_service_position_unique` SAFE HERE. Every row for
+      // the appointment goes first, inside this transaction, so the reinsert below refills an
+      // empty key space and no intermediate state holds two rows at one position. The positions it
+      // writes are 1..n over `catalog`, which is the edited order the request submitted, so an
+      // edit RENUMBERS the sheet rather than appending to it - reordering three services with no
+      // other change is a real edit and lands as one.
       await tx`delete from appointment_services where business_id=${context.businessId} and appointment_id=${id}`;
-      for (const service of catalog) {
+      for (const [index, service] of catalog.entries()) {
         await tx`
           insert into appointment_services
-            (business_id,appointment_id,service_id,service_name_snapshot,duration_minutes_snapshot,price_minor_snapshot,pricing_class_snapshot,weight_tier_snapshot,resolution_source_snapshot)
+            (business_id,appointment_id,service_id,service_name_snapshot,duration_minutes_snapshot,price_minor_snapshot,pricing_class_snapshot,weight_tier_snapshot,resolution_source_snapshot,line_position)
           values (${context.businessId},${id},${service.serviceId},${service.name},
-            ${service.durationMinutes},${service.priceMinor!},${service.pricingClass},${service.weightTierCode},${service.resolutionSource})
+            ${service.durationMinutes},${service.priceMinor!},${service.pricingClass},${service.weightTierCode},${service.resolutionSource},${index + 1})
         `;
       }
       const minutes = catalog.reduce((sum, service) => sum + service.durationMinutes, 0);
@@ -10154,7 +11036,7 @@ export function registerRoutes(
       const services = await tx<{ id: string; serviceNameSnapshot: string; priceMinorSnapshot: number }[]>`
         select id, service_name_snapshot, price_minor_snapshot from appointment_services
         where business_id=${context.businessId} and appointment_id=${id}
-        order by id
+        order by line_position, id
       `;
       if (!services.length) throw new FinancialRequestError(409, "CHECKOUT_REQUIRES_SERVICE", "Checkout requires at least one service");
       // READ BEFORE THE DISCOUNTS ARE RESOLVED, not after, so a REPLAY can exclude its own first
@@ -10341,10 +11223,88 @@ export function registerRoutes(
       if (!["open", "partially_paid"].includes(invoice.status)) {
         throw new FinancialRequestError(409, "STALE_FINANCIAL_STATE", "Invoice cannot accept payment");
       }
+      /**
+       * NO SECOND TENDER WHILE A CARD IS IN A READER FOR THIS INVOICE.
+       *
+       * A Terminal start locks this same invoice row, derives the amount from its balance and
+       * writes a `pending` checkout, all in one transaction. Until this gate existed, nothing on
+       * this route looked at that row. So: a capture is started for the whole $100.00 balance; a
+       * second person records $40.00 cash, which nothing refuses; the customer taps and Square
+       * charges the $100.00 it was asked for. Reconciliation then finds the invoice balance
+       * ($60.00) no longer equal to the amount the checkout was started for ($100.00) and parks a
+       * `needs_review` rather than posting - which is why this was a mess and not a catastrophe.
+       * The customer had still paid $140.00 against a $100.00 bill, Pawsh still showed $60.00
+       * owing, and a person had to take both apart by hand.
+       *
+       * THE INVOICE ROW LOCK ABOVE IS WHAT MAKES THIS AN EXCLUSION RATHER THAN A GLANCE. Both
+       * writers serialise on it, so one of them commits first and the other sees it: a start that
+       * got there first is `pending` here and refuses this tender, and a tender that got there
+       * first is committed before the start reads the balance it derives its amount from. No lock
+       * is taken on `square_terminal_checkouts` and none may be - the Terminal reconciler locks
+       * the checkout and THEN the invoice, and taking them the other way round here is precisely
+       * how the two would deadlock.
+       *
+       * REFUSING THE SECOND ACTOR IS THE SAFE DEFAULT AND THE ONLY ONE TAKEN HERE. Cancelling a
+       * live capture from a cash tender would reach out to a device somebody is standing at;
+       * racing it would be the defect again. The refusal names the capture so the screen can show
+       * what is happening and let the operator wait for it or cancel it deliberately, on the
+       * route that exists for that.
+       *
+       * IT IS A GATE ON THE INVOICE'S STATE, so it sits with the status gate above rather than
+       * with the figures below. "Somebody is taking this on the terminal right now" makes
+       * "review the current balance and try again" the wrong instruction, and an operator who
+       * followed it would be composing a second tender against a bill that is about to be paid.
+       */
+      const capture = await readLiveTerminalCheckout(tx, {
+        businessId: context.businessId, invoiceId: id
+      });
+      if (capture) {
+        throw new FinancialRequestError(409, "TERMINAL_CAPTURE_IN_FLIGHT",
+          "A card payment for this invoice is already on the terminal. Wait for it to finish, or "
+          + "cancel it on the terminal, before taking payment another way.",
+          {
+            balanceMinor: invoice.balanceMinor,
+            checkoutId: capture.id,
+            checkoutAmountMinor: capture.amountMinor,
+            checkoutStatus: capture.status
+          });
+      }
+      /**
+       * OPTIMISTIC CONCURRENCY, CHECKED BEFORE THE AMOUNT AND UNCONDITIONALLY.
+       *
+       * `expectedBalanceMinor` is what the operator was looking at when they pressed the button.
+       * If it is not what the invoice says NOW, this request was composed against a balance that
+       * no longer exists and the only honest answer is 409 - whatever the amount happens to be.
+       *
+       * IT USED TO BE CHECKED ONLY INSIDE THE OVER-TENDER BRANCH BELOW, which made it no guard at
+       * all for the case it exists to catch. Two operators each holding a $100 balance could each
+       * tender $40 against it; both amounts were under the balance, so neither ever reached the
+       * staleness comparison, and both recorded. The invoice was left correct by arithmetic and
+       * wrong by intent - the second operator settled nothing they had actually been shown, and
+       * nothing told them so. A tender COMPONENT smaller than the balance is legitimate, which is
+       * how split tender works; a tender component composed against a balance that has since moved
+       * is not, and the difference is exactly this comparison.
+       *
+       * IT BELONGS UNDER THE `for update` TAKEN AT THE TOP OF THIS TRANSACTION and nowhere else.
+       * That lock is the serialization point: `invoice.balanceMinor` was read through it, so two
+       * concurrent tenders are ordered rather than interleaved and the second one sees the first
+       * one's committed effect. Checked before the lock, the comparison would read a balance that
+       * could move before the insert and the guard would be decorative.
+       *
+       * The current balance rides on the refusal, the same way `creditAvailableMinor` rides on
+       * `CREDIT_BALANCE_INSUFFICIENT` below, so the screen that lost the race can show what is
+       * actually owed instead of asking for it again.
+       */
+      if (input.expectedBalanceMinor !== invoice.balanceMinor) {
+        throw new FinancialRequestError(409, "STALE_FINANCIAL_STATE",
+          "The invoice balance changed; review the current balance",
+          { balanceMinor: invoice.balanceMinor });
+      }
+      // Past the staleness gate the operator is provably arguing about the CURRENT balance, so an
+      // amount over it is their own number being too big - a 400, not a race.
       if (input.amountMinor > invoice.balanceMinor) {
-        const stale=input.expectedBalanceMinor!==invoice.balanceMinor;
-        throw new FinancialRequestError(stale?409:400,stale?"STALE_FINANCIAL_STATE":"PAYMENT_EXCEEDS_CURRENT_BALANCE",
-          stale?"The invoice balance changed; review the current balance":"Payment exceeds invoice balance");
+        throw new FinancialRequestError(400, "PAYMENT_EXCEEDS_CURRENT_BALANCE",
+          "Payment exceeds invoice balance");
       }
       /**
        * SPENDING CLIENT CREDIT.

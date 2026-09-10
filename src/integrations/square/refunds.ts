@@ -411,6 +411,16 @@ export type RefundOutcome =
  * Fenced on `status='pending'`: a replayed `refund.updated` and an operator pressing refresh in
  * the same second both reach here, and the second one must change nothing rather than settle the
  * refund twice. A zero-row update is convergence, which is a normal outcome and not an error.
+ *
+ * TWO LOCKS, PAYMENT THEN INVOICE. The payment lock is taken here because refund headroom is
+ * counted against it. The invoice lock is taken by `applyInvoiceSettlement`, which is where it
+ * belongs: that function reads `balance_minor` and writes it back, so it must hold the row while
+ * it does. This transaction used to hold only the payment lock, and the invoice write went out
+ * unguarded - a payment settling the invoice to zero in the same instant was overwritten by the
+ * balance this transaction had read before it, leaving a paid bill claiming money.
+ *
+ * The order matches `POST /api/payments/:id/void`, which takes payment, then invoice, then
+ * customer. Nothing anywhere takes an existing payment row's lock while holding an invoice's.
  */
 export async function completePaymentRefund(
   db: Database, refund: PaymentRefundRow, providerRefundId: string

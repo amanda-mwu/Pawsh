@@ -115,8 +115,8 @@ describeDatabase("the retirement of coupon_stacking", () => {
     `;
     await db`
       insert into appointment_services(business_id,appointment_id,service_id,service_name_snapshot,
-        duration_minutes_snapshot,price_minor_snapshot)
-      values (${businessId},${appointment!.id},${serviceId},'Stacking Groom',60,10000)
+        duration_minutes_snapshot,price_minor_snapshot,line_position)
+      values (${businessId},${appointment!.id},${serviceId},'Stacking Groom',60,10000,1)
     `;
     return appointment!.id;
   };

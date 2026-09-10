@@ -506,26 +506,46 @@ describe("refuseWindow attributes a refusal to the restriction that caused it", 
 });
 
 describe("what an availability override may and may not bypass", () => {
-  it("bypasses the three ordinary scheduling-hour restrictions", () => {
-    // Exactly the set the single boolean predicate this replaced allowed it to bypass, so a
-    // workspace with no per-date rows behaves as it did before the domain authority was wired in.
-    for (const reason of ["outside_staff_hours", "outside_business_hours", "fully_blocked"] as const) {
+  it("bypasses the two ORDINARY-HOURS restrictions, and only those", () => {
+    // A weekday grid is a default, at either level: the groomer's own hours, and the salon's. An
+    // override says "these are not the hours today", which is an ordinary thing for somebody with
+    // the permission to decide, and it goes on meaning exactly that.
+    for (const reason of ["outside_staff_hours", "outside_business_hours"] as const) {
       expect(availabilityOverrideMayBypass(reason), reason).toBe(true);
     }
   });
 
-  it("never bypasses a closed salon or an explicit date-level unavailability", () => {
-    // Two different kinds of no. The first is about the premises; the second is somebody having
-    // stated, for this employee and this date, that they are not there. Neither is an
-    // ordinary-hours judgement, which is all the override is.
+  it("never bypasses a closed salon, a date-level unavailability, or a blocked time", () => {
+    // Three different kinds of no, none of them an ordinary-hours judgement.
+    //
+    // The premises are shut, which no judgement about a groomer's hours can reopen. Somebody
+    // stated, for this employee and this date, that they are not there. And somebody went to the
+    // calendar and spoke for this particular half hour, with a reason written on it.
     expect(availabilityOverrideMayBypass("location_closed")).toBe(false);
     expect(availabilityOverrideMayBypass("date_override_off")).toBe(false);
+    expect(availabilityOverrideMayBypass("fully_blocked")).toBe(false);
+  });
+
+  it("HARDENED `fully_blocked`, and that is a reversal worth stating as its own assertion", () => {
+    // THIS USED TO RETURN TRUE. A block was bypassable by the request flag for as long as the
+    // flag existed, which meant a booking could be forced on top of a lunch break and the block
+    // stayed underneath it - the calendar going on painting a region the scheduler had already
+    // sold. The route to needing that slot is now to MOVE OR DELETE the block, which is a visible,
+    // attributable edit to the thing that is in the way rather than an invisible exception to it.
+    //
+    // It is pinned separately from the case above so that a change back to the old behaviour
+    // fails a test whose name says what was decided, rather than one that merely counts a set.
+    expect(availabilityOverrideMayBypass("fully_blocked")).toBe(false);
+    // And the distinction is the point, not a blanket hardening: the ordinary-hours pair beside it
+    // is untouched, so an operator can still book a groomer past the end of their shift.
+    expect(availabilityOverrideMayBypass("outside_staff_hours")).toBe(true);
+    expect(availabilityOverrideMayBypass("outside_business_hours")).toBe(true);
   });
 
   it("classifies every reason the resolver can emit, with no default branch to hide a new one", () => {
     const reasons = Object.keys(availabilityRefusalCodes) as AvailabilityReason[];
     expect(reasons.filter(availabilityOverrideMayBypass)).toEqual([
-      "outside_staff_hours", "outside_business_hours", "fully_blocked"
+      "outside_staff_hours", "outside_business_hours"
     ]);
   });
 });

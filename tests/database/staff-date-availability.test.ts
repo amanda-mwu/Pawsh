@@ -351,12 +351,26 @@ describeDatabase("staff availability precedence, through the booking routes", ()
       expect(row!.availabilityOverridden).toBe(true);
     });
 
-    it("bypasses a blocked time and a shut salon, which are ordinary-hours judgements too", async () => {
+    // THE OTHER RULING, and this case was INVERTED rather than deleted. It used to expect 201: a
+    // blocked time was bypassable by the request flag for as long as the flag existed. It is not
+    // any more, and for the same reason a per-date `working = false` never was - somebody stated
+    // this on purpose. A block is finer-grained than a day off, which cuts in its favour rather
+    // than against: the way to have the slot is to MOVE OR DELETE the block, an attributable edit
+    // to the thing in the way, instead of an invisible exception that leaves the block standing
+    // with an appointment on top of it.
+    it("is REFUSED against a blocked time, and books nothing", async () => {
       const day = "2027-07-20";
       expect((await blockTime(`${day}T13:00`, `${day}T14:00`)).statusCode).toBe(201);
-      expect((await book(`${day}T13:00`, {
+      const refused = await book(`${day}T13:00`, {
         availabilityOverride: true, overrideReason: "Squeezing them in"
-      })).statusCode).toBe(201);
+      });
+      expect(refused.statusCode, refused.body).toBe(409);
+      // The refusal says no flag helps, so no client offers a control the server would refuse.
+      expect(refused.json()).toMatchObject({ code: "TIME_BLOCKED", canOverride: false });
+      expect(await bookedOn(day)).toBe(0);
+      // The ordinary-hours half of the override is untouched - the sibling case above books an
+      // evening appointment with this same flag - so this is the block being hard rather than the
+      // override having quietly stopped working.
     });
 
     // THE RULING. A per-date `working = false` is an explicit statement that this employee is not

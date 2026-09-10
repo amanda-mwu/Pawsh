@@ -149,8 +149,8 @@ describeDatabase("editing the appointment note", () => {
     `;
     await db`
       insert into appointment_services(business_id,appointment_id,service_id,service_name_snapshot,
-        duration_minutes_snapshot,price_minor_snapshot)
-      values (${businessId},${appointment!.id},${serviceId},'Notes Groom',60,${servicePriceMinor})
+        duration_minutes_snapshot,price_minor_snapshot,line_position)
+      values (${businessId},${appointment!.id},${serviceId},'Notes Groom',60,${servicePriceMinor},1)
     `;
     return appointment!.id;
   }

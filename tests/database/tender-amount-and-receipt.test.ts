@@ -5,19 +5,23 @@ import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
 
 /**
- * CAN AN OPERATOR TAKE PART OF THE MONEY? This file exists to answer that with a test rather
- * than with a reading of the code.
+ * WHAT THE PAYMENTS ENDPOINT ACCEPTS AS ONE TENDER COMPONENT, answered with a test rather than
+ * with a reading of the code.
  *
- * `POST /api/invoices/:id/payments` has always accepted an arbitrary positive `amountMinor`, and
- * the only thing that has ever forced a full settlement is a single line of client code sending
- * the whole balance. `checkout-regression.test.ts` proves that two CONCURRENT partial payments
- * serialize correctly and that a STALE overpayment is a 409 - but not the two plainest cases a
- * Pay control depends on: that a smaller amount leaves a collectable balance under a
- * `partially_paid` status, and that a larger one is refused with
+ * `POST /api/invoices/:id/payments` accepts an arbitrary positive `amountMinor`. That is the
+ * mechanism behind a settlement made of SEVERAL TENDER COMPONENTS: each component is one call,
+ * and the settlement is complete when the balance reaches zero. Stopping halfway is not a
+ * workflow the product offers - it is the intermediate state a multi-component settlement
+ * passes through, which is why the amount contract has to hold at every step of it.
+ *
+ * `checkout-regression.test.ts` proves that two CONCURRENT components serialize correctly and
+ * that a STALE over-tender is a 409 - but not the two plainest cases the Pay control depends on:
+ * that a component smaller than the balance leaves the rest collectable under an outstanding
+ * `partially_paid` status, and that one larger than the balance is refused with
  * `PAYMENT_EXCEEDS_CURRENT_BALANCE` rather than a 409 about concurrency. Those are here.
  *
- * The receipt's salon identity is in the same file because it needs the same invoice, and
- * because the receipt header and the Pay control are two halves of one screen.
+ * The receipt's payload and salon identity are in the same file because they need the same
+ * invoice, and because the receipt header and the Pay control are two halves of one screen.
  */
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -25,14 +29,14 @@ const describeDatabase = databaseUrl ? describe : describe.skip;
 const config: Config = {
   NODE_ENV: "test", DOCUMENT_STORAGE_ADAPTER: "memory", PORT: 3000,
   DATABASE_URL: databaseUrl ?? "postgres://unavailable",
-  SESSION_SECRET: "partial-payment-receipt-secret-at-least-32-chars",
+  SESSION_SECRET: "tender-amount-receipt-secret-at-least-32-chars",
   APP_ORIGIN: "http://localhost:3000", SMTP_PORT: 587, SMTP_SECURE: false
 };
 
 const cookie = (response: { headers: Record<string, unknown> }) =>
   String(response.headers["set-cookie"]).split(";", 1)[0]!;
 
-describeDatabase("partial payment and the receipt's salon identity", () => {
+describeDatabase("tender amounts and the receipt payload", () => {
   let db: Database;
   let app: Awaited<ReturnType<typeof createApp>>;
   const suffix = crypto.randomUUID();
@@ -62,8 +66,8 @@ describeDatabase("partial payment and the receipt's salon identity", () => {
     `;
     await db`
       insert into appointment_services(business_id,appointment_id,service_id,service_name_snapshot,
-        duration_minutes_snapshot,price_minor_snapshot)
-      values (${businessId},${appointment!.id},${serviceId},'Payment Groom',60,10000)
+        duration_minutes_snapshot,price_minor_snapshot,line_position)
+      values (${businessId},${appointment!.id},${serviceId},'Payment Groom',60,10000,1)
     `;
     return appointment!.id;
   }
@@ -142,8 +146,8 @@ describeDatabase("partial payment and the receipt's salon identity", () => {
     expect(afterPart.payments).toHaveLength(1);
     expect(afterPart.payments[0]).toMatchObject({ amountMinor: part, status: "recorded", method: "cash" });
 
-    // A second partial closes it, so the invoice is settled by two smaller amounts and never by
-    // one full one. `paid`, not `partially_paid`, is what the last payment must leave.
+    // A second component closes it, so the invoice is settled by two smaller amounts and never
+    // by one full one. `paid`, not `partially_paid`, is what the last component must leave.
     const remainder = afterPart.invoice.balanceMinor;
     const second = await pay(invoice.id, remainder, remainder);
     expect(second.statusCode, second.body).toBe(201);
@@ -222,6 +226,60 @@ describeDatabase("partial payment and the receipt's salon identity", () => {
     expect(afterTheFact.statusCode).toBe(400);
     expect(afterTheFact.json().code).toBe("PAYMENT_EXCEEDS_CURRENT_BALANCE");
   });
+
+  it("carries every field the Receipt draws, and nulls the ones a manual payment has none of",
+    async () => {
+      // THE RECEIPT IS A CLIENT-SIDE RENDER OF THIS PAYLOAD AND NOTHING ELSE. It states the
+      // method, the amount, when the money was received, Pawsh's own handle on the settlement,
+      // and the processor's provider, payment id and reference — the last three ONLY when the row
+      // has them. A cash payment has none, so this asserts that the payload says so in the one
+      // way the renderer can act on: null, not an empty string and not a placeholder. If these
+      // columns ever started arriving as "" the client would print a processor line for money no
+      // processor touched, and `tests/ui/payment-receipt.test.ts` — which renders fixtures —
+      // could not see it.
+      const invoice = await openInvoice();
+      const settled = await pay(invoice.id, invoice.balanceMinor, invoice.balanceMinor);
+      expect(settled.statusCode, settled.body).toBe(201);
+
+      const payments = (await receipt(invoice.id)).json().payments as Record<string, unknown>[];
+      expect(payments).toHaveLength(1);
+      const payment = payments[0]!;
+      expect(typeof payment.id).toBe("string");
+      expect(payment.method).toBe("cash");
+      expect(payment.status).toBe("recorded");
+      expect(payment.amountMinor).toBe(invoice.balanceMinor);
+      // A real instant, because the Receipt lays it out through the workspace's date and hour
+      // preferences and an unparseable stamp would reach paper as "Invalid Date".
+      expect(Number.isNaN(Date.parse(String(payment.recordedAt)))).toBe(false);
+      expect(payment.provider).toBeNull();
+      expect(payment.providerPaymentId).toBeNull();
+      expect(payment.externalReference).toBeNull();
+    });
+
+  it("returns an operator's own reference verbatim, so the Receipt can print what was typed",
+    async () => {
+      // `externalReference` is free text for every method and is the one identifier a manually
+      // recorded payment CAN have — a cheque number, a bank reference. It is the "when present"
+      // half of the same rule: absent it draws nothing, present it draws exactly this.
+      const invoice = await openInvoice();
+      const reference = "cheque 40219";
+      const settled = await app.inject({
+        method: "POST", url: `/api/invoices/${invoice.id}/payments`,
+        headers: { cookie: ownerCookie, "idempotency-key": key() },
+        payload: {
+          amountMinor: invoice.balanceMinor, expectedBalanceMinor: invoice.balanceMinor,
+          method: "check", externalReference: reference
+        }
+      });
+      expect(settled.statusCode, settled.body).toBe(201);
+
+      const payments = (await receipt(invoice.id)).json().payments as Record<string, unknown>[];
+      expect(payments[0]!.externalReference).toBe(reference);
+      // And still no processor. A cheque is not a card, and the reference the operator typed must
+      // not turn into a claim that one was involved.
+      expect(payments[0]!.provider).toBeNull();
+      expect(payments[0]!.providerPaymentId).toBeNull();
+    });
 
   it("carries the salon's name, phone, email and address on the receipt", async () => {
     // An invoice from BEFORE anything is written, because the null case is the one a header has

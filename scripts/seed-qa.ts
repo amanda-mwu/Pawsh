@@ -402,7 +402,8 @@ await sql.begin(async (tx) => {
           end_at=((${localEnd}::text)::timestamp at time zone ${location!.timezone}),
           scheduling_timezone=${location!.timezone},
           scheduled_local_start=(${localStart}::text)::timestamp,
-          scheduled_local_end=(${localEnd}::text)::timestamp
+          scheduled_local_end=(${localEnd}::text)::timestamp,
+          updated_by=${ownerId}, updated_at=now()
         where id=${existing.id}
           and (employee_id,location_id,scheduling_timezone,scheduled_local_start,scheduled_local_end)
             is distinct from (${employeeId}::uuid,${location!.id}::uuid,${location!.timezone}::text,
@@ -411,12 +412,12 @@ await sql.begin(async (tx) => {
     } else {
       await tx`
         insert into blocked_times(business_id,employee_id,location_id,start_at,end_at,
-          scheduling_timezone,scheduled_local_start,scheduled_local_end,reason,created_by)
+          scheduling_timezone,scheduled_local_start,scheduled_local_end,reason,created_by,updated_by)
         values (${businessId},${employeeId},${location!.id},
           ((${localStart}::text)::timestamp at time zone ${location!.timezone}),
           ((${localEnd}::text)::timestamp at time zone ${location!.timezone}),
           ${location!.timezone},(${localStart}::text)::timestamp,(${localEnd}::text)::timestamp,
-          ${reason},${ownerId})
+          ${reason},${ownerId},${ownerId})
       `;
     }
   }
@@ -692,17 +693,18 @@ await sql.begin(async (tx) => {
     if (existingService) {
       await tx`
         update appointment_services set service_name_snapshot=${placement.entry.service},
-          duration_minutes_snapshot=${placement.duration}, price_minor_snapshot=${placement.price}
+          duration_minutes_snapshot=${placement.duration}, price_minor_snapshot=${placement.price},
+          line_position=1
         where id=${existingService.id}
-          and (service_name_snapshot,duration_minutes_snapshot,price_minor_snapshot)
-            is distinct from (${placement.entry.service},${placement.duration}::int,${placement.price}::int)
+          and (service_name_snapshot,duration_minutes_snapshot,price_minor_snapshot,line_position)
+            is distinct from (${placement.entry.service},${placement.duration}::int,${placement.price}::int,1)
       `;
     } else {
       await tx`
         insert into appointment_services(business_id,appointment_id,service_id,
-          service_name_snapshot,duration_minutes_snapshot,price_minor_snapshot)
+          service_name_snapshot,duration_minutes_snapshot,price_minor_snapshot,line_position)
         values (${businessId},${placement.id},${serviceId},${placement.entry.service},
-          ${placement.duration},${placement.price})
+          ${placement.duration},${placement.price},1)
       `;
     }
   }

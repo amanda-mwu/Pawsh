@@ -1089,8 +1089,14 @@ export function registerSquareRoutes(
     },
     payment_not_refundable: {
       status: 409, code: "PAYMENT_NOT_REFUNDABLE",
+      // Says what cannot be done, and stops there. It used to end "Void the record instead and
+      // return the money the way it was taken", which instructed the operator to assert that this
+      // record was wrong - about a record that was right - in the one situation where the money
+      // genuinely went back. That void would put the amount back on the invoice balance and chase
+      // the customer for a debt they do not owe. Refunding a payment Pawsh did not process is a
+      // post-pilot capability; until it exists the product must not name a false stand-in.
       error: "Pawsh did not take this payment through a card terminal, so it cannot send money "
-        + "back. Void the record instead and return the money the way it was taken."
+        + "back. Refunding a payment taken any other way is not supported yet."
     },
     refund_exceeds_remaining: {
       status: 409, code: "REFUND_EXCEEDS_REMAINING",

@@ -101,20 +101,22 @@ describe("permission catalog", () => {
     }
   });
 
-  it("grants every permission to somebody, through 0041, 0043 or 0045", async () => {
+  it("grants every permission to somebody, through the role-granting migrations", async () => {
     // Migrations are historical records and must not be edited when the tuple grows, so none of
     // these names the whole tuple on its own: 0041 seeded roles from the presets as they stood
-    // then, 0043 added the reporting taxonomy to the roles that already had `reports.view`, and
-    // 0045 added the Role Permission taxonomy to the roles that already held all 46.
+    // then, 0043 added the reporting taxonomy to the roles that already had `reports.view`, 0045
+    // added the Role Permission taxonomy to the roles that already held all 46, and 0055 gave the
+    // two block keys to every role that could already block time out.
     //
-    // TOGETHER THEY MUST COVER IT. A permission named in neither is one that exists in code, is
-    // grantable through the editor, and that NO EXISTING ROLE HAS - so every workspace silently
+    // TOGETHER THEY MUST COVER IT. A permission named in none of them is one that exists in code,
+    // is grantable through the editor, and that NO EXISTING ROLE HAS - so every workspace silently
     // starts without it and nobody is told. That may well be the right answer for a genuinely new
     // capability, but it is a decision, and this test exists to force it to be made rather than
     // arrived at by omission.
     const named = new Set<string>();
     const chain = [
-      "0041_roles.sql", "0043_report_dashboard_taxonomy.sql", "0045_permission_taxonomy.sql"
+      "0041_roles.sql", "0043_report_dashboard_taxonomy.sql", "0045_permission_taxonomy.sql",
+      "0055_blocked_time_management.sql"
     ];
     for (const file of chain) {
       const sql = (await readFile(`migrations/${file}`, "utf8")).replaceAll("\r\n", "\n");
@@ -122,7 +124,7 @@ describe("permission catalog", () => {
         const value = match[1]!;
         if (namespaces.has(value.split(".", 1)[0]!)) named.add(value);
       }
-      // Neither migration may name a permission the domain does not define.
+      // No migration in the chain may name a permission the domain does not define.
       expect([...named].filter((value) => !permissionSet.has(value)), file).toEqual([]);
     }
     expect([...permissions].filter((value) => !named.has(value))).toEqual([]);
@@ -146,6 +148,11 @@ describe("permission catalog", () => {
     //   0045  granted the Role Permission taxonomy to every role already holding all 46, which is
     //         "the roles that could already do everything", expressed relationally rather than by
     //         name so a renamed built-in and a fully-granted custom role are both covered.
+    //   0055  granted the two `calendar.blocks_*` keys to every role holding `appointments.edit`,
+    //         which is "the roles that could already block time out" - the capability the create
+    //         route was gated on until the dedicated key started enforcing. This is the link the
+    //         RECEPTIONIST rides: it holds `appointments.edit`, held neither block key after 0045,
+    //         and would silently have lost the button without it.
     //
     // A NEW MIGRATION IN THIS CHAIN MUST BE ADDED HERE. That is not busywork: this test is the
     // only thing pinning the frozen SQL literals to the live definitions, and a link left out
@@ -155,6 +162,7 @@ describe("permission catalog", () => {
     const roles = await read("0041_roles.sql");
     const reportingSql = await read("0043_report_dashboard_taxonomy.sql");
     const permissionSql = await read("0045_permission_taxonomy.sql");
+    const blockSql = await read("0055_blocked_time_management.sql");
     const stringsIn = (sql: string) => [...sql.matchAll(/'([^']+)'/g)].map((match) => match[1]!);
     const granted = (sql: string) =>
       stringsIn(/permissions \|\| array\[([\s\S]*?)\]/.exec(sql)![1]!);
@@ -164,8 +172,17 @@ describe("permission catalog", () => {
     const alreadyEverything = stringsIn(
       /permissions @> array\[([\s\S]*?)\]::text\[\]/.exec(permissionSql)![1]!
     );
+    const blockPair = granted(blockSql);
+    // 0055's own predicate, read out of the file for the same reason the others are: this test has
+    // to reproduce what the migration DOES, not what somebody remembers writing. ANCHORED TO THE
+    // START OF A LINE, because that file quotes 0043's `where 'reports.view' = any(permissions)`
+    // in a comment to say which precedent it is following, and an unanchored match reads the
+    // prose instead of the statement.
+    const blockPredicate = /^where '([a-z_.]+)' = any\(permissions\)/m.exec(blockSql)![1]!;
     expect(taxonomy.length).toBeGreaterThan(0);
     expect(permissionTaxonomy.length).toBeGreaterThan(0);
+    expect(blockPair).toEqual(["calendar.blocks_create", "calendar.blocks_edit"]);
+    expect(blockPredicate).toBe("appointments.edit");
     expect(alreadyEverything.length).toBeGreaterThan(0);
 
     const seeded = new Map(
@@ -184,6 +201,8 @@ describe("permission catalog", () => {
       if (alreadyEverything.every((permission) => migrated.has(permission))) {
         for (const permission of permissionTaxonomy) migrated.add(permission);
       }
+      // 0055's: every role that could already block time out.
+      if (migrated.has(blockPredicate)) for (const permission of blockPair) migrated.add(permission);
       expect([...migrated].sort(), role.name).toEqual([...role.permissions].sort());
     }
   });

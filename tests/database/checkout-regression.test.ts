@@ -42,8 +42,8 @@ describeDatabase("D4 checkout, stale state, and error paths",()=>{
       from business_memberships where business_id=${businessId} and is_owner returning id
     `;
     if(withService)await db`
-      insert into appointment_services(business_id,appointment_id,service_id,service_name_snapshot,duration_minutes_snapshot,price_minor_snapshot)
-      values (${businessId},${appointment!.id},${serviceId},'D4 Groom Snapshot',60,8500)
+      insert into appointment_services(business_id,appointment_id,service_id,service_name_snapshot,duration_minutes_snapshot,price_minor_snapshot,line_position)
+      values (${businessId},${appointment!.id},${serviceId},'D4 Groom Snapshot',60,8500,1)
     `;
     return appointment!.id;
   }
@@ -138,30 +138,133 @@ describeDatabase("D4 checkout, stale state, and error paths",()=>{
     expect(noService.json().code).toBe("CHECKOUT_REQUIRES_SERVICE");
   });
 
-  it("serializes valid partial payments and rejects a stale aggregate overpayment",async()=>{
+  it("serializes concurrent tender components and refuses the one composed against a moved balance",async()=>{
     const invoice=(await checkout(await createCompleted(5),{discountMinor:0,discountType:null,tipMinor:1500})).json();
+    /**
+     * TWO OPERATORS, ONE BALANCE, THE SAME INSTANT. Both compose a tender against the figure the
+     * invoice carried when their screen opened, and the `for update` on the invoice orders them
+     * rather than interleaving them: whichever transaction reaches the lock first records, and
+     * the other one then reads the balance that payment left and finds its own expectation out
+     * of date.
+     *
+     * THIS ASSERTION USED TO READ `[201,201]` AND THAT WAS THE DEFECT, not the guarantee. Both
+     * amounts were under the balance, so the old code never compared expectations at all and the
+     * loser of the race settled against a balance nobody had shown it. What has to survive is the
+     * SERIALIZATION - one effect, no lost update, no double count - and that is what is pinned
+     * here. Split tender does not depend on both racers winning; it depends on each component
+     * being composed against the balance the previous one left, which the second half of this
+     * test settles the same invoice by doing.
+     */
     const [a,b]=await Promise.all([
       pay(invoice.id,4000,invoice.balanceMinor),pay(invoice.id,3000,invoice.balanceMinor)
     ]);
-    expect([a.statusCode,b.statusCode]).toEqual([201,201]);
+    expect([a.statusCode,b.statusCode].sort()).toEqual([201,409]);
+    const winner=[a,b].find((response)=>response.statusCode===201)!;
+    const loser=[a,b].find((response)=>response.statusCode===409)!;
+    expect(loser.json().code).toBe("STALE_FINANCIAL_STATE");
+    // The refusal carries the balance that actually exists, so the screen that lost the race does
+    // not have to ask for it a second time.
+    expect(loser.json().balanceMinor).toBe(invoice.balanceMinor-winner.json().amountMinor);
     const receipt=await app.inject({method:"GET",url:`/api/invoices/${invoice.id}/receipt`,headers:{cookie:ownerCookie}});
     const current=receipt.json().invoice.balanceMinor;
-    expect(current).toBe(invoice.balanceMinor-7000);
-    const valid=await pay(invoice.id,current,current);
-    expect(valid.statusCode).toBe(201);
-    const stale=await pay(invoice.id,current, current);
-    expect(stale.statusCode).toBe(409);
-    expect(stale.json().code).toBe("STALE_FINANCIAL_STATE");
+    expect(current).toBe(invoice.balanceMinor-winner.json().amountMinor);
+    expect(receipt.json().payments.filter((payment:{status:string})=>payment.status==="recorded")).toHaveLength(1);
+
+    // AND LEGITIMATE SPLIT TENDER IS UNTOUCHED. Two more components settle the same invoice, each
+    // carrying the balance the previous one left. A component smaller than the balance is fine -
+    // that is what split tender is - and the only thing refused is a component composed against a
+    // balance that has since moved.
+    const part=Math.floor(current/2);
+    const firstPart=await pay(invoice.id,part,current);
+    expect(firstPart.statusCode,firstPart.body).toBe(201);
+    const remainder=firstPart.json().balance;
+    expect(remainder).toBe(current-part);
+    const secondPart=await pay(invoice.id,remainder,remainder);
+    expect(secondPart.statusCode,secondPart.body).toBe(201);
+    expect(secondPart.json().balance).toBe(0);
     const updated=(await app.inject({method:"GET",url:`/api/invoices/${invoice.id}/receipt`,headers:{cookie:ownerCookie}})).json();
-    expect(updated.invoice.balanceMinor).toBeGreaterThanOrEqual(0);
+    expect(updated.invoice).toMatchObject({status:"paid",balanceMinor:0});
     expect(updated.payments.filter((payment:{status:string})=>payment.status==="recorded")
       .reduce((sum:number,payment:{amountMinor:number})=>sum+payment.amountMinor,0)).toBe(invoice.totalMinor-updated.invoice.balanceMinor);
+  });
+
+  it("refuses a stale expected balance whether the tender is under, exact, or over",async()=>{
+    /**
+     * THE FOUR CORNERS OF THE OPTIMISTIC-CONCURRENCY CONTRACT.
+     *
+     * `opened` is the balance an operator was shown. Another component settles part of it, so
+     * `opened` now describes nothing. Every attempt still carrying it is refused - the amount is
+     * irrelevant to that question - and an attempt carrying the balance that actually exists is
+     * accepted.
+     *
+     * THE FIRST TWO CASES ARE THE ONES THE DEFECT LET THROUGH. The staleness comparison used to
+     * live inside the over-tender branch, so a tender at or below the current balance never
+     * reached it and recorded silently against an expectation the invoice had already outgrown.
+     */
+    const invoice=(await checkout(await createCompleted(20),{discountMinor:0,discountType:null,tipMinor:1500})).json();
+    const opened:number=invoice.balanceMinor;
+    const settledPart=4000;
+    const first=await pay(invoice.id,settledPart,opened);
+    expect(first.statusCode,first.body).toBe(201);
+    const current:number=first.json().balance;
+    expect(current).toBe(opened-settledPart);
+
+    // UNDER-TENDER against the stale figure: 3000 is below the stale balance AND below the current
+    // one, so nothing about the amount is wrong. The expectation is.
+    const under=await pay(invoice.id,3000,opened);
+    expect(under.statusCode,under.body).toBe(409);
+    expect(under.json().code).toBe("STALE_FINANCIAL_STATE");
+    expect(under.json().balanceMinor).toBe(current);
+
+    // EXACT tender against the stale figure: the right amount to settle the invoice, composed
+    // against the wrong balance. Accepting it would close the invoice on a number the operator was
+    // never shown.
+    const exact=await pay(invoice.id,current,opened);
+    expect(exact.statusCode,exact.body).toBe(409);
+    expect(exact.json().code).toBe("STALE_FINANCIAL_STATE");
+    expect(exact.json().balanceMinor).toBe(current);
+
+    // OVER-TENDER against the stale figure - the operator paying "the whole bill" they were shown.
+    // The old code already caught this one, and it still answers 409 rather than
+    // PAYMENT_EXCEEDS_CURRENT_BALANCE, because the balance moving is the true story.
+    const over=await pay(invoice.id,opened,opened);
+    expect(over.statusCode,over.body).toBe(409);
+    expect(over.json().code).toBe("STALE_FINANCIAL_STATE");
+    expect(over.json().balanceMinor).toBe(current);
+
+    // Three refusals, nothing written: the invoice still carries exactly the one component it
+    // legitimately took, and it is still outstanding rather than settled.
+    const between=(await app.inject({method:"GET",url:`/api/invoices/${invoice.id}/receipt`,headers:{cookie:ownerCookie}})).json();
+    expect(between.payments.map((payment:{amountMinor:number})=>payment.amountMinor)).toEqual([settledPart]);
+    expect(between.invoice).toMatchObject({status:"partially_paid",balanceMinor:current});
+
+    // A FRESH EXPECTED BALANCE STILL SETTLES IT. The guard refuses stale requests, not payment.
+    const fresh=await pay(invoice.id,current,current);
+    expect(fresh.statusCode,fresh.body).toBe(201);
+    expect(fresh.json().balance).toBe(0);
+    const settled=(await app.inject({method:"GET",url:`/api/invoices/${invoice.id}/receipt`,headers:{cookie:ownerCookie}})).json();
+    expect(settled.invoice).toMatchObject({status:"paid",balanceMinor:0});
+    expect(settled.payments.map((payment:{amountMinor:number})=>payment.amountMinor)).toEqual([settledPart,current]);
+
+    // And an over-tender against a FRESH balance is still the operator's own number being too big,
+    // so PAYMENT_EXCEEDS_CURRENT_BALANCE is not swallowed by the new gate.
+    const other=(await checkout(await createCompleted(21),{discountMinor:0,discountType:null,tipMinor:0})).json();
+    const tooMuch=await pay(other.id,other.balanceMinor+1,other.balanceMinor);
+    expect(tooMuch.statusCode,tooMuch.body).toBe(400);
+    expect(tooMuch.json().code).toBe("PAYMENT_EXCEEDS_CURRENT_BALANCE");
   });
 
   it("deduplicates same-key payment concurrency and preserves one void effect",async()=>{
     const invoice=(await checkout(await createCompleted(6),{discountMinor:0,discountType:null,tipMinor:1500})).json();
     const paymentKey=key();
-    const [first,second]=await Promise.all([pay(invoice.id,5000,10000,paymentKey),pay(invoice.id,5000,10000,paymentKey)]);
+    // A FRESH expected balance on both, because what is under test here is the idempotency claim
+    // and not the concurrency guard. The literal 10000 that used to stand here was stale against a
+    // real balance of 10701 and recorded only because the staleness comparison was unreachable for
+    // a tender under the balance. The claim is checked before that gate either way, which is what
+    // keeps a lost response replayable no matter what the balance has since done.
+    const [first,second]=await Promise.all([
+      pay(invoice.id,5000,invoice.balanceMinor,paymentKey),pay(invoice.id,5000,invoice.balanceMinor,paymentKey)
+    ]);
     expect([first.statusCode,second.statusCode].sort()).toEqual([200,201]);
     expect(first.json().id).toBe(second.json().id);
     const reused=await pay(invoice.id,4000,5000,paymentKey);

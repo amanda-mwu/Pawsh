@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
-import { createDatabase, type Database } from "../../src/db/client.js";
+import { createDatabase, setTenant, type Database } from "../../src/db/client.js";
 import { tokenHash } from "../../src/http/context.js";
 import { hashPassword } from "../../src/security/passwords.js";
 import { IntegrationKeyring } from "../../src/security/integration-encryption.js";
@@ -12,13 +12,14 @@ import {
   maxWebhookAttempts, processSquareWebhooks, squareSignature, squareSignatureHeader
 } from "../../src/integrations/square/webhooks.js";
 import {
-  expireStaleDeviceCodes, terminalCheckoutIdempotencyKey
+  expireStaleDeviceCodes, liveTerminalCheckoutStatuses, terminalCheckoutIdempotencyKey
 } from "../../src/integrations/square/terminal.js";
 import {
   maxCheckoutSweepAttempts, sweepOpenCheckouts
 } from "../../src/integrations/square/sweep.js";
 import { squareStub } from "../support/square-stub.js";
 import { roleFor } from "../support/roles.js";
+import { backendPid, waitUntilBlockedBy } from "../support/concurrency.js";
 
 /**
  * Pairing a terminal, taking a payment on it, and every way that goes wrong.
@@ -202,8 +203,8 @@ describeDatabase("Square Terminal capture", () => {
     await db`
       insert into appointment_services
         (business_id,appointment_id,service_id,service_name_snapshot,
-         duration_minutes_snapshot,price_minor_snapshot)
-      values (${businessId},${appointment!.id},${serviceId},'Full groom',60,6500)
+         duration_minutes_snapshot,price_minor_snapshot,line_position)
+      values (${businessId},${appointment!.id},${serviceId},'Full groom',60,6500,1)
     `;
     const created = await app.inject({
       method: "POST", url: `/api/appointments/${appointment!.id}/checkout`,
@@ -222,6 +223,23 @@ describeDatabase("Square Terminal capture", () => {
       method: "POST", url: `/api/invoices/${invoiceId}/terminal-checkouts`,
       headers: { cookie: withCookie }, payload: { deviceId }
     });
+  }
+
+  /** A manual tender, exactly as Check Out sends one. */
+  async function pay(invoiceId: string, amountMinor: number, expectedBalanceMinor: number) {
+    return app.inject({
+      method: "POST", url: `/api/invoices/${invoiceId}/payments`,
+      headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
+      payload: { amountMinor, expectedBalanceMinor, method: "cash" }
+    });
+  }
+
+  async function recordedPayments(invoiceId: string) {
+    return db<{ amountMinor: number; method: string }[]>`
+      select amount_minor, method from payments
+      where business_id=${businessId} and invoice_id=${invoiceId} and status='recorded'
+      order by recorded_at
+    `;
   }
 
   async function invoiceRow(id: string) {
@@ -805,6 +823,142 @@ describeDatabase("Square Terminal capture", () => {
     expect(next.idempotencyKey).not.toBe(first.idempotencyKey);
   });
 
+  it("refuses a manual tender while a card is in the reader for the same invoice", async () => {
+    /**
+     * TWO WAYS TO PAY ONE BILL, AT ONCE, AND NOTHING STOPPING THEM.
+     *
+     * The Terminal start derives its amount from the invoice balance and holds it in a `pending`
+     * checkout. `POST /api/invoices/:id/payments` never looked at that row, so a capture for the
+     * whole bill and a cash tender against the same bill could both be accepted: the customer
+     * taps, Square charges the full amount it was asked for, and reconciliation - finding the
+     * balance no longer equal to what the checkout was started for - parks a `needs_review`
+     * instead of posting. The customer has paid the bill and part of it again, Pawsh shows money
+     * still owing, and a person has to untangle both.
+     *
+     * The refusal is the whole fix. Nothing cancels the capture and nothing races it; the second
+     * actor is told what is happening and given the identity of the capture so the screen can
+     * show it.
+     */
+    const { deviceId } = await pairTerminal("Exclusion counter");
+    const invoice = await terminalInvoice();
+    const started = await startCapture(invoice.id, deviceId);
+    expect(started.statusCode, started.body).toBe(201);
+    const checkoutId = started.json().id as string;
+
+    const refused = await pay(invoice.id, 4_000, invoice.balanceMinor);
+    expect(refused.statusCode, refused.body).toBe(409);
+    expect(refused.json()).toMatchObject({
+      code: "TERMINAL_CAPTURE_IN_FLIGHT",
+      // What the losing screen needs to render the truth without asking twice: what is owed, and
+      // which capture is holding it. A Pawsh id, never Square's.
+      balanceMinor: invoice.balanceMinor,
+      checkoutId,
+      checkoutAmountMinor: invoice.balanceMinor
+    });
+    expect(liveTerminalCheckoutStatuses).toContain(refused.json().checkoutStatus);
+    expect(refused.json().squareCheckoutId).toBeUndefined();
+
+    // NOTHING WAS WRITTEN. Not a payment, not a balance, not the checkout.
+    expect(await recordedPayments(invoice.id)).toHaveLength(0);
+    expect(await invoiceRow(invoice.id)).toMatchObject({
+      balanceMinor: invoice.balanceMinor, status: "open"
+    });
+    expect((await checkoutRow(checkoutId)).amountMinor).toBe(invoice.balanceMinor);
+
+    // AND THEN THE CUSTOMER TAPS. The bill is settled once, for exactly what it was.
+    const squareCheckoutId = (await checkoutRow(checkoutId)).squareCheckoutId!;
+    square.completeCheckout({
+      checkoutId: squareCheckoutId, amountMinor: invoice.balanceMinor, tipMinor: 0
+    });
+    await terminalWebhook(squareCheckoutId);
+    await drain();
+    expect((await checkoutRow(checkoutId)).status).toBe("completed");
+    const settled = await recordedPayments(invoice.id);
+    expect(settled).toHaveLength(1);
+    expect(settled[0]!.amountMinor).toBe(invoice.balanceMinor);
+    expect(await invoiceRow(invoice.id)).toMatchObject({ balanceMinor: 0, status: "paid" });
+  });
+
+  it("takes the cash again as soon as the capture is no longer in flight", async () => {
+    // The gate is on a capture that can still take money, not on the invoice having ever had one.
+    // A cancelled attempt has come to rest, so the counter is free to take payment another way -
+    // which is exactly what the operator who cancelled it is about to do.
+    const { deviceId } = await pairTerminal("Released counter");
+    const invoice = await terminalInvoice();
+    const started = await startCapture(invoice.id, deviceId);
+    const checkoutId = started.json().id as string;
+    expect((await pay(invoice.id, 4_000, invoice.balanceMinor)).statusCode).toBe(409);
+
+    const cancelled = await app.inject({
+      method: "POST", url: `/api/square/terminal-checkouts/${checkoutId}/cancel`,
+      headers: { cookie: ownerCookie }
+    });
+    expect(cancelled.statusCode, cancelled.body).toBe(200);
+    expect(cancelled.json().status).toBe("canceled");
+
+    const paid = await pay(invoice.id, 4_000, invoice.balanceMinor);
+    expect(paid.statusCode, paid.body).toBe(201);
+    expect(await invoiceRow(invoice.id)).toMatchObject({
+      balanceMinor: invoice.balanceMinor - 4_000, status: "partially_paid"
+    });
+  });
+
+  it("orders a capture start and a cash tender that arrive together", async () => {
+    /**
+     * THE SAME EXCLUSION, WITH THE COLLISION GUARANTEED RATHER THAN HOPED FOR.
+     *
+     * Both writers take `for update` on the invoice row as their first statement, so this test
+     * takes that lock itself, releases both racers into it, and waits until BOTH are demonstrably
+     * blocked on this backend before letting go. Whichever wins the lock, the other one is
+     * ordered behind it and sees its committed effect - which is the property, not which one wins.
+     *
+     * TWO OUTCOMES ARE CORRECT AND THEY ARE NOT THE SAME OUTCOME:
+     *
+     *   - The capture wins: it holds the whole balance, and the cash tender is refused.
+     *   - The tender wins: it commits first, and the capture then derives its amount from the
+     *     balance that tender left rather than from the one it was composed against.
+     *
+     * What is never allowed is both taking the whole bill, and the last assertion is the one that
+     * says so in money: what the terminal will ask for plus what has already been recorded is the
+     * bill, not more than it.
+     */
+    const { deviceId } = await pairTerminal("Race counter");
+    const invoice = await terminalInvoice();
+    let racers!: Promise<[
+      Awaited<ReturnType<typeof startCapture>>, Awaited<ReturnType<typeof pay>>
+    ]>;
+    await db.begin(async (tx) => {
+      await setTenant(tx, businessId);
+      const pid = await backendPid(tx);
+      await tx`
+        select balance_minor from invoices
+        where business_id=${businessId} and id=${invoice.id} for update
+      `;
+      racers = Promise.all([
+        startCapture(invoice.id, deviceId), pay(invoice.id, 4_000, invoice.balanceMinor)
+      ]);
+      racers.catch(() => {});
+      await waitUntilBlockedBy(db, { pid, count: 2 });
+    });
+    const [capture, tender] = await racers;
+
+    expect(capture.statusCode, capture.body).toBe(201);
+    const checkout = await checkoutRow(capture.json().id as string);
+    const recorded = await recordedPayments(invoice.id);
+    if (tender.statusCode === 201) {
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]!.amountMinor).toBe(4_000);
+      expect(checkout.amountMinor).toBe(invoice.balanceMinor - 4_000);
+    } else {
+      expect(tender.statusCode, tender.body).toBe(409);
+      expect(tender.json().code).toBe("TERMINAL_CAPTURE_IN_FLIGHT");
+      expect(recorded).toHaveLength(0);
+      expect(checkout.amountMinor).toBe(invoice.balanceMinor);
+    }
+    const collected = recorded.reduce((sum, row) => sum + row.amountMinor, 0);
+    expect(checkout.amountMinor + collected).toBe(invoice.balanceMinor);
+  }, 20_000);
+
   it("reports a timed-out terminal as timed out rather than as somebody's decision", async () => {
     const { deviceId } = await pairTerminal("Timeout counter");
     const invoice = await terminalInvoice();
@@ -977,24 +1131,37 @@ describeDatabase("Square Terminal capture", () => {
   });
 
   it("parks a mismatch when the invoice moved while the card was in the reader", async () => {
+    /**
+     * THE INVOICE MOVES BY A VOID HERE, NOT BY A SECOND TENDER, and that is a change of route
+     * rather than of subject. A manual tender can no longer land against an invoice with a live
+     * capture on it - `POST /api/invoices/:id/payments` refuses that with
+     * `TERMINAL_CAPTURE_IN_FLIGHT`, which is what closes the double-charge. Voiding an EARLIER
+     * payment is not gated that way and still moves the balance under a card in a reader, so it
+     * is the honest way to reach this guard, and the guard is the one being tested: the reconciler
+     * refuses to post against an invoice that is no longer the one the checkout was started for.
+     */
     const { deviceId } = await pairTerminal("Moved invoice counter");
     const invoice = await terminalInvoice();
+    const paid = await pay(invoice.id, 500, invoice.balanceMinor);
+    expect(paid.statusCode, paid.body).toBe(201);
+
     const started = await startCapture(invoice.id, deviceId);
     const checkoutId = started.json().id as string;
     const squareCheckoutId = (await checkoutRow(checkoutId)).squareCheckoutId!;
+    // The capture was started for what was left after the cash, which is what makes the void
+    // below a move rather than a coincidence.
+    expect((await checkoutRow(checkoutId)).amountMinor).toBe(invoice.balanceMinor - 500);
 
-    // Somebody took cash at the same moment.
-    const paid = await app.inject({
-      method: "POST", url: `/api/invoices/${invoice.id}/payments`,
+    // Somebody takes the cash back out of the till while the customer is at the terminal.
+    const voided = await app.inject({
+      method: "POST", url: `/api/payments/${paid.json().id}/void`,
       headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
-      payload: {
-        amountMinor: 500, expectedBalanceMinor: invoice.balanceMinor, method: "cash"
-      }
+      payload: { reason: "Cash was never handed over" }
     });
-    expect(paid.statusCode).toBe(201);
+    expect(voided.statusCode, voided.body).toBe(200);
 
     square.completeCheckout({
-      checkoutId: squareCheckoutId, amountMinor: invoice.balanceMinor, tipMinor: 0
+      checkoutId: squareCheckoutId, amountMinor: invoice.balanceMinor - 500, tipMinor: 0
     });
     await terminalWebhook(squareCheckoutId);
     await drain();
@@ -1003,9 +1170,17 @@ describeDatabase("Square Terminal capture", () => {
     expect(review.status).toBe("needs_review");
     expect(JSON.parse(review.mismatchText!).reason).toBe("invoice_balance");
     expect(await squarePayments(invoice.id)).toHaveLength(0);
-    // The cash payment is untouched, which is the point: a Terminal mismatch never rewrites a
-    // ledger entry somebody else made.
-    expect((await invoiceRow(invoice.id)).balanceMinor).toBe(invoice.balanceMinor - 500);
+    // The void is untouched, which is the point: a Terminal mismatch never rewrites a ledger
+    // entry somebody else made.
+    expect((await invoiceRow(invoice.id)).balanceMinor).toBe(invoice.balanceMinor);
+
+    // AND `needs_review` DOES NOT LOCK THE COUNTER. It is not in flight - nothing further happens
+    // to it without a person - and the person resolving it may need to record what actually
+    // happened. Blocking manual payment here would take away the correction path for the one
+    // state that exists to be corrected.
+    const corrected = await pay(invoice.id, invoice.balanceMinor, invoice.balanceMinor);
+    expect(corrected.statusCode, corrected.body).toBe(201);
+    expect(await invoiceRow(invoice.id)).toMatchObject({ balanceMinor: 0, status: "paid" });
   });
 
   it("fails rather than posts when the terminal finished without a completed payment", async () => {

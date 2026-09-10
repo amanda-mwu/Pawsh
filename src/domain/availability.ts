@@ -358,7 +358,19 @@ export function refuseWindow(
 /**
  * Whether `availabilityOverride` - "book them anyway" - may bypass this refusal.
  *
- * TWO REASONS ARE NOT BYPASSABLE, and they are not the same kind of not-bypassable.
+ * THE OVERRIDE IS A JUDGEMENT ABOUT ORDINARY HOURS AND NOTHING ELSE. Two of the five refusals say
+ * "these are not the usual hours", and those are exactly what the flag was built to argue with.
+ * The other three are each a statement somebody made ON PURPOSE about a specific thing, and a flag
+ * on a booking request is not the way to retract one of those.
+ *
+ * BYPASSABLE - the ordinary-hours pair:
+ *
+ *   `outside_staff_hours`     the weekday grid says the groomer is not in then. A grid is a
+ *                             default, and staying late is an ordinary thing to decide.
+ *   `outside_business_hours`  the salon's weekday hours do not cover it. The same kind of default,
+ *                             one level up.
+ *
+ * NOT BYPASSABLE, and the three are not the same kind of not-bypassable:
  *
  *   `location_closed`    a fact about the PREMISES. Step 1 is terminal, and someone with the
  *                        override permission is making a judgement about a groomer's hours, which
@@ -370,10 +382,26 @@ export function refuseWindow(
  *                        that day. Pawsh has no capability that forces past it, deliberately - an
  *                        emergency override of an explicit date-level unavailability is a separate
  *                        design, not a flag reused.
+ *   `fully_blocked`      TIME SOMEBODY DELIBERATELY SPOKE FOR. A `blocked_times` row is not a
+ *                        default that failed to cover the window; it is an operator having gone to
+ *                        the calendar and said "not this half hour" - lunch, a vet run, a deep
+ *                        clean - and having written a reason on it. The argument that keeps
+ *                        `date_override_off` out of reach applies here with one difference in its
+ *                        favour: a block is finer-grained than a whole day off, so the answer to
+ *                        needing the slot is to MOVE OR DELETE THE BLOCK, which is a visible,
+ *                        attributable edit to the thing that is actually in the way. Bypassing it
+ *                        left the block standing with an appointment on top of it, so the grid
+ *                        went on painting a region the scheduler had already sold.
  *
- * The remaining three are exactly what the override has always been able to bypass, so a workspace
- * with no `employee_date_availability` rows behaves as it did before this was wired in.
+ * A BLOCK USED TO BE BYPASSABLE. That is a deliberate product reversal rather than a bug fix, and
+ * it is PROSPECTIVE ONLY: this function is consulted when a booking is being placed, so it gates
+ * new bookings and alters no appointment already on the books. An overlap audit run before the
+ * change found zero block/appointment overlaps in either live database, so nothing historical was
+ * made retrospectively wrong by it either.
+ *
+ * `staffAvailabilityError` reads this to fill `canOverride`, so a refusal no flag can clear says
+ * so in its own response and no client offers a control the server would refuse.
  */
 export function availabilityOverrideMayBypass(reason: AvailabilityReason): boolean {
-  return reason !== "location_closed" && reason !== "date_override_off";
+  return reason === "outside_staff_hours" || reason === "outside_business_hours";
 }

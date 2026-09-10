@@ -500,11 +500,30 @@ describeDatabase("D1 scheduling regression", () => {
     const onBlock = await create(ownerCookie, employeeA, "2032-01-15T20:00:00.000Z");
     expect(onBlock.statusCode, onBlock.body).toBe(409);
     expect(onBlock.json().code).toBe("TIME_BLOCKED");
+    // AND THE FLAG DOES NOT CLEAR IT. This assertion was inverted deliberately: it used to expect
+    // 201 here, because `availabilityOverrideMayBypass` returned true for `fully_blocked`. A block
+    // is now hard - somebody spoke for that half hour on purpose, and the way past it is to move
+    // or delete the block rather than to book invisibly on top of it. `canOverride: false` is
+    // returned with the refusal so no client offers a control the server would refuse, and it is
+    // false for an OWNER, because the answer is about the rule and not about the caller.
     const overridden = await create(ownerCookie, employeeA, "2032-01-15T20:00:00.000Z", {
       availabilityOverride: true,
       overrideReason: "Owner-approved blocked-time exception"
     });
-    expect(overridden.statusCode).toBe(201);
+    expect(overridden.statusCode, overridden.body).toBe(409);
+    expect(overridden.json()).toMatchObject({ code: "TIME_BLOCKED", canOverride: false });
+    // The ordinary-hours refusal IS still bypassable by the same flag, on the same salon, through
+    // the same route - so the case above is the block being hard rather than the override having
+    // quietly stopped working. 2032-01-16T01:00Z is 17:00 local the evening before, one minute
+    // past the end of a 09:00-17:00 shift and clear of every fixture booked above.
+    const afterShift = await create(ownerCookie, employeeA, "2032-01-16T01:00:00.000Z");
+    expect(afterShift.statusCode, afterShift.body).toBe(409);
+    expect(afterShift.json()).toMatchObject({ code: "OUTSIDE_STAFF_HOURS", canOverride: true });
+    const afterShiftForced = await create(ownerCookie, employeeA, "2032-01-16T01:00:00.000Z", {
+      availabilityOverride: true,
+      overrideReason: "Owner-approved late finish"
+    });
+    expect(afterShiftForced.statusCode, afterShiftForced.body).toBe(201);
   });
 
   it("keeps the seven-day calendar bounded and deterministically ordered at the pilot envelope", async () => {

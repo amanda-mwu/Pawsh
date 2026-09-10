@@ -364,6 +364,53 @@ export async function listInvoiceCheckouts(
   return rows.map(hydrate);
 }
 
+/**
+ * The statuses in which a Terminal checkout may still take the customer's money.
+ *
+ * ONE DEFINITION, because two questions depend on it and they must never disagree: whether a start
+ * is a retry of an attempt already in flight (`claimTerminalCheckout` below), and whether a manual
+ * tender may be recorded against the same invoice at all (`readLiveTerminalCheckout`, which
+ * `POST /api/invoices/:id/payments` calls). If those two drifted apart, the gap between them would
+ * be exactly the window in which a customer is charged twice.
+ *
+ * `needs_review` IS DELIBERATELY NOT HERE. It is not in flight - nothing further will happen to it
+ * without a person - and a person resolving it may well need to record what actually happened.
+ * Treating it as live would take away the correction path for the state that most needs one. The
+ * three `update ... where status in ('pending','in_progress')` fences further down are a different
+ * question, asked of one named row rather than of an invoice, and keep their own literal.
+ */
+export const liveTerminalCheckoutStatuses = ["pending", "in_progress"] as const;
+
+/** The live capture on an invoice, if a card is in a reader for it right now. */
+export interface LiveTerminalCheckout {
+  id: string;
+  amountMinor: number;
+  status: string;
+  attempt: number;
+}
+
+/**
+ * Whether money is being taken on a terminal for this invoice at this instant.
+ *
+ * Read under whatever lock the caller holds on the invoice, and that is the whole mechanism: a
+ * Terminal start locks the invoice row and inserts its `pending` checkout in the SAME transaction,
+ * and `POST /api/invoices/:id/payments` holds that same row lock while it reads this. So the two
+ * are ordered rather than interleaved - a start that committed first is visible here, and a manual
+ * payment that committed first is visible to the start, which then derives its amount from the
+ * balance that payment left.
+ */
+export async function readLiveTerminalCheckout(
+  sql: SqlExecutor, input: { businessId: string; invoiceId: string }
+): Promise<LiveTerminalCheckout | null> {
+  const [row] = await sql<LiveTerminalCheckout[]>`
+    select id, amount_minor, status, attempt from square_terminal_checkouts
+    where business_id=${input.businessId} and invoice_id=${input.invoiceId}
+      and status = any(${liveTerminalCheckoutStatuses})
+    order by attempt desc limit 1
+  `;
+  return row ?? null;
+}
+
 export type StartCheckoutRefusal =
   | "invoice_not_found"
   | "invoice_not_payable"
@@ -421,7 +468,7 @@ export async function claimTerminalCheckout(
       amount_minor, currency, status, cancel_reason, last_error, mismatch::text as mismatch_text,
       payment_id, attempt, created_by, reconciled_at, created_at, updated_at from square_terminal_checkouts
     where business_id=${input.businessId} and invoice_id=${input.invoiceId}
-      and status in ('pending','in_progress')
+      and status = any(${liveTerminalCheckoutStatuses})
     order by attempt desc limit 1
   `;
   if (live) {

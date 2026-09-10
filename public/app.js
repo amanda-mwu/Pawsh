@@ -522,17 +522,24 @@ async function refresh() {
   const allowed = new Set(state.me.permissions);
   const owner = state.me.isOwner;
   const safe = (permission) => owner || allowed.has(permission);
-  // ONE window string, sent to both calendar reads. The blocks drawn on the grid and the
-  // appointments drawn on the grid have to describe the same days, and the only way to guarantee
-  // that is for there to be one description. `/api/blocked-times` takes the identical query.
-  const calendarWindow = `localDate=${businessDate()}&days=8`;
+  // THE DAYS THE CALENDAR IS SHOWING, not a window anchored on today. See `calendarDisplayRange`
+  // for what a fixed today+8 window did to an operator working a week away from this one.
+  //
+  // Until the calendar has been positioned at all - the first `refresh()` of a session, before
+  // `openCalendarView()` has ever chosen a week - there is no displayed period to read. The
+  // today-anchored window stays for exactly that case, because the landing date is picked out of
+  // what it returns a few lines below.
+  const range = state.calendar.selectedDate ? calendarDisplayRange() : {start:businessDate(),days:8,blocks:true};
+  // Claimed BEFORE the reads go out, so a navigation that lands while they are in flight supersedes
+  // them rather than being overwritten by them.
+  const calendarRead = beginCalendarRead();
   const requests = [
     canViewDashboard() ? api("/api/dashboard") : {},
     safe("customers.view") ? api("/api/customers?paged=true&page=1&pageSize=20") : {items:[],total:0,page:1,pageSize:20},
     state.pets,
     api("/api/employees"), api("/api/services"),
-    safe("appointments.view") ? api(`/api/appointments?${calendarWindow}`) : [],
-    safe("appointments.view") ? api(`/api/blocked-times?${calendarWindow}`) : [],
+    safe("appointments.view") ? loadAppointmentRange(range.start,range.days) : [],
+    safe("appointments.view") && range.blocks ? loadBlockedTimeRange(range.start,range.days) : [],
     safe("team.manage") ? api("/api/members") : [],
     safe("reports.view") ? api("/api/reports") : null,
     safe("pets.view") && !state.dogBreeds.length ? api("/api/dog-breeds") : state.dogBreeds,
@@ -544,7 +551,11 @@ async function refresh() {
     loadLocations()
   ];
   const [dashboard, customerDirectory, pets, employees, services, appointments, blockedTimes, members, reports, dogBreeds, petTypes, accessRequests, workspaces, locations] = await Promise.all(requests);
-  Object.assign(state, { customerDirectory,customers:customerDirectory.items||[], pets, employees, services, appointments, blockedTimes, members, reports, dogBreeds, petTypes, accessRequests, workspaces, locations });
+  Object.assign(state, { customerDirectory,customers:customerDirectory.items||[], pets, employees, services, members, reports, dogBreeds, petTypes, accessRequests, workspaces, locations });
+  // Everything above belongs to the workspace and is true whichever period is on screen. The two
+  // calendar slices belong to a PERIOD, so they are written only while this read still owns the
+  // grid - a newer one that has already answered keeps what it painted.
+  if(calendarReadCurrent(calendarRead))applyCalendarPeriod({appointments,blockedTimes});
   renderAccountIdentity();
   renderLocationSwitcher();
   reconcileGroomerFilter();
@@ -2364,11 +2375,71 @@ async function loadAppointmentRange(start,days){return (await Promise.all(calend
 // front of the exact defect this seam exists to close: a refusal pointing at nothing. The read
 // fails the way the working-hours read beside it does, loudly.
 async function loadBlockedTimeRange(start,days){return (await Promise.all(calendarRangeQueries(start,days).map(query=>api(`/api/blocked-times?${query}`)))).flat();}
+/**
+ * WHICH DAYS THE CALENDAR IS SHOWING - the ONE answer, for every read that paints the grid.
+ *
+ * `refresh()` used to reload a window of its own: `localDate=<today>&days=8`, fixed, anchored on
+ * today, regardless of the period on screen. It then overwrote `state.appointments` wholesale. So
+ * an operator working four weeks out watched every card leave the grid the moment anything called
+ * `refresh()` - a drag that succeeded, a check-in, a refund, or merely switching browser tabs and
+ * back, which is `visibilitychange`. The grid stayed drawn and emptied itself; pressing Today
+ * "fixed" it only by navigating back INTO the window `refresh()` had loaded.
+ *
+ * The window is derived from `state.calendar` - the same three fields `loadCalendarWeek()` has
+ * always derived it from - rather than from the clock, and it is derived HERE so that there is one
+ * derivation rather than two that can drift. Every view mode is covered, because the mode is what
+ * the derivation switches on: a day reads its day, a week reads its week, a month reads the 42
+ * cells its grid draws.
+ *
+ * `blocks` is part of the range rather than a decision each caller makes. The month grid draws no
+ * bands, so it reads none - asking for blocks the paint has nowhere to put them is work for
+ * nothing - and switching back to a week or a day runs the read again, so nothing is stale by the
+ * time it is drawn.
+ */
+function calendarDisplayRange(){
+  if(state.calendar.view==="day")return {start:state.calendar.selectedDate||businessDate(),days:1,blocks:true};
+  if(state.calendar.view==="month")return {start:weekStart(`${state.calendar.month||businessDate().slice(0,7)}-01`),days:42,blocks:false};
+  return {start:state.calendar.weekStart||weekStart(state.calendar.selectedDate||businessDate()),days:7,blocks:true};
+}
+/** Both reads for one range, together, so the cards and the bands describe the same days. */
+async function readCalendarPeriod(range){
+  const [appointments,blockedTimes]=await Promise.all([
+    loadAppointmentRange(range.start,range.days),
+    range.blocks?loadBlockedTimeRange(range.start,range.days):[]]);
+  return {appointments,blockedTimes};
+}
+/**
+ * WHO OWNS THE GRID WHEN TWO READS ARE IN THE AIR AT ONCE.
+ *
+ * `refresh()` and `loadCalendarWeek()` both fill `state.appointments` and `state.blockedTimes`
+ * from a period computed when they START. An operator who pages to the next week while a refresh
+ * is still in flight would otherwise get that refresh's answer - the period they just left -
+ * painted over the period they asked for, which is the same blank grid this fix exists to close,
+ * arriving a second later instead.
+ *
+ * So a read claims a serial number before it asks, and writes the two slices only if no later read
+ * has claimed one since. The LATEST read always wins, whichever of the two it is and whichever
+ * finishes first; the loser drops its calendar answer and nothing else. Navigation is the act that
+ * bumps the serial, because `loadCalendarWeek()` is what every navigation goes through.
+ */
+let calendarReadSerial=0;
+function beginCalendarRead(){return ++calendarReadSerial;}
+function calendarReadCurrent(token){return token===calendarReadSerial;}
+/** The two slices the grid is drawn from, written together. Month keeps its own cache in step. */
+function applyCalendarPeriod({appointments,blockedTimes}){
+  state.appointments=appointments;state.blockedTimes=blockedTimes;
+  if(state.calendar.view==="month")state.calendar.monthAppointments=appointments;
+}
 async function loadCalendarWeek(start=state.calendar.weekStart){
-  state.calendar.weekStart=start;let rangeStart=start,days=7;if(state.calendar.view==="day"){rangeStart=state.calendar.selectedDate;days=1;}else if(state.calendar.view==="month"){rangeStart=weekStart(`${state.calendar.month}-01`);days=42;}// The month grid draws no bands, so it reads none: a 42-day month window is two chunked requests
-// per endpoint, and asking for blocks the paint has nowhere to put them is work for nothing.
-// Switching back to a week or a day runs this again, so nothing is stale by the time it is drawn.
-const [appointments,blockedTimes,hours]=await Promise.all([loadAppointmentRange(rangeStart,days),state.calendar.view==="month"?[]:loadBlockedTimeRange(rangeStart,days),state.businessHours.length?state.businessHours:api("/api/business/working-hours")]);state.appointments=appointments;state.blockedTimes=blockedTimes;state.businessHours=hours;if(state.calendar.view==="month")state.calendar.monthAppointments=appointments;if(!state.calendar.monthAppointments.length&&state.calendar.view!=="month")await loadCalendarMonth(state.calendar.month,false);renderAppointments();
+  state.calendar.weekStart=start;
+  const range=calendarDisplayRange(),token=beginCalendarRead();
+  const [period,hours]=await Promise.all([readCalendarPeriod(range),state.businessHours.length?state.businessHours:api("/api/business/working-hours")]);
+  // The hours are the same whichever period is showing, so they are kept even by a superseded read.
+  state.businessHours=hours;
+  if(!calendarReadCurrent(token))return;
+  applyCalendarPeriod(period);
+  if(!state.calendar.monthAppointments.length&&state.calendar.view!=="month")await loadCalendarMonth(state.calendar.month,false);
+  renderAppointments();
 }
 async function openCalendarView(){await loadCalendarWeek();if(!state.calendar.opened&&!state.appointments.length&&state.calendar.selectedGroomerIds===null){const upcoming=await api(`/api/appointments?localDate=${businessDate()}&days=31`);if(upcoming.length){const date=appointmentLocalValue(upcoming[0]).slice(0,10);state.calendar.opened=true;return selectCalendarDate(date);}}state.calendar.opened=true;}
 async function loadCalendarMonth(month=state.calendar.month){const start=weekStart(`${month}-01`),appointments=await loadAppointmentRange(start,42);state.calendar.monthAppointments=appointments;return appointments;}
@@ -5792,9 +5863,12 @@ const actions = {
         // create the two say exactly the same thing, and the shorter one asks less of the schema.
         const reason=String(form.get("reason")??"").trim();
         const created=await api("/api/blocked-times",{method:"POST",body:JSON.stringify({employeeId:form.get("employeeId"),locationId:state.me.business.locationId,localStart:form.get("startAt"),localEnd:form.get("endAt"),expectedLocationVersion:state.me.business.locationVersion,...(reason===""?{}:{reason}),...(slot===""?{}:{colorSlot:Number(slot)})})});
-        // The band appears without a reload, and without depending on `refresh()`'s eight-day
-        // window from TODAY happening to cover the week on screen - block a Tuesday three weeks
-        // out and that window does not. `POST` answers with the read route's projection field for
+        // The band appears without a reload, and without depending on any refetch at all - which
+        // is what it used to depend on, back when `refresh()` reloaded a fixed eight-day window
+        // from TODAY that a Tuesday three weeks out fell straight through. `refresh()` reads the
+        // displayed period now, so the window is no longer the hazard; the direct write below is
+        // still the shorter path and is kept for that reason. `POST` answers with the read
+        // route's projection field for
         // field, so this writes the same row a refetch would have drawn, in the same place.
         return ()=>applyCalendarBlockedTime(created);
       });

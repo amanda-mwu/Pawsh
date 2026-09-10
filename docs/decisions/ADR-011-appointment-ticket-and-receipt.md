@@ -1,6 +1,6 @@
 # ADR-011: The appointment Ticket, the invoice and the receipt
 
-Status: Amended 2026-09-09, over the amendment of 2026-09-08.
+Status: Amended 2026-09-10, over the amendment of 2026-09-09.
 
 The 2026-09-03 amendment overruled the unification of the Ticket and the
 receipt; that stands. The 2026-09-08 amendment settled the naming and gating
@@ -8,8 +8,63 @@ question the 2026-09-03 text explicitly left open, and in settling it superseded
 the rule the product had been running: that a financial page is called Invoice
 until something is paid and Receipt afterwards; that stands too. The 2026-09-09
 amendment settles what a Receipt is about when an invoice was satisfied by more
-than one tender, which the 2026-09-08 text deliberately left open. All earlier
-records are retained below, marked rather than rewritten.
+than one tender, which the 2026-09-08 text deliberately left open; that stands
+too. The 2026-09-10 amendment settles what a Receipt may CONTAIN - it gains an
+itemised summary of what was purchased - which the 2026-09-08 text answered in
+the narrowest possible way and which human QA found too narrow to hand a client.
+All earlier records are retained below, marked rather than rewritten.
+
+## The rule, as of 2026-09-10
+
+> A Receipt is evidence of a completed settlement, and it may state what was
+> purchased. Itemised detail does not make it an operational document: the
+> Ticket remains the work record, the Invoice remains the obligation, and the
+> Receipt remains the settlement.
+
+### What changed, and why the 2026-09-08 rule was too narrow
+
+The 2026-09-08 record drew the line at the document's SUBJECT and then applied it
+to the document's CONTENTS: because the Receipt's subject is the payments, it
+was given the payments and nothing else - no items, no subtotal, no discount, no
+tax, no tip, no invoice total, on the reasoning that all of those belong to the
+Invoice. That reasoning is sound about subject and wrong about contents, and a
+client at a counter is what exposes it. A receipt that says only `Total settled
+$92.01` cannot answer "what did I pay for?", which is the first thing anybody
+asks of a receipt they are handed. Every receipt a person receives anywhere
+itemises; Pawsh's did not.
+
+**The Receipt therefore now carries a concise itemised summary of the purchase**,
+and may state, where applicable: the service or item name, the pet it was for,
+its price, discounts, tax, tip, the tender components, refunds attributed to the
+tender component they reverse, and **Total settled**.
+
+### What must NOT cross over
+
+Itemising is not an invitation to copy the Ticket. The Receipt must never carry
+the Ticket's operational content: internal notes, workflow or service notes,
+appointment edit history, operational status history, or any other internal
+work-record metadata. Those belong to the shop's own copy of the work and have
+no place on a document handed to a client.
+
+Two mechanical rules follow and are not negotiable. **The Receipt is never
+renamed to Ticket**, and **the Ticket renderer is never reused as the Receipt
+renderer** - `paymentReceiptMarkup` stays the Receipt's own renderer, and
+`ticketDocumentMarkup` stays the Ticket's. A document that itemises is still
+identified by what it evidences, not by what it lists.
+
+The exclusions that protect the client are unchanged and are restated here
+because an itemised document is a larger surface to leak through:
+`externalReference` is unconstrained operator free text and **never** appears on
+the Receipt; `providerRefundId` remains stripped; `provider` and
+`providerPaymentId` may appear when the row actually carries them.
+
+### Where it is held
+
+Behavioural coverage asserts that the Receipt contains the item list, that it
+still identifies itself as a Receipt, that no Ticket-only internal content
+reaches it, that split tender still renders as one settlement of several tender
+components, and that `externalReference` and `providerRefundId` still never
+render.
 
 ## The rule, as of 2026-09-09
 
@@ -213,7 +268,12 @@ that, and they are separate faults.
   processor fields, and those lines are then absent rather than empty: a label
   with nothing after it still implies a card processor was involved. Beyond the
   payments it states Total paid always, Refunded only when money has gone back,
-  and the balance only while something is still owed. It states no subtotal,
+  and the balance only while something is still owed. *(Amended 2026-09-10: the
+  Receipt now also carries a concise itemised summary of what was purchased -
+  item, pet, price, discounts, tax and tip where applicable. The clause below,
+  which gave it the payments and nothing of the bill at all, is superseded. What
+  stays excluded is the Ticket's operational content, not the purchase detail.)*
+  It states no subtotal,
   discount, tax, tip or invoice total, because those are the Invoice's.
 
   **Amended 2026-09-09 in two places.** "One block per recorded payment,"

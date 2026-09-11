@@ -1,5 +1,6 @@
 import { createMember, test, expect, login } from "./fixtures/tenant.js";
 import { expectNoDocumentOverflow } from "./helpers/responsive.js";
+import { contrastRatio, swatchMark } from "./helpers/contrast.js";
 import type { APIRequestContext, Page } from "@playwright/test";
 
 /**
@@ -318,3 +319,59 @@ test("the roster sits beside the record on a wide screen and stacks above it on 
     await card(page,"Grace Groomer").click();
     await expect(page.getByTestId("staff-detail")).toBeFocused();
   });
+
+/**
+ * THE TICK ON THE CHOSEN SWATCH, ON ALL TEN COLOURS.
+ *
+ * The mark used to be drawn in `--g` on a dot filled with that colour's own `--g-tint`, which
+ * makes its legibility a property of the palette rather than a decision: Violet gave 9.96:1 and
+ * Amber gave 3.74:1 for exactly the same CSS. On Steel blue, Teal and Amber the tick was a pale
+ * mark on a pale fill, so the swatch a person had just clicked looked no different from the nine
+ * they had not - the defect was reported as the checkmark being inverted, and it is the whole
+ * reason this walks the palette instead of sampling one colour.
+ *
+ * Walked rather than parameterised because the picker is ONE rule shared by this screen and Block
+ * Time, so the cheapest honest proof that the rule holds is to select every colour it can produce
+ * and measure what actually rendered. The distinctness assertion at the end is the other half:
+ * a tick hard-coded to --ink would pass every ratio here and silently throw away the answer to
+ * "which colour is this", so the test has to fail that too.
+ */
+const palette=["Violet","Steel blue","Teal","Amber","Olive","Plum","Bark","Indigo","Clay","Petrol"];
+
+test("the tick on a chosen swatch is legible on every colour in the palette",async({page,tenant})=>{
+  await login(page,tenant.ownerEmail);
+  await openStaff(page);
+
+  // Nothing chosen yet: Automatic holds the selection, so no named swatch draws a tick.
+  const unchosen=await swatchMark(swatch(page,"Amber").locator(".staff-swatch-dot"));
+  expect(unchosen.drawn,"an unselected swatch draws no tick").toBe(false);
+
+  const marks=new Map<string,string>();
+  for(const name of palette){
+    const cell=swatch(page,name);
+    await cell.click();
+    await expect(page.getByTestId("staff-colour-current")).toHaveText(`Selected: ${name}`);
+
+    const {mark,fill,drawn}=await swatchMark(cell.locator(".staff-swatch-dot"));
+    expect(drawn,`${name} draws a tick when it is the selection`).toBe(true);
+
+    const ratio=contrastRatio(mark,fill);
+    expect(ratio,`${name}: tick ${mark} on fill ${fill}`).toBeGreaterThanOrEqual(4.5);
+    marks.set(name,mark);
+
+    // SELECTION IS NOT CARRIED BY THE TICK ALONE. The cell's own border goes from transparent to
+    // --ink, so the state survives for anyone who cannot resolve a 9px glyph - and it is measured
+    // here rather than assumed, because it is the affordance the tick falls back to.
+    const ring=await cell.evaluate((element)=>getComputedStyle(element).borderTopColor);
+    expect(ring,`${name} selected ring`).toBe("rgb(32, 37, 34)");
+
+    // ...and only ONE cell is ringed, so the ring names the selection rather than decorating it.
+    await expect(page.locator(".staff-swatches .staff-swatch").filter({has:page.locator("input:checked")}))
+      .toHaveCount(1);
+  }
+
+  // The mark answers to the swatch. Ten selections, ten different mark colours - a constant tick
+  // would collapse this set to one, and that is what the fix deliberately did NOT do.
+  expect(new Set(marks.values()).size,`mark colours: ${[...marks.values()].join(" ")}`)
+    .toBe(palette.length);
+});

@@ -1754,9 +1754,18 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
 .staff-swatch input{position:absolute;width:1px;height:1px;min-height:0;padding:0;border:0;overflow:hidden;clip-path:inset(50%)}
 .staff-swatch-dot{display:grid;place-items:center;width:26px;height:26px;border:2px solid var(--g,var(--muted));border-radius:50%;background:var(--g-tint,var(--surface-2))}
 /* Selection is a mark and a ring, not a hue: the tick is the signal that survives a
-   monochrome screen, and the label under the grid names the colour in words. */
+   monochrome screen, and the label under the grid names the colour in words.
+   THE TICK IS DRAWN DARKENED, NOT IN --g. It sits on --g-tint, and --g against its own tint is
+   only a contrast ratio the palette happens to give: seven of the ten clear 4.5:1 but Steel blue,
+   Teal and Amber land at 4.33, 4.31 and 3.74, so on those three the selected swatch read as
+   unselected. Mixing --g toward --ink keeps the mark the swatch's OWN colour - ten different
+   hexes, so the tick still answers "which colour is this" - while pinning the darker end of the
+   ratio to a value the tint cannot follow: the palette's floor becomes 5.97:1 (Amber). Every
+   --g-tint is near-white, so there is no swatch here that wants a light tick; deriving a
+   light-on-dark branch would be machinery that never runs. An engine without color-mix() drops
+   this to currentColor, which is --ink on both surfaces that render the picker. */
 .staff-swatch:has(input:checked){border-color:var(--ink)}
-.staff-swatch:has(input:checked) .staff-swatch-dot::after{content:"";width:9px;height:9px;border:2px solid var(--g,var(--ink));border-top:0;border-right:0;transform:translateY(-1px) rotate(-45deg)}
+.staff-swatch:has(input:checked) .staff-swatch-dot::after{content:"";width:9px;height:9px;border:2px solid color-mix(in srgb,var(--g,var(--ink)) 65%,var(--ink));border-top:0;border-right:0;transform:translateY(-1px) rotate(-45deg)}
 .staff-swatch:has(input:focus-visible){outline:3px solid var(--coral);outline-offset:2px}
 .staff-swatch.is-auto .staff-swatch-dot{background:repeating-linear-gradient(135deg,var(--g-tint) 0 4px,var(--paper) 4px 8px)}
 .staff-swatch-auto{position:absolute;bottom:-2px;color:var(--muted);font-size:8.5px;font-weight:700;letter-spacing:.02em}

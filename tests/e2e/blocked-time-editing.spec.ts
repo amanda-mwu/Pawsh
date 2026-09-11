@@ -3,6 +3,7 @@ import { createDatabase } from "../../src/db/client.js";
 import { permissionPresets } from "@pawsh/domain";
 import { prefLocalDate } from "./helpers/calendar.js";
 import { expectCriticalTarget } from "./helpers/responsive.js";
+import { contrastRatio, swatchMark } from "./helpers/contrast.js";
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 
 /**
@@ -713,6 +714,15 @@ test("chooses the block's colour in the create dialog, and persists a slot rathe
     await page.getByTestId("field-reason").fill("Amber block");
     await createSwatch(page, "Amber").click();
     await expect(page.getByTestId("blocked-time-create-colour-current")).toHaveText("Selected: Amber");
+    // THE SHARED RULE, ON THE SLOT THAT USED TO FAIL. Amber's tick was drawn in --g (#a96e4c) on
+    // Amber's own tint (#f8f1ec): 3.74:1, a pale mark on a pale fill, which is what "the checkmark
+    // for colour is inverted" describes. `staff.spec.ts` walks all ten; this measures the one that
+    // was worst on the surface the defect was actually reported on, because a rule shared by two
+    // screens is only shared for as long as both of them are checked.
+    const chosen = await swatchMark(createSwatch(page, "Amber").locator(".staff-swatch-dot"));
+    expect(chosen.drawn, "Amber draws a tick once it is the selection").toBe(true);
+    expect(contrastRatio(chosen.mark, chosen.fill),
+      `Amber: tick ${chosen.mark} on fill ${chosen.fill}`).toBeGreaterThanOrEqual(4.5);
     await page.getByTestId("modal-submit").click();
     await expect(page.getByTestId("modal")).toBeHidden();
 
@@ -746,6 +756,11 @@ test("chooses the block's colour in the create dialog, and persists a slot rathe
     await amber.click();
     await expect(page.getByTestId("blocked-time-dialog")).toBeVisible();
     await expect(page.getByTestId("blocked-time-colour-current")).toHaveText("Selected: Amber");
+    // ...and the drawer draws the same legible tick the create dialog did.
+    const reread = await swatchMark(swatch(page, "Amber").locator(".staff-swatch-dot"));
+    expect(reread.drawn, "the reopened drawer ticks the stored colour").toBe(true);
+    expect(contrastRatio(reread.mark, reread.fill),
+      `Amber in the drawer: tick ${reread.mark} on fill ${reread.fill}`).toBeGreaterThanOrEqual(4.5);
   });
 
 /**

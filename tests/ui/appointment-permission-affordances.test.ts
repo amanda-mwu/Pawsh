@@ -269,11 +269,24 @@ describe("a control the VISIT does not allow stays absent", () => {
     expect(control(markup, "appointment-no-show")).toBeNull();
   });
 
-  it("offers no Adjust services before check-in, and no groomer pencil after it", () => {
-    const scheduled = client("scheduled");
-    scheduled.grant("calendar.view", "appointments.view", "appointments.edit", "appointments.cancel");
-    expect(control(draw(scheduled), "appointment-adjust-services")).toBeNull();
+  it("offers Adjust services in every status the route accepts, and no groomer pencil after check-in", () => {
+    // `PUT /api/appointments/:id/services` accepts `scheduled`, `checked_in` and `in_service`.
+    // This used to offer the last two, so the status where adding a nail trim is most ordinary -
+    // the client rings up before the visit - was the one with no way to do it.
+    for (const status of ["scheduled", "checked_in", "in_service"]) {
+      const app = client(status);
+      app.grant("calendar.view", "appointments.view", "appointments.edit", "appointments.cancel");
+      expect(control(draw(app), "appointment-adjust-services"), status).not.toBeNull();
+    }
 
+    // And nowhere else: the route refuses the other three outright.
+    for (const status of ["completed", "cancelled", "no_show"]) {
+      const app = client(status);
+      app.grant("calendar.view", "appointments.view", "appointments.edit", "appointments.cancel");
+      expect(control(draw(app), "appointment-adjust-services"), status).toBeNull();
+    }
+
+    // The groomer and the time stay a scheduled-only correction, which is unchanged.
     const inService = client("in_service");
     inService.grant("calendar.view", "appointments.view", "appointments.edit", "appointments.cancel");
     expect(control(draw(inService), "appointment-groomer-edit")).toBeNull();

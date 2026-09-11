@@ -126,7 +126,7 @@ async function openDetail(page: Page, appointmentId: string): Promise<void> {
  */
 async function openTicketFromHeader(page: Page, appointmentId: string): Promise<void> {
   await openDetail(page, appointmentId);
-  await page.getByTestId("appointment-ticket-print").click();
+  await page.getByTestId("appointment-ticket").click();
   await expect(ticket(page)).toBeVisible();
 }
 
@@ -490,7 +490,7 @@ test("a future scheduled appointment gets a Ticket, and a note nobody has writte
     // NO COMPLETION GATE, ON EITHER ENTRY POINT. Both are offered on a visit that has not
     // happened yet, and both open the same level — the inconsistency this replaces was the footer
     // button alone being gated on `completed` while the icon beside it was not.
-    await expect(page.getByTestId("appointment-ticket-print")).toBeVisible();
+    await expect(page.getByTestId("appointment-ticket")).toBeVisible();
     await expect(page.getByTestId("appointment-ticket")).toBeVisible();
     await page.getByTestId("appointment-ticket").click();
     await expect(ticket(page)).toBeVisible();
@@ -498,7 +498,7 @@ test("a future scheduled appointment gets a Ticket, and a note nobody has writte
     // one. Closing and reopening from the other entry point lands on the same sheet.
     await page.keyboard.press("Escape");
     await expect(ticket(page)).toBeHidden();
-    await page.getByTestId("appointment-ticket-print").click();
+    await page.getByTestId("appointment-ticket").click();
     await expect(ticket(page)).toBeVisible();
 
     await expect(ticket(page).getByTestId("ticket-service-row")).toHaveCount(1);

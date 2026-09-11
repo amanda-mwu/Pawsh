@@ -250,6 +250,22 @@ button:disabled{cursor:not-allowed;opacity:.55}
 .text-button{padding:6px 2px;border-radius:6px}
 .text-button:hover{color:var(--ink);text-decoration:underline}
 .header-icon-button,.calendar-tool-button{width:var(--icon-btn);height:var(--icon-btn);border-radius:var(--radius-sm)}
+/* AN ICON BUTTON WITH NO BASE RULE IS A USER-AGENT BUTTON. Every `.icon-action` declaration in
+   this file was scoped to `.reminder-table`, so the ONE editing affordance on an appointment -
+   the groomer/time pencil - drew as raw UA chrome: ButtonFace grey, a UA border, UA padding, no
+   token height and, because the coarse-pointer override below was scoped the same way, no 44px
+   touch target on a phone. Measured at 32x27 at every viewport and at both pointer types.
+   Stated once, here, in the same shape `.header-icon-button` and `.calendar-tool-button` take.
+   The reminder table keeps everything it had: `.reminder-table .icon-action` is (0,2,0) and
+   outranks this on size, border, radius, background and font-size, so only the centring and the
+   ink token reach it, and both match what the UA was already drawing. */
+.icon-action{
+  display:grid;place-items:center;
+  width:var(--icon-btn-sm);height:var(--icon-btn-sm);min-height:var(--icon-btn-sm);
+  padding:0;border:1px solid var(--line);border-radius:var(--radius-sm);
+  background:var(--paper);color:var(--ink);font-size:15px;line-height:1;
+}
+.icon-action:hover,.icon-action:focus-visible{border-color:var(--brand);background:var(--mint)}
 .header-actions{gap:var(--space-2)}
 input,select,textarea{border-radius:var(--radius-sm);padding:9px 11px}
 .text-button,input,select{min-height:var(--control-h)}
@@ -341,9 +357,12 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 .pager-size{margin:0}
 .pager-size select{height:32px;padding:0 8px;font-size:13px}
 
-/* Coarse pointers grow the small in-table icon affordances to a full touch target. */
+/* Coarse pointers grow the small in-table icon affordances to a full touch target.
+   `.icon-action` unscoped, so the appointment surface's pencil takes the floor too - it was the
+   one icon button in the product that never did. The `.reminder-table` selector stays beside it
+   rather than being folded away: it is (0,2,0) and is what outranks that table's own 32px. */
 @media(pointer:coarse){
-  .header-icon-button,.calendar-tool-button,.reminder-table .icon-action{width:44px;height:44px;min-height:44px}
+  .header-icon-button,.calendar-tool-button,.icon-action,.reminder-table .icon-action{width:44px;height:44px;min-height:44px}
 }
 @media(max-width:580px){main{padding:18px 14px}header{margin-bottom:14px}h2{font-size:23px}}
 
@@ -2390,6 +2409,278 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
   .surface-foot-actions:last-child{flex-direction:column-reverse}
   .surface-foot-actions:last-child>.primary{width:100%;min-height:48px}
   .surface-foot-actions:first-child{justify-content:space-between}
+}
+
+/* == The appointment detail's own density ==
+
+   EVERYTHING IN THIS BLOCK IS SCOPED TO `#appointment-detail` ON PURPOSE, and the id is doing
+   two jobs. It confines the change to the one surface QA reported on - Check Out, the Ticket and
+   the Invoice are separate dialogs and share none of it - and, being (1,0,0), it outranks the
+   class-based rules above without depending on where it sits in the file.
+
+   The complaint was that the surface "feels like a viewer instead of an editable work surface":
+   oversized buttons, a stretched dialog, and no visible way to change anything. Measured before
+   any of this, at 1440 fine pointer, a scheduled visit was a 1102px main column behind a 99px
+   head and a 61px footer of seven 36px buttons, and at 390px the footer alone was 253px - a
+   third of the screen given to a vertical stack of full-width pills.
+
+   WHAT THE SURFACE ACTUALLY HOLDS is one groomer, one pet, three service lines and two notes.
+   The density here is set for that, not for prose. */
+
+/* `.compact` DOES NOT COMPACT. It sets `padding` and `font-size` and never touches `min-height`,
+   so `.primary,.secondary`'s `min-height:var(--control-h)` carries straight through and a
+   `.compact` button is EXACTLY as tall as a full-size one - 36px fine, 44px coarse, measured.
+   That is a defect in the global, and it is stated here rather than fixed there: `.compact`
+   appears on 112 controls across the calendar, Check Out, the Invoice, the Ticket, Settings, the
+   drawers and the client profile, and resizing all of them is a decision about those screens.
+   Two of them - `.profile-actions .compact` and `.business-form-foot .compact` - already patch a
+   height back on locally, which is the same admission from the other side.
+
+   32px is the height `.pager-page` already uses for a deliberately compacted control, so this
+   surface reads at the same scale as the pager rather than inventing a third one. */
+#appointment-detail .compact{min-height:32px;padding:5px 11px}
+/* AND THE COARSE POINTER IS NOT COMPACTED. 44px is the floor on a phone whatever the design
+   wants; only the fine-pointer case gives anything up. */
+@media(pointer:coarse){
+  #appointment-detail .compact{min-height:44px;padding:8px 13px}
+}
+
+/* The head carried 16px of padding over three short lines. 12px is enough separation for a
+   reference, a date and a time range, and the clamp keeps the horizontal rhythm the shell set. */
+#appointment-detail .surface-head{padding:var(--space-3) clamp(16px,3vw,40px)}
+
+/* 16px of column padding, a 16px column gap and a 16px stack gap between six bordered cards is
+   roughly 288px of chrome before a single fact is drawn. The border is already the separator
+   between two cards, so the stack gap does not have to be one as well. */
+#appointment-detail .surface-main{padding:var(--space-3) clamp(16px,3vw,40px);gap:var(--space-3)}
+#appointment-detail .appointment-work{gap:var(--space-2)}
+/* Vertical padding down, horizontal padding unchanged: the cards were too tall, not too narrow,
+   and pulling the side padding in would cost readability at the same time. */
+#appointment-detail .work-block{padding:var(--space-3) var(--space-4)}
+
+/* THE HEADING IS A LABEL, NOT A TITLE. `h3` is 15px/1.35 semibold in ink - the same weight as the
+   groomer's name underneath it - so every card asked to be read twice and the value it names had
+   no more presence than the word naming it. Small, quiet and set in the muted ink makes the VALUE
+   the thing the eye lands on, which is what a work surface wants.
+   NO `text-transform` AND NO `letter-spacing`, deliberately. `tests/e2e/appointment-note-edit.spec.ts`
+   asserts these headings by their text, and the Ticket's money statement carries the same
+   prohibition for the same reason: a rendered case change is a text change. */
+#appointment-detail .work-block-head h3,
+#appointment-detail .appointment-photos>h4,
+#appointment-detail .report-card-head h4{
+  font:600 12px/1.35 var(--font-sans);color:var(--muted);
+}
+
+/* THE EDITING AFFORDANCES, MADE VISIBLE. The pencil and the two in-card buttons are the only
+   things on this surface that change anything, and they were drawn in the same grey as the
+   dismissive controls in the footer. The brand edge and ink say "this is a control that acts on
+   the card it sits in"; the border and the label are the non-colour channels, so nothing here is
+   carried by hue alone. A refused control keeps `button:disabled`'s opacity and stops inviting. */
+#appointment-detail .work-block-head>.secondary,
+#appointment-detail .work-block-head>.icon-action{border-color:var(--brand);color:var(--brand)}
+#appointment-detail .work-block-head>.secondary:hover,
+#appointment-detail .work-block-head>.secondary:focus-visible,
+#appointment-detail .work-block-head>.icon-action:hover,
+#appointment-detail .work-block-head>.icon-action:focus-visible{
+  border-color:var(--brand-strong);background:var(--brand-tint);color:var(--brand-strong);
+}
+#appointment-detail .work-block-head>.secondary:disabled:hover,
+#appointment-detail .work-block-head>.icon-action:disabled:hover{
+  border-color:var(--brand);background:var(--paper);color:var(--brand);
+}
+
+/* THREE TINTED, BORDERED, 12px-PADDED BOXES INSIDE A BORDERED CARD IS A CARD INSIDE A CARD, and
+   it was the tallest thing on the surface - 74px per line to say a name, a duration and a price.
+   A rule between the rows scans exactly as well as a tint does and costs nothing, and it is the
+   shape the Invoice's own service lines already take, so the visit and the bill now draw the
+   same list. `gap:0` on the block, because the separators do the spacing; the head keeps a
+   margin of its own so the label is not sitting on the first row. */
+#appointment-detail .appointment-services-block{gap:0}
+#appointment-detail .appointment-services-block>.work-block-head{margin-bottom:var(--space-2)}
+#appointment-detail .appointment-service-row{
+  padding:var(--space-2) 0;
+  border:0;border-top:1px solid var(--line);border-radius:0;background:transparent;
+}
+#appointment-detail .appointment-service-row:first-of-type{border-top:0}
+
+/* A BORDERED CARD WITH NO CONTROL IN IT IS NOT A CARD. The discount row's entire payload is one
+   muted sentence saying where discounts are applied; it was costing 79px and a full card edge to
+   say it. `display:contents` on its head puts the label and the sentence on ONE line, and the
+   card treatment goes entirely - it is a footnote under the services, not a section of its own. */
+#appointment-detail .appointment-discount-row{
+  grid-template-columns:auto minmax(0,1fr);align-items:baseline;
+  gap:var(--space-1) var(--space-2);
+  padding:0 var(--space-1);border:0;background:transparent;
+}
+#appointment-detail .appointment-discount-row>.work-block-head{display:contents}
+
+/* 12px top and bottom on each of two parts is 24px inside a card that already pads itself. The
+   rule between the parts is what separates them; the padding only has to keep it off the text. */
+#appointment-detail .appointment-note-part{padding:var(--space-2) 0}
+/* TWO 96px BOXES ON ONE SCREEN. A checked-in visit draws both notes as textareas at once, and
+   96px each is 192px of empty field for what is usually a sentence. 72px is three lines.
+   `height` AS WELL AS `min-height`, and that is not belt and braces. The markup sets `rows="4"`,
+   which gives the box an INTRINSIC height of 88px; lowering `min-height` alone left the rows
+   attribute in charge and bought 8px. `height` is what the rows attribute maps to, so this is
+   the declaration that reaches it - and it stays resizable, because the drag handle writes an
+   inline `height` that outranks any stylesheet. */
+#appointment-detail .surface-note-field textarea{min-height:72px;height:72px}
+
+/* THE ONE WAY OUT OF A FULL-SCREEN DIALOG, AT A SIZE A THUMB CAN HIT. `.surface-close` is a
+   fixed 40px square and does not read `--icon-btn`, so it never took the coarse-pointer floor -
+   measured at 40x40 with `(pointer:coarse)` on. The Invoice already patches this for itself
+   further down and the argument is the same one here: on a phone this is the only dismissal the
+   surface has, because Escape is not reachable. Scoped rather than widened for the same reason
+   the Invoice scoped it - the shared rule also draws three other surfaces' heads. */
+@media(pointer:coarse){
+  #appointment-detail .surface-close{width:44px;height:44px;min-height:44px}
+}
+@media(max-width:640px){
+  #appointment-detail .surface-close{width:44px;height:44px;min-height:44px}
+}
+
+/* == THE FOOTER IS TWO ZONES AND FOUR WEIGHTS ==
+
+   WHAT QA REPORTED, VERBATIM: "six equally weighted pill buttons in one crowded row", and Ready
+   for Pickup called UNAVAILABLE on a checked-in visit where it was drawn, enabled and working.
+   It was the fifth grey pill from the left. That is not a defect anyone can fix by rewording a
+   label: every control in the row carried `.secondary`, and `.secondary` is one pill - white
+   fill, a `--line` edge, ink text, 500 - so six of them ARE six of the same thing, and the eye
+   has nothing to sort them by. The operator was being asked to read a row to find the button they
+   opened the surface to press.
+
+   `appointmentSurfaceMarkup` now names the two ends - `.surface-foot-utility` leading,
+   `.surface-foot-lead` trailing - and this block is what makes the names visible. The zones are
+   the FIRST cut (the work vs. the paperwork); the four weights are the second (rank inside a
+   zone).
+
+   THE LADDER, LOUDEST FIRST, and each step drops a DIFFERENT channel rather than just dimming:
+
+     1  `.primary`             brand fill, `--on-brand` ink, 600, and the widest side padding in
+                               the footer. One per status. Filled is a channel nothing else uses,
+                               so it is found without reading.
+     2  `.secondary.is-strong` NO fill of the brand, but the brand's EDGE and the brand's INK on
+                               `--brand-tint`, at 600. Unmistakably of the same family as the
+                               primary and unmistakably not it. Colour is not carrying this alone:
+                               it is the only control in the footer that is both tinted and
+                               weighted.
+     3  `.secondary` in lead   the untouched global - paper fill, `--line` edge, ink, 500. A real
+                               control, offered, not urged. Save and a demoted Invoice live here.
+     4  `.secondary` in utility  edge AND fill removed, ink to `--muted`. Not a pill any more. It
+                               is a label you can press, which is what Book Again, Print Ticket,
+                               No-show and Close actually are.
+
+   Rank 4 is the one that does the work QA asked for, and it is deliberately a THREE-channel drop
+   (border, background, ink) rather than a tint change: four quiet labels at one end and one
+   filled control at the other is a picture, and a picture does not have to be read. The hover and
+   focus states give the border and the ink straight back, so nothing is undiscoverable and
+   nothing reads as disabled - a refused control still has `opacity:.55` and `cursor:not-allowed`
+   to say so, which is a different signal entirely.
+
+   NO `text-transform` AND NO `letter-spacing` ANYWHERE IN HERE, for the reason stated at the top
+   of this block: the e2e specs assert these labels by text. */
+
+/* AN EMPTY ACTION GROUP IS NOT A ROW. A cancelled or no-show visit draws
+   `<div class="surface-foot-actions surface-foot-lead"></div>` with nothing in it - there is no
+   money and no lifecycle left to offer - and the footer's gap was still being spent on it.
+   The class moved from anonymous to named; `:empty` still matches, and still fires at every
+   viewport and both pointer types. Same reasoning as `.surface-shell>p.error:empty` above. */
+#appointment-detail .surface-foot-actions:empty{display:none}
+
+/* THE DISTANCE BETWEEN THE ZONES IS PART OF THE HIERARCHY, so it is stated rather than left to
+   the shell's single 12px. 24px between the zones and 12px inside the lead zone means the lead
+   never reads as the tail of the utility row even at the width where `space-between` stops
+   supplying the separation for free. The utility zone closes up to 8px instead: those four are
+   one cluster of chrome, not four decisions. */
+#appointment-detail .surface-foot{gap:var(--space-3) var(--space-5)}
+#appointment-detail .surface-foot-utility{gap:var(--space-2)}
+/* `margin-left:auto` is not redundant beside `space-between`. The footer wraps, and when the two
+   zones cannot share a line the lead would otherwise drop to the LEFT edge under the utility
+   cluster - a single-item line has no free space for `space-between` to distribute. The auto
+   margin keeps the lead on the trailing edge at every width above the stacking breakpoint.
+   It is undone at <=640, where an auto cross-axis margin would beat `align-items:stretch` and
+   shrink the stacked zone to its content. */
+#appointment-detail .surface-foot-lead{gap:var(--space-3);margin-left:auto}
+
+/* RANK 1. The fill already says which control it is; the extra side padding gives the one control
+   the visit is waiting for more horizontal presence than the three beside it without breaking the
+   row's common height. `--space-4` wherever a primary lands (a cancelled visit's Close is one,
+   and it sits in the utility zone), `--space-5` when it leads. */
+#appointment-detail .surface-foot .primary{padding-left:var(--space-4);padding-right:var(--space-4);font-weight:600}
+#appointment-detail .surface-foot-lead>.primary{padding-left:var(--space-5);padding-right:var(--space-5)}
+
+/* RANK 2. Ready for Pickup on a checked-in visit is the visit's own next step, and it is second
+   only because MONEY outranks it in the same footer - two filled controls is the defect this
+   footer exists to prevent. Scoped to this footer rather than declared globally ON PURPOSE:
+   `.is-strong` is a rank in THIS four-weight ladder, and it means "one below the primary beside
+   it". Dropped into a surface with no primary, or two, it would be meaningless or wrong, and a
+   global class invites exactly that. If another surface earns the rank it can widen the selector
+   deliberately.
+   Hover FILLS it, which is the one moment it is allowed to look like the primary: the pointer is
+   on it, so there is no ambiguity left to protect. A refused one keeps its resting treatment. */
+#appointment-detail .surface-foot .is-strong{
+  border-color:var(--brand);background:var(--brand-tint);color:var(--brand-strong);font-weight:600;
+}
+#appointment-detail .surface-foot .is-strong:hover,
+#appointment-detail .surface-foot .is-strong:focus-visible{
+  border-color:var(--brand);background:var(--brand);color:var(--on-brand);
+}
+#appointment-detail .surface-foot .is-strong:disabled:hover{
+  border-color:var(--brand);background:var(--brand-tint);color:var(--brand-strong);
+}
+
+/* RANK 3 is the global `.secondary`, untouched, and that is the point - the lead zone's quiet
+   members are the baseline everything else is measured against. Nothing is written for it here. */
+
+/* RANK 4. Documents, record corrections and ways out. `--muted` on `--paper` is 5.2:1, so this is
+   quiet by two channels it can afford to lose and NOT by contrast, which it cannot. */
+#appointment-detail .surface-foot-utility .secondary{
+  border-color:transparent;background:transparent;color:var(--muted);
+}
+#appointment-detail .surface-foot-utility .secondary:hover,
+#appointment-detail .surface-foot-utility .secondary:focus-visible{
+  border-color:var(--line);background:var(--mint);color:var(--ink);
+}
+#appointment-detail .surface-foot-utility .secondary:disabled:hover{
+  border-color:transparent;background:transparent;color:var(--muted);
+}
+
+/* Cancel carries `destructive` and had no rule reaching it here - only the pet profile and the
+   calendar popover ever styled that class - so the one irreversible control in the footer looked
+   exactly like No-show and Book Again beside it. It keeps the danger ink and the danger tint on
+   hover; what it gives up against the previous pass is the resting `--danger-line` EDGE, because
+   in a zone where nothing else is a box any more, a pink box would make Cancel the loudest thing
+   in the footer on a scheduled visit - the exact mistake, pointed the other way. The word is
+   still the first signal, the ink is the second, and the edge comes back under the pointer.
+   Stated after the utility rules at equal specificity so the ink survives them. */
+#appointment-detail .surface-foot .destructive{color:var(--danger)}
+#appointment-detail .surface-foot .destructive:hover,
+#appointment-detail .surface-foot .destructive:focus-visible{
+  border-color:var(--danger-line);background:var(--danger-tint);color:var(--danger);
+}
+
+@media(max-width:640px){
+  /* THE FOOTER WAS A THIRD OF THE PHONE. The shared rule stacks the trailing group into a column,
+     and this surface puts six to eight controls in it - 253px on a scheduled visit, 341px checked
+     in, measured at 390px wide. What an operator needs full-width is the ONE action they came to
+     press; the rest are a wrapping row of 44px targets underneath it, which is how a counter
+     terminal lays them out and which halves the footer without taking a touch target back.
+     `order:-1` rather than reordering the markup: which control is primary is decided in script,
+     and this rule must follow whichever one it picked. It is the ONLY visual reorder in this
+     footer - above the breakpoint the ranks do the work and DOM order is left exactly as written,
+     so tab order and reading order stay the same thing.
+     Written against `.surface-foot-lead` now that the zone has a name; it was `:last-child`, which
+     selected the same element and said nothing about why. */
+  #appointment-detail .surface-foot-lead{flex-direction:row;flex-wrap:wrap;margin-left:0}
+  #appointment-detail .surface-foot-lead>.primary{order:-1;flex:1 0 100%;min-height:48px}
+  #appointment-detail .surface-foot-lead>:not(.primary){flex:1 1 auto;justify-content:center}
+  /* The shared rule spreads the leading group with `space-between`, which is right for two
+     controls and wrong for four: at 390px the utility cluster wraps, and a wrapped line with one
+     item left on it has no free space to distribute, so the row ends up ragged at both edges.
+     Left-aligned, it stays one readable cluster however many controls the status offers. */
+  #appointment-detail .surface-foot-utility{justify-content:flex-start}
+  /* One line each for the label and the sentence once the row is too narrow to hold both. */
+  #appointment-detail .appointment-discount-row{grid-template-columns:minmax(0,1fr)}
 }
 
 /* == Check Out ==

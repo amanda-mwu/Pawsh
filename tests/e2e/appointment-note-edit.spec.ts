@@ -92,7 +92,7 @@ test("a settled visit's note is written, read back, carried onto the Ticket and 
 
   // The Ticket renders the live projection, so the corrected note is on the next sheet printed
   // without the Ticket having a writer of its own. It stays a document: no field on it.
-  await page.getByTestId("appointment-ticket-print").click();
+  await page.getByTestId("appointment-ticket").click();
   const ticket = page.getByTestId("ticket-surface");
   await expect(ticket).toBeVisible();
   await expect(ticket.getByTestId("ticket-note-appointment").locator("td"))

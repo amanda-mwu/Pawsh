@@ -184,10 +184,15 @@ describe("the checkout affordance follows the server's own eligibility rule", ()
     expect(save).not.toContain("primary");
   });
 
-  it("leaves the Save primary where there is nothing to collect", () => {
+  it("gives the slot to the workflow action where there is nothing to collect", () => {
+    // An in-service visit cannot be billed, so the thing it is waiting for is Complete - and
+    // Save yields to it exactly as it yields to Take Payment on a checked-in one. One primary,
+    // whichever it is.
     const markup = client("in_service").markup();
-    expect(control(markup, "appointment-save")).toContain("primary");
     expect(control(markup, "appointment-take-payment")).toBeNull();
+    expect(control(markup, "appointment-complete")).toContain("primary");
+    expect(control(markup, "appointment-save")).not.toContain("primary");
+    expect([...markup.matchAll(/<button[^>]*class="primary /gu)]).toHaveLength(1);
   });
 });
 
@@ -235,5 +240,168 @@ describe("the checked-in footer offers the three things a counter does", () => {
     expect(control(settled, "appointment-take-payment")).toBeNull();
     expect(control(settled, "appointment-ready")).not.toBeNull();
     expect(control(settled, "appointment-invoice")).not.toBeNull();
+  });
+});
+
+/**
+ * THE FOOTER IS A WORK SURFACE IN EVERY STATUS, NOT ONLY THE ONES THAT HANDLE MONEY.
+ *
+ * A scheduled visit used to open onto five identical grey pills and no primary at all - Cancel,
+ * No-show, Book Again, Print, Ticket - so the screen an operator opened to DO something with the
+ * visit offered them nothing to do. Checking a pet in existed only on the calendar card, which
+ * meant closing the appointment, finding the card and pressing the small control on it.
+ *
+ * Access, lifecycle and money are three separate questions and this block asserts them apart:
+ * every status can be opened and edited where the route allows, exactly one lifecycle action is
+ * offered per status, and Take Payment follows `canEnterCheckout` and nothing else.
+ */
+describe("every status offers the one thing it is waiting for", () => {
+  const workflow = (markup: string): string[] =>
+    ["appointment-check-in", "appointment-ready", "appointment-complete"]
+      .filter((testid) => control(markup, testid) !== null);
+
+  it("offers exactly one lifecycle action per status, and names it for that status", () => {
+    const expected: Record<string, string[]> = {
+      scheduled: ["appointment-check-in"],
+      checked_in: ["appointment-ready"],
+      in_service: ["appointment-complete"],
+      completed: [], cancelled: [], no_show: []
+    };
+    for (const status of appointmentStatuses) {
+      expect(workflow(client(status).markup()), status).toEqual(expected[status]);
+    }
+  });
+
+  it("makes Check In the primary on a scheduled visit", () => {
+    // The visit is waiting for exactly one thing and there is no money to take, so the thing it
+    // is waiting for takes the slot. Before this a scheduled footer had no primary at all.
+    const markup = client("scheduled").markup();
+    expect(control(markup, "appointment-check-in")).toContain("primary");
+    expect(control(markup, "appointment-take-payment")).toBeNull();
+    expect(control(markup, "appointment-ready")).toBeNull();
+    expect([...markup.matchAll(/<button[^>]*class="primary /gu)]).toHaveLength(1);
+  });
+
+  it("keeps money ahead of the lifecycle on a checked-in visit", () => {
+    const markup = client("checked_in").markup();
+    expect(control(markup, "appointment-take-payment")).toContain("primary");
+    expect(control(markup, "appointment-ready")).not.toContain("primary");
+    expect([...markup.matchAll(/<button[^>]*class="primary /gu)]).toHaveLength(1);
+  });
+
+  it("never offers checkout where the route refuses it, whatever else the footer gained", () => {
+    for (const status of appointmentStatuses) {
+      expect(Boolean(control(client(status).markup(), "appointment-take-payment")), status)
+        .toBe(canEnterCheckout(status));
+    }
+  });
+
+  it("lets the services be edited in every status the route accepts, and not after a bill exists", () => {
+    // ACCESS IS NOT GATED BY CHECK-IN. `PUT /api/appointments/:id/services` accepts all three of
+    // these, and the surface now offers all three.
+    for (const status of ["scheduled", "checked_in", "in_service"]) {
+      expect(control(client(status).markup(), "appointment-adjust-services"), status).not.toBeNull();
+    }
+    // The route refuses once an invoice exists, so the control goes rather than producing a
+    // sentence nobody can act on.
+    const billed = client("checked_in", { invoiceId: "inv-1", invoiceStatus: "open", invoiceBalanceMinor: 8500 });
+    expect(control(billed.markup(), "appointment-adjust-services")).toBeNull();
+  });
+
+  it("draws one ticket action and no second route to the same document", () => {
+    // `Print` made an agenda extract and `Ticket` made the work sheet, in identical grey pills,
+    // and a header icon was bound to the very same closure as `Ticket`. One document, one door.
+    for (const status of appointmentStatuses) {
+      const markup = client(status).markup();
+      expect(control(markup, "appointment-ticket"), status).not.toBeNull();
+      expect(control(markup, "appointment-print"), status).toBeNull();
+      expect(control(markup, "appointment-ticket-print"), status).toBeNull();
+      expect(markup, status).toContain("Print Ticket");
+    }
+  });
+
+  it("keeps a cancelled or no-show visit readable rather than shutting it", () => {
+    // History is not made inaccessible by being terminal: the sheet is still printable and the
+    // record still opens. What is absent is everything that would move or bill it.
+    for (const status of ["cancelled", "no_show"]) {
+      const markup = client(status).markup();
+      expect(control(markup, "appointment-ticket"), status).not.toBeNull();
+      expect(control(markup, "appointment-close"), status).not.toBeNull();
+      expect(control(markup, "appointment-take-payment"), status).toBeNull();
+      expect(workflow(markup), status).toEqual([]);
+    }
+  });
+});
+
+/**
+ * THE FOOTER IS TWO ZONES, AND THE ONE THING THE VISIT IS WAITING FOR IS ALONE IN ONE OF THEM.
+ *
+ * It was a flat run of five or six identically-weighted pills. A scheduled visit had no primary
+ * at all, and Ready for Pickup was reported by human QA as unavailable on a checked-in visit
+ * where it was drawn, enabled and working - it was the fifth grey pill from the left.
+ */
+describe("the footer separates what the visit is waiting for from everything else", () => {
+  /** The test ids in one zone, in the order the footer draws them. */
+  const zone = (markup: string, name: "lead" | "utility"): string[] => {
+    const block = new RegExp(`<div class="surface-foot-actions surface-foot-${name}">(.*?)</div>`, "su")
+      .exec(markup)?.[1] ?? "";
+    return [...block.matchAll(/data-testid="([^"]+)"/gu)].map((match) => match[1]!);
+  };
+
+  it("puts exactly the work in the lead zone, and everything else out of it", () => {
+    const expected: Record<string, { lead: string[]; utility: string[] }> = {
+      scheduled: {
+        lead: ["appointment-check-in"],
+        utility: ["appointment-cancel", "appointment-no-show", "appointment-book-again", "appointment-ticket"]
+      },
+      checked_in: {
+        lead: ["appointment-ready", "appointment-save", "appointment-take-payment"],
+        utility: ["appointment-book-again", "appointment-ticket"]
+      },
+      in_service: {
+        lead: ["appointment-save", "appointment-complete"],
+        utility: ["appointment-book-again", "appointment-ticket"]
+      },
+      completed: {
+        lead: ["appointment-take-payment"],
+        utility: ["appointment-book-again", "appointment-ticket"]
+      },
+      cancelled: { lead: [], utility: ["appointment-ticket", "appointment-close"] },
+      no_show: { lead: [], utility: ["appointment-ticket", "appointment-close"] }
+    };
+    for (const status of appointmentStatuses) {
+      const markup = client(status).markup();
+      expect(zone(markup, "lead"), `${status} lead`).toEqual(expected[status]!.lead);
+      expect(zone(markup, "utility"), `${status} utility`).toEqual(expected[status]!.utility);
+    }
+  });
+
+  it("never crowds the lead zone past three controls", () => {
+    // Three is the worst case and it is checked-in: the money, the next step, and the Save that
+    // belongs beside it. Everything else was moved out rather than made smaller.
+    for (const status of appointmentStatuses) {
+      expect(zone(client(status).markup(), "lead").length, status).toBeLessThanOrEqual(3);
+    }
+  });
+
+  it("gives Ready for Pickup a rank of its own, below the money and above the utilities", () => {
+    // Reported as unavailable because it looked exactly like Book Again. It is a secondary - two
+    // primaries is what this footer exists to prevent - but not a quiet one.
+    const ready = control(client("checked_in").markup(), "appointment-ready");
+    expect(ready).toContain("secondary");
+    expect(ready).toContain("is-strong");
+    expect(ready).not.toContain("primary");
+    // And nothing else in the footer borrows that rank.
+    const markup = client("checked_in").markup();
+    expect([...markup.matchAll(/is-strong/gu)]).toHaveLength(1);
+  });
+
+  it("keeps the settled bill leading its own visit", () => {
+    const markup = client("completed", {
+      invoiceId: "inv-1", invoiceStatus: "paid", invoiceBalanceMinor: 0
+    }).markup();
+    expect(zone(markup, "lead")).toEqual(["appointment-invoice"]);
+    expect(control(markup, "appointment-invoice")).toContain("primary");
+    expect(zone(markup, "utility")).toEqual(["appointment-ticket", "appointment-close"]);
   });
 });

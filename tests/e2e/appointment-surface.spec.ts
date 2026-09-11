@@ -75,7 +75,7 @@ test("the surface is its own dialog, and the checkout and ticket levels stand re
   await expect(page.getByTestId("checkout-surface")).toBeHidden();
   await expect(page.getByTestId("ticket-surface")).toBeHidden();
   await expect(page.getByTestId("appointment-ticket")).toBeVisible();
-  await expect(page.getByTestId("appointment-ticket-print")).toBeVisible();
+  await expect(page.getByTestId("appointment-ticket")).toBeVisible();
 
   await expect(page.getByTestId("appointment-reference"))
     .toContainText(`Appointment #${appointment.id.slice(0, 8)}`);
@@ -93,7 +93,7 @@ test("the surface is its own dialog, and the checkout and ticket levels stand re
   await expect(page.getByTestId("appointment-cancel")).toBeVisible();
   await expect(page.getByTestId("appointment-no-show")).toBeVisible();
   await expect(page.getByTestId("appointment-book-again")).toBeVisible();
-  await expect(page.getByTestId("appointment-print")).toBeVisible();
+  await expect(page.getByTestId("appointment-ticket")).toBeVisible();
 
   // Escape is the browser's, routed through the one dismissal every close uses so the history
   // depth and the screen stay in agreement.
@@ -223,7 +223,7 @@ test("a terminal appointment offers only what still means something", async ({
   await openFromCalendar(page, appointment.id);
 
   await expect(page.getByTestId("appointment-status")).toHaveText("cancelled");
-  await expect(page.getByTestId("appointment-print")).toBeVisible();
+  await expect(page.getByTestId("appointment-ticket")).toBeVisible();
   await expect(page.getByTestId("appointment-close")).toBeVisible();
   for (const control of [
     "appointment-cancel",
@@ -240,7 +240,7 @@ test("a terminal appointment offers only what still means something", async ({
   // the visit happened, and an operator reprinting it for a cancellation they are chasing is an
   // ordinary thing to do. What the state still decides is the PRIMARY SLOT and nothing else: there
   // is nothing to come to a cancelled appointment for, so Close keeps it.
-  await expect(page.getByTestId("appointment-ticket-print")).toBeVisible();
+  await expect(page.getByTestId("appointment-ticket")).toBeVisible();
   await expect(page.getByTestId("appointment-ticket")).toBeVisible();
   await expect(page.getByTestId("appointment-ticket")).toHaveClass(/secondary/);
   await expect(page.getByTestId("appointment-close")).toHaveClass(/primary/);
@@ -291,7 +291,7 @@ test("Take Payment opens the existing checkout dialog, and is absent without the
   await login(page, member.email);
   await openFromCalendar(page, appointment.id);
   await expect(page.getByTestId("appointment-take-payment")).toHaveCount(0);
-  await expect(page.getByTestId("appointment-print")).toBeVisible();
+  await expect(page.getByTestId("appointment-ticket")).toBeVisible();
 });
 
 test("the client rail can fail without taking the main column with it", async ({

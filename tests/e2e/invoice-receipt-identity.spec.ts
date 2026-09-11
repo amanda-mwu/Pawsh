@@ -515,7 +515,7 @@ test("a scheduled appointment has a Ticket and no financial document at all",
     await expect(surface).toBeVisible();
     await expect(page.getByTestId("appointment-billing")).toHaveText("Not invoiced");
     await expect(page.getByTestId("appointment-ticket")).toBeVisible();
-    await expect(page.getByTestId("appointment-ticket-print")).toBeVisible();
+    await expect(page.getByTestId("appointment-ticket")).toBeVisible();
     for (const financial of [
       "checkout-print-receipt", "checkout-print-invoice", "receipt", "payment-receipt"
     ]) {

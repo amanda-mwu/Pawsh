@@ -134,6 +134,7 @@ test("a groomer's appointment says why it is inert instead of showing nothing", 
   for (const [testid, permission] of [
     ["appointment-groomer-edit", "appointments.edit"],
     ["appointment-note-edit", "appointments.edit"],
+    ["appointment-adjust-services", "appointments.edit"],
     ["appointment-cancel", "appointments.cancel"],
     ["appointment-no-show", "appointments.cancel"]
   ]) {
@@ -143,13 +144,65 @@ test("a groomer's appointment says why it is inert instead of showing nothing", 
     await expect(control).toHaveAttribute("title", new RegExp(permission!.replace(".", "\\.")));
   }
 
-  // AND THE OTHER HALF OF THE RULE, in the same browser. Adjust services is not drawn at all on a
-  // scheduled visit: the server refuses that edit before check-in whoever asks, so it is a state,
-  // not a permission, and a disabled control would explain nothing.
-  await expect(detail.getByTestId("appointment-adjust-services")).toHaveCount(0);
+  // AND THE OTHER HALF OF THE RULE, in the same browser. Check In is a STATE question: a
+  // scheduled visit offers it, and this groomer holds `operations.check_in`, so it is drawn and
+  // pressable. Ready for Pickup and Take Payment belong to statuses this visit is not in, so
+  // they are absent rather than disabled - a control that could never apply here explains
+  // nothing.
+  await expect(detail.getByTestId("appointment-check-in")).toBeEnabled();
+  await expect(detail.getByTestId("appointment-ready")).toHaveCount(0);
+  await expect(detail.getByTestId("appointment-take-payment")).toHaveCount(0);
 
   // What the groomer CAN reach is untouched. The Ticket is the shop's work sheet, carries no money
   // and no permission gate, and is the reason this surface is still worth opening.
   await expect(detail.getByTestId("appointment-ticket")).toBeVisible();
-  await expect(detail.getByTestId("appointment-print")).toBeVisible();
+});
+
+test("a groomer checks a pet in and hands it back, both from the visit itself", async ({
+  page,
+  request,
+  tenant
+}) => {
+  /*
+   * HUMAN QA REPORTED READY FOR PICKUP AS UNAVAILABLE TO A GROOMER, AND IT NEVER WAS.
+   *
+   * The Groomer preset holds `operations.check_in`, `operations.perform_service` AND
+   * `operations.complete` - it always has - so both of these controls are the groomer's to press.
+   * What the report was actually about was that the footer gave them no weight: five identical
+   * grey pills, and the one that moved the visit on was the fifth from the left. This walk pins
+   * the capability so that a future change to the preset or to the gate has to break a test
+   * rather than a shift.
+   */
+  const member = await createMember(request, `groomer-lifecycle+${tenant.runId}@pawsh-test.example`, GROOMER_PRESET);
+  const appointment = await createAppointment(request, tenant, { localStart: `${tenant.anchor}T11:00` });
+  await login(page, member.email, password);
+  await calendar(page);
+  await page.locator(`[data-appointment-id="${appointment.id}"] .calendar-open`).first().click();
+
+  const detail = page.getByTestId("appointment-detail-surface");
+  await expect(detail).toBeVisible();
+
+  // SCHEDULED: Check In is the one dominant control, and it is theirs.
+  const checkIn = detail.getByTestId("appointment-check-in");
+  await expect(checkIn).toBeEnabled();
+  await expect(checkIn).toHaveClass(/primary/u);
+  await expect(detail.locator("footer .primary")).toHaveCount(1);
+  await checkIn.click();
+
+  // CHECKED IN: Ready for Pickup appears, enabled, and carries its own rank rather than the
+  // quiet one. Take Payment does NOT - a groomer holds no `checkout.perform`.
+  const ready = detail.getByTestId("appointment-ready");
+  await expect(ready).toBeEnabled();
+  await expect(ready).toHaveClass(/is-strong/u);
+  await expect(ready).not.toHaveAttribute("title", /permission/u);
+  await expect(detail.getByTestId("appointment-take-payment")).toHaveCount(0);
+
+  await ready.click();
+
+  // The server's answer, which is the only one that counts.
+  await expect(async () => {
+    const response = await request.get(`/api/appointments/${appointment.id}`);
+    expect(((await response.json()) as { status: string }).status).toBe("completed");
+  }).toPass();
+  await expect(detail.getByTestId("appointment-ready")).toHaveCount(0);
 });

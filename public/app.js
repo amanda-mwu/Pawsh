@@ -2505,21 +2505,39 @@ async function loadCalendarWeek(start=state.calendar.weekStart){
 async function openCalendarView(){await loadCalendarWeek();if(!state.calendar.opened&&!state.appointments.length&&state.calendar.selectedGroomerIds===null){const upcoming=await api(`/api/appointments?localDate=${businessDate()}&days=31`);if(upcoming.length){const date=appointmentLocalValue(upcoming[0]).slice(0,10);state.calendar.opened=true;return selectCalendarDate(date);}}state.calendar.opened=true;}
 async function loadCalendarMonth(month=state.calendar.month){const start=weekStart(`${month}-01`),appointments=await loadAppointmentRange(start,42);state.calendar.monthAppointments=appointments;return appointments;}
 async function selectCalendarDate(date){const changedMonth=state.calendar.month!==date.slice(0,7);state.calendar.selectedDate=date;state.calendar.weekStart=weekStart(date);state.calendar.month=date.slice(0,7);if(changedMonth)await loadCalendarMonth(state.calendar.month,false);await loadCalendarWeek();}
-function adjustServices(id) {
-  const appointment=state.appointments.find(item=>item.id===id);
+/**
+ * THE RECORD THESE THREE ACT ON, AND WHY IT IS PASSED IN RATHER THAN LOOKED UP.
+ *
+ * All three read the appointment out of the CALENDAR CACHE. That is right when the press came
+ * from a calendar card, because the card was drawn from that cache; it is wrong everywhere else.
+ * The appointment surface deliberately falls back to `GET /api/appointments/:id` for a visit the
+ * calendar has never held - one opened from a client's history, or on a week nobody has loaded -
+ * so pressing the pencil or Adjust services there read `undefined.version` and threw before the
+ * dialog opened.
+ *
+ * That was survivable while the pencil was scheduled-only and services were checked-in-only. It
+ * stops being survivable now that services are editable from `scheduled`, which is exactly the
+ * visit an operator reaches from a client profile. So the caller hands over the record it already
+ * has, and the cache lookup stays as the default for the calendar's own call sites.
+ */
+function adjustServices(id,record=null) {
+  const appointment=record||calendarAppointmentById(id);
+  if(!appointment)return toast("That appointment could not be loaded. Refresh and try again.");
   openModal("Adjust appointment services",safetyContext(appointment)+bookingServiceCheckboxes(appointment.services.map(service=>service.serviceId)),form=>api(`/api/appointments/${id}/services`,{method:"PUT",body:JSON.stringify({serviceIds:form.getAll("serviceIds"),version:appointment.version})}));
 }
-function moveAppointment(id,preset={}) {
-  const appointment=state.appointments.find(item=>item.id===id);
+function moveAppointment(id,preset={},record=null) {
+  const appointment=record||calendarAppointmentById(id);
+  if(!appointment)return toast("That appointment could not be loaded. Refresh and try again.");
   // A preset is the slot a drag aimed at. Prefilling the dialog with it means a refused drop is
   // corrected where it was attempted instead of making the user find the target again.
   const local=preset.localStart||appointmentLocalValue(appointment);
   const assigned=preset.employeeId?[preset.employeeId]:(appointment.groomers||[]).map(item=>item.id);
   openModal("Move appointment",groomerCheckboxes(assigned,(appointment.services||[]).map(service=>service.serviceId))+field("startAt","Start time","datetime-local",`required value="${escape(local)}"`)+disambiguationField(appointment.scheduledDisambiguation||""),form=>schedulingMutation(`/api/appointments/${id}/schedule`,{employeeId:form.get("employeeId"),localStart:form.get("startAt"),disambiguation:form.get("disambiguation")||undefined,expectedLocationVersion:state.me.business.locationVersion,version:appointment.version},"Reschedule"));
 }
-async function terminalAppointment(id,status) {
+async function terminalAppointment(id,status,record=null) {
   if(!confirm(status==="cancelled"?"Cancel this appointment?":"Mark this appointment as a no-show?"))return;
-  const appointment=state.appointments.find(item=>item.id===id);
+  const appointment=record||calendarAppointmentById(id);
+  if(!appointment)return toast("That appointment could not be loaded. Refresh and try again.");
   return runOnce(`transition:${id}`,async()=>{
     try{await api(`/api/appointments/${id}/transition`,{method:"POST",body:JSON.stringify({status,version:appointment.version})});toast(`Appointment ${status.replace("_"," ")}`);await refresh();}catch(error){toast(error.message);if([400,409].includes(error.status))await refresh();}
   });
@@ -2655,11 +2673,11 @@ function appendPrintRoot(className,html){
 /**
  * THE DOCUMENT ON SCREEN BEFORE IT IS ON PAPER.
  *
- * Pressing Print Invoice, Print Receipt, Ticket or Print used to hand the operator straight to the
+ * Pressing Print Invoice, Print Receipt or the Ticket's own Print used to hand the operator straight to the
  * browser's own print dialog, with no chance to see what was about to come out of the printer and
  * no way back except that dialog's Cancel. The agenda has never worked that way - `openPrintAgenda`
  * has always drawn the document into `#print-agenda-preview` and reached `appendPrintRoot` only
- * when the operator pressed Print - so this is that precedent, offered to the four documents that
+ * when the operator pressed Print - so this is that precedent, offered to the three documents that
  * did not have it.
  *
  * IT TAKES EXACTLY WHAT `appendPrintRoot` TAKES AND HANDS THE SAME TWO VALUES BACK TO IT. That is
@@ -2684,9 +2702,8 @@ function appendPrintRoot(className,html){
  *
  * EVERY DOCUMENT STILL IDENTIFIES ITSELF INSIDE THE PREVIEW, and that is the PRECONDITION for
  * dropping the label rather than a hope about it. `printFinancialRoot` hands the Invoice and the
- * Receipt an <h1> - `Invoice #1042`, `Receipt #1042`, the same strings they print under - and
- * `printAppointment` heads a single printed appointment the same way. The Ticket prepends nothing
- * and needs nothing: `ticketDocumentMarkup` OPENS on `Appointment #: 4f2c1a90` and the salon's own
+ * Receipt an <h1> - `Invoice #1042`, `Receipt #1042`, the same strings they print under. The
+ * Ticket prepends nothing and needs nothing: `ticketDocumentMarkup` OPENS on `Appointment #: 4f2c1a90` and the salon's own
  * name, so the one document whose body used to say nothing at all now says it first.
  *
  * THE THREE WORDS THAT REMAIN ARE NOT A DOCUMENT NAME. "Print preview" is what the WINDOW is, and
@@ -15116,13 +15133,6 @@ function appointmentLifecycleMarkup(activity,{editable=false}={}){
       : "");
 }
 
-// Through `previewPrintRoot`, like every other printed document. The <h1> is prepended because
-// `printableAgenda` carries no title of its own, and since the preview's chrome names no document
-// it is the only thing that says what this sheet is - on screen and on paper alike.
-function printAppointment(item){
-  previewPrintRoot("print-root",`<h1>Pawsh appointment</h1>${printableAgenda([item])}`);
-}
-
 /**
  * Two notes, two audiences, two write rules, so they are not presented as one field.
  *
@@ -15196,13 +15206,31 @@ function appointmentRecordNoteMarkup(surface){
 
 function appointmentNotesBlockMarkup(surface){
   const {item,permissions:can}=surface;
+  /*
+   * WHY A VISIT THAT HAS NOT ARRIVED CANNOT HAVE A SERVICE NOTE, SAID OUT LOUD.
+   *
+   * `PATCH /api/appointments/:id/operations` writes this field only while the appointment is
+   * `checked_in` or `in_service` - it records what happened during the groom, and there is no
+   * during yet. That is a real rule and not one this surface invents, but it used to be invisible:
+   * a scheduled visit showed "No service note." with no box, no control and no reason, so an
+   * operator looking for somewhere to write went hunting and concluded the screen was broken.
+   *
+   * The sentence below names the two things worth knowing - which note this is, and when it opens
+   * - and points at the note that IS writable now. The APPOINTMENT note takes what the client
+   * asked for, in every status, and its own block already offers Add or Edit by name.
+   */
+  const pending=["scheduled"].includes(item.status)
+    ? `<p class="note-empty" data-testid="appointment-service-note-pending">`
+      +`This records what happened during the groom, so it opens when the pet is checked in. `
+      +`Anything the client has asked for goes in the appointment note above.</p>`
+    : `<p class="note-empty">No service note.</p>`;
   const service=can.editNote
     ? `<label class="surface-note-field"><span class="visually-hidden">Service note</span>`
       +`<textarea data-testid="appointment-note-input" name="operationalNotes" rows="4" maxlength="10000"`
       +` placeholder="What happened during this visit.">${escape(item.operationalNotes||"")}</textarea></label>`
     : item.operationalNotes
       ? `<p data-testid="appointment-service-note">${escape(item.operationalNotes)}</p>`
-      : `<p class="note-empty">No service note.</p>`;
+      : pending;
   return `<div class="work-block appointment-note" data-testid="appointment-note">`
     +`<div class="appointment-note-part" data-testid="appointment-record-note">`
       +appointmentRecordNoteMarkup(surface)+`</div>`
@@ -15263,17 +15291,11 @@ function appointmentSurfaceMarkup(surface){
       +`<h2 id="appointment-detail-title">${escape(model.dateLabel)}</h2>`
       +`<p class="surface-subhead">${escape(model.timeRange)} · scheduled ${model.durationMinutes} min</p>`
     +`</div>`
-    // The Ticket's own entry point, and the reason it is an icon rather than a footer button: the
-    // work sheet is printed from every appointment at any stage, so it sits with the surface's
-    // chrome rather than among the controls that act on the visit. `.header-icon-button` is the
-    // product's existing icon button, so it already carries the 44px touch target on a coarse
-    // pointer and the stroke conventions every other icon in the app is drawn with.
+    // ONE WAY TO THE TICKET, AND IT IS THE FOOTER'S. This chrome used to carry an icon bound to
+    // the very same closure as the footer's Ticket button - the same `runOnce("ticket:<id>")` key,
+    // the same document, on the same screen. Two affordances for one act is something an operator
+    // has to work out rather than read, and the footer's is the one that says what it does.
     +`<div class="surface-head-actions">`
-      +`<button type="button" class="header-icon-button" data-testid="appointment-ticket-print"`
-        +` aria-label="Print ticket" title="Print ticket">`
-        +`<svg viewBox="0 0 24 24" aria-hidden="true">`
-          +`<path d="M7 8V3h10v5M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2"/>`
-          +`<path d="M7 14h10v7H7zM9 17h6M9 19h4"/></svg></button>`
       +`<button type="button" class="surface-close" data-surface-close aria-label="Close appointment details">&#215;</button>`
     +`</div>`
   +`</header>`;
@@ -15341,7 +15363,6 @@ function appointmentSurfaceMarkup(surface){
     +work
   +`</div></div>`;
 
-  const print=`<button type="button" class="secondary compact" data-testid="appointment-print">Print</button>`;
   // Level 3, AND IT IS OFFERED IN EVERY STATE - the same rule the header's print icon has always
   // applied. What changes with the state is only which control gets the primary slot: on a
   // completed visit CLOSE GIVES UP THE PRIMARY SLOT, because opening the Ticket is what the
@@ -15353,8 +15374,31 @@ function appointmentSurfaceMarkup(surface){
   // bill takes the slot whenever there is one, because an operator opening a settled visit came to
   // see what was charged; failing that the Ticket takes it on a completed visit; and on a
   // cancelled or no-show visit, where there is nothing to come for, Close keeps it.
-  const primarySlot=can.checkout?"checkout":can.invoice?"invoice":can.ticketPrimary?"ticket":"close";
-  const ticket=`<button type="button" class="${can.readOnly&&primarySlot==="ticket"?"primary":"secondary"} compact" data-testid="appointment-ticket">Ticket</button>`;
+  // THE WORKFLOW ACTIONS ARE IN THE RANKING NOW, which is what makes a scheduled visit a screen
+  // somebody can work from rather than one they can only read. Money still outranks everything;
+  // below it comes the one thing the visit is waiting for - check the pet in, or say the work is
+  // done - then the bill as a document, then the sheet, then dismissal.
+  const primarySlot=can.checkout?"checkout"
+    :can.checkInOffered?"check-in"
+    :can.completeOffered?"complete"
+    :can.invoice?"invoice"
+    :can.ticketPrimary?"ticket":"close";
+  /*
+   * ONE TICKET ACTION, WHERE THERE WERE THREE, AND NAMED FOR WHAT IT PRODUCES.
+   *
+   * The footer carried `Print` and `Ticket` side by side in identical grey pills, producing two
+   * DIFFERENT documents nobody could tell apart from the labels: Print made an agenda extract -
+   * groomer, date, pet, service names with no prices, client phone, appointment note - and Ticket
+   * made the real work sheet, with the salon's identity, the service table and the note threads.
+   * The header then carried an icon bound to the same closure as the footer's Ticket, sharing its
+   * `runOnce` key, so it was not a third route but a second copy of the second one.
+   *
+   * ADR-011 makes the Ticket the operational document for a visit, and the agenda extract was a
+   * poorer version of it for the same appointment. It is gone from this surface; the calendar's
+   * own Print agenda, which is what `printableAgenda` is actually for, is untouched. With only one
+   * left, the control can afford to say which document it is and what pressing it leads to.
+   */
+  const ticket=`<button type="button" class="${can.readOnly&&primarySlot==="ticket"?"primary":"secondary"} compact" data-testid="appointment-ticket">Print Ticket</button>`;
   // It OPENS the invoice rather than raising a second one, and it is the same workspace a client's
   // transaction history opens, so there is one Invoice document with one title and one pair of
   // print controls.
@@ -15377,52 +15421,73 @@ function appointmentSurfaceMarkup(surface){
   const takePayment=can.checkout
     ? `<button type="button" class="primary compact" data-testid="appointment-take-payment">Take Payment</button>`
     : "";
+  /**
+   * THE FOOTER IS TWO ZONES, NOT ONE ROW OF EQUAL PILLS.
+   *
+   * It used to be a flat run of five or six identically-weighted `secondary compact` buttons, and
+   * the one control the operator had actually opened the visit to press was somewhere among them
+   * at the bottom right. On a scheduled appointment there was no primary at all: Cancel, No-show,
+   * Book Again, Print, Ticket, and nothing that moved the visit on. Human QA read the whole screen
+   * as a viewer, and reported Ready for Pickup as unavailable on a checked-in visit where it was
+   * in fact drawn, enabled and working - it was simply the fifth grey pill from the left.
+   *
+   * WHAT THE VISIT IS WAITING FOR IS ONE CONTROL AND IT STANDS ALONE. `lead` holds it, plus the
+   * money and the Save it belongs beside; everything that is a document, a record correction or a
+   * way out lives in `utility` at the other end. Two zones, a gap between them, and at most three
+   * controls in the one the eye is meant to land on.
+   *
+   * The RANK inside the lead zone is unchanged and is still `primarySlot`'s: money outranks the
+   * lifecycle, the lifecycle outranks the document, the document outranks the sheet. What changed
+   * is that the loser of that ranking is no longer indistinguishable from Book Again.
+   */
+  // THE PRIMARY IS DRAWN LAST, which is where this product has always put it - the ≤640 rule
+  // reaches for `.surface-foot-actions:last-child>.primary` - so the zone reads quietest to
+  // strongest left to right. Ready for Pickup is the only workflow control that is never the
+  // primary, so it leads the zone; Check In and Complete are the primary on their own statuses and
+  // join Take Payment at the end.
+  const readyForPickup=can.readyOffered
+    ? `<button type="button" class="secondary compact is-strong" data-testid="appointment-ready"${
+      can.ready?"":appointmentPermissionRefusal("mark work as finished","operations.complete")}>Ready for Pickup</button>`
+    : "";
+  const workflow=(can.checkInOffered
+      ? `<button type="button" class="${primarySlot==="check-in"?"primary":"secondary"} compact" data-testid="appointment-check-in"${
+        can.checkIn?"":appointmentPermissionRefusal("check appointments in","operations.check_in")}>Check In</button>`
+      : "")
+    +(can.completeOffered
+      ? `<button type="button" class="${primarySlot==="complete"?"primary":"secondary"} compact" data-testid="appointment-complete"${
+        can.complete?"":appointmentPermissionRefusal("mark work as finished","operations.complete")}>Complete</button>`
+      : "");
+  // A save that is offered but asleep. See `syncSaveState` for what wakes it.
+  const save=can.editNote
+    ? `<button type="button" class="${primarySlot==="close"?"primary":"secondary"} compact" data-testid="appointment-save" disabled aria-disabled="true">Save</button>`
+    : "";
+  const close=closeRank=>`<button type="button" class="${
+    primarySlot==="close"&&closeRank?"primary":"secondary"} compact" data-testid="appointment-close">Close</button>`;
+
   const foot=can.readOnly
     // Nothing on this appointment can move any more, so the footer offers the things that still
-    // mean something rather than a row of controls the server would refuse.
-    ? `<footer class="surface-foot"><div class="surface-foot-actions"></div>`
-      +`<div class="surface-foot-actions">${print}`
-      +`<button type="button" class="${primarySlot==="close"?"primary":"secondary"} compact" data-testid="appointment-close">Close</button>`
-      +ticket+invoice+takePayment+`</div></footer>`
-    : `<footer class="surface-foot"><div class="surface-foot-actions">`
+    // mean something rather than a row of controls the server would refuse. The bill is what an
+    // operator opens a settled visit for, so it leads; the sheet and the way out are utility.
+    ? `<footer class="surface-foot">`
+      +`<div class="surface-foot-actions surface-foot-utility">${ticket}${close(true)}</div>`
+      +`<div class="surface-foot-actions surface-foot-lead">${invoice}${takePayment}</div>`
+    +`</footer>`
+    : `<footer class="surface-foot">`
+      +`<div class="surface-foot-actions surface-foot-utility">`
         +(can.cancelOffered?`<button type="button" class="secondary compact destructive" data-testid="appointment-cancel"${
           can.cancel?"":appointmentPermissionRefusal("cancel appointments","appointments.cancel")}>Cancel</button>`:"")
         +(can.cancelOffered?`<button type="button" class="secondary compact" data-testid="appointment-no-show"${
           can.cancel?"":appointmentPermissionRefusal("mark an appointment as a no-show","appointments.cancel")}>No-show</button>`:"")
         +(can.bookAgain?`<button type="button" class="secondary compact" data-testid="appointment-book-again">Book Again</button>`:"")
-      +`</div><div class="surface-foot-actions">${print}${ticket}`
+        +ticket
         // An invoice reaches this branch only if one exists while the visit is still moving, which
         // no path produces today - `readOnly` is exactly completed-and-invoiced. It is interpolated
         // here anyway so the rule is unconditional: AN INVOICE THAT EXISTS IS REACHABLE FROM ITS
-        // OWN APPOINTMENT, in every state, which is the whole of what went wrong. It cannot collide
-        // with Take Payment for the primary slot, because `checkout` requires no invoice and this
-        // requires one.
+        // OWN APPOINTMENT, in every state, which is the whole of what went wrong.
         +invoice
-        // Billing the visit stays the primary action while there is money to take; the Ticket is
-        // available beside it.
-        +takePayment
-        // THE WORK IS FINISHED AND THE PET CAN GO HOME. Secondary, always: it is a lifecycle
-        // record rather than the thing the operator came to this footer to do, and money outranks
-        // it by the rule above. Drawn before Save so the footer reads left to right as the order a
-        // counter actually works in - finish the note, hand the pet back, take the money.
-        +(can.readyOffered?`<button type="button" class="secondary compact" data-testid="appointment-ready"${
-          can.ready?"":appointmentPermissionRefusal("mark work as finished","operations.complete")}>Ready for Pickup</button>`:"")
-        // ONE PRIMARY, AND `primarySlot` IS ALREADY THE RULE FOR WHICH. Save is the primary
-        // action on a visit still being worked, and until checkout widened to `checked_in` it
-        // was never drawn beside Take Payment - `editNote` is live in `checked_in`/`in_service`
-        // and `checkout` was `completed` only, so the two could not meet. They meet now, and the
-        // footer's own rule above says money outranks the rest, so Save yields the slot rather
-        // than a second blue button claiming it alongside.
-        //
-        // AND IT STARTS DISABLED, because nothing has been changed yet. A Save that is always
-        // pressable says an edit is waiting when none is, and pressing it writes the note back
-        // over itself - a version bump, an audit row and a full redraw for no change at all. It
-        // is enabled by `syncSaveState` the moment the textarea differs from what was loaded, and
-        // disabled again when it matches or when a save has just landed. Disabled rather than
-        // absent: the control is the operator's, not the visit's, and a footer whose buttons
-        // appear and vanish as one types is a footer that moves under the pointer.
-        +(can.editNote?`<button type="button" class="${primarySlot==="checkout"?"secondary":"primary"} compact" data-testid="appointment-save" disabled aria-disabled="true">Save</button>`:"")
-      +`</div></footer>`;
+      +`</div>`
+      +`<div class="surface-foot-actions surface-foot-lead">${readyForPickup}${save}${workflow}${takePayment}</div>`
+    +`</footer>`;
 
   return `<div class="surface-shell" data-testid="appointment-detail">${head}${body}${foot}</div>`;
 }
@@ -15505,8 +15570,47 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
        */
       moveOffered:status==="scheduled"&&!appointmentsLocked(),
       move:status==="scheduled"&&appointmentMoveAllowed(),
-      adjustServicesOffered:["checked_in","in_service"].includes(status),
-      adjustServices:["checked_in","in_service"].includes(status)&&allowed("appointments.edit"),
+      /*
+       * WHAT THE VISIT ALLOWS HERE IS WHAT THE ROUTE ALLOWS, AND IT ALWAYS INCLUDED `scheduled`.
+       *
+       * `PUT /api/appointments/:id/services` accepts `scheduled`, `checked_in` and `in_service`
+       * and refuses once an invoice exists. This offered the last two only, so the one status
+       * where changing the services is most ordinary - the client rings up before the visit and
+       * adds a nail trim - was the one status with no way to do it. Nobody was refused; the
+       * control simply was not drawn.
+       *
+       * The invoice half is mirrored too, because "Services cannot change after checkout begins"
+       * is a refusal this surface can see coming: the bill is raised from these snapshots, and a
+       * control that could only ever produce that sentence is not a control.
+       */
+      adjustServicesOffered:["scheduled","checked_in","in_service"].includes(status)
+        &&!surface.item.invoiceId,
+      adjustServices:["scheduled","checked_in","in_service"].includes(status)
+        &&!surface.item.invoiceId&&allowed("appointments.edit"),
+      /*
+       * CHECKING THE PET IN, FROM THE SCREEN THE OPERATOR IS ALREADY ON.
+       *
+       * The only door to this was the calendar card's own action button. So an operator who had
+       * opened the appointment - to read the notes, to check the services, to see which groomer -
+       * had to close it, find the card again and press the small control on it. The visit they
+       * were looking at offered them nothing to do with it at all: Print, Ticket, and four
+       * controls a groomer cannot use.
+       *
+       * ONE PRESS, AND NO FORM. The calendar's door opens a dialog first, because it also offers
+       * the safety context for a pet nobody has looked at yet; here the operator is standing in
+       * front of that context already - it is the screen they are on - so asking them to confirm
+       * what they can see is asking twice.
+       */
+      checkInOffered:status==="scheduled",
+      checkIn:status==="scheduled"&&allowed("operations.check_in"),
+      /*
+       * FINISHING A VISIT THAT WAS MARKED STARTED. The same transition Ready for Pickup writes,
+       * under the same permission, and deliberately under the CALENDAR'S OWN WORD for it rather
+       * than a second one: `in_service` already says Complete on the card, and one transition with
+       * two names on two surfaces is a thing an operator has to learn instead of read.
+       */
+      completeOffered:status==="in_service",
+      complete:status==="in_service"&&allowed("operations.complete"),
       /*
        * TAKE PAYMENT IS ABOUT MONEY STILL OWED, NOT ABOUT WHETHER A BILL WAS EVER RAISED.
        *
@@ -15879,9 +15983,8 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
         renderSettingsCategory("business",{history:"push"});
       })));
     on("appointment-close",()=>runDetached(()=>popStackLevel()));
-    on("appointment-print",()=>printAppointment(surface.item));
-    on("appointment-groomer-edit",()=>throughModal(()=>moveAppointment(id)));
-    on("appointment-adjust-services",()=>throughModal(()=>adjustServices(id)));
+    on("appointment-groomer-edit",()=>throughModal(()=>moveAppointment(id,{},surface.item)));
+    on("appointment-adjust-services",()=>throughModal(()=>adjustServices(id,surface.item)));
     // Check Out is level 2 of the stack now, not a modal over this one, so it is pushed rather
     // than opened through #modal. Guarded by the same key the calendar's own Checkout uses: two
     // concurrent renders of that screen is the failure advanceAppointment() documents.
@@ -15915,9 +16018,7 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
     // reads after it pushes, and a second press inside that window would render and bind the
     // surface twice. Both entry points share the one key, so the header icon and the footer
     // button cannot open two.
-    const ticketLevel=()=>runDetached(()=>runOnce(`ticket:${id}`,()=>openTicket(surface.item)));
-    on("appointment-ticket",ticketLevel);
-    on("appointment-ticket-print",ticketLevel);
+    on("appointment-ticket",()=>runDetached(()=>runOnce(`ticket:${id}`,()=>openTicket(surface.item))));
     // Booking is navigation away from this visit, so the stack comes down first rather than
     // leaving a stale appointment standing behind the booking workspace.
     on("appointment-book-again",()=>runDetached(async()=>{
@@ -15930,7 +16031,7 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
       // terminalAppointment() confirms, reports its own outcome and refreshes the calendar. The
       // surface is redrawn from what came back rather than from what was asked for: a refusal
       // leaves the appointment exactly as it was, and the redraw says so.
-      on(testid,()=>runDetached(async()=>{await terminalAppointment(id,status);await reload();}));
+      on(testid,()=>runDetached(async()=>{await terminalAppointment(id,status,surface.item);await reload();}));
     }
     bindRecordNote();
     // The FOOTER Save writes the SERVICE note and only the service note. The appointment note has
@@ -15986,24 +16087,45 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
         }
       }));
     }
-    // READY FOR PICKUP. The existing `completed` transition under its existing permission, with
-    // no financial side effect of any kind: this posts to `/transition` and nothing else, and the
-    // surface is redrawn from what came back rather than from what was asked for.
-    on("appointment-ready",()=>runDetached(async()=>{
+    /**
+     * THE THREE LIFECYCLE PRESSES, WHICH ARE ONE FUNCTION BECAUSE THEY ARE ONE ACT.
+     *
+     * Each posts the transition its status allows, under the permission that transition has always
+     * required, and NOTHING ELSE - no invoice, no payment, no document. The surface is then
+     * redrawn from what the server came back with rather than from what was asked for, so a
+     * refusal leaves the appointment reading exactly as it still is.
+     *
+     * IN PLACE, WITHOUT CLOSING. `refresh()` reloads the calendar underneath and `reload()`
+     * re-reads this appointment and redraws the surface over it, so the operator keeps their
+     * place: the footer changes under their hand and the visit they were reading stays open.
+     *
+     * ONE PRESS AND NO CONFIRMATION. The calendar's own Check In opens a dialog first because it
+     * also carries the safety context for a pet nobody has looked at yet. Here that context is
+     * the screen the operator is standing on, so a confirmation would be asking them to agree
+     * with something already in front of them. None of the three is destructive and all three are
+     * reversible by the desk in the ordinary way; Cancel and No-show, which are not, keep their
+     * confirmations.
+     */
+    const lifecycle=(testid,status,message)=>on(testid,()=>runDetached(async()=>{
       await runOnce(`transition:${id}`,async()=>{
         try{
           await api(`/api/appointments/${id}/transition`,{method:"POST",
-            body:JSON.stringify({status:"completed",version:surface.item.version})});
-          toast("Marked ready for pickup");
+            body:JSON.stringify({status,version:surface.item.version})});
+          toast(message);
           await refresh();
         }catch(error){
           toast(error.message);
           if(![400,409].includes(error.status))return;
+          // A stale version or a refused transition both mean this screen is behind. Reloading is
+          // the correction, and it is the same one the calendar's own transitions make.
           await refresh();
         }
       });
       await reload();
     }));
+    lifecycle("appointment-check-in","checked_in","Checked in");
+    lifecycle("appointment-ready","completed","Marked ready for pickup");
+    lifecycle("appointment-complete","completed","Appointment completed");
   };
 
   const draw=()=>{
@@ -16289,7 +16411,7 @@ function ticketSurfaceMarkup(item,notes){
  * The sheet on paper, which is a NARROWER PROJECTION of the sheet on screen.
  *
  * Through `previewPrintRoot`, like every other printed document, but with NO PREPENDED <h1> -
- * `printAppointment` and the two financial documents prepend one because their bodies carry no
+ * The two financial documents prepend one because their bodies carry no
  * title of their own, and this one OPENS on `Appointment #: ...` and the salon's name. That is
  * also why the preview's chrome carrying no document label costs this document nothing: the thing
  * the label was load-bearing for is the first line of the body.

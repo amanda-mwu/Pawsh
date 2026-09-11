@@ -4,14 +4,17 @@ import { dialogHarness, evaluate, slice, type DialogHarness } from "./support/st
 /**
  * A DOCUMENT IS SEEN BEFORE IT IS PRINTED, AND ONLY PRESSING PRINT PRINTS IT.
  *
- * Print Invoice, Print Receipt, Ticket and Print used to hand the operator straight to the
- * browser's own print dialog. There was no way to see what was about to come out of the printer,
+ * Print Invoice, Print Receipt and the Ticket's own Print used to hand the operator straight to
+ * the browser's print dialog. There was no way to see what was about to come out of the printer,
  * and no way back to the screen they pressed it from except that dialog's Cancel — which is the
  * browser's control, not Pawsh's, and lands wherever the browser decides.
  *
  * The agenda has never worked that way: `openPrintAgenda` draws the document into
  * `#print-agenda-preview` and reaches `appendPrintRoot` only when the operator presses Print. That
- * precedent is now the rule, and `previewPrintRoot` is where it lives.
+ * precedent is now the rule, and `previewPrintRoot` is where it lives. The agenda keeps its own
+ * preview and still reaches `appendPrintRoot` directly, so it is NOT one of the documents this
+ * file holds: the three that come through `previewPrintRoot` are the Invoice, the Receipt and the
+ * Ticket.
  *
  * ─── THE ONE PROPERTY THAT MATTERS MOST ──────────────────────────────────────────────────────
  *
@@ -27,8 +30,8 @@ import { dialogHarness, evaluate, slice, type DialogHarness } from "./support/st
  * ─── WHAT A MUTATION HAS TO BREAK ────────────────────────────────────────────────────────────
  *
  *   `previewPrintRoot(className,html)` → `appendPrintRoot(className,html)`
- *       the four entry points print immediately again. Every "opens a preview and prints nothing"
- *       assertion below fails, in all four documents.
+ *       the two entry points print immediately again. Every "opens a preview and prints nothing"
+ *       assertion below fails, in all three documents.
  *
  *   `onConfirm:()=>{}` in `previewPrintRoot`
  *       Print becomes furniture. "confirming is what reaches paper" fails.
@@ -54,22 +57,19 @@ const DIALOG = slice("function openStackedDialog({", "\n// Pets whose rabies rec
 const FINANCIAL = slice("function printFinancialRoot(", "\n/**\n * THE PRINTING MECHANISM ITSELF");
 /** The Ticket's own path to paper. */
 const TICKET = slice("function printTicket(item,notes){", "\n/**\n * Opens the Ticket.");
-/** One appointment, printed off the detail surface. */
-const APPOINTMENT = slice("function printAppointment(item){", "\n/**\n * Two notes, two audiences");
 
 /**
- * The three bodies, as sentinels. What each document SAYS is held by its own spec — this file is
- * about the step in front of it — so each is a string distinctive enough that finding it on paper
- * proves which document was composed.
+ * The two bodies, as sentinels. Three documents share them, because the Invoice and the Receipt
+ * are one composition step handed a different title and a different root class. What each document
+ * SAYS is held by its own spec — this file is about the step in front of it — so each is a string
+ * distinctive enough that finding it on paper proves which document was composed.
  */
 const INVOICE_BODY = '<section data-testid="receipt">«what the visit cost»</section>';
 const TICKET_SENTINEL = '<div data-testid="ticket-document">«the shop’s work sheet»</div>';
-const AGENDA_SENTINEL = '<article class="print-appointment">«one visit»</article>';
 
 interface Client {
   printFinancialRoot(title: string, body: string, className: string): void;
   printTicket(item: unknown, notes: unknown): void;
-  printAppointment(item: unknown): void;
   previewPrintRoot(className: string, html: string): unknown;
   openStackedDialog(options: Record<string, unknown>): unknown;
 }
@@ -79,7 +79,7 @@ function loadClient(): { client: Client; dialog: DialogHarness } {
   const escape = (value = "") =>
     String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
   const client = evaluate<Client>(
-    [MECHANISM, DIALOG, FINANCIAL, TICKET, APPOINTMENT],
+    [MECHANISM, DIALOG, FINANCIAL, TICKET],
     {
       ...dialog.stubs,
       escape,
@@ -88,10 +88,9 @@ function loadClient(): { client: Client; dialog: DialogHarness } {
       // The Ticket's body, as a sentinel. What it actually SAYS — that it opens on its own
       // reference and the salon's name, which is what lets the chrome carry no label — is
       // `tests/ui/ticket-document.test.ts`, against the real renderer.
-      ticketDocumentMarkup: () => TICKET_SENTINEL,
-      printableAgenda: () => AGENDA_SENTINEL
+      ticketDocumentMarkup: () => TICKET_SENTINEL
     },
-    `return {printFinancialRoot, printTicket, printAppointment, previewPrintRoot, openStackedDialog};`
+    `return {printFinancialRoot, printTicket, previewPrintRoot, openStackedDialog};`
   );
   return { client, dialog };
 }
@@ -119,6 +118,23 @@ describe("every printable document opens a preview instead of the browser's prin
     expect(previewedDocument(preview!.body)).toBe(`<h1>Invoice #1042</h1>${INVOICE_BODY}`);
   });
 
+  it("previews the Receipt and prints NOTHING until Print is pressed", () => {
+    // The Receipt is its own document even though it shares `printFinancialRoot` with the Invoice:
+    // a different title, and `print-payment-receipt` on the root to tell the two apart on paper.
+    // Nothing reaches paper for this one either until Print is pressed.
+    const { client, dialog } = loadClient();
+    client.printFinancialRoot("Receipt #1042", INVOICE_BODY, "print-root print-payment-receipt");
+
+    expect(dialog.printed).toEqual([]);
+    expect(dialog.prints.count).toBe(0);
+    expect(dialog.isOpen()).toBe(true);
+    const preview = dialog.current();
+    expect(preview?.title).toBe("Print preview");
+    expect(preview?.confirmLabel).toBe("Print");
+    expect(preview?.dismissLabel).toBe("Close");
+    expect(previewedDocument(preview!.body)).toBe(`<h1>Receipt #1042</h1>${INVOICE_BODY}`);
+  });
+
   it("previews the Ticket and prints NOTHING until Print is pressed", () => {
     const { client, dialog } = loadClient();
     client.printTicket({ id: "4f2c1a90-0000-4000-8000-000000000001" }, { pet: null, client: null });
@@ -126,16 +142,6 @@ describe("every printable document opens a preview instead of the browser's prin
     expect(dialog.printed).toEqual([]);
     expect(dialog.prints.count).toBe(0);
     expect(previewedDocument(dialog.current()!.body)).toBe(TICKET_SENTINEL);
-  });
-
-  it("previews one appointment and prints NOTHING until Print is pressed", () => {
-    const { client, dialog } = loadClient();
-    client.printAppointment({ id: "appt" });
-
-    expect(dialog.printed).toEqual([]);
-    expect(dialog.prints.count).toBe(0);
-    expect(previewedDocument(dialog.current()!.body))
-      .toBe(`<h1>Pawsh appointment</h1>${AGENDA_SENTINEL}`);
   });
 });
 
@@ -151,10 +157,10 @@ describe("the preview chrome carries no document label", () => {
    * Print — and a generic heading that names no document.
    *
    * THE PRECONDITION IS THAT EVERY BODY NAMES ITSELF, and it is asserted rather than assumed.
-   * `printFinancialRoot` prepends the Invoice's and the Receipt's <h1>, `printAppointment`
-   * prepends the appointment's, and the Ticket's body opens on `Appointment #: ...` and the
-   * salon's name — which this file cannot see, because it stubs `ticketDocumentMarkup` to a
-   * sentinel, so `tests/ui/ticket-document.test.ts` holds that half against the real renderer.
+   * `printFinancialRoot` prepends the Invoice's and the Receipt's <h1>, and the Ticket's body
+   * opens on `Appointment #: ...` and the salon's name — which this file cannot see, because it
+   * stubs `ticketDocumentMarkup` to a sentinel, so `tests/ui/ticket-document.test.ts` holds that
+   * half against the real renderer.
    */
   it("heads every preview with the same three words, whichever document it is holding", () => {
     const invoice = loadClient();
@@ -172,38 +178,30 @@ describe("the preview chrome carries no document label", () => {
       { id: "4f2c1a90-0000-4000-8000-000000000001" }, { pet: null, client: null }
     );
     expect(ticket.dialog.current()?.title).toBe("Print preview");
-
-    const appointment = loadClient();
-    appointment.client.printAppointment({ id: "appt" });
-    expect(appointment.dialog.current()?.title).toBe("Print preview");
   });
 
-  it("names no document in the chrome — not the Invoice, the Receipt, the Ticket or the visit",
-    () => {
-      // The specific regression: a heading that carries the document's name AS WELL AS the three
-      // words would pass an assertion that only checked the three words were still there.
-      const invoice = loadClient();
-      invoice.client.printFinancialRoot("Invoice #1042", INVOICE_BODY, "print-root");
-      expect(invoice.dialog.current()?.title).not.toContain("1042");
-      expect(invoice.dialog.current()?.title).not.toContain("Invoice");
+  it("names no document in the chrome — not the Invoice, the Receipt or the Ticket", () => {
+    // The specific regression: a heading that carries the document's name AS WELL AS the three
+    // words would pass an assertion that only checked the three words were still there.
+    const invoice = loadClient();
+    invoice.client.printFinancialRoot("Invoice #1042", INVOICE_BODY, "print-root");
+    expect(invoice.dialog.current()?.title).not.toContain("1042");
+    expect(invoice.dialog.current()?.title).not.toContain("Invoice");
 
-      const receipt = loadClient();
-      receipt.client.printFinancialRoot(
-        "Receipt #1042", INVOICE_BODY, "print-root print-payment-receipt"
-      );
-      expect(receipt.dialog.current()?.title).not.toContain("Receipt");
+    const receipt = loadClient();
+    receipt.client.printFinancialRoot(
+      "Receipt #1042", INVOICE_BODY, "print-root print-payment-receipt"
+    );
+    expect(receipt.dialog.current()?.title).not.toContain("Receipt");
+    expect(receipt.dialog.current()?.title).not.toContain("1042");
 
-      const ticket = loadClient();
-      ticket.client.printTicket(
-        { id: "4f2c1a90-0000-4000-8000-000000000001" }, { pet: null, client: null }
-      );
-      expect(ticket.dialog.current()?.title).not.toContain("Ticket");
-      expect(ticket.dialog.current()?.title).not.toContain("4f2c1a90");
-
-      const appointment = loadClient();
-      appointment.client.printAppointment({ id: "appt" });
-      expect(appointment.dialog.current()?.title).not.toContain("appointment");
-    });
+    const ticket = loadClient();
+    ticket.client.printTicket(
+      { id: "4f2c1a90-0000-4000-8000-000000000001" }, { pet: null, client: null }
+    );
+    expect(ticket.dialog.current()?.title).not.toContain("Ticket");
+    expect(ticket.dialog.current()?.title).not.toContain("4f2c1a90");
+  });
 
   it("puts the name INSIDE the preview instead, where the document prints it", () => {
     // What was lost from the chrome was never lost from the screen. The <h1> the body is handed is
@@ -220,11 +218,6 @@ describe("the preview chrome carries no document label", () => {
     );
     expect(previewedDocument(receipt.dialog.current()!.body))
       .toBe(`<h1>Receipt #1042</h1>${INVOICE_BODY}`);
-
-    const appointment = loadClient();
-    appointment.client.printAppointment({ id: "appt" });
-    expect(previewedDocument(appointment.dialog.current()!.body))
-      .toBe(`<h1>Pawsh appointment</h1>${AGENDA_SENTINEL}`);
 
     // The Ticket prepends NOTHING, here as before: its own body is its own title, which is why
     // the chrome's label was safe to drop for this document too.
@@ -270,6 +263,8 @@ describe("Print, and only Print, reaches paper", () => {
     await loadedInvoice.dialog.confirm();
     expect(loadedInvoice.dialog.opens[0]!.body)
       .toContain(loadedInvoice.dialog.printed[0]!.innerHTML);
+    expect(loadedInvoice.dialog.printed[0]!.innerHTML)
+      .toBe(`<h1>Invoice #1042</h1>${INVOICE_BODY}`);
 
     const loadedReceipt = loadClient();
     loadedReceipt.client.printFinancialRoot(
@@ -278,6 +273,8 @@ describe("Print, and only Print, reaches paper", () => {
     await loadedReceipt.dialog.confirm();
     expect(loadedReceipt.dialog.opens[0]!.body)
       .toContain(loadedReceipt.dialog.printed[0]!.innerHTML);
+    expect(loadedReceipt.dialog.printed[0]!.innerHTML)
+      .toBe(`<h1>Receipt #1042</h1>${INVOICE_BODY}`);
     // The class is what tells the Receipt from the Invoice on paper, and it survives the preview.
     expect(loadedReceipt.dialog.printed[0]!.className).toBe("print-root print-payment-receipt");
     expect(loadedReceipt.dialog.opens[0]!.body)
@@ -288,14 +285,10 @@ describe("Print, and only Print, reaches paper", () => {
       { id: "4f2c1a90-0000-4000-8000-000000000001" }, { pet: null, client: null }
     );
     await loadedTicket.dialog.confirm();
+    expect(loadedTicket.dialog.opens[0]!.body)
+      .toContain(loadedTicket.dialog.printed[0]!.innerHTML);
     expect(loadedTicket.dialog.printed[0]!.className).toBe("print-root print-ticket");
     expect(loadedTicket.dialog.printed[0]!.innerHTML).toBe(TICKET_SENTINEL);
-
-    const loadedAppointment = loadClient();
-    loadedAppointment.client.printAppointment({ id: "appt" });
-    await loadedAppointment.dialog.confirm();
-    expect(loadedAppointment.dialog.printed[0]!.innerHTML)
-      .toBe(`<h1>Pawsh appointment</h1>${AGENDA_SENTINEL}`);
   });
 });
 
@@ -322,8 +315,10 @@ describe("closing the preview returns to the window underneath, having printed n
   });
 
   it("Escape prints nothing", () => {
+    // The Receipt, so that the three ways out of a preview are each proved against a different one
+    // of the three documents rather than all three against the same one.
     const { client, dialog } = loadClient();
-    client.printAppointment({ id: "appt" });
+    client.printFinancialRoot("Receipt #1042", INVOICE_BODY, "print-root print-payment-receipt");
     dialog.escape();
 
     expect(dialog.isOpen()).toBe(false);

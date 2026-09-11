@@ -22,7 +22,16 @@ import type { APIRequestContext, Locator, Page } from "@playwright/test";
  * holds them to it. EXPOSING A TICKET MUST NOT EXPOSE A RECEIPT: it needs no completion, no
  * invoice and no payment, and it reads no receipt endpoint to find that out. What these specs
  * cover is the sheet itself: the salon and visit head, one services row per pet-service pair, and
- * three note rows whose empty case is a dash.
+ * three note rows on screen whose empty case is a dash.
+ *
+ * THE PRINTED SHEET IS A NARROWER PROJECTION THAN THE SHEET ON SCREEN, and this spec holds that in
+ * the browser. `ticketDocumentMarkup` is still one renderer with two hosts, but it takes a
+ * `printed` flag, and the flag withholds the PET and CLIENT note threads from the print root: a
+ * screen is read by whoever is signed in, at a desk, while the dialog is open, and a printed sheet
+ * is clipped to a run, carried around the salon and eventually thrown out. The appointment note —
+ * the one of the three that is a fact about THIS visit — is what goes on paper. The deterministic
+ * half, including the field-by-field assertion that no internal note kind reaches the printed
+ * markup, is `tests/ui/ticket-document.test.ts`.
  *
  * THE SINGLE MONEY STATEMENT INVARIANT IS STILL GUARDED HERE, and the first spec is where. Every
  * money value the product shows about an invoice is a value `GET /api/invoices/:id/receipt`
@@ -334,13 +343,34 @@ test("the work sheet: one row per pet-service pair, and the three notes", async 
   // appointment surface, and neither note thread has a writer anywhere.
   await expect(ticket(page).locator("textarea")).toHaveCount(0);
 
-  // The sheet is the sheet, on screen and on paper: one markup function, two hosts.
+  // ONE MARKUP FUNCTION, TWO HOSTS, AND ONE DECLARED DIFFERENCE. Everything the screen drew is on
+  // paper — the reference, the salon block, the visit, both service rows — except the two note
+  // THREADS, which the printed projection withholds.
   await ticket(page).getByTestId("ticket-print").click();
   await printFromPreview(page);
   const printRoot = page.locator(".print-root.print-ticket");
   await expect(printRoot).toHaveCount(1);
   await expect(printRoot.getByTestId("ticket-service-row")).toHaveCount(2);
-  await expect(printRoot.getByTestId("ticket-notes")).toContainText("One inch reverse, round head.");
+  await expect(printRoot.getByTestId("ticket-appointment-reference"))
+    .toHaveText(`Appointment #: ${reference}`);
+
+  // THE PRINTED NOTES TABLE IS ONE ROW, AND IT IS THE APPOINTMENT'S OWN.
+  const printedNotes = printRoot.getByTestId("ticket-notes");
+  await expect(printedNotes.locator("tbody tr")).toHaveCount(1);
+  await expect(column(printedNotes, 1)).toHaveText(["Appointment note"]);
+  await expect(column(printedNotes, 2)).toHaveText(["Owner collecting at 4pm sharp."]);
+  // WITHHELD, NOT EMPTIED. Neither thread's row is on paper at all, and neither thread's text is
+  // anywhere in the printed document — which is the assertion that fails if somebody later pipes
+  // a pet or client note back into the sheet through some other cell.
+  await expect(printRoot.getByTestId("ticket-note-pet")).toHaveCount(0);
+  await expect(printRoot.getByTestId("ticket-note-client")).toHaveCount(0);
+  await expect(printRoot).not.toContainText("One inch reverse, round head.");
+  await expect(printRoot).not.toContainText("Text before the dog is ready.");
+  await expect(printRoot).not.toContainText("(Pet)");
+  await expect(printRoot).not.toContainText("(Client)");
+  // And the surface UNDERNEATH still has all three: this is a print projection and nothing else.
+  await expect(column(ticket(page).getByTestId("ticket-notes"), 1))
+    .toHaveText(["Charlie (Pet)", "Emma Johnson (Client)", "Appointment note"]);
   await page.evaluate(() => {
     for (const root of document.querySelectorAll(".print-root")) root.parentNode?.removeChild(root);
   });

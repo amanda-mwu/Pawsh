@@ -2625,9 +2625,10 @@ function appointmentLifecycleValues(item,activity){
 // neither financial body carries a title of its own; the Ticket prepends nothing, because it opens
 // on its own reference.
 function printFinancialRoot(title,body,className){
-  // The title is handed to the preview as well as prepended to the body, so the window over the
-  // document and the document under it say the same name rather than only the second one saying it.
-  previewPrintRoot(className,`<h1>${escape(title)}</h1>${body}`,title);
+  // The title reaches the DOCUMENT and nothing else. The preview's chrome is deliberately generic
+  // now, so this <h1> is the only thing on screen naming the document - and it is the very <h1>
+  // that reaches paper, so the window and the page cannot disagree about which document this is.
+  previewPrintRoot(className,`<h1>${escape(title)}</h1>${body}`);
 }
 /**
  * THE PRINTING MECHANISM ITSELF, STATED ONCE.
@@ -2673,19 +2674,29 @@ function appendPrintRoot(className,html){
  * Invoice any more, but it still hosts the client history the Invoice is reached through, so
  * borrowing it would close a window the preview is standing over.
  *
- * THE PREVIEW CARRIES THE DOCUMENT'S OWN IDENTITY. It used to be headed "Print preview" for all
- * four documents, so the only thing on screen that said WHICH document was about to be printed was
- * the <h1> inside the body - and the Ticket has no <h1> at all, so for the Ticket nothing said it.
- * A window offering to put a document on paper has to name the document it is holding: an operator
- * who reached Print Receipt and is looking at a preview headed `Invoice #1042` has been told,
- * before the paper comes out, that they pressed the wrong control. `documentTitle` is the same
- * string the document itself is titled by at every other point in its life - `invoiceDocumentTitle`,
- * `paymentReceiptTitle`, the Ticket's own reference - so the preview cannot name it anything the
- * rest of the product does not.
+ * THE CHROME CARRIES NO DOCUMENT LABEL, BECAUSE THE DOCUMENT ALREADY CARRIES ONE. This heading
+ * read `Print preview: Invoice #1042` for a while, which named the document a second time about a
+ * centimetre above the name it prints under. The preview is the one place in the product where
+ * both readings are on screen at once, so the duplication was at its most visible exactly where it
+ * was least useful, and it cost a row of the window to say nothing new. What is left is the two
+ * controls and nothing else: Close - drawn twice, because a window closes from its corner as well
+ * as from its footer - and Print.
+ *
+ * EVERY DOCUMENT STILL IDENTIFIES ITSELF INSIDE THE PREVIEW, and that is the PRECONDITION for
+ * dropping the label rather than a hope about it. `printFinancialRoot` hands the Invoice and the
+ * Receipt an <h1> - `Invoice #1042`, `Receipt #1042`, the same strings they print under - and
+ * `printAppointment` heads a single printed appointment the same way. The Ticket prepends nothing
+ * and needs nothing: `ticketDocumentMarkup` OPENS on `Appointment #: 4f2c1a90` and the salon's own
+ * name, so the one document whose body used to say nothing at all now says it first.
+ *
+ * THE THREE WORDS THAT REMAIN ARE NOT A DOCUMENT NAME. "Print preview" is what the WINDOW is, and
+ * it is the dialog's accessible name through `aria-labelledby="stacked-dialog-title"`; a modal
+ * with an empty heading announces as nothing at all to a screen reader, which is a worse trade
+ * than a generic one. So it stays, and it stays generic - it names no document and never varies.
  */
-function previewPrintRoot(className,html,documentTitle){
+function previewPrintRoot(className,html){
   return openStackedDialog({
-    title:documentTitle?`Print preview: ${documentTitle}`:"Print preview",
+    title:"Print preview",
     body:`<section class="print-preview" data-testid="print-preview" `
       +`data-print-root-class="${escapeAttr(className)}">${html}</section>`,
     dismissLabel:"Close",
@@ -4469,12 +4480,21 @@ function invoiceWorkspaceMarkup(receipt,appointment){
   const invoice=receipt.invoice;
   return `<div class="surface-shell invoice-shell" data-testid="invoice-workspace">`
     +`<header class="surface-head invoice-head">`
-      +`<div class="surface-head-text">`
+      // THE NUMBER AND THE STATE ARE ONE LINE: `Invoice #12101807   Paid`. The chip used to sit on
+      // its own row under the title, which spent a whole row of the head - the scarcest vertical
+      // space on the surface, directly above the statement an operator came here to read - saying
+      // one word. Identity and current state are the two things a document's head is FOR and they
+      // belong together; `.invoice-head-identity` is the same one-line shape
+      // `.surface-head .appointment-reference` already gives the detail surface, and it wraps, so
+      // a narrow screen drops the chip below the number rather than squeezing either.
+      //
+      // The chip stays OUTSIDE the <h2>. The <h2> is `aria-labelledby` for the whole surface, so
+      // folding a settlement state into it would rename the document every time it was paid.
+      +`<div class="surface-head-text invoice-head-identity">`
         +`<h2 id="invoice-surface-title" data-testid="invoice-document-title">`
           +`${escape(invoiceDocumentTitle(receipt))}</h2>`
-        +`<p class="invoice-head-meta">`
-          +`<span class="badge invoice-status-badge" data-testid="invoice-status">`
-            +`${escape(invoiceStatusLabel(invoice.status))}</span></p>`
+        +`<span class="badge invoice-status-badge" data-testid="invoice-status">`
+          +`${escape(invoiceStatusLabel(invoice.status))}</span>`
       +`</div>`
       +`<div class="surface-head-actions">`
         +`<button type="button" class="surface-close" data-surface-close aria-label="Close invoice">`
@@ -14978,10 +14998,10 @@ function appointmentLifecycleMarkup(activity,{editable=false}={}){
 }
 
 // Through `previewPrintRoot`, like every other printed document. The <h1> is prepended because
-// `printableAgenda` carries no title of its own.
+// `printableAgenda` carries no title of its own, and since the preview's chrome names no document
+// it is the only thing that says what this sheet is - on screen and on paper alike.
 function printAppointment(item){
-  previewPrintRoot("print-root",`<h1>Pawsh appointment</h1>${printableAgenda([item])}`,
-    "Pawsh appointment");
+  previewPrintRoot("print-root",`<h1>Pawsh appointment</h1>${printableAgenda([item])}`);
 }
 
 /**
@@ -15940,11 +15960,24 @@ function ticketServicesMarkup(model){
 }
 
 /**
- * Three notes, always three rows.
+ * The notes, and WHICH notes depends on which host is drawing them.
  *
- * The pet's and the client's are the newest entry in each note thread; the third is the
- * appointment's own note, read straight off the live projection - so a correction saved on the
- * appointment surface is on the next sheet printed without anything here changing.
+ * ON SCREEN: three rows. The pet's and the client's are the newest entry in each note thread; the
+ * third is the appointment's own note, read straight off the live projection - so a correction
+ * saved on the appointment surface is on the next sheet drawn without anything here changing.
+ *
+ * ON PAPER: one row, the appointment note. The pet and client threads are the salon's STANDING
+ * record of an animal and a household - "text before the dog is ready", "one inch reverse, round
+ * head" - rather than facts about this visit, and a printed sheet has a longer and far less
+ * controlled life than the screen they were read on: it is clipped to a run, carried around the
+ * salon, set down on a bench and eventually thrown out. The appointment note is the one of the
+ * three that is about THIS appointment, so it is the one the sheet carries.
+ *
+ * NOTHING IS DELETED AND NOTHING STOPS BEING READ. `openTicket` still loads both threads, the
+ * surface still shows them, and the records still hold them; `printed` narrows the PROJECTION and
+ * touches no store and no read. It is one flag on the shared renderer rather than a second
+ * renderer, because a printed Ticket composed by its own function would be free to drift from the
+ * sheet the groomer read on screen in every other respect as well.
  *
  * STILL NEVER A TEXTAREA, but no longer for want of a route. `PATCH /api/appointments/:id` will
  * now write the appointment note and the appointment surface offers it; the Ticket declines it
@@ -15952,19 +15985,23 @@ function ticketServicesMarkup(model){
  * a document that could be edited from the page it is printed from is a document nobody can trust
  * they are holding a copy of. The note threads have no writer here for the same reason.
  *
- * THE ROWS ARE PRESENT EVEN WHEN EMPTY. "Nobody has written a note about this pet" is a fact the
- * groomer needs, and a table that silently drops the row leaves them unable to tell it from a
- * sheet that never had the row at all.
+ * THE ROWS IT DRAWS, IT DRAWS EVEN WHEN EMPTY. "Nobody has written a note about this pet" is a
+ * fact the groomer needs, and a table that silently drops the row leaves them unable to tell it
+ * from a sheet that never had the row at all. A row WITHHELD from the printed projection is a
+ * different thing from a row that is empty, which is why the print root carries neither the pet
+ * row nor the client row rather than carrying them with a dash in them.
  */
-function ticketNotesMarkup(item,model,notes){
+function ticketNotesMarkup(item,model,notes,{printed}){
   const row=(testid,label,value)=>
     `<tr data-testid="${testid}"><td>${escape(label)}</td><td>${escape(value)}</td></tr>`;
+  const threads=printed?""
+    :row("ticket-note-pet",`${petName({petName:model.petName})} (Pet)`,ticketNoteCell(notes.pet))
+      +row("ticket-note-client",`${model.customerName} (Client)`,ticketNoteCell(notes.client));
   return `<section class="ticket-section"><h3>Notes</h3>`
     +`<div class="ticket-table-wrap">`
       +`<table class="ticket-table ticket-notes-table" data-testid="ticket-notes">`
       +`<thead><tr><th>Item</th><th>Latest Note</th></tr></thead><tbody>`
-      +row("ticket-note-pet",`${petName({petName:model.petName})} (Pet)`,ticketNoteCell(notes.pet))
-      +row("ticket-note-client",`${model.customerName} (Client)`,ticketNoteCell(notes.client))
+      +threads
       +row("ticket-note-appointment","Appointment note",item.notes||TICKET_EMPTY)
     +`</tbody></table></div>`
   +`</section>`;
@@ -15973,10 +16010,22 @@ function ticketNotesMarkup(item,model,notes){
 /**
  * The sheet itself - the thing that is on screen and the thing that goes on paper.
  *
- * ONE MARKUP FUNCTION, TWO HOSTS. The print root is not a second renderer, so whatever state the
- * note reads are in prints in that state; there is no print-only variant of anything here.
+ * ONE MARKUP FUNCTION, TWO HOSTS, AND ONE DECLARED DIFFERENCE BETWEEN THEM. `printed` is the only
+ * thing either host may vary, it is false for the surface and true for the print root, and all it
+ * does is withhold the pet and client note threads from the printed projection - see
+ * `ticketNotesMarkup`. Everything else is composed once for both, so whatever state the note reads
+ * are in on screen prints in that state.
+ *
+ * WHAT THE PRINTED PROJECTION CARRIES, exhaustively, because this is the document that leaves the
+ * screen: the appointment reference, the salon's own name and contact lines, the visit's date and
+ * the client's name, one row per pet-service pair (pet, breed, groomer, service, duration), and the
+ * appointment note. It carries NOTHING from the pet care record - no safety alert, and no
+ * behaviour, medical, grooming-preference or coat note - because it reads `appointmentPresentation`
+ * field by name and never `model.warning`, which is where those five are folded together. It
+ * carries no pinned/"popup" flag either, because with the threads withheld `ticketLatestNote` is
+ * not consulted at all. And no money: that is the Invoice's and the Receipt's.
  */
-function ticketDocumentMarkup(item,notes){
+function ticketDocumentMarkup(item,notes,{printed=false}={}){
   const model=appointmentPresentation(item);
   return `<article class="ticket-doc" data-testid="ticket-document">`
     +`<p class="ticket-doc-reference" data-testid="ticket-appointment-reference">`
@@ -15986,7 +16035,7 @@ function ticketDocumentMarkup(item,notes){
       +ticketVisitMarkup(item,model)
     +`</div>`
     +ticketServicesMarkup(model)
-    +ticketNotesMarkup(item,model,notes)
+    +ticketNotesMarkup(item,model,notes,{printed})
   +`</article>`;
 }
 
@@ -16013,19 +16062,21 @@ function ticketSurfaceMarkup(item,notes){
 }
 
 /**
- * The sheet on paper.
+ * The sheet on paper, which is a NARROWER PROJECTION of the sheet on screen.
  *
  * Through `previewPrintRoot`, like every other printed document, but with NO PREPENDED <h1> -
  * `printAppointment` and the two financial documents prepend one because their bodies carry no
- * title of their own, and this one opens on the appointment reference and the salon's name.
+ * title of their own, and this one OPENS on `Appointment #: ...` and the salon's name. That is
+ * also why the preview's chrome carrying no document label costs this document nothing: the thing
+ * the label was load-bearing for is the first line of the body.
  *
- * It is still named to the PREVIEW, in the exact words the Ticket surface heads itself with. The
- * body's reference line is inside the scroller and can be scrolled away from; the window's own
- * heading cannot, and this is the one document whose preview had no title anywhere at all.
+ * `{printed:true}` is the whole difference between the two hosts, and it withholds the pet and
+ * client note threads and nothing else. `notes` is still handed in rather than dropped from the
+ * signature, because the flag belongs to the PROJECTION: whether the threads are printed is a
+ * decision `ticketNotesMarkup` states once, not a fact about what this caller happens to hold.
  */
 function printTicket(item,notes){
-  previewPrintRoot("print-root print-ticket",ticketDocumentMarkup(item,notes),
-    `Ticket #: ${ticketReference(item)}`);
+  previewPrintRoot("print-root print-ticket",ticketDocumentMarkup(item,notes,{printed:true}));
 }
 
 /**

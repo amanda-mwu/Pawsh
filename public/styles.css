@@ -2617,9 +2617,24 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
 .invoice-statement>.receipt{max-width:64ch;margin:0}
 .invoice-summary{border-left:1px solid var(--line);background:var(--surface-2)}
 
-/* The head. The status is a fact about this invoice and sits under its name rather than beside
-   it, so a long document title has the whole first line. */
-.invoice-head-meta{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center;margin:0}
+/* The head. THE NUMBER AND THE STATE READ AS ONE LINE - `Invoice #12101807   Paid` - rather than
+   as a title with a status strip beneath it. The strip cost a whole row of the head to say one
+   word, and the head sits directly above the statement, so that row was the most expensive
+   vertical space on the surface. This is the shape `.surface-head .appointment-reference` already
+   gives the detail surface's reference and its two chips; it overrides `.surface-head-text`'s
+   `display:grid` by sitting later in this file, which is the only reason a second class is enough.
+
+   `flex-wrap` is the narrow-screen behaviour, and it is why this is flex rather than a two-column
+   grid. One line is what a desk gets; a 360px phone has about 270px of head beside the close
+   button, and `Invoice #12101807` plus any state at all does not fit in it - so the chip DROPS
+   BELOW the number whole, back at the number's own left edge, rather than being squeezed, clipped
+   or pushed over the edge of the head. That is the same two-row reading the old `.invoice-head-meta`
+   strip always gave, but only where the width actually demands it. `min-width:0` on the <h2> lets a
+   long number wrap inside itself instead of widening the head past the viewport. */
+.invoice-head-identity{
+  display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-1) var(--space-3);
+}
+.invoice-head-identity>h2{min-width:0}
 .invoice-status-badge{background:var(--surface-2);color:var(--ink)}
 
 /* The visit, above the money. A definition list, because that is what it is. */

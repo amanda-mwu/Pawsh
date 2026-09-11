@@ -20,7 +20,8 @@ import type { APIRequestContext, Page } from "@playwright/test";
  * `tests/ui/invoice-workspace.test.ts` cannot answer because it needs layout, a viewport and a
  * navigation history.
  *
- *   1. the desktop workspace, opened from the appointment, uses the viewport and splits in two
+ *   1. the desktop workspace, opened from the appointment, uses the viewport, splits in two, and
+ *      heads itself with the number and the settlement state on ONE LINE
  *   2. Print Invoice → an Invoice preview → paper, and Print Receipt → a RECEIPT preview → paper,
  *      with no Ticket anywhere on either route
  *   3. closing it returns the operator to the context they opened it from — the visit from the
@@ -59,11 +60,15 @@ async function settledInvoice(api: APIRequestContext, appointmentId: string): Pr
 }
 
 /**
- * The preview window's own name.
+ * The preview window's own chrome heading.
  *
  * `#stacked-dialog-title` is the <h4> the head X is appended INTO — one dismissal drawn in the
- * corner a window closes from — so the heading's text ends in that glyph. The name is what is
+ * corner a window closes from — so the heading's text ends in that glyph. The heading is what is
  * asserted, so the control that shares the element is trimmed off rather than asserted around.
+ *
+ * It names NO DOCUMENT. The chrome was headed `Print preview: Invoice #1042` for a while, over a
+ * body headed `Invoice #1042`; the label is gone and the document's own <h1> is what says which
+ * document is about to come out, which is where an operator reads a document's name anywhere else.
  */
 async function previewName(page: Page): Promise<string> {
   return (await page.locator("#stacked-dialog-title").evaluate((node) => {
@@ -108,6 +113,24 @@ test("the desktop Invoice is a workspace, and both print routes carry their own 
     // NOT THE FORM DIALOG. `#modal` still exists and still hosts Move, Adjust services and the
     // client history — it simply is not where a financial document lives any more.
     await expect(page.getByTestId("modal")).toBeHidden();
+
+    // ---- The head is ONE LINE: `Invoice #12101807   Paid` -------------------------------------
+    // The chip used to sit in a row of its own under the title, which spent a whole row of the head
+    // to say one word — and the head is directly above the statement the operator came to read.
+    // Identity and current state are what a document's head is for, so they share its first line.
+    const titleBox = (await invoiceTitle(page).boundingBox())!;
+    const chipBox = (await document_.getByTestId("invoice-status").boundingBox())!;
+    await expect(document_.getByTestId("invoice-status")).toHaveText("Paid");
+    // ONE LINE, measured by the two boxes sharing a centre rather than by one containing the
+    // other: the chip is a padded `.badge` and is TALLER than the heading's line box, so
+    // `align-items:center` leaves it overhanging the heading top and bottom by a pixel or two.
+    const centre = (box: { y: number; height: number }) => box.y + box.height / 2;
+    expect(Math.abs(centre(chipBox) - centre(titleBox))).toBeLessThan(2);
+    // To the RIGHT of the number, which is what makes it one line rather than two.
+    expect(chipBox.x).toBeGreaterThan(titleBox.x + titleBox.width - 1);
+    // And it is the existing chip, not a new component: `.badge` with the surface's one tint.
+    await expect(document_.getByTestId("invoice-status")).toHaveClass(/\bbadge\b/u);
+    await expect(document_.getByTestId("invoice-status")).toHaveClass(/\binvoice-status-badge\b/u);
 
     // ---- The workspace uses the screen it was given ------------------------------------------
     const viewport = page.viewportSize()!;
@@ -163,7 +186,11 @@ test("the desktop Invoice is a workspace, and both print routes carry their own 
     // ---- Print Invoice → an INVOICE preview → paper ------------------------------------------
     await document_.getByTestId("invoice-print-invoice").click();
     await expect(page.getByTestId("print-preview")).toBeVisible();
-    expect(await previewName(page)).toBe(`Print preview: Invoice #${invoice.invoiceNumber}`);
+    // THE CHROME CARRIES NO DOCUMENT LABEL — three words and two controls — and the document
+    // inside it names itself in the <h1> it prints under.
+    expect(await previewName(page)).toBe("Print preview");
+    await expect(page.getByTestId("print-preview").locator("h1"))
+      .toHaveText(`Invoice #${invoice.invoiceNumber}`);
     await expect(page.getByTestId("print-preview").getByTestId("ticket-document")).toHaveCount(0);
     await printFromPreview(page);
     await expect(printRoot(page).locator("h1")).toHaveText(`Invoice #${invoice.invoiceNumber}`);
@@ -175,7 +202,7 @@ test("the desktop Invoice is a workspace, and both print routes carry their own 
     await document_.getByTestId("invoice-print-receipt").click();
     const preview = page.getByTestId("print-preview");
     await expect(preview).toBeVisible();
-    expect(await previewName(page)).toBe(`Print preview: Receipt #${invoice.invoiceNumber}`);
+    expect(await previewName(page)).toBe("Print preview");
     // THE PREVIEW IS THE RECEIPT. Not the Ticket — which is the shop's operational work sheet and
     // carries no money at all — and not the Invoice's own statement retitled.
     await expect(preview.getByTestId("payment-receipt")).toHaveCount(1);
@@ -186,6 +213,14 @@ test("the desktop Invoice is a workspace, and both print routes carry their own 
     // It references the invoice it evidences. Pawsh has no separate receipt series and inventing
     // one would be an identifier nothing reconciles against.
     await expect(preview.locator("h1")).toHaveText(`Receipt #${invoice.invoiceNumber}`);
+    // WHAT THE CHROME DOES KEEP: the two controls, and nothing naming the document. Back out, and
+    // Print. Both are still there with the label gone, and the heading says neither "Receipt" nor
+    // the invoice's number.
+    await expect(page.getByTestId("stacked-dialog-dismiss")).toHaveText("Close");
+    await expect(page.getByTestId("stacked-dialog-confirm")).toHaveText("Print");
+    await expect(page.getByTestId("stacked-dialog-close")).toBeVisible();
+    expect(await previewName(page)).not.toContain("Receipt");
+    expect(await previewName(page)).not.toContain(String(invoice.invoiceNumber));
     // And Print from inside it is what reaches the print path.
     await printFromPreview(page);
     await expect(printRoot(page).locator("h1")).toHaveText(`Receipt #${invoice.invoiceNumber}`);
@@ -252,6 +287,28 @@ test("a narrow viewport collapses the workspace to one column and overflows nowh
       return shell.scrollWidth - shell.clientWidth;
     });
     expect(overflow).toBeLessThanOrEqual(1);
+
+    // THE HEAD WRAPS RATHER THAN OVERFLOWING. The number and the state share one line on a desk;
+    // at 360px they do not fit beside each other, so the chip DROPS BELOW the number whole —
+    // `flex-wrap:wrap`, not a squeezed line and not a chip hanging over the edge of the head.
+    const titleBox = (await document_.getByTestId("invoice-document-title").boundingBox())!;
+    const chipBox = (await document_.getByTestId("invoice-status").boundingBox())!;
+    const headBox = (await document_.locator(".invoice-head").boundingBox())!;
+    // Below it, and back at the number's own left edge rather than indented or centred.
+    expect(chipBox.y).toBeGreaterThanOrEqual(titleBox.y + titleBox.height - 1);
+    expect(Math.abs(chipBox.x - titleBox.x)).toBeLessThan(2);
+    // Inside the head horizontally, both of them — this is the overflow the old stacked row could
+    // not produce and a non-wrapping one line could.
+    expect(titleBox.x + titleBox.width).toBeLessThanOrEqual(headBox.x + headBox.width + 1);
+    expect(chipBox.x + chipBox.width).toBeLessThanOrEqual(headBox.x + headBox.width + 1);
+    // AND NEITHER IS TRUNCATED. Both read whole: no ellipsis, no clipped box, the state in words.
+    for (const testid of ["invoice-document-title", "invoice-status"]) {
+      const clipped = await document_.getByTestId(testid).evaluate((node) =>
+        node.scrollWidth - node.clientWidth);
+      expect(clipped, testid).toBeLessThanOrEqual(1);
+    }
+    await expect(invoiceTitle(page)).toHaveText(`Invoice #${invoice.invoiceNumber}`);
+    await expect(document_.getByTestId("invoice-status")).toHaveText("Paid");
 
     // THE TEXT IS NOT SHRUNK TO FORCE THE DESKTOP LAYOUT IN. The money statement reads at the same
     // size it reads at on a desk.

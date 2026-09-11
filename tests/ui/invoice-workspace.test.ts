@@ -294,6 +294,51 @@ describe("the workspace is an Invoice in every settlement state", () => {
     }
   });
 
+  /**
+   * THE NUMBER AND THE STATE ARE ONE LINE: `Invoice #12101807   Paid`.
+   *
+   * The chip used to sit in a `<p class="invoice-head-meta">` of its own UNDER the <h2>, which
+   * spent a whole row of the head to say one word - and the head sits directly above the money
+   * statement, so that was the most expensive vertical space on the surface. Identity and current
+   * state are the two things a document's head is for and they belong on one line.
+   *
+   * The WRAP at a narrow width is layout and belongs to `tests/e2e/invoice-workspace.spec.ts`,
+   * which measures it at 360px. What is deterministic here is the SHAPE: one row, two siblings,
+   * the existing chip, and the chip outside the heading.
+   */
+  it("puts the state on the SAME LINE as the number, not on a row of its own", () => {
+    const client = loadClient();
+    const markup = client.invoiceWorkspaceMarkup(
+      receiptFixture([cashPayment({ amountMinor: 9201 })]), null
+    );
+
+    expect(markup).toContain('class="surface-head-text invoice-head-identity"');
+    // The separate meta row is gone rather than hidden, so nothing is left to drift back.
+    expect(markup).not.toContain("invoice-head-meta");
+    // Siblings, in that order, with nothing between them: the chip follows the number's heading
+    // directly inside the one row.
+    expect(markup).toContain(
+      '<h2 id="invoice-surface-title" data-testid="invoice-document-title">Invoice #1042</h2>'
+      + '<span class="badge invoice-status-badge" data-testid="invoice-status">Paid</span>'
+    );
+
+    // AND THE CHIP IS OUTSIDE THE <h2>. The heading is the surface's `aria-labelledby`, so a state
+    // folded into it would rename the document every time the invoice was paid.
+    expect(title(markup)).toBe("Invoice #1042");
+    expect(title(markup)).not.toContain("Paid");
+  });
+
+  it("moves the existing chip rather than introducing a second status component", () => {
+    // `.badge` is the product's chip and `.invoice-status-badge` is its one tint on this surface.
+    // Putting the state on the title's line was a LAYOUT change; a new component or a new colour
+    // would have been a different change wearing this one's description.
+    const client = loadClient();
+    const markup = client.invoiceWorkspaceMarkup(receiptFixture([]), null);
+    expect(markup)
+      .toContain('<span class="badge invoice-status-badge" data-testid="invoice-status">');
+    expect([...markup.matchAll(/data-testid="invoice-status"/gu)]).toHaveLength(1);
+  });
+
   it("says which settlement state it is in, beside the name and never instead of it", () => {
     const client = loadClient();
     expect(value(client.invoiceWorkspaceMarkup(receiptFixture([]), null), "invoice-status"))

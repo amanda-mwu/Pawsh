@@ -428,19 +428,28 @@ test("a client's transaction history opens the Invoice, in every settlement stat
     await expect(settledDocument.getByTestId("invoice-print-receipt")).toBeVisible();
 
     await settledDocument.getByTestId("invoice-print-invoice").click();
-    // THE PREVIEW NAMES THE DOCUMENT IT IS HOLDING. It used to be headed "Print preview" for
-    // every document, so nothing but the sheet inside it said which one was about to come out.
+    // THE DOCUMENT NAMES ITSELF AND THE CHROME DOES NOT. The chrome was headed
+    // `Print preview: Invoice #N` for a while, a centimetre above a body headed `Invoice #N`; the
+    // label is gone and the <h1> the document prints under is what says which one this is.
+    // `toContainText` rather than `toHaveText`: the head X is appended INTO this heading, so its
+    // glyph is part of the element's text.
+    await expect(page.locator("#stacked-dialog-title")).toContainText("Print preview");
     await expect(page.locator("#stacked-dialog-title"))
-      .toContainText(`Invoice #${paid.invoiceNumber}`);
+      .not.toContainText(`Invoice #${paid.invoiceNumber}`);
+    await expect(page.getByTestId("print-preview").locator("h1"))
+      .toHaveText(`Invoice #${paid.invoiceNumber}`);
     await printFromPreview(page);
     await expect(printRoot(page).locator("h1")).toHaveText(`Invoice #${paid.invoiceNumber}`);
     await clearPrintRoots(page);
 
     await settledDocument.getByTestId("invoice-print-receipt").click();
-    // A RECEIPT PREVIEW IS NAMED AS A RECEIPT, and it is the Receipt that is in it — never the
-    // Ticket, which is the shop's work sheet and carries no money at all.
-    await expect(page.locator("#stacked-dialog-title"))
-      .toContainText(`Receipt #${paid.invoiceNumber}`);
+    // A RECEIPT PREVIEW HOLDS A DOCUMENT NAMED AS A RECEIPT — in its own <h1>, not in the window's
+    // chrome — and it is the Receipt that is in it, never the Ticket, which is the shop's work
+    // sheet and carries no money at all.
+    await expect(page.locator("#stacked-dialog-title")).toContainText("Print preview");
+    await expect(page.locator("#stacked-dialog-title")).not.toContainText("Receipt");
+    await expect(page.getByTestId("print-preview").locator("h1"))
+      .toHaveText(`Receipt #${paid.invoiceNumber}`);
     await expect(page.getByTestId("print-preview")).toContainText("Total settled");
     await expect(page.getByTestId("print-preview").getByTestId("ticket-document"))
       .toHaveCount(0);

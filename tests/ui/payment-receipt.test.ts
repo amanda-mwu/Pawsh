@@ -1497,15 +1497,17 @@ describe("6.2 the Receipt still identifies itself as a Receipt", () => {
    * mistaken for the bill, and the one thing that tells a client which of the two they are holding
    * is the name at the top of it.
    */
-  it("puts its own name on the paper, on the preview over it, and nowhere says Invoice", () => {
+  it("puts its own name on the paper, inside the preview over it, and nowhere says Invoice", () => {
     const client = loadClient();
     client.printPaymentReceipt(itemisedFixture([creditPayment(), keyedCardPayment()]));
     const root = client.printed.at(-1);
     expect(root!.className).toContain("print-payment-receipt");
     expect(root!.innerHTML).toContain("<h1>Receipt #1042</h1>");
-    // The window over the document says the same name, so an operator who pressed the wrong
-    // control learns it before the paper comes out.
-    expect(client.previews.at(-1)!.title).toBe("Print preview: Receipt #1042");
+    // The PREVIEW'S CHROME names no document — the document under it does, in the <h1> it prints
+    // under, which is the one place an operator reads a name off a document anywhere else. A
+    // chrome label was a second copy of that name a centimetre above it.
+    expect(client.previews.at(-1)!.title).toBe("Print preview");
+    expect(client.previews.at(-1)!.body).toContain("<h1>Receipt #1042</h1>");
     // Not the bill, and not the work sheet.
     expect(root!.innerHTML).not.toContain("Invoice #");
     expect(root!.innerHTML).not.toContain(TICKET_SENTINEL);

@@ -2742,11 +2742,43 @@ function checkoutBillMarkup(co){
   const {checkedIn,finished,minutes,stored}=appointmentLifecycleValues(item,null);
   const invoice=receipt?.invoice||null;
   const frozen=Boolean(invoice);
+  /**
+   * ONE MONEY STATEMENT ON THIS SCREEN, AND IN THE SETTLED MODE IT IS THE RAIL'S.
+   *
+   * `frozen` is `Boolean(invoice)` and answers "are the figures fixed", which is true in BOTH
+   * post-invoice modes. It was being used to decide what this column SAYS as well, and those are
+   * different questions. The consequence was on screen in the settled mode: this column drew
+   * `Subtotal / Discount / Tax / Tip / Total` off the invoice while `.checkout-money` drew
+   * `receiptBodyMarkup` beside it - the same five figures, in two different shapes, a hand apart.
+   * It also drew "Only the payment is still open" over an invoice on which the payment is closed.
+   *
+   * WHICH REGION IS REDUNDANT, AND WHY IT IS THIS ONE. The rail's statement is the shared one:
+   * `receiptBodyMarkup`, the same renderer the Invoice workspace and the print root use, carrying
+   * the discount breakdown, the invoice total, the balance, the payment records and the Void
+   * control. This column's list is a private copy of a subset of it. Deleting the fuller,
+   * shared, cross-host-compared statement to keep the smaller private one would be the wrong way
+   * round, and `tests/e2e/ticket-surface.spec.ts` compares that shared statement cell for cell
+   * across its three hosts.
+   *
+   * So the rule is by MODE, not by `frozen`:
+   *   build    this column is the only statement there is - it estimates, and it keeps its money.
+   *   collect  this column is still the only statement - the rail is the payment form. Keeps its
+   *            money, and keeps the "already raised" note, which is true exactly here.
+   *   settled  the rail states the money in full. This column states NONE of it and becomes what
+   *            is left when the money is taken out: who, when, what was done, and the note the
+   *            groomer left. The per-service price goes with the rest, because `$85.00` beside
+   *            `Full Groom` here and `$85.00` beside `Full Groom (for Charlie)` in the rail is
+   *            the same duplication one line smaller.
+   *
+   * NO FIGURE MOVED and no host was deleted. This is one screen that stated its money twice
+   * saying it once.
+   */
+  const settled=checkoutMode(co)==="settled";
 
   const services=model.serviceSnapshots.map(service=>
     `<div class="appointment-service-row" data-testid="checkout-service-row">`
       +`<span><strong>${escape(service.name)}</strong><small>${Number(service.durationMinutes)} min</small></span>`
-      +`<strong>${service.priceMinor===null||service.priceMinor===undefined?"Price unavailable":money(service.priceMinor)}</strong>`
+      +(settled?"":`<strong>${service.priceMinor===null||service.priceMinor===undefined?"Price unavailable":money(service.priceMinor)}</strong>`)
     +`</div>`).join("");
 
   // Absent, not disabled. `PUT /api/appointments/:id/services` refuses any status past in-service
@@ -2772,7 +2804,10 @@ function checkoutBillMarkup(co){
     ? `<p class="wide fine" data-testid="checkout-one-only">This salon applies one coupon or discount per appointment.</p>`
     : "";
 
-  const money_=frozen
+  const money_=settled
+    // Stated once, in the rail, by the shared renderer. See the note above `settled`.
+    ? ""
+    :frozen
     // Every figure the server actually charged, from the invoice it wrote. Nothing is re-derived
     // once there is an authoritative answer.
     ? `<div class="checkout-line"><span>Subtotal</span><strong data-testid="checkout-subtotal">${money(invoice.subtotalMinor)}</strong></div>`
@@ -2785,7 +2820,12 @@ function checkoutBillMarkup(co){
       +`<div class="checkout-line"><span>Tax</span><strong data-testid="checkout-tax">…</strong></div>`
       +`<div class="checkout-line is-total"><span>Total</span><strong data-testid="checkout-total">…</strong></div>`;
 
-  const disclosures=frozen
+  const disclosures=settled
+    // "Only the payment is still open" is a sentence about an invoice that is still owing, and on
+    // a settled one it is simply false. There is nothing left to say here: the rail's statement
+    // carries the balance, the records and the corrections.
+    ? ""
+    :frozen
     // The invoice fixed all of this. Showing live editors over frozen figures would invite an
     // edit whose only possible outcome is a fingerprint mismatch on a second checkout write.
     ? `<p class="fine" data-testid="checkout-frozen">Invoice ${escape(invoice.invoiceNumber)} is already raised, so the services, discounts and tip are fixed. Only the payment is still open.</p>`
@@ -2844,10 +2884,19 @@ function checkoutMethodMarkup(co){
   // salon's methods because that is the one decision the operator is making, and choosing it hands
   // the tip to hardware that asks the customer directly.
   if(co.terminals.length)methodOptions.push([CHECKOUT_TERMINAL_METHOD,"Card terminal"]);
-  // Last, and NEVER the default. `index===0` still checks the first salon method: spending a
-  // client's balance is a decision, and a checkout that pre-selected it would drain accounts by
-  // inattention. Absent at null (no client named, or the read failed) and absent at zero, because
-  // an inert radio for a balance there is nothing to spend is furniture.
+  // Last, and never pre-selected - which is now true of EVERY method rather than of this one
+  // alone. The reasoning here was right and was applied to too small a set: spending a client's
+  // balance is a decision, and a checkout that pre-selected it would drain accounts by
+  // inattention. So is taking cash. `index===0` used to check the first salon method, so a
+  // surface opened by the appointment footer's Take Payment arrived with Cash already chosen and
+  // the balance already in the amount field - and the checkout's own primary sits one pixel from
+  // the button that opened it, under the same word. One further press recorded a full cash
+  // payment that nobody had chosen. NOTHING IS CHOSEN FOR THE OPERATOR NOW: `readMethod()`
+  // returns "" until they pick, and `submitCheckout` answers that with "Choose a payment method."
+  // rather than with a tender.
+  //
+  // Absent at null (no client named, or the read failed) and absent at zero, because an inert
+  // radio for a balance there is nothing to spend is furniture.
   const offersCredit=checkoutOffersCredit(co);
   if(offersCredit)methodOptions.push([CHECKOUT_CREDIT_METHOD,"Client credit"]);
   if(!methodOptions.length){
@@ -2864,13 +2913,15 @@ function checkoutMethodMarkup(co){
     const options=methodOptions.map(([value,label])=>value===CHECKOUT_CREDIT_METHOD
       ?[value,`${label} — ${money(co.creditAvailableMinor)} available`]
       :[value,label]);
-    return select("method","Method",options,true,options[0][0])
+    // `""` selects the placeholder `select()` always renders, so the select opens on "Choose…"
+    // for the same reason the radios open on nothing.
+    return select("method","Method",options,true,"")
       +(offersCredit?`<p class="fine" data-testid="checkout-credit-available">Client credit: ${money(co.creditAvailableMinor)} available.</p>`:"");
   }
   const single=co.terminals.length===1?co.terminals[0]:null;
   return `<fieldset class="checkout-methods" data-testid="field-method"><legend>Method</legend>`
-    +methodOptions.map(([value,label],index)=>`<label class="checkout-method">`
-      +`<input type="radio" name="method" value="${escapeAttr(value)}" data-testid="checkout-method"${index===0?" checked":""}>`
+    +methodOptions.map(([value,label])=>`<label class="checkout-method">`
+      +`<input type="radio" name="method" value="${escapeAttr(value)}" data-testid="checkout-method">`
       +`<span>${escape(label)}`
       // One paired terminal is not a decision, so it is named rather than offered as a choice.
       +(single&&value===CHECKOUT_TERMINAL_METHOD?`<small data-testid="checkout-terminal-name">${escape(single.label)}</small>`:"")

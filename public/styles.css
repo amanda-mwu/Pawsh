@@ -2249,6 +2249,19 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
   box-shadow:0 -1px 3px rgba(32,37,34,.06);
 }
 .surface-foot-actions{display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center}
+/* AN EMPTY ERROR IS NOT A ROW.
+   Check Out is the one surface whose shell carries a bare `<p class="error">` between the body
+   and the footer - the Invoice workspace has none - and `.error` carries a global
+   `min-height:19px` so a message appearing does not shift the form under it. On a form that is
+   what you want. On a full-height surface it meant the shell's THREE declared rows
+   (`auto minmax(0,1fr) auto`) were being asked to hold FOUR children, so the footer was pushed
+   into an implicit fourth row with a permanently blank full-width 42px band above it - measured
+   at every viewport from 390x844 to 1440x900. That band sits immediately over the action row and
+   is what makes the bottom of a settled Check Out read as empty.
+   Collapsed only while it is EMPTY: `setError(message)` writes `textContent`, so a real message
+   gives the element a child, `:empty` stops matching and the error takes its space back. The body
+   is `minmax(0,1fr)` and absorbs it, so the footer does not move when a message arrives. */
+.surface-shell>p.error:empty{display:none}
 
 /* == Status strip ==
    Reuses `.appointment-lifecycle`; only the surface variant and the unrecorded/derived

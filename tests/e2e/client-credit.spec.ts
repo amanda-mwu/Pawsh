@@ -261,10 +261,18 @@ test("credit settles an invoice at checkout, and the receipt names it as a payme
 
     // Last in the list and NOT the default: spending a client's balance is a decision, and a
     // checkout that pre-selected it would drain accounts by inattention.
+    //
+    // THE SAME REASONING NOW COVERS EVERY METHOD, and this assertion was strengthened rather than
+    // relaxed to say so. It used to require the FIRST salon method to be checked - the corollary
+    // of "credit is not the default" when something had to be - and that corollary was itself a
+    // defect: the first salon method is Cash, so Check Out opened holding a complete, submittable
+    // cash payment, and the owner settled an invoice as cash without ever being asked. Taking cash
+    // is as much a decision as spending a balance. NOTHING is chosen for the operator now, which
+    // is a stronger claim than the one this line used to make and contains it.
     const methods = page.getByTestId("checkout-method");
     await expect(methods.last()).toHaveValue("client-credit");
     await expect(methods.last()).not.toBeChecked();
-    await expect(methods.first()).toBeChecked();
+    await expect(page.getByTestId("field-method").locator(":checked")).toHaveCount(0);
     await expect(page.getByTestId("checkout-credit-available")).toHaveText("$150.00 available");
     // Furniture until it is chosen.
     await expect(page.getByTestId("checkout-credit-note")).toBeHidden();

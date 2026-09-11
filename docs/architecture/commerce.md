@@ -1,6 +1,7 @@
 # Commerce
 
-Checkout is available for completed appointments with at least one service. It
+Checkout is available for checked-in and completed appointments with at least one
+service, and raising the invoice leaves the appointment's status untouched. It
 creates at most one non-void invoice whose explicitly positioned items copy
 appointment-service snapshots. The server applies discount before configured
 tax, rounds tax to the nearest minor unit, then adds tip. A zero-total invoice

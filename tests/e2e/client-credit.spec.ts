@@ -252,67 +252,116 @@ test("a correction is a new compensating entry, and the corrected row keeps its 
       .toHaveCount(0);
   });
 
-test("credit settles an invoice at checkout, and the receipt names it as a payment",
+/**
+ * CREDIT IS A TICK ABOVE THE METHODS, NOT ONE OF THEM.
+ *
+ * As a method radio it was ALTERNATIVE to cash and card, so a bill larger than the balance could
+ * not be settled in one press: the operator took the credit, watched the surface redraw into
+ * `collect`, and chose a second method for the rest. Both components landed on one invoice, which
+ * was always right - what was wrong was that the screen made one settlement look like two.
+ *
+ * The tick applies credit up to what is OWED, and the method below it takes exactly the remainder.
+ * Three figures say so while it is ticked: Available credit, Credit applied, Remaining amount due.
+ */
+test("credit and a second method settle one invoice in one press, and the bill does not move",
+  async ({ page, request, tenant }) => {
+    const appointment = await completeAppointment(request, tenant);
+    await grantCredit(request, tenant.customerId, 4000, "Partial goodwill");
+    await login(page, tenant.ownerEmail);
+    await openCheckout(page, appointment.id);
+
+    // EVERY request this page makes to raise a bill or record a tender, so the claim that two
+    // components make ONE settlement is checked against what was actually sent.
+    const posts: string[] = [];
+    page.on("request", (outgoing) => {
+      if (outgoing.method() !== "POST") return;
+      const path = new URL(outgoing.url()).pathname;
+      if (/\/checkout$/u.test(path) || /\/payments$/u.test(path)) posts.push(path);
+    });
+
+    // Nothing is chosen for the operator - not a method, and not the balance on account.
+    await expect(page.getByTestId("checkout-credit-toggle")).not.toBeChecked();
+    await expect(page.getByTestId("checkout-credit-available")).toContainText("Available credit$40.00");
+    await expect(page.getByTestId("checkout-credit-applied")).toBeHidden();
+    await expect(page.getByTestId("checkout-credit-remaining")).toBeHidden();
+    await expect(page.getByTestId("field-method").locator(":checked")).toHaveCount(0);
+    // Credit is not among the methods any more.
+    await expect(page.getByTestId("field-method")).not.toContainText("Client credit");
+
+    await page.getByTestId("checkout-credit-toggle").check();
+    // Applied is capped at what is owed and at what is there; $40 of a $92.01 bill leaves $52.01.
+    await expect(page.getByTestId("checkout-credit-applied")).toContainText("Credit applied$40.00");
+    await expect(page.getByTestId("checkout-credit-remaining"))
+      .toContainText("Remaining amount due$52.01");
+    // The amount below is what the METHOD has to cover, not the whole bill.
+    await expect(page.getByTestId("field-pay")).toHaveValue("52.01");
+    await expect(page.getByTestId("checkout-balance"))
+      .toHaveText("Balance $92.01 · $0.00 credit will remain");
+
+    await chooseMethod(page, "Cash");
+    await page.getByTestId("checkout-submit").click();
+    await expect(page.getByTestId("checkout-balance")).toHaveText("Balance $0.00");
+
+    // ONE INVOICE, TWO TENDER COMPONENTS. One checkout POST, two payment POSTs, one bill.
+    expect(posts.filter((path) => path.endsWith("/checkout"))).toHaveLength(1);
+    expect(posts.filter((path) => path.endsWith("/payments"))).toHaveLength(2);
+
+    const statement = page.getByTestId("receipt");
+    await expect(statement.getByTestId("receipt-payment")).toHaveCount(2);
+    await expect(statement).toContainText("Client credit · recorded");
+    await expect(statement).toContainText("Cash · recorded");
+    // CREDIT IS TENDER AND NEVER A DISCOUNT. Routing it through the discount path would shrink the
+    // taxable base and under-collect tax on every redemption, so NOTHING came off this bill: the
+    // services still total $85.00 and the tax is the tax on $85.00, whoever paid it and however.
+    await expect(statement.getByTestId("receipt-discount")).toHaveCount(0);
+    await expect(statement.getByTestId("receipt-service-subtotal")).toContainText("Service subtotal$85.00");
+    await expect(statement.getByTestId("receipt-invoice-total")).toContainText("Invoice total$92.01");
+
+    const ledger = await creditLedger(request, tenant.customerId);
+    expect(ledger.balanceMinor).toBe(0);
+    expect(ledger.usedMinor).toBe(4000);
+    expect(ledger.entries[0]!.kind).toBe("redemption");
+    expect(ledger.entries[0]!.amountMinor).toBe(-4000);
+  });
+
+test("credit larger than the bill settles it alone, and only what was owed is spent",
   async ({ page, request, tenant }) => {
     const appointment = await completeAppointment(request, tenant);
     await grantCredit(request, tenant.customerId, 15000, "Prepaid package");
     await login(page, tenant.ownerEmail);
     await openCheckout(page, appointment.id);
 
-    // Last in the list and NOT the default: spending a client's balance is a decision, and a
-    // checkout that pre-selected it would drain accounts by inattention.
-    //
-    // THE SAME REASONING NOW COVERS EVERY METHOD, and this assertion was strengthened rather than
-    // relaxed to say so. It used to require the FIRST salon method to be checked - the corollary
-    // of "credit is not the default" when something had to be - and that corollary was itself a
-    // defect: the first salon method is Cash, so Check Out opened holding a complete, submittable
-    // cash payment, and the owner settled an invoice as cash without ever being asked. Taking cash
-    // is as much a decision as spending a balance. NOTHING is chosen for the operator now, which
-    // is a stronger claim than the one this line used to make and contains it.
-    const methods = page.getByTestId("checkout-method");
-    await expect(methods.last()).toHaveValue("client-credit");
-    await expect(methods.last()).not.toBeChecked();
-    await expect(page.getByTestId("field-method").locator(":checked")).toHaveCount(0);
-    await expect(page.getByTestId("checkout-credit-available")).toHaveText("$150.00 available");
-    // Furniture until it is chosen.
-    await expect(page.getByTestId("checkout-credit-note")).toBeHidden();
+    await expect(page.getByTestId("checkout-credit-available")).toContainText("Available credit$150.00");
+    await page.getByTestId("checkout-credit-toggle").check();
 
-    await chooseMethod(page, "Client credit");
+    // APPLIED IS CAPPED AT WHAT IS OWED, not at what is available: $150 on account against a
+    // $92.01 bill spends $92.01 and leaves $57.99 for next time.
+    await expect(page.getByTestId("checkout-credit-applied")).toContainText("Credit applied$92.01");
+    await expect(page.getByTestId("checkout-credit-remaining"))
+      .toContainText("Remaining amount due$0.00");
     await expect(page.getByTestId("checkout-credit-note"))
-      .toContainText("This settles the invoice from the client's balance — no money is collected.");
-    await expect(page.getByTestId("field-pay")).toHaveValue("92.01");
-    // What is left ON ACCOUNT, which is a different figure from what is left owed.
+      .toContainText("Settled from the client's account balance");
+    // NOTHING LEFT TO COLLECT, SO NOTHING LEFT TO ASK. No second method is required, and the
+    // controls that would ask for one are not on screen to be answered.
+    await expect(page.getByTestId("field-pay")).toBeHidden();
+    await expect(page.getByTestId("field-method")).toBeHidden();
     await expect(page.getByTestId("checkout-balance"))
       .toHaveText("Balance $92.01 · $57.99 credit will remain");
 
     await page.getByTestId("checkout-submit").click();
     await expect(page.getByTestId("checkout-balance")).toHaveText("Balance $0.00");
-    // The operator's words, not the raw column: `client credit` is what the receipt used to print.
-    await expect(page.getByTestId("receipt")).toContainText("Client credit · recorded");
-    // CREDIT IS A PAYMENT AND NEVER A DISCOUNT. Routing it through the discount path would shrink
-    // the taxable base and under-collect tax on every redemption, so nothing came off this bill.
-    //
-    // This used to assert a `Discount -$0.00` row. The statement draws no Discounts section at all
-    // now when nothing was taken off, which says the same thing more strongly - there is no such
-    // section to read a figure out of - so the claim is made where it cannot be got wrong: the
-    // group is absent, and the services still total the full $85.00 the tax was taken on.
-    const statement = page.getByTestId("receipt");
-    await expect(statement.getByTestId("receipt-discount")).toHaveCount(0);
-    await expect(statement.locator("h4.receipt-group")).toHaveText(["Services", "Payment records"]);
-    await expect(statement.getByTestId("receipt-service-subtotal"))
-      .toContainText("Service subtotal$85.00");
-    await expect(statement.getByTestId("receipt-invoice-total")).toContainText("Invoice total$92.01");
 
+    const statement = page.getByTestId("receipt");
+    await expect(statement.getByTestId("receipt-payment")).toHaveCount(1);
+    await expect(statement).toContainText("Client credit · recorded");
+
+    // THE UNUSED BALANCE IS STILL THERE.
     const ledger = await creditLedger(request, tenant.customerId);
     expect(ledger.balanceMinor).toBe(15000 - 9201);
     expect(ledger.usedMinor).toBe(9201);
-    expect(ledger.entries[0]!.kind).toBe("redemption");
-    expect(ledger.entries[0]!.amountMinor).toBe(-9201);
 
     // A redemption is undone by voiding its payment, so its row names that door instead of
-    // offering a second one from the profile. Asserted HERE, on a redemption that still stands:
-    // once the payment is voided the sentence is an instruction for something already done, and
-    // "voiding a credit payment…" below is where its absence is checked.
+    // offering a second one from the profile.
     await page.getByTestId("checkout-surface").getByRole("button", { name: "Close check out" }).click();
     await expect(page.getByTestId("checkout-surface")).toBeHidden();
     await openLedger(page, tenant.customerId);
@@ -321,37 +370,41 @@ test("credit settles an invoice at checkout, and the receipt names it as a payme
     await expect(redemption.getByTestId("credit-correct-entry")).toHaveCount(0);
   });
 
-test("a balance smaller than the bill is offered as a part payment, and more than it is refused",
+test("an untouched tick spends nothing, and the bill is collected the ordinary way",
   async ({ page, request, tenant }) => {
     const appointment = await completeAppointment(request, tenant);
-    await grantCredit(request, tenant.customerId, 4000, "Partial goodwill");
+    await grantCredit(request, tenant.customerId, 15000, "Prepaid package");
     await login(page, tenant.ownerEmail);
     await openCheckout(page, appointment.id);
 
-    // A part payment from credit is legitimate: the redemption is keyed on the PAYMENT, not the
-    // invoice, precisely so several payments may settle one.
-    await chooseMethod(page, "Client credit");
-    await expect(page.getByTestId("field-pay")).toHaveValue("40.00");
-    await expect(page.getByTestId("checkout-balance"))
-      .toHaveText("Balance $92.01 · $52.01 still to settle · $0.00 credit will remain");
-
-    await page.getByTestId("field-pay").fill("60.00");
+    // The tick is offered and left alone. What follows must be indistinguishable from a checkout
+    // for a client with no balance at all.
+    await expect(page.getByTestId("checkout-credit-toggle")).not.toBeChecked();
+    await expect(page.getByTestId("field-pay")).toHaveValue("92.01");
+    await chooseMethod(page, "Cash");
     await page.getByTestId("checkout-submit").click();
-    // Refused inline rather than discovered as a 409 after the invoice was raised.
-    await expect(page.getByTestId("checkout-error"))
-      .toContainText("That is more than the $40.00 this client has on account.");
-    expect((await creditLedger(request, tenant.customerId)).balanceMinor).toBe(4000);
+    await expect(page.getByTestId("checkout-balance")).toHaveText("Balance $0.00");
+
+    const statement = page.getByTestId("receipt");
+    await expect(statement.getByTestId("receipt-payment")).toHaveCount(1);
+    await expect(statement).toContainText("Cash · recorded");
+    await expect(statement).not.toContainText("Client credit");
+    // NOT A PENNY MOVED.
+    const ledger = await creditLedger(request, tenant.customerId);
+    expect(ledger.balanceMinor).toBe(15000);
+    expect(ledger.usedMinor).toBe(0);
   });
 
 test("no option is offered when the client has nothing on account", async ({ page, request, tenant }) => {
   const appointment = await completeAppointment(request, tenant);
   await login(page, tenant.ownerEmail);
   await openCheckout(page, appointment.id);
-  // A zero balance and an unnamed client render the same — no option at all — because an inert
-  // radio for money that is not there is furniture.
+  // A zero balance and an unnamed client render the same - no tick at all - because a control for
+  // a balance there is nothing to spend is furniture.
+  await expect(page.getByTestId("checkout-credit")).toHaveCount(0);
+  await expect(page.getByTestId("checkout-credit-toggle")).toHaveCount(0);
   await expect(page.getByTestId("checkout-credit-available")).toHaveCount(0);
   await expect(page.getByTestId("checkout-credit-note")).toHaveCount(0);
-  await expect(page.getByTestId("checkout-method").filter({ hasText: "Client credit" })).toHaveCount(0);
 });
 
 test("voiding a credit payment says where the money goes, and the ledger shows the return",
@@ -360,7 +413,7 @@ test("voiding a credit payment says where the money goes, and the ledger shows t
     await grantCredit(request, tenant.customerId, 15000, "Prepaid package");
     await login(page, tenant.ownerEmail);
     await openCheckout(page, appointment.id);
-    await chooseMethod(page, "Client credit");
+    await page.getByTestId("checkout-credit-toggle").check();
     await page.getByTestId("checkout-submit").click();
     await expect(page.getByTestId("checkout-balance")).toHaveText("Balance $0.00");
 

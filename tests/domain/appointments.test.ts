@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { appointmentStatuses, canTransition, overlaps } from "@pawsh/domain";
+import { appointmentStatuses, canEnterCheckout, canTransition, checkoutEligibleStatuses, overlaps } from "@pawsh/domain";
+
+const transitionsFrom = (from: string): string[] =>
+  appointmentStatuses.filter((target) => canTransition(from as never, target));
 
 describe("appointment invariants", () => {
   it("allows the complete lifecycle contract and rejects every other edge", () => {
@@ -8,6 +11,9 @@ describe("appointment invariants", () => {
       "scheduled:cancelled",
       "scheduled:no_show",
       "checked_in:in_service",
+      // "Ready for Pickup" on a checked-in visit. See the table's own note for why this is an
+      // edge rather than a shortcut: plenty of work is never marked started.
+      "checked_in:completed",
       "in_service:completed"
     ]);
     for (const source of appointmentStatuses) {
@@ -17,6 +23,33 @@ describe("appointment invariants", () => {
         );
       }
     }
+  });
+
+  it("bills a visit that is here or finished, and refuses the four that are neither", () => {
+    // Written out rather than derived from `checkoutEligibleStatuses`, so that widening the set
+    // by one more status has to be a deliberate edit in two places instead of a test that agrees
+    // with whatever the constant happens to say.
+    const billable = new Set(["checked_in", "completed"]);
+    for (const status of appointmentStatuses) {
+      expect(canEnterCheckout(status), status).toBe(billable.has(status));
+    }
+  });
+
+  it("names only real statuses as billable", () => {
+    for (const status of checkoutEligibleStatuses) {
+      expect(appointmentStatuses).toContain(status);
+    }
+  });
+
+  it("keeps billing and the lifecycle as two separate questions", () => {
+    // Every status that may be billed and every status that may be reached are decided by
+    // different tables, and neither consults the other. `checked_in` is billable AND may move on
+    // to `completed`; `in_service` may move on and may NOT be billed; `completed` is billable and
+    // moves nowhere at all. That the three disagree is the point - a visit's money and a visit's
+    // progress are not the same fact, and the route that takes payment writes no status.
+    expect([canEnterCheckout("checked_in"), canTransition("checked_in", "completed")]).toEqual([true, true]);
+    expect([canEnterCheckout("in_service"), canTransition("in_service", "completed")]).toEqual([false, true]);
+    expect([canEnterCheckout("completed"), transitionsFrom("completed")]).toEqual([true, []]);
   });
 
   it("uses half-open time intervals", () => {

@@ -2906,28 +2906,24 @@ function checkoutMethodMarkup(co){
   // returns "" until they pick, and `submitCheckout` answers that with "Choose a payment method."
   // rather than with a tender.
   //
-  // Absent at null (no client named, or the read failed) and absent at zero, because an inert
-  // radio for a balance there is nothing to spend is furniture.
-  const offersCredit=checkoutOffersCredit(co);
-  if(offersCredit)methodOptions.push([CHECKOUT_CREDIT_METHOD,"Client credit"]);
+  // CLIENT CREDIT IS NOT IN THIS LIST ANY MORE, and that is the point of the change rather than
+  // an omission. It used to be the last radio, which made it ALTERNATIVE to every other method:
+  // an operator settling a $92 bill from a $40 balance had to take the $40 as its own pass,
+  // watch the surface redraw into `collect`, and then choose a second method for the rest. Credit
+  // is not a method, it is money the client has already handed over - so it is a tick above the
+  // methods now, and whatever it does not cover is taken by the method chosen below it in the
+  // same press. See `checkoutCreditMarkup`.
   if(!methodOptions.length){
     return `<label class="wide">Method<select data-testid="field-method" name="method"><option value="" disabled selected>No payment method is enabled</option></select></label>`;
   }
   // Two to six read faster as chips at a counter than as a menu that has to be opened to be read.
-  // Past that the chips stop being scannable and the select is the better control. The threshold
-  // moves by one only when credit is offered, so adding the option cannot be what costs credit its
-  // availability sub-label.
-  const chipLimit=offersCredit?7:6;
+  // Past that the chips stop being scannable and the select is the better control. Credit no
+  // longer moves this threshold, because credit is no longer one of the options being counted.
+  const chipLimit=6;
   if(methodOptions.length>chipLimit){
-    // The figure survives the control change: a <select> option carries no sub-label, so it is
-    // folded into the option text and repeated under the control.
-    const options=methodOptions.map(([value,label])=>value===CHECKOUT_CREDIT_METHOD
-      ?[value,`${label} — ${money(co.creditAvailableMinor)} available`]
-      :[value,label]);
     // `""` selects the placeholder `select()` always renders, so the select opens on "Choose…"
     // for the same reason the radios open on nothing.
-    return select("method","Method",options,true,"")
-      +(offersCredit?`<p class="fine" data-testid="checkout-credit-available">Client credit: ${money(co.creditAvailableMinor)} available.</p>`:"");
+    return select("method","Method",methodOptions,true,"");
   }
   const single=co.terminals.length===1?co.terminals[0]:null;
   return `<fieldset class="checkout-methods" data-testid="field-method"><legend>Method</legend>`
@@ -2936,9 +2932,12 @@ function checkoutMethodMarkup(co){
       +`<span>${escape(label)}`
       // One paired terminal is not a decision, so it is named rather than offered as a choice.
       +(single&&value===CHECKOUT_TERMINAL_METHOD?`<small data-testid="checkout-terminal-name">${escape(single.label)}</small>`:"")
-      // Inside the radio's own label, so it is part of the accessible name: "Client credit $45.00
-      // available".
-      +(value===CHECKOUT_CREDIT_METHOD?`<small data-testid="checkout-credit-available">${money(co.creditAvailableMinor)} available</small>`:"")
+      // THE TERMINAL CANNOT FOLLOW CREDIT IN ONE PRESS, and says so rather than disappearing. A
+      // card capture hands the amount and the tip to the device and comes back through its own
+      // status dialog; sequencing a credit tender in front of that would put a spent balance
+      // behind a capture the customer may still cancel on the keypad. Untick credit to use the
+      // terminal for the whole bill, or take the credit and then capture the remainder - the
+      // surface reopens in `collect` with the terminal available for exactly what is left.
       +`</span></label>`).join("")
     +`</fieldset>`;
 }
@@ -2967,6 +2966,48 @@ function checkoutSettlementProgressMarkup(co){
     +`<strong>${money(receipt.invoice.balanceMinor)} still to settle</strong></p>`;
 }
 
+/**
+ * THE CLIENT-CREDIT TICK, AND THE THREE FIGURES UNDER IT.
+ *
+ * Credit is TENDER. It is money the client has already handed the salon, sitting on their
+ * account; spending it settles the invoice exactly as cash does, and it is never a discount and
+ * never an adjustment to tax. So the bill on the left does not move when this is ticked - the
+ * total is the total - and what changes is only how it gets paid.
+ *
+ * WHY A TICK ABOVE THE METHODS RATHER THAN A METHOD AMONG THEM. As one more radio it was
+ * ALTERNATIVE to cash and card, so a $92 bill against a $40 balance could not be settled in one
+ * press: the operator took the $40, watched the surface redraw, and chose a second method for the
+ * rest. Both components landed on one invoice, which was right, but the screen made a single
+ * settlement look like two. Ticked here instead, the credit takes what it can and the method
+ * chosen BELOW takes exactly the remainder, in the same press.
+ *
+ * THE THREE FIGURES ARE THE WHOLE EXPLANATION. Available is what is on account; Credit applied is
+ * what this settlement will take from it, never more than is owed; Remaining amount due is what
+ * still has to be collected another way. When the third is zero no second method is needed and
+ * the amount field and the method list are withdrawn - asking an operator to choose how to
+ * collect nothing is asking them to answer a question that has no answer.
+ *
+ * Absent at null (no client named, or the read failed) and absent at zero: a tick for a balance
+ * there is nothing to spend is furniture.
+ */
+function checkoutCreditMarkup(co){
+  if(!checkoutOffersCredit(co))return "";
+  return `<div class="checkout-credit" data-testid="checkout-credit">`
+    +`<label class="checkout-credit-toggle">`
+      +`<input type="checkbox" name="useCredit" data-testid="checkout-credit-toggle">`
+      +`<span>Use client credit</span>`
+    +`</label>`
+    +`<p class="checkout-credit-line" data-testid="checkout-credit-available">`
+      +`<span>Available credit</span><strong>${money(co.creditAvailableMinor)}</strong></p>`
+    +`<p class="checkout-credit-line" data-testid="checkout-credit-applied" hidden>`
+      +`<span>Credit applied</span><strong data-credit-applied></strong></p>`
+    +`<p class="checkout-credit-line is-remaining" data-testid="checkout-credit-remaining" hidden>`
+      +`<span>Remaining amount due</span><strong data-credit-remaining></strong></p>`
+    +`<p class="checkout-credit-note" data-testid="checkout-credit-note" hidden>`
+      +`Settled from the client's account balance — no money is collected for that part.</p>`
+  +`</div>`;
+}
+
 function checkoutMoneyMarkup(co){
   if(checkoutMode(co)==="settled"){
     return `<div class="checkout-money checkout-settled">${receiptBodyMarkup(co.receipt)}</div>`;
@@ -2979,6 +3020,9 @@ function checkoutMoneyMarkup(co){
     : "";
   return `<div class="checkout-money">`
     +checkoutSettlementProgressMarkup(co)
+    // FIRST IN THE COLUMN, ABOVE THE AMOUNT. What is already on account changes what has to be
+    // collected, so it is answered before the operator is asked for a figure.
+    +checkoutCreditMarkup(co)
     +`<label class="checkout-pay" data-checkout-pay>Pay`
       +`<input data-testid="field-pay" name="pay" type="number" inputmode="decimal" step="0.01" min="0" required>`
     +`</label>`
@@ -2989,14 +3033,9 @@ function checkoutMoneyMarkup(co){
       +`<span data-remainder-label>Apply the remainder to tip</span>`
     +`</label>`
     +`<p class="fine" data-testid="checkout-coupon-pay-note" hidden>A coupon is priced when you check out, so this takes the full balance.</p>`
-    +checkoutMethodMarkup(co)
-    // Revealed only while credit is the chosen method, so it can afford to be tinted - the same
-    // discipline `.checkout-remainder` follows. Nothing else about the ledger belongs on this
-    // surface: who granted it, when and why sit behind `payments.view`, which the cashier standing
-    // here may not hold.
-    +(checkoutOffersCredit(co)
-      ? `<p class="checkout-credit-note" data-testid="checkout-credit-note" hidden>${money(co.creditAvailableMinor)} on account. This settles the invoice from the client's balance — no money is collected.</p>`
-      : "")
+    // Withdrawn entirely when credit covers the whole bill: `syncMoney` hides this wrapper, so a
+    // method list that could only be answered about nothing is not on screen to be answered.
+    +`<div data-checkout-method-block>${checkoutMethodMarkup(co)}</div>`
     +device
   +`</div>`;
 }
@@ -3195,27 +3234,58 @@ async function checkout(id) {
     if(couponNote)couponNote.hidden=!couponBlocks;
     if(payField)payField.required=!couponBlocks;
 
-    // Revealed only while credit is the chosen method, and toggled with the `hidden` property
-    // rather than a style, so it obeys the same `[hidden]{display:none!important}` rule everything
-    // else on this surface does.
-    const onCredit=readMethod()===CHECKOUT_CREDIT_METHOD;
+    /**
+     * WHAT THE CREDIT TICK DOES TO THE REST OF THE COLUMN.
+     *
+     * Applied is capped at what is OWED, never at what is available: a client with $150 on
+     * account settling a $92 bill spends $92 and keeps $57.99: "apply up to the outstanding
+     * balance only" is the rule, and the cap is what enforces it. Remaining is whatever is left
+     * for a second method, and when it is zero the amount field and the method list go away.
+     *
+     * Every figure here is arithmetic on the server's own balance. Nothing is re-priced: tax,
+     * discounts and the total are the invoice's and are not touched by how it is paid.
+     */
+    const creditToggle=dialog.querySelector('[data-testid="checkout-credit-toggle"]');
+    const onCredit=Boolean(creditToggle?.checked)&&checkoutOffersCredit(co);
+    const creditApplied=onCredit&&due!==null
+      ? Math.max(0,Math.min(due,Number(co.creditAvailableMinor)))
+      : 0;
+    const afterCredit=due===null?null:due-creditApplied;
+    const creditCoversAll=onCredit&&afterCredit===0;
+    const set=(testid,value)=>{
+      const row=dialog.querySelector(`[data-testid="${testid}"]`);
+      if(!row)return;
+      row.hidden=!onCredit;
+      const figure=row.querySelector("strong[data-credit-applied],strong[data-credit-remaining]");
+      if(figure)figure.textContent=money(value);
+    };
+    set("checkout-credit-applied",creditApplied);
+    set("checkout-credit-remaining",afterCredit??0);
+    // Toggled with the `hidden` property rather than a style, so it obeys the same
+    // `[hidden]{display:none!important}` rule everything else on this surface does.
     const creditNote=dialog.querySelector('[data-testid="checkout-credit-note"]');
     if(creditNote)creditNote.hidden=!onCredit;
+    // NOTHING LEFT TO COLLECT, SO NOTHING LEFT TO ASK. Both are withdrawn rather than disabled:
+    // there is no decision here that the operator is being refused, there is simply no second
+    // component, and a greyed-out amount box saying $0.00 invites a press that does nothing.
+    const payWrapper=dialog.querySelector("[data-checkout-pay]");
+    const methodBlock=dialog.querySelector("[data-checkout-method-block]");
+    if(payWrapper)payWrapper.hidden=creditCoversAll;
+    if(methodBlock)methodBlock.hidden=creditCoversAll;
+    if(payField)payField.required=payField.required&&!creditCoversAll;
 
     // Pre-filled with what is owed, and only once there is a figure to pre-fill it with. `base`
     // null means the server sent no subtotal, and a guess in this field would be a guess about
-    // money: it stays empty and required instead.
-    //
-    // A part payment from credit is legitimate - the redemption is keyed on the PAYMENT, not the
-    // invoice, precisely so several payments may settle one - so a balance smaller than the bill
-    // pre-fills to the balance and the rest is taken another way.
-    const prefill=onCredit&&checkoutOffersCredit(co)&&due!==null
-      ? Math.min(due,co.creditAvailableMinor)
-      : due;
+    // money: it stays empty and required instead. With credit ticked the figure is what credit
+    // does NOT cover, because that is the amount the method below it is being asked for.
+    const prefill=onCredit?afterCredit:due;
     if(payField&&prefill!==null&&!payField.dataset.touched)payField.value=(prefill/100).toFixed(2);
 
-    const pay=payMinor();
-    const over=due!==null&&pay!==null?pay-due:0;
+    const pay=creditCoversAll?0:payMinor();
+    // Over-tender is measured against what is STILL OWED after credit, not against the whole bill:
+    // ticking credit on a $92 bill with $40 on account leaves $52.01 to collect, and $60 of cash
+    // against that is a $7.99 remainder exactly as it would be with no credit in play.
+    const over=afterCredit!==null&&pay!==null?pay-afterCredit:0;
     if(remainder){
       // Pre-invoice only. `claimTerminalCheckout` refuses to start against an invoice whose tip is
       // non-zero and `postReconciledPayment` raises the tip under `tip_minor = 0`, so a
@@ -3237,14 +3307,16 @@ async function checkout(id) {
       if(couponBlocks)parts.push("the coupon comes off when you check out");
       // "still to settle", not "will remain": what is left after a component smaller than the
       // balance is an UNFINISHED SETTLEMENT, and a phrase that only describes a leftover reads as
-      // an accepted outcome of the checkout the operator is about to complete.
-      else if(due!==null&&pay!==null&&pay<due)parts.push(`${money(due-pay)} still to settle`);
-      // What is left ON ACCOUNT afterwards, which is a different figure from what is left owed.
-      // This line is already role="status" aria-live="polite", so it is announced when the method
-      // changes.
-      if(onCredit&&checkoutOffersCredit(co)&&pay!==null&&pay<=co.creditAvailableMinor){
-        parts.push(`${money(co.creditAvailableMinor-pay)} credit will remain`);
+      // an accepted outcome of the checkout the operator is about to complete. Credit is counted
+      // as tender here because that is what it is: what is unsettled is the bill less the credit
+      // less what the method below is about to take.
+      else if(afterCredit!==null&&pay!==null&&pay<afterCredit){
+        parts.push(`${money(afterCredit-pay)} still to settle`);
       }
+      // What is left ON ACCOUNT afterwards, which is a different figure from what is left owed.
+      // This line is already role="status" aria-live="polite", so it is announced when the tick
+      // changes.
+      if(onCredit)parts.push(`${money(Number(co.creditAvailableMinor)-creditApplied)} credit will remain`);
       balance.textContent=parts.join(" · ");
     }
   };
@@ -3323,6 +3395,13 @@ async function checkout(id) {
     tipField?.addEventListener("input",changed);
     payField?.addEventListener("input",()=>{payField.dataset.touched="1";syncMoney();});
     remainder?.addEventListener("change",syncMoney);
+    // Ticking credit changes what the method below has to cover, so the prefill is recomputed
+    // rather than left at whatever was typed against the old figure - `touched` is cleared for the
+    // same reason: the operator did not choose the number that is about to appear.
+    dialog.querySelector('[data-testid="checkout-credit-toggle"]')?.addEventListener("change",()=>{
+      if(payField)delete payField.dataset.touched;
+      syncMoney();
+    });
     // The tip presets write into the field without dispatching, so the summary and the balance are
     // brought along by the same click rather than waiting for the next keystroke.
     dialog.querySelectorAll("[data-taxpay-tip]").forEach(button=>button.addEventListener("click",changed));
@@ -3351,33 +3430,46 @@ async function checkout(id) {
     }
     const mode=checkoutMode(co);
     const onTerminal=readMethod()===CHECKOUT_TERMINAL_METHOD;
-    // The credit sentinel is tolerated exactly as the terminal one is: neither names a configured
-    // `payment_methods` row, so neither has a `choice` to look up.
-    const onCredit=readMethod()===CHECKOUT_CREDIT_METHOD;
-    const choice=onTerminal||onCredit?null:co.choices.find(item=>String(item.value)===String(readMethod()));
-    if(!onTerminal&&!onCredit&&!choice){
+    /**
+     * CREDIT IS NOT A METHOD, SO IT IS NOT READ OFF THE METHOD CONTROL. It is a tick, and what it
+     * decides is how much of the bill the method below still has to cover.
+     *
+     * `creditApplied` is capped at the balance and at the account, in that order, so it can never
+     * spend more than is owed nor more than is there. `creditCoversAll` is the case where no
+     * second component exists at all - and it is exactly then that the method list is not on
+     * screen, so demanding a choice would be demanding one the operator cannot make.
+     */
+    const dueNow=dueMinor();
+    const creditToggle=dialog.querySelector('[data-testid="checkout-credit-toggle"]');
+    const onCredit=Boolean(creditToggle?.checked)&&checkoutOffersCredit(co);
+    const creditApplied=onCredit&&dueNow!==null
+      ? Math.max(0,Math.min(dueNow,Number(co.creditAvailableMinor)))
+      : 0;
+    const creditCoversAll=onCredit&&dueNow!==null&&creditApplied>=dueNow;
+    const choice=onTerminal?null:co.choices.find(item=>String(item.value)===String(readMethod()));
+    if(onCredit&&onTerminal){
+      setError("A card terminal cannot follow client credit in one press. Take the credit first, "
+        +"then capture what is left on the terminal.");
+      return;
+    }
+    if(!onTerminal&&!creditCoversAll&&!choice){
       setError(co.choices.length
-        ?"Choose a payment method."
+        ?(onCredit?"Choose how to collect the rest.":"Choose a payment method.")
         :"No payment method is enabled. Enable one in Settings → Tax & payments.");
       return;
     }
     const coupon=couponValue();
-    const due=dueMinor();
-    const pay=payMinor();
-    const usesAmount=!onTerminal&&!(mode==="build"&&coupon);
+    const due=dueNow;
+    const pay=creditCoversAll?0:payMinor();
+    const usesAmount=!onTerminal&&!creditCoversAll&&!(mode==="build"&&coupon);
+    // What the METHOD below has to cover, which is the bill less whatever credit is taking.
+    const collectable=due===null?null:due-creditApplied;
     if(usesAmount){
       if(pay===null||pay<=0){setError("Enter the amount to take.");return;}
-      if(due!==null&&pay>due&&!(mode==="build"&&remainder?.checked)){
+      if(collectable!==null&&pay>collectable&&!(mode==="build"&&remainder?.checked)){
         setError(mode==="build"
-          ? `That is ${money(pay-due)} more than the balance. Tick the remainder box to put it in the tip, or lower the amount.`
-          : `Payment exceeds invoice balance by ${money(pay-due)}.`);
-        return;
-      }
-      // Refused here rather than discovered as a 409, which would have raised the invoice first on
-      // a build. The server re-reads the balance under a row lock and its answer still wins.
-      if(onCredit&&pay!==null&&pay>Number(co.creditAvailableMinor??0)){
-        setError(`That is more than the ${money(co.creditAvailableMinor??0)} this client has on account. `
-          +`Lower the amount, or take the rest another way.`);
+          ? `That is ${money(pay-collectable)} more than the balance. Tick the remainder box to put it in the tip, or lower the amount.`
+          : `Payment exceeds invoice balance by ${money(pay-collectable)}.`);
         return;
       }
     }
@@ -3443,22 +3535,50 @@ async function checkout(id) {
         return;
       }
       if(Number(invoice.balanceMinor)>0){
-        // A coupon, or a "pay it all" that the server priced slightly differently, both mean the
-        // authoritative balance rather than this screen's figure. A part payment is the operator's
-        // own number and is sent as typed.
-        const full=!usesAmount||pay===null||due===null||pay>=due;
-        const amountMinor=full?Number(invoice.balanceMinor):pay;
+        /**
+         * ONE SETTLEMENT, UP TO TWO TENDER COMPONENTS, IN THAT ORDER.
+         *
+         * Credit goes first, because it is the component whose size is already decided - it is
+         * capped at the balance and at the account, and neither figure is the operator's to
+         * choose. What the method below then takes is whatever the invoice still says is owed,
+         * read off the CREDIT PAYMENT'S OWN RESPONSE rather than recomputed here: `payment.balance`
+         * is the server's balance after the redemption committed, so the second component is
+         * composed against the authoritative figure and its `expectedBalanceMinor` cannot be a
+         * guess. That is also what makes the second component refusable on its own terms if
+         * somebody else moved the invoice in between.
+         *
+         * TWO ROWS ON ONE INVOICE IS ONE SETTLEMENT. Pawsh's model is one invoice per appointment
+         * and one completed settlement per invoice, tendered in as many components as it takes;
+         * nothing here raises a second invoice, and the loop below posts to the same one twice.
+         *
+         * IF THE SECOND COMPONENT FAILS THE FIRST STANDS. The credit is spent, the invoice is
+         * partly settled, the screen redraws into `collect` saying exactly what is still owed,
+         * and the operator takes the rest. That is the honest outcome - the alternative would be
+         * silently unwinding a committed ledger entry - and it is the same state a deliberate
+         * part payment leaves behind.
+         */
+        const tenders=[];
+        if(creditApplied>0)tenders.push({amountMinor:creditApplied,method:"client_credit"});
+        if(!creditCoversAll){
+          // A coupon, or a "pay it all" that the server priced slightly differently, both mean the
+          // authoritative balance rather than this screen's figure. A part payment is the
+          // operator's own number and is sent as typed.
+          const remainingMinor=Number(invoice.balanceMinor)-creditApplied;
+          const full=!usesAmount||pay===null||collectable===null||pay>=collectable;
+          tenders.push({amountMinor:full?remainingMinor:pay,method:choice.settlementType});
+        }
         try{
-          const payment=await financialMutation(`/api/invoices/${invoice.id}/payments`,`payment.record`,{
-            amountMinor,expectedBalanceMinor:Number(invoice.balanceMinor),
-            // `client_credit` directly: there is no configured method row for it, so there is no
-            // settlement type to read off a choice that does not exist.
-            method:onCredit?"client_credit":choice.settlementType
-          });
-          // What is LEFT on the account, from the payment's own response, so the screen neither
-          // guesses nor re-requests the options endpoint. Null on that field means the payment was
-          // not credit, and `co` is left alone.
-          if(typeof payment?.creditRemainingMinor==="number")co.creditAvailableMinor=payment.creditRemainingMinor;
+          let expected=Number(invoice.balanceMinor);
+          for(const tender of tenders){
+            const payment=await financialMutation(`/api/invoices/${invoice.id}/payments`,`payment.record`,{
+              amountMinor:tender.amountMinor,expectedBalanceMinor:expected,method:tender.method
+            });
+            // What is LEFT on the account, from the payment's own response, so the screen neither
+            // guesses nor re-requests the options endpoint. Null on that field means the payment
+            // was not credit, and `co` is left alone.
+            if(typeof payment?.creditRemainingMinor==="number")co.creditAvailableMinor=payment.creditRemainingMinor;
+            if(typeof payment?.balance==="number")expected=payment.balance;
+          }
         }catch(error){
           // A race: somebody spent the balance while this screen was open. The route's own stated
           // intent is to offer what is actually there, so the figure it sends back is taken.
@@ -8283,11 +8403,10 @@ const CHECKOUT_FALLBACK_METHODS=[["cash","Cash"],["external_card","External card
 // settlement type and not a payment method id - it names a capture route, and the server decides
 // what the resulting payment settles as.
 const CHECKOUT_TERMINAL_METHOD="terminal-capture";
-// The sentinel for "settle this from what the client already has on account". A sentinel beside
-// the terminal's rather than a configured method id, because there is no `payment_methods` row for
-// credit and `payment_methods.settlement_type` is deliberately not widened to admit one - so the
-// payment body sends `client_credit` directly and `choice.settlementType` has nothing to read.
-const CHECKOUT_CREDIT_METHOD="client-credit";
+// Credit has NO sentinel in the method list any more - it is a tick above the methods, not one of
+// them - but the payment body still sends `client_credit` directly, because there is no
+// `payment_methods` row for credit and `payment_methods.settlement_type` is deliberately not
+// widened to admit one. See `checkoutCreditMarkup`.
 /**
  * Whether this checkout may offer credit.
  *
@@ -15282,7 +15401,27 @@ function appointmentSurfaceMarkup(surface){
         // Billing the visit stays the primary action while there is money to take; the Ticket is
         // available beside it.
         +takePayment
-        +(can.editNote?`<button type="button" class="primary compact" data-testid="appointment-save">Save</button>`:"")
+        // THE WORK IS FINISHED AND THE PET CAN GO HOME. Secondary, always: it is a lifecycle
+        // record rather than the thing the operator came to this footer to do, and money outranks
+        // it by the rule above. Drawn before Save so the footer reads left to right as the order a
+        // counter actually works in - finish the note, hand the pet back, take the money.
+        +(can.readyOffered?`<button type="button" class="secondary compact" data-testid="appointment-ready"${
+          can.ready?"":appointmentPermissionRefusal("mark work as finished","operations.complete")}>Ready for Pickup</button>`:"")
+        // ONE PRIMARY, AND `primarySlot` IS ALREADY THE RULE FOR WHICH. Save is the primary
+        // action on a visit still being worked, and until checkout widened to `checked_in` it
+        // was never drawn beside Take Payment - `editNote` is live in `checked_in`/`in_service`
+        // and `checkout` was `completed` only, so the two could not meet. They meet now, and the
+        // footer's own rule above says money outranks the rest, so Save yields the slot rather
+        // than a second blue button claiming it alongside.
+        //
+        // AND IT STARTS DISABLED, because nothing has been changed yet. A Save that is always
+        // pressable says an edit is waiting when none is, and pressing it writes the note back
+        // over itself - a version bump, an audit row and a full redraw for no change at all. It
+        // is enabled by `syncSaveState` the moment the textarea differs from what was loaded, and
+        // disabled again when it matches or when a save has just landed. Disabled rather than
+        // absent: the control is the operator's, not the visit's, and a footer whose buttons
+        // appear and vanish as one types is a footer that moves under the pointer.
+        +(can.editNote?`<button type="button" class="${primarySlot==="checkout"?"secondary":"primary"} compact" data-testid="appointment-save" disabled aria-disabled="true">Save</button>`:"")
       +`</div></footer>`;
 
   return `<div class="surface-shell" data-testid="appointment-detail">${head}${body}${foot}</div>`;
@@ -15402,7 +15541,19 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
        * (`TERMINAL_CAPTURE_IN_FLIGHT`), and refuses a request composed against a balance that has
        * since moved. Those guards are the route's and this reaches them by the front door.
        */
-      checkout:status==="completed"
+      // CHECKED IN BILLS TOO, AND BILLING DOES NOT FINISH THE VISIT. This read `completed`
+      // alone, which made the bill the last step of the lifecycle; it is not. A pet that has
+      // been dropped off can be paid for at the desk while it is still in the salon, and the
+      // operator marks the work finished separately afterwards. Pressing this on a `checked_in`
+      // visit opens Check Out and raises the invoice; the appointment is still `checked_in`
+      // when it closes, because nothing on that path transitions anything.
+      //
+      // THE SAME FOUR STATES THE SERVER REFUSES ARE WITHHELD HERE - `scheduled`, `in_service`,
+      // `cancelled` and `no_show` - so the footer never offers a checkout the route would answer
+      // with a 409. `canEnterCheckout` in @pawsh/domain is the rule; this file is served as
+      // plain script and cannot import it, so the list is written out and held to the domain by
+      // a test that runs both.
+      checkout:["checked_in","completed"].includes(status)
         &&(!invoiced||appointmentInvoiceOutstanding(surface.item))
         &&allowed("checkout.perform"),
       // THE BILL THIS VISIT RAISED, AND IT IS A DOCUMENT RATHER THAN A TRANSITION. The moment an
@@ -15448,6 +15599,25 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
       // `ticketPrimary` is presentation and nothing else: which of Ticket and Close is the footer's
       // primary button on a read-only surface. It decides no availability.
       ticketPrimary:status==="completed",
+      // READY FOR PICKUP: THE WORK IS DONE AND THE PET CAN GO HOME.
+      //
+      // It is a LABEL over the existing `completed` status - no new state, no new column - and the
+      // transition it posts is the same one `operations.complete` has always gated.
+      //
+      // `checked_in` ONLY, and deliberately not `in_service`. A visit on the table already has a
+      // name for finishing, and it is the calendar card's own "Complete"; putting a second word
+      // for one transition on a second surface would mean an operator learning that Complete and
+      // Ready for Pickup are the same press. The gap this fills is the one where the pet was
+      // dropped off, worked on, and handed back without anybody marking a start - which is the
+      // status that had no way to finish at all.
+      //
+      // IT SAYS NOTHING ABOUT MONEY. A visit may be marked ready with nothing paid and billed
+      // without being ready, which is why this sits beside Take Payment rather than replacing it.
+      //
+      // Split like the other five: the STATE half withholds it where it could never apply, and the
+      // PERMISSION half draws it disabled with the key named.
+      readyOffered:status==="checked_in",
+      ready:status==="checked_in"&&allowed("operations.complete"),
       editNote:["checked_in","in_service"].includes(status)&&allowed("operations.perform_service"),
       // The APPOINTMENT note, which is a different field with a different permission and no
       // status window at all. `readOnly` above is about the visit no longer moving; a note that
@@ -15767,18 +15937,72 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
     // its own Save inside its own block, because this one is not drawn at all outside the check-in
     // window while the appointment note is editable in every status.
     const save=dialog.querySelector('[data-testid="appointment-save"]');
-    save?.addEventListener("click",()=>runDetached(async()=>{
-      const field=dialog.querySelector('[data-testid="appointment-note-input"]');
-      if(!field)return;
-      save.disabled=true;
-      try{
-        const updated=await api(`/api/appointments/${id}/operations`,{method:"PATCH",
-          body:JSON.stringify({operationalNotes:field.value.trim()||null,version:surface.item.version})});
-        surface.item.version=updated.version;
-        toast("Service note saved");
-        await refresh();
-        await reload();
-      }catch(error){toast(error.message);if(save.isConnected)save.disabled=false;}
+    const noteField=dialog.querySelector('[data-testid="appointment-note-input"]');
+    if(save&&noteField){
+      /**
+       * WHAT "DIRTY" MEANS HERE, AND WHY IT IS COMPARED RATHER THAN FLAGGED.
+       *
+       * The baseline is what the SERVER last said the note was, normalised exactly the way the
+       * save normalises it on the way out - trimmed, and an empty string is the same thing as no
+       * note. So typing a space into an empty note is not an edit, and typing a word and deleting
+       * it again puts Save back to sleep rather than leaving a flag set. A boolean set on first
+       * keystroke could not do either.
+       *
+       * `surface.item.operationalNotes` is re-read on every sync instead of being captured once,
+       * because `reload()` rewrites it from the server and the baseline has to move with it.
+       */
+      const clean=(value)=>(value??"").trim();
+      const syncSaveState=()=>{
+        const dirty=clean(noteField.value)!==clean(surface.item.operationalNotes);
+        save.disabled=!dirty;
+        if(dirty)save.removeAttribute("aria-disabled");
+        else save.setAttribute("aria-disabled","true");
+      };
+      noteField.addEventListener("input",syncSaveState);
+      noteField.addEventListener("change",syncSaveState);
+      syncSaveState();
+      save.addEventListener("click",()=>runDetached(async()=>{
+        // Re-checked rather than trusted: a keystroke can land between the sync and the click.
+        if(clean(noteField.value)===clean(surface.item.operationalNotes))return;
+        const typed=clean(noteField.value)||null;
+        save.disabled=true;
+        save.setAttribute("aria-disabled","true");
+        try{
+          const updated=await api(`/api/appointments/${id}/operations`,{method:"PATCH",
+            body:JSON.stringify({operationalNotes:typed,version:surface.item.version})});
+          surface.item.version=updated.version;
+          // THE BASELINE MOVES BEFORE ANYTHING REDRAWS. `reload()` may be superseded or may fail,
+          // and a surface left holding the OLD baseline would report a saved note as still dirty.
+          surface.item.operationalNotes=typed;
+          toast("Service note saved");
+          await refresh();
+          await reload();
+        }catch(error){
+          // THE OPERATOR'S TEXT SURVIVES A REFUSAL. Nothing redraws on this path, so what was
+          // typed is still in the textarea, and Save goes back to being pressable so it can be
+          // tried again - which is the whole point of not having written it anywhere else.
+          toast(error.message);
+          if(save.isConnected)syncSaveState();
+        }
+      }));
+    }
+    // READY FOR PICKUP. The existing `completed` transition under its existing permission, with
+    // no financial side effect of any kind: this posts to `/transition` and nothing else, and the
+    // surface is redrawn from what came back rather than from what was asked for.
+    on("appointment-ready",()=>runDetached(async()=>{
+      await runOnce(`transition:${id}`,async()=>{
+        try{
+          await api(`/api/appointments/${id}/transition`,{method:"POST",
+            body:JSON.stringify({status:"completed",version:surface.item.version})});
+          toast("Marked ready for pickup");
+          await refresh();
+        }catch(error){
+          toast(error.message);
+          if(![400,409].includes(error.status))return;
+          await refresh();
+        }
+      });
+      await reload();
     }));
   };
 

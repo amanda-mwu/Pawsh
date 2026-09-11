@@ -57,6 +57,34 @@ import { describe, expect, it } from "vitest";
  * prints nothing, and that Print is the only thing that reaches `appendPrintRoot`, is
  * `tests/ui/print-preview.test.ts`. The previews are still recorded here, so a document that
  * skipped the preview entirely would show up as a missing record rather than as nothing.
+ *
+ * ─── WHAT A MUTATION HAS TO BREAK ────────────────────────────────────────────
+ *
+ * The two gates are independently sensitive, and these kill one each AT THE CHECK OUT FOOTER —
+ * the place an operator actually meets the decision, and the place neither was being asked:
+ *
+ *   `&&!receipt?.refundedMinor` added to `receiptSettlementComplete`
+ *       the Receipt leaves every refunded invoice silently. "walks the settlement ladder, and a
+ *       REFUND does not take the Receipt back off it" fails on both refunded rungs, and "prints
+ *       that settlement when the refunded surface's own control is pressed" fails with no
+ *       control left to press.
+ *
+ *   dropping `receiptHasPayment(receipt)&&` from `receiptSettlementComplete`, or asking the
+ *   footer's own condition `!receiptBalanceOutstanding(receipt)` instead of both gates
+ *       the balance decides alone, and the $0.00 visit — raised Paid, nothing owed, no payment
+ *       row ever written — is handed evidence of a settlement that never happened. "is ABSENT on
+ *       the $0.00 visit's Check Out footer, which is Paid with no payment rows at all" fails.
+ *       The footer-scoped form is the one nothing else in this file catches: with it applied,
+ *       that test is the ONLY failure in the file.
+ *
+ * The other half of the first gate — `receiptHasPayment` weakened to
+ * `(receipt?.payments||[]).length>0` — is killed by "prints NOTHING for a voided-only record
+ * with NOTHING OWED" below. It cannot reach the $0.00 visit, whose payments array is empty under
+ * that mutation as well as under the real filter; only the balance-only mutation above reaches
+ * that one.
+ *
+ * All three were applied to `public/app.js`, run against this file, and reverted; the file was
+ * verified byte-identical by hash afterwards.
  */
 const source = readFileSync("public/app.js", "utf8");
 
@@ -677,6 +705,71 @@ describe("3. Print Receipt is a separate, independent control", () => {
       expect(ids, label).toContain("checkout-print-invoice");
       expect(ids, label).not.toContain("checkout-print-receipt");
     }
+  });
+
+  it("walks the settlement ladder, and a REFUND does not take the Receipt back off it", () => {
+    // The ladder describe 2 walks for Print Invoice, asked the other question. Print Invoice is on
+    // every rung; Print Receipt joins at the rung where the settlement COMPLETED, and — the rung
+    // nothing asserted until now — STAYS THERE ONCE MONEY HAS GONE BACK. A refund does not move
+    // `balance_minor` (`routes.ts` states that invariant where it computes collected revenue), so
+    // a refunded invoice is still settled and its Receipt still evidences what was taken and what
+    // was returned. Withdrawing it would deny a client the evidence of a settlement that DID
+    // happen. A VOID is the correction that does move the balance back, and it correctly takes
+    // the Receipt with it — the owing rungs below are that side of the same gate.
+    const client = loadClient();
+    const settledOnce = receiptFixture([terminalPayment({ amountMinor: 9201 })]);
+    const states: [string, unknown, boolean][] = [
+      ["invoice raised, nothing paid", receiptFixture([], { balanceMinor: 9201 }), false],
+      ["one component recorded, still owing", receiptFixture([cashPayment()], { balanceMinor: 5201 }), false],
+      ["settled by one component", receiptFixture([cashPayment({ amountMinor: 9201 })]), true],
+      ["settled by two components", receiptFixture([creditPayment(), keyedCardPayment()]), true],
+      ["settled, then partly refunded", { ...settledOnce, refundedMinor: 1000 }, true],
+      ["settled, then refunded in full", { ...settledOnce, refundedMinor: 9201 }, true]
+    ];
+    for (const [label, receipt, evidences] of states) {
+      const ids = testids(client.checkoutSurfaceMarkup(checkoutFixture(receipt)));
+      // The bill is on every rung, as describe 2 holds. Asserted again here so that a fixture
+      // which stopped rendering a footer at all could not pass the Receipt assertion by absence.
+      expect(ids, label).toContain("checkout-print-invoice");
+      if (evidences) expect(ids, label).toContain("checkout-print-receipt");
+      else expect(ids, label).not.toContain("checkout-print-receipt");
+    }
+  });
+
+  it("prints that settlement when the refunded surface's own control is pressed", () => {
+    // Presence at the button and production at the printer are two guarantees, the same way
+    // absence and refusal are. The refunded invoice's control is not merely drawn: it puts the
+    // Receipt on paper with both movements of money on it.
+    const client = loadClient();
+    const refunded = { ...receiptFixture([terminalPayment({ amountMinor: 9201 })]), refundedMinor: 1000 };
+    bindSurface(client, checkoutFixture(refunded))["checkout-print-receipt"]!();
+    expect(client.printed).toHaveLength(1);
+    expect(client.printed[0]!.innerHTML).toContain("<h1>Receipt #1042</h1>");
+    expect(lineValue(client.printed[0]!.innerHTML, "payment-receipt-total-settled"))
+      .toBe("Total settled | $92.01");
+    expect(lineValue(client.printed[0]!.innerHTML, "payment-receipt-refunded"))
+      .toBe("Refunded | -$10.00");
+  });
+
+  it("is ABSENT on the $0.00 visit's Check Out footer, which is Paid with no payment rows at all", () => {
+    // `routes.ts` raises a zero-total invoice with status `paid` and `balance_minor = 0` and never
+    // writes a payment row. The footer reads `settled` straight off that balance and offers Done,
+    // so the balance gate is WIDE OPEN here and `receiptHasPayment` is the only thing refusing a
+    // Receipt for a settlement that did not occur. The printer's refusal is asserted in describe
+    // 1; this is the footer, where the operator would otherwise be offered the document at all.
+    const client = loadClient();
+    const zero = receiptFixture([], {
+      subtotalMinor: 0, taxMinor: 0, totalMinor: 0, balanceMinor: 0, status: "paid"
+    });
+    const co = checkoutFixture(zero);
+    // The surface really is in its settled mode — otherwise the absence below proves nothing.
+    expect(client.checkoutMode(co)).toBe("settled");
+    const ids = testids(client.checkoutSurfaceMarkup(co));
+    expect(ids).toContain("checkout-done");
+    expect(ids).toContain("checkout-print-invoice");
+    expect(ids).not.toContain("checkout-print-receipt");
+    // Absent, not disabled: there is no handler to reach either.
+    expect(Object.keys(bindSurface(client, co))).toEqual(["checkout-print-invoice"]);
   });
 
   it("cannot be pressed when it was not rendered", () => {

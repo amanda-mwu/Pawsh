@@ -182,7 +182,11 @@ test("one invoice, three hosts, one money statement — and the Ticket is not on
 }) => {
   const appointment = await completeAppointment(request, tenant);
   await raiseInvoice(request, appointment.id);
-  await grantCredit(request, tenant.customerId, 15_000);
+  // A balance smaller than the bill, so the tick produces a $40.00 credit component and the
+  // cash below it takes the rest. Credit carries no amount of its own any more - it applies up
+  // to what is owed - so a part component comes from a part balance rather than from a figure
+  // somebody typed.
+  await grantCredit(request, tenant.customerId, 4_000);
   await observePrinting(page);
   await login(page, tenant.ownerEmail);
   // `openCheckout` opens the calendar card's own action menu; it does not navigate. Login lands on
@@ -193,11 +197,10 @@ test("one invoice, three hosts, one money statement — and the Ticket is not on
   await openCheckout(page, appointment.id);
 
   // Two payments, so the comparison covers a payment list rather than a single row — and one of
-  // them is credit, which is the method whose label the browser has to supply.
-  await chooseMethod(page, "Client credit");
-  await page.getByTestId("field-pay").fill("40.00");
-  await page.getByTestId("checkout-submit").click();
-  await expect(page.getByTestId("checkout-balance")).toHaveText("Balance $61.60");
+  // them is credit, which is the method whose label the browser has to supply. One press sends
+  // both components against the one invoice.
+  await page.getByTestId("checkout-credit-toggle").check();
+  await expect(page.getByTestId("checkout-credit-applied")).toContainText("Credit applied$40.00");
   await chooseMethod(page, "Cash");
   await page.getByTestId("checkout-submit").click();
   await expect(page.getByTestId("checkout-balance")).toHaveText("Balance $0.00");

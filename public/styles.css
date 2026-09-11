@@ -2440,6 +2440,43 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
 .checkout-disclosure-body .checkout-discounts{margin-bottom:var(--space-2)}
 
 /* == The money column == */
+/* == Client credit, which is the column's first decision ==
+   It is above the amount field because it changes what the amount field is FOR: money the client
+   already has with the salon is spent before anything is collected, and an operator who reaches
+   for the card reader first has taken the wrong number. Built the way `.checkout-block` is, so the
+   one thing in this column that is a DECISION is the one thing with a paper surface under it -
+   everything below it is an amount, a method or a consequence. Padding is a step tighter than the
+   bill's blocks: this column is 380px and the figures want that width more than the card wants the
+   air. The note at the foot of the card is styled with the rest of the credit family further down. */
+.checkout-credit{
+  display:grid;gap:var(--space-2);
+  padding:var(--space-3);border:1px solid var(--line);
+  border-radius:var(--radius-lg);background:var(--paper);
+}
+/* The whole row is the target rather than the 16px box - `.checkout-method`'s treatment, for the
+   same reason: this gets pressed at a counter, often on a tablet. The global `label` rule stacks
+   its parts and carries a bottom margin, both of which are wrong for a row, so both are restated
+   here rather than worked around. */
+.checkout-credit-toggle{
+  display:flex;align-items:center;gap:var(--space-2);
+  min-height:44px;margin:0;
+}
+.checkout-credit-toggle input{width:16px;height:16px;min-height:0;margin:0;accent-color:var(--brand)}
+/* The bill's line geometry, restated where the credit block lives rather than the bill's selector
+   being stretched into the money column. Same two columns and the same lining figures, so a
+   number in this card sits on the edge the bill's numbers sit on and the surface reads as one
+   column of money rather than two. */
+.checkout-credit-line{
+  display:flex;justify-content:space-between;gap:var(--space-4);margin:0;font-size:13px;
+}
+.checkout-credit-line strong{font-variant-numeric:tabular-nums}
+/* What is still to be collected, and the only one of the three the operator does anything about.
+   Closed off and weighted the way `.receipt-subtotal` is - heavier than the two figures it sums,
+   and deliberately NOT the 700 of `.checkout-line.is-total`, because the invoice total is still
+   the larger fact and two of those in one column would argue over which was the answer. */
+.checkout-credit-line.is-remaining{
+  padding-top:var(--space-1);border-top:1px solid var(--line);font-weight:600;
+}
 .checkout-pay{margin:0;gap:4px}
 .checkout-pay input{
   width:100%;text-align:right;font-size:22px;font-weight:600;
@@ -2964,7 +3001,7 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
 .credit-reason-count.is-full{color:var(--danger);font-weight:700}
 .credit-correcting{margin:0 0 14px;padding:9px 11px;border-radius:var(--radius-sm);background:var(--surface-2);font-size:12.5px}
 
-/* Revealed only while credit is the chosen method, so it can afford to be tinted - it is never
+/* Revealed only while the credit toggle is on, so it can afford to be tinted - it is never
    sitting there inert. The same rule `.checkout-remainder` follows. */
 .checkout-credit-note{display:flex;align-items:center;gap:var(--space-2);margin:0;padding:7px 9px;border-radius:var(--radius-sm);background:var(--brand-tint);font-size:12.5px;font-weight:600;line-height:1.4}
 

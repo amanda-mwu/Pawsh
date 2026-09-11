@@ -257,14 +257,19 @@ describe("DEFECT 1 — the operator chooses the tender, and the surface never ch
     expect(preselected(markup)).toEqual([]);
   });
 
-  it("offers client credit only when the client has a balance, and never selects it", () => {
-    const without = client.checkoutMethodMarkup(checkout("collect", { creditAvailableMinor: 0 }));
-    expect(without).not.toContain("client-credit");
-
-    const with_ = client.checkoutMethodMarkup(checkout("collect", { creditAvailableMinor: 4500 }));
-    expect(with_).toContain("client-credit");
-    expect(with_).toContain("$45.00 available");
-    expect(preselected(with_)).toEqual([]);
+  it("keeps client credit out of the method list entirely", () => {
+    // CREDIT IS TENDER, NOT A METHOD, and it is no longer one of these radios. As an option among
+    // them it was ALTERNATIVE to cash and card, so a bill larger than the balance could not be
+    // settled in one press. It is a tick above this control now - see the credit block's own
+    // tests - and what is asserted here is the absence it leaves behind: whether or not the
+    // client has money on account, this list offers the salon's methods and nothing else, and
+    // still selects none of them.
+    for (const creditAvailableMinor of [0, 4500]) {
+      const markup = client.checkoutMethodMarkup(checkout("collect", { creditAvailableMinor }));
+      expect(markup, String(creditAvailableMinor)).not.toContain("client-credit");
+      expect(markup, String(creditAvailableMinor)).not.toContain("Client credit");
+      expect(preselected(markup)).toEqual([]);
+    }
   });
 
   it("opens the select fallback on its own placeholder once the methods outgrow the chips", () => {

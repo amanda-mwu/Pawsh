@@ -1,8 +1,12 @@
 # Checkout specification
 
-Only a completed appointment can enter checkout. Pawsh creates at most one active
-invoice for the appointment and copies appointment service snapshots into invoice
-items. Retrying checkout returns the existing invoice.
+A checked-in or completed appointment can enter checkout; scheduled, in-service,
+cancelled and no-show appointments are refused. Entering checkout does not move the
+appointment: a checked-in visit is still checked in once its invoice exists, because
+appointment status records the work and invoice status records the money, and neither
+is inferred from the other. Pawsh creates at most one active invoice for the
+appointment and copies appointment service snapshots into invoice items. Retrying
+checkout returns the existing invoice.
 
 All authoritative money uses integer minor units and is calculated server-side:
 

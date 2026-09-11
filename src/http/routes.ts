@@ -5,7 +5,7 @@ import { z, type ZodType } from "zod";
 import type { Config } from "../config.js";
 import { setTenant, type Database, type SqlExecutor } from "../db/client.js";
 import { DocumentStorageError, sha256, type DocumentStorage } from "../storage/documents.js";
-import { canTransition, invoiceSettledStatuses, type AppointmentStatus } from "@pawsh/domain";
+import { canEnterCheckout, canTransition, invoiceSettledStatuses, type AppointmentStatus } from "@pawsh/domain";
 import { applyDiscounts, calculateInvoice } from "@pawsh/domain";
 import {
   discountApplyScopeLabels, discountApplyScopes, discountKindLabels, discountKinds,
@@ -11030,8 +11030,15 @@ export function registerRoutes(
         operation: "checkout.create-invoice", key: requestKey, hash: clientHash
       });
       if (claim.existingResult) return { result: claim.existingResult, created: false };
-      if (appointment.status !== "completed") {
-        throw new FinancialRequestError(409, "STALE_FINANCIAL_STATE", "Only completed appointments can be checked out");
+      // `canEnterCheckout` is the domain's rule and this is the only lifecycle gate on the route.
+      // `checked_in` bills as readily as `completed`, and NOTHING BELOW MOVES THE VISIT: this
+      // handler never writes `appointments.status`, so a visit billed at drop-off is still
+      // `checked_in` when the invoice comes back. The code stays `STALE_FINANCIAL_STATE` because
+      // it is the same statement it always made - the visit is not in a state this request can
+      // act on - and the payment route's concurrency handling reads that code by name.
+      if (!canEnterCheckout(appointment.status)) {
+        throw new FinancialRequestError(409, "STALE_FINANCIAL_STATE",
+          "Only checked-in or completed appointments can be checked out");
       }
       const services = await tx<{ id: string; serviceNameSnapshot: string; priceMinorSnapshot: number }[]>`
         select id, service_name_snapshot, price_minor_snapshot from appointment_services

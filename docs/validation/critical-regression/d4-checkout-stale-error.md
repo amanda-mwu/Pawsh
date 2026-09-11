@@ -21,8 +21,8 @@ commit cannot contain its own hash.
 
 ## Financial contract
 
-Checkout requires a completed appointment and at least one immutable appointment
-service snapshot. Invoice line positions are explicit. Discount precedes tax;
+Checkout requires a checked-in or completed appointment and at least one immutable
+appointment service snapshot, and does not itself move the appointment. Invoice line positions are explicit. Discount precedes tax;
 tax is `round(taxable subtotal × basis points / 10,000)`; tip follows tax. All
 money is integer minor units. A zero-total invoice is immediately `paid`.
 

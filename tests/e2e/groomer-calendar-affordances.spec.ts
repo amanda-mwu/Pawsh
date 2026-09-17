@@ -189,11 +189,14 @@ test("a groomer checks a pet in and hands it back, both from the visit itself", 
   await expect(detail.locator("footer .primary")).toHaveCount(1);
   await checkIn.click();
 
-  // CHECKED IN: Ready for Pickup appears, enabled, and carries its own rank rather than the
-  // quiet one. Take Payment does NOT - a groomer holds no `checkout.perform`.
+  // CHECKED IN: Ready for Pickup appears, enabled, and IS THE PRIMARY. Take Payment does NOT
+  // appear - a groomer holds no `checkout.perform` - and with no money action on the footer the
+  // one enabled workflow control takes the dominant slot rather than standing beside an asleep
+  // Save that used to hold it. Human QA read that footer as "no Ready for Pickup".
   const ready = detail.getByTestId("appointment-ready");
   await expect(ready).toBeEnabled();
-  await expect(ready).toHaveClass(/is-strong/u);
+  await expect(ready).toHaveClass(/^primary /u);
+  await expect(detail.locator("footer .primary")).toHaveCount(1);
   await expect(ready).not.toHaveAttribute("title", /permission/u);
   await expect(detail.getByTestId("appointment-take-payment")).toHaveCount(0);
 

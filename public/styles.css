@@ -216,6 +216,10 @@ header>.header-services{margin-left:auto;min-height:40px;padding:8px 14px;border
   /* 44px is a tested accessibility contract (expectCriticalTarget). Density comes from
      padding, type scale and surface spacing — never from shrinking a control below it. */
   --control-h:36px;--icon-btn:36px;--icon-btn-sm:30px;
+  /* The height a `.compact` control gives up to: the pager's 32px, so every deliberately small
+     control in the product is small at the same scale. The coarse-pointer block below lifts it
+     to the 44px floor with everything else. */
+  --control-h-compact:32px;
   --page-pad-y:16px;--page-pad-x:16px;--section-gap:16px;--card-pad:16px;
 }
 
@@ -243,7 +247,14 @@ h3{font:600 15px/1.35 var(--font-sans);margin-bottom:6px}
 .primary,.secondary{min-height:var(--control-h);padding:7px 13px;border-radius:var(--radius-sm);border:1px solid transparent}
 .secondary{border-color:var(--line)}
 .secondary:hover{background:#e2e6e2}
-.compact{padding:8px 13px;font-size:12.5px}
+/* `.compact` COMPACTS. It used to set padding and font-size and never `min-height`, so
+   `.primary,.secondary`'s `min-height:var(--control-h)` carried straight through and a `.compact`
+   button was exactly as tall as a full-size one - 36px fine, 44px coarse, measured - on all 112
+   controls that carry the class. The appointment surface patched a height back on locally and
+   said so; two form footers patched a 44px back on from the other side. The token is the fix:
+   fine pointers get the pager's 32px, and the coarse block below keeps the 44px floor without a
+   second rule per screen. */
+.compact{min-height:var(--control-h-compact);padding:5px 11px;font-size:12.5px}
 .primary:active,.secondary:active,.calendar-tool-button:active,.header-icon-button:active{transform:translateY(1px)}
 button:disabled{cursor:not-allowed;opacity:.55}
 .primary:disabled:hover{background:var(--brand)}
@@ -266,10 +277,35 @@ button:disabled{cursor:not-allowed;opacity:.55}
   background:var(--paper);color:var(--ink);font-size:15px;line-height:1;
 }
 .icon-action:hover,.icon-action:focus-visible{border-color:var(--brand);background:var(--mint)}
+/* THE EDIT GLYPH IS A STROKED PATH IN currentColor, so it takes the button's ink in every state
+   and can be sized to the box: 16px of a 30px button, where the U+270E font glyph it replaces
+   drew perhaps 9px of thin ink and read as a smudge. */
+.icon-action .edit-glyph{display:block;width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+/* A DISABLED ICON BUTTON IS DRAWN IN MUTED INK AT FULL OPACITY, not in its live colour at 55%.
+   The global `button:disabled{opacity:.55}` is right for a text button, whose word survives it;
+   on a 16px glyph it left the brand green at 2.4:1 against white - a mark you could not be sure
+   was there, on a control whose whole job while disabled is to be found and to give its reason.
+   Muted on surface-2 is 4.5:1, it reads as inert without reading as absent, and the `disabled`
+   attribute, the cursor and the title are unchanged. */
+.icon-action:disabled{opacity:1;color:var(--muted);border-color:var(--line);background:var(--surface-2)}
 .header-actions{gap:var(--space-2)}
 input,select,textarea{border-radius:var(--radius-sm);padding:9px 11px}
 .text-button,input,select{min-height:var(--control-h)}
 label{gap:5px;margin-bottom:12px}
+
+/* WHO A DIALOG IS ABOUT. `petContextMarkup()` spans the form grid and lays its own pieces out:
+   the identity line takes the first column, the rabies status sits beside it on the same line at
+   its natural size - never stretched to a neighbour's height, which is what the grid did to the
+   pill when it was a cell of its own - and the care notes take the full width beneath. */
+.modal-pet-context{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:var(--space-1) var(--space-3);margin:0 0 var(--space-3);padding:0 0 var(--space-3);border-bottom:1px solid var(--line)}
+.modal-pet-identity{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 var(--space-2);min-width:0;margin:0}
+.modal-pet-label{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.modal-pet-identity strong{font-size:15px;color:var(--ink)}
+.modal-pet-meta{color:var(--muted);font-size:13px;overflow-wrap:anywhere}
+.modal-pet-context>.rabies-status{justify-self:end;align-self:center}
+.modal-pet-context>.rabies-needed{margin:0!important}
+.modal-pet-context>.safety-context{grid-column:1/-1;margin-top:var(--space-1);padding:8px 10px}
+.modal-pet-context>.safety-context .care-note{margin:2px 0}
 
 /* Tables read as one component: compact rows, quiet headers, obvious row affordance. */
 .directory-table th,.directory-table td{padding:8px 12px}
@@ -400,7 +436,7 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 [data-testid="calendar-add-appointment"],#calendar-view-select,
 .primary-nav button{min-height:44px}
 [data-testid="account-trigger"],[data-testid="logout"],.modal-actions .close{min-width:44px}
-@media (pointer:coarse){:root{--control-h:44px;--icon-btn:44px}}
+@media (pointer:coarse){:root{--control-h:44px;--icon-btn:44px;--control-h-compact:44px}.compact{padding:8px 13px}}
 
 /* == clients list == */
 /* One scannable row per client. The old three-line card (name / pets +
@@ -2427,23 +2463,9 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
    WHAT THE SURFACE ACTUALLY HOLDS is one groomer, one pet, three service lines and two notes.
    The density here is set for that, not for prose. */
 
-/* `.compact` DOES NOT COMPACT. It sets `padding` and `font-size` and never touches `min-height`,
-   so `.primary,.secondary`'s `min-height:var(--control-h)` carries straight through and a
-   `.compact` button is EXACTLY as tall as a full-size one - 36px fine, 44px coarse, measured.
-   That is a defect in the global, and it is stated here rather than fixed there: `.compact`
-   appears on 112 controls across the calendar, Check Out, the Invoice, the Ticket, Settings, the
-   drawers and the client profile, and resizing all of them is a decision about those screens.
-   Two of them - `.profile-actions .compact` and `.business-form-foot .compact` - already patch a
-   height back on locally, which is the same admission from the other side.
-
-   32px is the height `.pager-page` already uses for a deliberately compacted control, so this
-   surface reads at the same scale as the pager rather than inventing a third one. */
-#appointment-detail .compact{min-height:32px;padding:5px 11px}
-/* AND THE COARSE POINTER IS NOT COMPACTED. 44px is the floor on a phone whatever the design
-   wants; only the fine-pointer case gives anything up. */
-@media(pointer:coarse){
-  #appointment-detail .compact{min-height:44px;padding:8px 13px}
-}
+/* `.compact` is compacted by the shared rule now - `--control-h-compact`, 32px fine and 44px
+   coarse - so this surface no longer carries a height of its own. What it used to patch on
+   locally is what every `.compact` control in the product gets. */
 
 /* The head carried 16px of padding over three short lines. 12px is enough separation for a
    reference, a date and a time range, and the clamp keeps the horizontal rhythm the shell set. */
@@ -2484,9 +2506,14 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
 #appointment-detail .work-block-head>.icon-action:focus-visible{
   border-color:var(--brand-strong);background:var(--brand-tint);color:var(--brand-strong);
 }
-#appointment-detail .work-block-head>.secondary:disabled:hover,
-#appointment-detail .work-block-head>.icon-action:disabled:hover{
+#appointment-detail .work-block-head>.secondary:disabled:hover{
   border-color:var(--brand);background:var(--paper);color:var(--brand);
+}
+/* The refused pencil takes the shared `.icon-action:disabled` look - muted ink on surface-2 at
+   full opacity - and hover leaves it exactly there. */
+#appointment-detail .work-block-head>.icon-action:disabled,
+#appointment-detail .work-block-head>.icon-action:disabled:hover{
+  border-color:var(--line);background:var(--surface-2);color:var(--muted);
 }
 
 /* THREE TINTED, BORDERED, 12px-PADDED BOXES INSIDE A BORDERED CARD IS A CARD INSIDE A CARD, and

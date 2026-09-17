@@ -788,6 +788,30 @@ function safetyContext(item) {
   const flagged=item.safetyAlerts?" has-alarm":"";
   return `${compactRabies||rabies}${careDetails.length?`<div class="safety-context${flagged}" role="note" aria-label="Pet safety and care information" data-testid="safety-context">${careDetails.join("")}</div>`:""}`;
 }
+/**
+ * WHO THE DIALOG IS ABOUT, AND WHAT THE GROOMER MUST KNOW, as one block at the top of a modal.
+ *
+ * `safetyContext()` was interpolated straight into `#modal-fields`, which is a two-column form
+ * grid. Its two pieces - the rabies pill and the care-notes box - therefore landed in two grid
+ * cells side by side, and because the pill is a bordered `inline-flex` with a 999px radius, the
+ * grid stretched it to the height of the notes beside it: human QA saw a large, off-centre, empty
+ * red bubble with "Rabies needed" in its top corner. And nothing in the dialog said WHICH pet, so
+ * the alert had no subject.
+ *
+ * This wrapper spans the grid (`.wide`), names the pet, breed and client first, seats the rabies
+ * status on the same line as the name, and puts the care notes beneath at full width. Every fact
+ * `safetyContext()` produces is still produced by `safetyContext()`; the calendar's cards, which
+ * lay it out themselves, are untouched.
+ */
+function petContextMarkup(item){
+  const name=petName({petName:item.petName});
+  const meta=[item.breed,clientName(item,"")].filter(Boolean);
+  return `<div class="modal-pet-context wide" data-testid="modal-pet-context">`
+    +`<p class="modal-pet-identity"><span class="modal-pet-label">Pet</span>`
+      +`<strong data-testid="modal-pet-name">${escape(name)}</strong>`
+      +(meta.length?`<span class="modal-pet-meta">${meta.map(escape).join(" · ")}</span>`:"")
+    +`</p>${safetyContext(item)}</div>`;
+}
 function appointmentHtml(item) {
   const time = schedulingTime(item);
   const customer = `${clientName(item)}`;
@@ -2523,7 +2547,7 @@ async function selectCalendarDate(date){const changedMonth=state.calendar.month!
 function adjustServices(id,record=null) {
   const appointment=record||calendarAppointmentById(id);
   if(!appointment)return toast("That appointment could not be loaded. Refresh and try again.");
-  openModal("Adjust appointment services",safetyContext(appointment)+bookingServiceCheckboxes(appointment.services.map(service=>service.serviceId)),form=>api(`/api/appointments/${id}/services`,{method:"PUT",body:JSON.stringify({serviceIds:form.getAll("serviceIds"),version:appointment.version})}));
+  openModal("Adjust appointment services",petContextMarkup(appointment)+bookingServiceCheckboxes(appointment.services.map(service=>service.serviceId)),form=>api(`/api/appointments/${id}/services`,{method:"PUT",body:JSON.stringify({serviceIds:form.getAll("serviceIds"),version:appointment.version})}));
 }
 function moveAppointment(id,preset={},record=null) {
   const appointment=record||calendarAppointmentById(id);
@@ -2554,7 +2578,7 @@ async function advanceAppointment(id, status, actionButton) {
   const next = {scheduled:"checked_in",checked_in:"in_service",in_service:"completed"}[status];
   if (status === "scheduled" || status === "checked_in") {
     return openModal(status === "scheduled" ? "Check in appointment" : "Start service",
-      safetyContext(appointment)+(status === "checked_in" ? field("operationalNotes","Service note","text","",true) : ""),
+      petContextMarkup(appointment)+(status === "checked_in" ? field("operationalNotes","Service note","text","",true) : ""),
       async (form) => {
         try {
           if (status === "checked_in") {
@@ -15231,11 +15255,25 @@ function appointmentNotesBlockMarkup(surface){
     : item.operationalNotes
       ? `<p data-testid="appointment-service-note">${escape(item.operationalNotes)}</p>`
       : pending;
+  /*
+   * THE SAME NAMED CONTROL ITS SIBLING HAS. The appointment note's heading carries Add or Edit by
+   * name; this one carried a bare heading over a box, and human QA - reading the one labelled
+   * control in the card - concluded the service note could only be added, never edited, when it
+   * was in fact editable the whole time. Two notes in one card now say the same thing the same
+   * way. The field itself is unchanged and stays open, because Save's dirtiness is a comparison
+   * against what is typed there; the control's job is to say the box is a field and to put the
+   * caret in it. Add or Edit follows what the SERVER holds, exactly as the sibling's does.
+   */
+  const serviceHead=`<div class="work-block-head"><h3>Service note</h3>`
+    +(can.editNote
+      ? `<button type="button" class="secondary compact" data-testid="appointment-service-note-edit"`
+        +` aria-label="${item.operationalNotes?"Edit":"Add"} service note">${item.operationalNotes?"Edit":"Add"}</button>`
+      : "")
+    +`</div>`;
   return `<div class="work-block appointment-note" data-testid="appointment-note">`
     +`<div class="appointment-note-part" data-testid="appointment-record-note">`
       +appointmentRecordNoteMarkup(surface)+`</div>`
-    +`<div class="appointment-note-part">`
-      +`<div class="work-block-head"><h3>Service note</h3></div>${service}</div>`
+    +`<div class="appointment-note-part">${serviceHead}${service}</div>`
   +`</div>`;
 }
 
@@ -15263,6 +15301,61 @@ function appointmentNotesBlockMarkup(surface){
  */
 function appointmentPermissionRefusal(action,permission){
   return ` disabled aria-disabled="true" title="You do not have permission to ${action} (${permission})"`;
+}
+
+/**
+ * WHY SAVE IS ASLEEP, said on the control rather than around it.
+ *
+ * Save is drawn disabled until the service note differs from what the server holds, and a disabled
+ * control with no stated reason reads as broken or as absent - human QA reported an in-service
+ * visit as having "no Save" while a disabled one sat beside Complete. The reason travels the way
+ * every other refusal on this surface travels, as the `title` a hover or a long press reveals, so
+ * the footer gains no permanent sentence; `syncSaveState` takes it off when the note is dirty and
+ * puts it back when the note returns to what was saved.
+ */
+const APPOINTMENT_SAVE_ASLEEP="Nothing to save yet. Save wakes when the service note changes.";
+
+/**
+ * THE EDIT GLYPH, DRAWN, NOT TYPED.
+ *
+ * The pencil was the character U+270E - a font glyph, so what reached the screen was whatever the
+ * platform's symbol font had for it: on Windows a small, thin mark with the point at the bottom
+ * right and most of the 30px box empty, which human QA read as "inverted", and at 15px too little
+ * ink for its colour to register as the brand's. A glyph the cascade cannot size or weight cannot
+ * be given a contrast, only a colour.
+ *
+ * This is the shape the product's other inline icons take (`.service-section-chevron`): a stroked
+ * path in `currentColor`, so the ink is the button's own token in every state - normal, hover,
+ * focus and disabled - and the contrast is decided once in the stylesheet for `.icon-action`
+ * rather than per font. The tip points down-left, the way an edit pencil is drawn everywhere else.
+ */
+function editGlyph(){
+  return `<svg class="edit-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">`
+    +`<path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0 0-3L17 5a2.1 2.1 0 0 0-3 0L3.5 15.5V20z"/>`
+    +`<path d="m13 6.5 4.5 4.5"/></svg>`;
+}
+
+/**
+ * WHICH CONTROL OWNS THE FOOTER'S DOMINANT SLOT, decided by one rule for every status and role.
+ *
+ * `ranking` is the footer's actions from most to least important, each as `[name, offered,
+ * enabled]`. The slot goes to the FIRST ONE THAT IS BOTH OFFERED AND PRESSABLE, and to nothing at
+ * all when none is. The second half of that sentence is the whole point. The old rule ranked on
+ * `offered` alone and fell through to "close" when nothing outranked it, and "close" was what made
+ * Save the primary - a Save that ships asleep. So a groomer with no `checkout.perform` opened a
+ * checked-in visit onto a DISABLED blue Save as the loudest thing on the screen, with the one
+ * enabled action, Ready for Pickup, demoted beside it; human QA read that footer as "no Ready for
+ * Pickup and no Take Payment". The same fall-through put a disabled Invoice in the slot on a
+ * settled visit for a role without `payments.view`.
+ *
+ * A DISABLED CONTROL CAN NEVER HOLD THE DOMINANT SLOT. It is still drawn, still disabled, still
+ * carrying its reason - what it loses is the emphasis, which passes to the next action the operator
+ * can actually take. And when there is none, the footer draws no primary rather than promoting a
+ * refusal: a blue button that does nothing is a claim, and the honest footer makes no claim.
+ */
+function dominantAction(ranking){
+  for(const [name,offered,enabled] of ranking)if(offered&&enabled)return name;
+  return null;
 }
 
 function clientRailRefusalMarkup(){
@@ -15318,7 +15411,7 @@ function appointmentSurfaceMarkup(surface){
     +`<div class="work-block"><div class="work-block-head"><h3>Groomer</h3>`
       +(can.moveOffered
         ? `<button type="button" class="icon-action" data-testid="appointment-groomer-edit" aria-label="Change groomer or time"${
-          can.move?"":appointmentPermissionRefusal("change the groomer or the time","appointments.edit")}>&#9998;</button>`
+          can.move?"":appointmentPermissionRefusal("change the groomer or the time","appointments.edit")}>${editGlyph()}</button>`
         : "")
       +`</div><p data-testid="appointment-groomer">${escape(model.groomer)}</p>`
       +appointmentLockNoteMarkup("appointment-detail-lock-note")+`</div>`
@@ -15376,13 +15469,30 @@ function appointmentSurfaceMarkup(surface){
   // cancelled or no-show visit, where there is nothing to come for, Close keeps it.
   // THE WORKFLOW ACTIONS ARE IN THE RANKING NOW, which is what makes a scheduled visit a screen
   // somebody can work from rather than one they can only read. Money still outranks everything;
-  // below it comes the one thing the visit is waiting for - check the pet in, or say the work is
-  // done - then the bill as a document, then the sheet, then dismissal.
-  const primarySlot=can.checkout?"checkout"
-    :can.checkInOffered?"check-in"
-    :can.completeOffered?"complete"
-    :can.invoice?"invoice"
-    :can.ticketPrimary?"ticket":"close";
+  // below it comes the one thing the visit is waiting for - check the pet in, say the work is
+  // done, or say the pet can go home - then the bill as a document, then the sheet, then
+  // dismissal.
+  //
+  // READY FOR PICKUP HAS A PLACE IN THE RANKING NOW, directly under the money. The old rule left
+  // it out on purpose - on a checked-in visit the money outranks it, and that is still true - but
+  // "outranked by the money" is not "never the primary". When there is no money action, because
+  // the role cannot take payment or the visit is already settled, saying the pet can go home IS
+  // what the visit is waiting for, and it takes the slot.
+  //
+  // `dominantAction` skips anything that is drawn disabled, so a refused Take Payment, Check In,
+  // Complete, Ready or Invoice passes the slot on rather than holding it inert. Save is not in
+  // the ranking at all: it is asleep at every draw and wakes only when the note is dirty, and a
+  // primary that is decided at draw time cannot be given to a control that is not pressable at
+  // draw time. Close takes the slot only on a read-only visit with nothing else to offer.
+  const primarySlot=dominantAction([
+    ["checkout",can.checkout,can.checkout],
+    ["check-in",can.checkInOffered,can.checkIn],
+    ["complete",can.completeOffered,can.complete],
+    ["ready",can.readyOffered,can.ready],
+    ["invoice",can.invoice,can.invoiceViewable],
+    ["ticket",can.readOnly&&can.ticketPrimary,true],
+    ["close",can.readOnly,true]
+  ]);
   /*
    * ONE TICKET ACTION, WHERE THERE WERE THREE, AND NAMED FOR WHAT IT PRODUCES.
    *
@@ -15398,7 +15508,7 @@ function appointmentSurfaceMarkup(surface){
    * own Print agenda, which is what `printableAgenda` is actually for, is untouched. With only one
    * left, the control can afford to say which document it is and what pressing it leads to.
    */
-  const ticket=`<button type="button" class="${can.readOnly&&primarySlot==="ticket"?"primary":"secondary"} compact" data-testid="appointment-ticket">Print Ticket</button>`;
+  const ticket=`<button type="button" class="${primarySlot==="ticket"?"primary":"secondary"} compact" data-testid="appointment-ticket">Print Ticket</button>`;
   // It OPENS the invoice rather than raising a second one, and it is the same workspace a client's
   // transaction history opens, so there is one Invoice document with one title and one pair of
   // print controls.
@@ -15441,12 +15551,12 @@ function appointmentSurfaceMarkup(surface){
    * is that the loser of that ranking is no longer indistinguishable from Book Again.
    */
   // THE PRIMARY IS DRAWN LAST, which is where this product has always put it - the ≤640 rule
-  // reaches for `.surface-foot-actions:last-child>.primary` - so the zone reads quietest to
-  // strongest left to right. Ready for Pickup is the only workflow control that is never the
-  // primary, so it leads the zone; Check In and Complete are the primary on their own statuses and
-  // join Take Payment at the end.
+  // reaches for `.surface-foot-lead>.primary` and gives it `order:-1` - so the zone reads quietest
+  // to strongest left to right in the DOM and the primary is lifted to the front on a phone.
+  // Ready for Pickup leads the zone in the DOM; when the money outranks it, it is the strong
+  // secondary beside Take Payment, and when there is no money action it is the primary itself.
   const readyForPickup=can.readyOffered
-    ? `<button type="button" class="secondary compact is-strong" data-testid="appointment-ready"${
+    ? `<button type="button" class="${primarySlot==="ready"?"primary":"secondary is-strong"} compact" data-testid="appointment-ready"${
       can.ready?"":appointmentPermissionRefusal("mark work as finished","operations.complete")}>Ready for Pickup</button>`
     : "";
   const workflow=(can.checkInOffered
@@ -15457,19 +15567,20 @@ function appointmentSurfaceMarkup(surface){
       ? `<button type="button" class="${primarySlot==="complete"?"primary":"secondary"} compact" data-testid="appointment-complete"${
         can.complete?"":appointmentPermissionRefusal("mark work as finished","operations.complete")}>Complete</button>`
       : "");
-  // A save that is offered but asleep. See `syncSaveState` for what wakes it.
+  // A save that is offered but asleep. See `syncSaveState` for what wakes it, and for the reason
+  // it carries while it sleeps. NEVER THE PRIMARY - see `dominantAction`.
   const save=can.editNote
-    ? `<button type="button" class="${primarySlot==="close"?"primary":"secondary"} compact" data-testid="appointment-save" disabled aria-disabled="true">Save</button>`
+    ? `<button type="button" class="secondary compact" data-testid="appointment-save" disabled aria-disabled="true" title="${APPOINTMENT_SAVE_ASLEEP}">Save</button>`
     : "";
-  const close=closeRank=>`<button type="button" class="${
-    primarySlot==="close"&&closeRank?"primary":"secondary"} compact" data-testid="appointment-close">Close</button>`;
+  const close=`<button type="button" class="${
+    primarySlot==="close"?"primary":"secondary"} compact" data-testid="appointment-close">Close</button>`;
 
   const foot=can.readOnly
     // Nothing on this appointment can move any more, so the footer offers the things that still
     // mean something rather than a row of controls the server would refuse. The bill is what an
     // operator opens a settled visit for, so it leads; the sheet and the way out are utility.
     ? `<footer class="surface-foot">`
-      +`<div class="surface-foot-actions surface-foot-utility">${ticket}${close(true)}</div>`
+      +`<div class="surface-foot-actions surface-foot-utility">${ticket}${close}</div>`
       +`<div class="surface-foot-actions surface-foot-lead">${invoice}${takePayment}</div>`
     +`</footer>`
     : `<footer class="surface-foot">`
@@ -16039,6 +16150,13 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
     // window while the appointment note is editable in every status.
     const save=dialog.querySelector('[data-testid="appointment-save"]');
     const noteField=dialog.querySelector('[data-testid="appointment-note-input"]');
+    // Add / Edit on the service note's heading is an affordance, not a mode: the field is already
+    // open, so the press puts the caret after whatever is there, the way the appointment note's
+    // editor does when it opens.
+    if(noteField)on("appointment-service-note-edit",()=>{
+      noteField.focus();
+      noteField.setSelectionRange(noteField.value.length,noteField.value.length);
+    });
     if(save&&noteField){
       /**
        * WHAT "DIRTY" MEANS HERE, AND WHY IT IS COMPARED RATHER THAN FLAGGED.
@@ -16056,8 +16174,9 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
       const syncSaveState=()=>{
         const dirty=clean(noteField.value)!==clean(surface.item.operationalNotes);
         save.disabled=!dirty;
-        if(dirty)save.removeAttribute("aria-disabled");
-        else save.setAttribute("aria-disabled","true");
+        // The reason is on the control exactly while it is asleep, and nowhere while it is not.
+        if(dirty){save.removeAttribute("aria-disabled");save.removeAttribute("title");}
+        else{save.setAttribute("aria-disabled","true");save.setAttribute("title",APPOINTMENT_SAVE_ASLEEP);}
       };
       noteField.addEventListener("input",syncSaveState);
       noteField.addEventListener("change",syncSaveState);

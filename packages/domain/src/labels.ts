@@ -228,8 +228,8 @@ export const permissionHints: Partial<Record<Permission, string>> = {
   "payments.view": "Covers the invoice on any appointment, paid or not.",
 
   "appointments.view_all_staff": "See appointments assigned to every staff member, not only your own.",
-  "appointments.edit_all_staff": "Change appointments assigned to every staff member, not only your own.",
-  "appointments.service_price_edit": "Override a service's price on one appointment. Pawsh resolves every price from the price book today.",
+  "appointments.edit_all_staff": "Change and reassign appointments assigned to every staff member, not only your own, and manage any staff member's blocked time.",
+  "appointments.service_price_edit": "Change the price of one service on one appointment. The price book is not changed; editing the time reserved needs only Edit appointments.",
   "appointments.online_booking_accept": "Accept appointments clients book for themselves online.",
   "checkout.split_tips": "Divide one appointment's tip between the staff who worked it.",
   "payments.edit": "Void or refund a payment that has already been recorded. Taking the payment is Check Out Appointments.",

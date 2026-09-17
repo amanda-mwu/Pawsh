@@ -228,6 +228,10 @@ function loadClient(): ClientModule {
     const grant = (...permissions) => { permissions.forEach((one) => granted.add(one)); };
     // Moving a visit is a different surface's concern and is never on for a completed one.
     const appointmentMoveAllowed = () => false;
+    // THE SESSION, for the ownership rule. This file grants financial keys and asks about the
+    // bill; no test here is about scope, so the actor has no employee record and the scoped
+    // controls are simply refused, which is what such a session would see.
+    const state = { me: { employeeId: null }, clientProfile: null, pets: [] };
     // The workspace-wide lock, which decides whether the Move affordance is OFFERED at all -
     // separately from whether this actor may use it. Off here; the two halves are pulled apart in
     // tests/ui/appointment-permission-affordances.test.ts.
@@ -464,7 +468,8 @@ function appointmentSurface(overrides: Record<string, unknown> = {}) {
     cards: { data: null, failed: false },
     client: { loaded: false, failed: false },
     permissions: null as unknown,
-    note: { open: false, draft: null, baseVersion: null, conflict: null, error: null, saving: false }
+    note: { open: false, draft: null, baseVersion: null, conflict: null, error: null, saving: false },
+    serviceNote: { open: false, draft: null, baseVersion: null, conflict: null, error: null, saving: false }
   };
 }
 

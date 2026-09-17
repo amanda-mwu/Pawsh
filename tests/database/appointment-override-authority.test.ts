@@ -143,15 +143,21 @@ describeDatabase("scheduling override authority, on both routes that write it", 
       `;
     }
 
+    // Every editor here also holds `appointments.edit_all_staff`: since that key started
+    // enforcing, `appointments.edit` alone reaches only appointments assigned to the caller's own
+    // employee record, and these members have none. The override authority under test is a
+    // question about `appointments.edit` and `appointments.override_conflict`, not about scope.
     editorCookie = await seedMember("editor",
-      ["calendar.view", "appointments.view", "appointments.create", "appointments.edit", "appointments.override_conflict"]);
+      ["calendar.view", "appointments.view", "appointments.create", "appointments.edit",
+        "appointments.edit_all_staff", "appointments.override_conflict"]);
     // Holds `appointments.create` and NOT `appointments.edit`: the caller the availability
     // override on create exists to refuse.
     creatorCookie = await seedMember("creator",
       ["calendar.view", "appointments.view", "appointments.create"]);
     // Holds `appointments.edit` and NOT `appointments.override_conflict`.
     plainEditorCookie = await seedMember("plain-editor",
-      ["calendar.view", "appointments.view", "appointments.create", "appointments.edit"]);
+      ["calendar.view", "appointments.view", "appointments.create", "appointments.edit",
+        "appointments.edit_all_staff"]);
   });
   afterAll(async () => { await app.close(); await db.end(); });
 

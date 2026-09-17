@@ -1,5 +1,6 @@
 import { test, expect, login, createAppointment } from "./fixtures/tenant.js";
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
+import { revealAppointmentOnCalendar } from "./helpers/calendar.js";
 
 /**
  * OPENING AN APPOINTMENT IS NOT GATED BY CHECKING THE PET IN.
@@ -51,6 +52,7 @@ async function visit(api: APIRequestContext, appointmentId: string): Promise<{
 async function openDetail(page: Page, appointmentId: string): Promise<void> {
   await page.getByTestId("nav-calendar").click();
   await page.waitForLoadState("networkidle");
+  await revealAppointmentOnCalendar(page, appointmentId);
   await page.locator(`[data-appointment-id="${appointmentId}"] .calendar-open`).first().click();
   await expect(detail(page)).toBeVisible();
 }
@@ -173,14 +175,12 @@ test("an in-service visit is completed from the visit, and is never offered a bi
     await expect(at(page, "appointment-ready")).toHaveCount(0);
     await expect(at(page, "appointment-take-payment")).toHaveCount(0);
     await expect(detail(page).locator("footer .primary")).toHaveCount(1);
-    // Still a work surface: the services and both notes are reachable.
+    // Still a work surface: the services and both notes are reachable, each note with its own
+    // editor and no footer Save.
     await expect(at(page, "appointment-adjust-services")).toBeEnabled();
-    await expect(at(page, "appointment-note-input")).toBeVisible();
-    await expect(at(page, "appointment-save")).toBeDisabled();
-
-    // Save still works from here, and still only when something changed.
-    await at(page, "appointment-note-input").fill("Dried and brushed out.");
-    await expect(at(page, "appointment-save")).toBeEnabled();
+    await expect(at(page, "appointment-service-note-edit")).toBeEnabled();
+    await expect(at(page, "appointment-note-edit")).toBeEnabled();
+    await expect(at(page, "appointment-save")).toHaveCount(0);
 
     await at(page, "appointment-complete").click();
     await expect(async () => {

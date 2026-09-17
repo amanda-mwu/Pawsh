@@ -398,8 +398,11 @@ test("a mixed group marks its own rows, and narrowing the sheet puts every badge
   await row(page,"Front desk").getByTestId("role-open-permissions").click();
 
   const appointment=await openGroup(page,"appointment");
+  // Four, not six: `appointments.edit_all_staff` graduated to an enforced key with the staff
+  // scheduling scope, and `appointments.service_price_edit` the day an appointment's own service
+  // price became editable, so neither is marked "not yet available" any more.
   await expect(appointment.getByTestId("role-group-note"))
-    .toContainText("6 of these 20 are marked");
+    .toContainText("4 of these 20 are marked");
   // Marked per row here, because only some of them are.
   await expect(page.locator('[data-role-permission-row="appointments.view_all_staff"] .pref-unenforced'))
     .toHaveCount(1);
@@ -436,8 +439,10 @@ test("hiding what Pawsh has not built names the groups that went, and keeps thei
   //
   // These two figures are read from a BUILD of `packages/domain`. If they pass when you expected
   // them to fail, restart the server first - see the note at the top of this file.
-  await expect(page.getByTestId("role-filter-count")).toContainText("27 of 78 permissions");
-  await expect(page.getByTestId("role-filter-count")).toContainText("51 not built yet, hidden");
+  // 29 built and 49 hidden since `appointments.edit_all_staff` and then
+  // `appointments.service_price_edit` graduated to enforced keys.
+  await expect(page.getByTestId("role-filter-count")).toContainText("29 of 78 permissions");
+  await expect(page.getByTestId("role-filter-count")).toContainText("49 not built yet, hidden");
   // The wholly unbuilt groups are gone from the sheet - and named underneath it.
   await expect(group(page,"cash-drawer")).toHaveCount(0);
   const note=page.getByTestId("role-hidden-note");

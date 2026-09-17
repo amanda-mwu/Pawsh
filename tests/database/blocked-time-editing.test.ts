@@ -940,21 +940,32 @@ describeDatabase("editing and removing a blocked time", () => {
 
     /**
      * CLEARING A NOTE IS EDITING A BLOCK, so it is gated on `calendar.blocks_edit` like every other
-     * edit and nothing about a null opens a second door. A Groomer holds no such key and is refused
-     * before the body is even considered.
+     * edit and nothing about a null opens a second door. A member without the key is refused
+     * before the body is even considered, and a Groomer - who holds the key scoped to their own
+     * calendar - is refused another groomer's block on scope.
      */
-    it("still requires calendar.blocks_edit, and refuses a Groomer", async () => {
+    it("still requires calendar.blocks_edit, and refuses a Groomer another groomer's block", async () => {
       const block = await created({
         localStart: `${SUMMER}T16:00`, localEnd: `${SUMMER}T16:30`, reason: "Gated",
         employeeId: noteEmployeeId
       });
-      const groomer = await sessionWith(permissionPresets.groomer!);
-      const refused = await patch(block.id, { version: block.version, reason: null }, groomer);
+      const createOnly = await sessionWith(["calendar.view", "calendar.blocks_create"]);
+      const refused = await patch(block.id, { version: block.version, reason: null }, createOnly);
       expect(refused.statusCode, refused.body).toBe(403);
       expect(refused.json().error).toContain("calendar.blocks_edit");
       expect((await stored(block.id))!.reason, "a refused clear writes nothing").toBe("Gated");
 
-      const editOnly = await sessionWith(["calendar.view", "calendar.blocks_edit"]);
+      const groomer = await sessionWith(permissionPresets.groomer!);
+      const scoped = await patch(block.id, { version: block.version, reason: null }, groomer);
+      expect(scoped.statusCode, scoped.body).toBe(403);
+      expect(scoped.json().code).toBe("NOT_ASSIGNED_TO_YOU");
+      expect((await stored(block.id))!.reason, "a refused clear writes nothing").toBe("Gated");
+
+      // Holds the key and, having no employee record, the all-staff key that lets it reach a
+      // block on somebody else's calendar.
+      const editOnly = await sessionWith([
+        "calendar.view", "calendar.blocks_edit", "appointments.edit_all_staff"
+      ]);
       const allowed = await patch(block.id, { version: block.version, reason: null }, editOnly);
       expect(allowed.statusCode, allowed.body).toBe(200);
       expect((allowed.json() as BlockRow).reason).toBeNull();
@@ -1247,9 +1258,13 @@ describeDatabase("editing and removing a blocked time", () => {
       expect(refusedDelete.statusCode, refusedDelete.body).toBe(403);
       expect(refusedDelete.json().error).toContain("calendar.blocks_edit");
 
-      // And the edit key alone IS enough: it is a permission in its own right, not a second switch
-      // that has to be held alongside the one that creates blocks.
-      const editOnly = await sessionWith(["calendar.view", "calendar.blocks_edit"]);
+      // And the edit key IS enough: it is a permission in its own right, not a second switch that
+      // has to be held alongside the one that creates blocks. `appointments.edit_all_staff` rides
+      // along because the block is on another groomer's calendar and this member has no employee
+      // record; the scope rule has its own suite, and this case is about which key is consulted.
+      const editOnly = await sessionWith([
+        "calendar.view", "calendar.blocks_edit", "appointments.edit_all_staff"
+      ]);
       const allowed = await patch(block.id, { version: block.version, reason: "Yes" }, editOnly);
       expect(allowed.statusCode, allowed.body).toBe(200);
       expect((await remove(block.id, (allowed.json() as BlockRow).version, editOnly)).statusCode)

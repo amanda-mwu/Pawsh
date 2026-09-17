@@ -5,7 +5,7 @@ import { z, type ZodType } from "zod";
 import type { Config } from "../config.js";
 import { setTenant, type Database, type SqlExecutor } from "../db/client.js";
 import { DocumentStorageError, sha256, type DocumentStorage } from "../storage/documents.js";
-import { canEnterCheckout, canTransition, invoiceSettledStatuses, type AppointmentStatus } from "@pawsh/domain";
+import { canEnterCheckout, canTransition, invoiceSettledStatuses, type AppointmentStatus, type InvoiceStatus } from "@pawsh/domain";
 import { applyDiscounts, calculateInvoice } from "@pawsh/domain";
 import {
   discountApplyScopeLabels, discountApplyScopes, discountKindLabels, discountKinds,
@@ -39,6 +39,7 @@ import {
   transitionSchema, appointmentTimesSchema, appointmentRecordSchema, businessSettingsSchema, workingHoursSchema, blockedTimeSchema,
   blockedTimeUpdateSchema, blockedTimeVersionQuerySchema,
   operationalUpdateSchema, voidPaymentSchema, appointmentMoveSchema, appointmentServicesSchema,
+  appointmentServiceLineParams, appointmentServiceLineEditSchema,
   passwordResetRequestSchema, passwordResetConfirmSchema, invitationSchema,
   invitationAcceptSchema, ownershipTransferSchema, petProfileUpdateSchema, petCareUpdateSchema,
   workspaceAccessApprovalSchema,
@@ -650,10 +651,15 @@ function appointmentCalendarRows(db: Database, scope: SqlFragment) {
       -- tie-break the unique key makes unreachable, kept so a hand-written row cannot reintroduce
       -- an arbitrary result. The client MUST NOT re-sort this: ticketServicesMarkup and
       -- appointmentPresentation render the array as given, and that is the contract.
+      -- id is the appointment_services row, which PUT .../services keeps across edits and
+      -- PATCH .../services/:lineId addresses. resolutionSource is the price-book rule the
+      -- snapshot came from, or 'manual' once the line has been edited for this appointment - the
+      -- one signal the client has for "edited here", since the catalog default is not on the row.
       coalesce(json_agg(json_build_object(
         'id', aps.id, 'name', aps.service_name_snapshot, 'durationMinutes',
         aps.duration_minutes_snapshot, 'priceMinor', aps.price_minor_snapshot,
-        'serviceId', aps.service_id
+        'serviceId', aps.service_id, 'linePosition', aps.line_position,
+        'resolutionSource', aps.resolution_source_snapshot
       ) order by aps.line_position, aps.id) filter (where aps.id is not null), '[]') as services,
       -- What checkout will charge for the work itself, from the same immutable snapshots the
       -- invoice is built from. The checkout modal opens before the invoice exists, so anything
@@ -1184,6 +1190,115 @@ function agreementSummary(items: readonly CustomerAgreementItem[]) {
 }
 
 /**
+ * THE THREE CLIENT READS, AS BUILDERS, so one client can be described from two doors.
+ *
+ * `GET /api/customers/:id/history`, `/notes` and `/agreements` each answer for a client the
+ * caller reached through the Clients tab, gated on `customers.view`. The appointment rail
+ * reaches the SAME client through the appointment - a groomer working a dog needs the history,
+ * the notes and the agreements of the person whose dog it is, and may hold no `customers.view`
+ * at all - so `GET /api/appointments/:id/client` answers with the same three shapes for the
+ * appointment's customer. Three builders, each returning exactly the payload its route returns
+ * (or null when the customer is not in this business), are what keep the two doors one answer:
+ * a field added to the history route appears on the rail, and a field the rail needs is added
+ * to the history route rather than to a copy of its query.
+ *
+ * MONEY IS WITHHELD BY THE BUILDER, NOT BY THE ROUTE. `mayViewPayments` decides whether
+ * `summary` and `invoices` are filled or left absent, exactly as the history route has always
+ * done, and it is a parameter rather than something read off a request so that both routes
+ * resolve it the same way - `isOwner || payments.view` - and neither can forget.
+ */
+async function customerHistoryProfile(
+  db: Database,
+  input: { businessId: string; customerId: string; mayViewCare: boolean; mayViewPayments: boolean }
+): Promise<Record<string, unknown> | null> {
+  const { businessId, customerId: id } = input;
+  const [customer] = await db`select customer.*,employee.display_name preferred_employee_name
+    from customers customer left join employees employee
+      on employee.business_id=customer.business_id and employee.id=customer.preferred_employee_id
+    where customer.business_id=${businessId} and customer.id=${id}`;
+  if (!customer) return null;
+  const [pets, upcoming, history, invoices, summary] = await Promise.all([
+    db`select * from pets where business_id=${businessId} and customer_id=${id} order by name,id`,
+    appointmentHistoryPage(db, {
+      businessId, scope: "customer", id,
+      limit: profileUpcomingLimit, offset: 0, direction: "upcoming"
+    }),
+    appointmentHistoryPage(db, {
+      businessId, scope: "customer", id,
+      limit: profileHistoryPreviewLimit, offset: 0, direction: "past"
+    }),
+    input.mayViewPayments
+      ? db`select id,invoice_number,status,subtotal_minor,discount_minor,tax_minor,tip_minor,
+            total_minor,balance_minor,created_at
+           from invoices where business_id=${businessId} and customer_id=${id}
+           order by created_at desc,id desc limit ${profileHistoryLimit}`
+      : Promise.resolve([]),
+    input.mayViewPayments
+      ? customerSalesSummary(db, { businessId, customerId: id })
+      : Promise.resolve(null)
+  ]);
+  const appointmentTotal = upcoming.total + history.total;
+  return {
+    customer,
+    pets: input.mayViewCare ? pets : pets.map((pet) => redactPetCare(pet)),
+    upcoming: { items: upcoming.items, total: upcoming.total },
+    history: { items: history.items, total: history.total },
+    appointmentTotal,
+    appointmentsTruncated:
+      upcoming.total > upcoming.items.length || history.total > history.items.length,
+    // Money is withheld rather than zeroed for staff without `payments.view`, so an empty
+    // summary is never mistaken for a client who has never spent anything.
+    summary,
+    invoices
+  };
+}
+
+/** One page of the client's note thread, in the shape `GET /api/customers/:id/notes` answers. */
+async function customerNotesPage(
+  db: Database,
+  input: { businessId: string; customerId: string; page: number; pageSize: number }
+): Promise<Record<string, unknown> | null> {
+  const [customer] = await db<{ id: string }[]>`
+    select id from customers where business_id=${input.businessId} and id=${input.customerId}
+  `;
+  if (!customer) return null;
+  const [items, totals] = await Promise.all([
+    customerNoteRows(db, {
+      businessId: input.businessId, customerId: input.customerId,
+      limit: input.pageSize, offset: (input.page - 1) * input.pageSize
+    }),
+    db<{ count: number }[]>`
+      select count(*)::int count from customer_notes
+      where business_id=${input.businessId} and customer_id=${input.customerId}
+    `
+  ]);
+  return { items, total: totals[0]?.count ?? 0, page: input.page, pageSize: input.pageSize };
+}
+
+/** The client's agreements, in the shape `GET /api/customers/:id/agreements` answers. */
+async function customerAgreementsProfile(
+  db: Database,
+  input: { businessId: string; customerId: string }
+): Promise<Record<string, unknown> | null> {
+  const [customer] = await db<(AgreementRecipient & { archivedAt: Date | null })[]>`
+    select id,first_name,last_name,email,email_allowed,block_messages,archived_at
+    from customers where business_id=${input.businessId} and id=${input.customerId}
+  `;
+  if (!customer) return null;
+  const items = await customerAgreementRows(db, {
+    businessId: input.businessId, customerId: input.customerId
+  });
+  return {
+    customerId: input.customerId,
+    items,
+    summary: agreementSummary(items),
+    delivery: agreementDelivery(customer),
+    // An archived client is readable but nothing can be sent to or recorded against it.
+    customerArchived: customer.archivedAt !== null
+  };
+}
+
+/**
  * The message a client actually receives. Pawsh has no client-facing signing surface, so
  * the email carries the document text and asks the client to confirm with the salon; the
  * signature is then recorded by staff. It is sealed like every other composed notification
@@ -1661,6 +1776,164 @@ function staffAvailabilityError(
       canOverride: callerMayOverride && availabilityOverrideMayBypass(refusal.reason)
     }
   );
+}
+
+/**
+ * One line of an appointment's work list, as the audit trail and the history projection carry
+ * it. Snapshots, not catalog values: the name and price are what THIS appointment holds.
+ */
+interface AppointmentServiceLine {
+  id: string;
+  serviceId: string;
+  name: string;
+  durationMinutes: number;
+  priceMinor: number;
+  linePosition: number;
+}
+
+/** The work list in sheet order. Used before and after every write so the audit row has both. */
+async function appointmentServiceLines(
+  tx: SqlExecutor, businessId: string, appointmentId: string
+): Promise<AppointmentServiceLine[]> {
+  return tx<AppointmentServiceLine[]>`
+    select id,service_id,service_name_snapshot as name,duration_minutes_snapshot as duration_minutes,
+      price_minor_snapshot as price_minor,line_position
+    from appointment_services
+    where business_id=${businessId} and appointment_id=${appointmentId}
+    order by line_position,id
+  `;
+}
+
+/** The appointment as the two service-edit routes need it, locked, scoped and resource-locked. */
+interface ServiceEditAppointment {
+  id: string;
+  startAt: Date;
+  endAt: Date;
+  status: string;
+  petId: string;
+  version: number;
+  schedulingTimezone: string;
+  locationId: string;
+  employeeIds: string[];
+}
+
+/**
+ * THE OPENING MOVES SHARED BY EVERY WRITE TO AN APPOINTMENT'S SERVICES, in the order the other
+ * appointment writes make them: the row lock, then whose appointment it is, then the per-groomer
+ * scheduling lock under which the window will be judged. Null when the appointment is not in the
+ * caller's business, which every caller answers with the same 404.
+ */
+async function lockAppointmentForServiceEdit(
+  tx: Transaction,
+  context: { businessId: string; membershipId: string; isOwner: boolean; permissions: readonly string[] },
+  appointmentId: string
+): Promise<ServiceEditAppointment | null> {
+  const [appointment] = await tx<Omit<ServiceEditAppointment, "employeeIds">[]>`
+    select id,start_at,end_at,status,pet_id,version,scheduling_timezone,location_id from appointments
+    where business_id=${context.businessId} and id=${appointmentId} for update
+  `;
+  if (!appointment) return null;
+  await assertAppointmentMutable(tx, context, { appointmentId });
+  const assigned = await tx<{ employeeId: string }[]>`
+    select employee_id from appointment_employees
+    where business_id=${context.businessId} and appointment_id=${appointmentId}
+  `;
+  const employeeIds = assigned.map((row) => row.employeeId);
+  await lockSchedulingResources(tx, context.businessId, employeeIds);
+  return { ...appointment, employeeIds };
+}
+
+/**
+ * The status window and the invoice guard, shared by the list edit and the line edit so the two
+ * cannot drift apart. Both sentences are the ones the list edit has always answered with.
+ */
+async function refuseServiceEditOutsideWindow(
+  tx: Transaction, businessId: string, appointmentId: string, status: string
+): Promise<void> {
+  if (!["scheduled","checked_in","in_service"].includes(status)) {
+    throw new Error("Services cannot be changed in the current appointment state");
+  }
+  const invoice = await tx`
+    select id from invoices where business_id=${businessId} and appointment_id=${appointmentId} and status<>'void'
+  `;
+  if (invoice.length) throw new Error("Services cannot change after checkout begins");
+}
+
+/**
+ * THE NEW `end_at`, JUDGED AS A MOVE IS JUDGED, THEN WRITTEN.
+ *
+ * `end_at = start_at + Σ duration` over the lines as they now stand, then the guard sequence
+ * `PATCH /api/appointments/:id/schedule` runs over the same minutes: the local-midnight rule,
+ * `findSchedulingConflicts` - 409 `SCHEDULING_CONFLICT` unless the caller asked to override and
+ * holds `appointments.override_conflict`, in which case the override is permitted to the database
+ * trigger and recorded as `appointment.conflict_override` - and then `refuseStaffAvailability`,
+ * where an `availabilityOverride` bypasses exactly the ordinary-hours refusals and never a block:
+ * `TIME_BLOCKED` stands whoever asks. `callerMayOverride` is true for the same reason it is on
+ * `/schedule`: every caller here already holds `appointments.edit`.
+ *
+ * The closure check a move runs is not repeated: the date does not change here, and the midnight
+ * rule is what keeps it from changing. `locationClosed: false` is therefore an input the resolver
+ * is handed rather than a fact this established, which the six-step contract allows.
+ *
+ * Writes `end_at`, `conflict_overridden` and the version in one statement, so what the guard
+ * judged is what the row says.
+ */
+async function settleAppointmentWindow(
+  tx: Transaction,
+  context: { businessId: string; membershipId: string; userId: string },
+  input: {
+    appointment: ServiceEditAppointment;
+    lines: readonly AppointmentServiceLine[];
+    overrideConflict: boolean;
+    overrideAuthorized: boolean;
+    availabilityOverride: boolean;
+    overrideReason: string | null;
+  }
+): Promise<Date> {
+  const { appointment } = input;
+  const minutes = input.lines.reduce((sum, line) => sum + line.durationMinutes, 0);
+  const startAt = appointment.startAt;
+  const endAt = new Date(startAt.getTime() + minutes * 60_000);
+  if (localDateForInstant(endAt, appointment.schedulingTimezone) !== localDateForInstant(startAt, appointment.schedulingTimezone)) {
+    throw new Error("Appointments may not cross local midnight during the controlled pilot");
+  }
+  const conflicts = (await Promise.all(appointment.employeeIds.map((employeeId) => findSchedulingConflicts(tx, {
+    businessId: context.businessId, employeeId, startAt, endAt, excludeAppointmentId: appointment.id
+  })))).flat();
+  if (conflicts.length && !input.overrideConflict) {
+    const canOverride = await hasCurrentPermission(tx, {
+      businessId: context.businessId, membershipId: context.membershipId,
+      permission: "appointments.override_conflict"
+    });
+    throw new SchedulingRequestError(409,"SCHEDULING_CONFLICT","This employee already has an overlapping appointment during the selected time.",{conflicts,canOverride});
+  }
+  const overrideApplied = conflicts.length > 0 && input.overrideConflict && input.overrideAuthorized;
+  if (overrideApplied) await permitConflictOverride(tx, appointment.id);
+  const refusal = await refuseStaffAvailability(tx, {
+    businessId: context.businessId, locationId: appointment.locationId,
+    timeZone: appointment.schedulingTimezone, employeeIds: appointment.employeeIds,
+    startAt, endAt, locationClosed: false
+  });
+  if (refusal && !(input.availabilityOverride && availabilityOverrideMayBypass(refusal.reason))) {
+    throw staffAvailabilityError(refusal, true);
+  }
+  await tx`
+    update appointments set end_at=${endAt},conflict_overridden=${overrideApplied},
+      version=version+1,updated_by=${context.userId},updated_at=now()
+    where business_id=${context.businessId} and id=${appointment.id}
+  `;
+  if (overrideApplied) {
+    await record(tx, {
+      businessId: context.businessId, actorId: context.userId,
+      action: "appointment.conflict_override", resourceType: "appointment", resourceId: appointment.id,
+      after: {
+        operation: "services", employeeIds: appointment.employeeIds, startAt, endAt,
+        conflictingAppointmentIds: conflicts.map((conflict) => conflict.appointmentId)
+      },
+      reason: input.overrideReason
+    });
+  }
+  return endAt;
 }
 
 /**
@@ -2172,6 +2445,176 @@ async function ensureAppointmentMovable(
     "APPOINTMENT_MOVE_LOCKED",
     "Appointments are locked from being moved. A manager can unlock this in Settings → Business."
   );
+}
+
+/**
+ * WHO THE CALLER IS ON THE CALENDAR.
+ *
+ * The canonical staff identity is the `employees` row whose `membership_id` is the authenticated
+ * membership. It is resolved HERE, from the session, inside the caller's transaction - never read
+ * off the request body. An `employeeId` a browser sends is a claim about somebody else's
+ * calendar, not proof of whose calendar the caller is; treating it as proof would let any member
+ * holding `appointments.edit` edit anything by naming the right groomer. `unique (business_id,
+ * membership_id)` on `employees` is what makes "the" employee well defined.
+ *
+ * Null for a membership with no employee record - an owner who never made themselves a groomer,
+ * a bookkeeper, a front desk seated without a staff card. For the scope checks below that means
+ * NOTHING is assigned to them: such a member holding `appointments.edit` and not
+ * `appointments.edit_all_staff` is refused every appointment edit, which is the honest reading
+ * of "may change appointments assigned to me" for somebody nothing can be assigned to.
+ * `migrations/0057_staff_scheduling_scope.sql` grants the all-staff key to every role that held
+ * the scoped keys when it ran, so no existing role lands in that state by migration.
+ */
+async function callerEmployeeId(
+  tx: SqlExecutor,
+  context: { businessId: string; membershipId: string }
+): Promise<string | null> {
+  const [row] = await tx<{ id: string }[]>`
+    select id from employees
+    where business_id=${context.businessId} and membership_id=${context.membershipId}
+  `;
+  return row?.id ?? null;
+}
+
+/**
+ * The caller's own employee record, and whether ONE appointment is assigned to it.
+ *
+ * The same resolution as `callerEmployeeId` - `employees.membership_id` is the session's
+ * membership, never a body or query id - carrying one more fact: whether this appointment is the
+ * caller's. "Assigned to me" is `appointments.employee_id` OR an `appointment_employees` row
+ * naming my employee record. Both are consulted because both are written: the create and move
+ * routes keep the two in step today, and a reader that trusted only one of them would refuse a
+ * groomer their own appointment the day they drift.
+ *
+ * Undefined for a membership with no employee record, which every caller reads as "not assigned":
+ * nothing can be assigned to somebody who is not on the staff list. `assertAppointmentMutable`
+ * answers every appointment write from this, and the receipt read answers a groomer's own paid
+ * invoice from it, so the two can never disagree about whose appointment a visit is.
+ */
+async function callerAssignment(
+  tx: SqlExecutor,
+  context: { businessId: string; membershipId: string },
+  appointmentId: string
+): Promise<{ employeeId: string; assigned: boolean } | undefined> {
+  const [me] = await tx<{ employeeId: string; assigned: boolean }[]>`
+    select staff.id as employee_id,
+      (
+        exists (
+          select 1 from appointments appointment
+          where appointment.business_id=${context.businessId} and appointment.id=${appointmentId}
+            and appointment.employee_id=staff.id
+        )
+        or exists (
+          select 1 from appointment_employees assignment
+          where assignment.business_id=${context.businessId}
+            and assignment.appointment_id=${appointmentId}
+            and assignment.employee_id=staff.id
+        )
+      ) as assigned
+    from employees staff
+    where staff.business_id=${context.businessId} and staff.membership_id=${context.membershipId}
+  `;
+  return me;
+}
+
+/**
+ * Whether the caller may change ANY staff member's appointments and blocked time.
+ *
+ * Read from the request's already-resolved permissions rather than re-queried, exactly as
+ * `requirePermission` and every inline `context.permissions.includes(...)` check do: the
+ * authenticate hook resolves the role on every request, so this is as fresh as the route's own
+ * permission gate. An owner bypasses, as an owner bypasses every permission.
+ */
+function editsAllStaff(context: { isOwner: boolean; permissions: readonly string[] }): boolean {
+  return context.isOwner || context.permissions.includes("appointments.edit_all_staff");
+}
+
+/**
+ * The one refusal shape for a scope refusal, on every route that has one.
+ *
+ * A 403 with its own code, distinct from the `Missing permission: <key>` a caller gets for a key
+ * they do not hold at all. The two are different answers to a client: a missing permission means
+ * the control should not be offered, a scope refusal means it should be offered DISABLED with the
+ * reason, because the same person holding the same role may use it on the next appointment over.
+ * The sentence always names `appointments.edit_all_staff`, which is the switch an owner flips to
+ * make the refusal go away.
+ */
+function notAssignedToYou(message: string): SchedulingRequestError {
+  return new SchedulingRequestError(403, "NOT_ASSIGNED_TO_YOU", message);
+}
+
+/**
+ * MAY THE CALLER CHANGE THIS APPOINTMENT.
+ *
+ * Every appointment mutation - the record edit, the recorded times, the move, the service
+ * sheet, the service note, the lifecycle transition - passes through here AFTER its own
+ * permission gate and AFTER the row has been found in the caller's tenant, and BEFORE anything is
+ * written. `appointments.edit` and the `operations.*` keys mean "on appointments assigned to
+ * me"; `appointments.edit_all_staff` means "on anybody's".
+ *
+ * "Assigned to me" is `appointments.employee_id` OR an `appointment_employees` row naming my
+ * employee record. Both are consulted because both are written: the create and move routes keep
+ * the two in step today, and a reader that trusted only one of them would refuse a groomer their
+ * own appointment the day they drift.
+ *
+ * `nextEmployeeIds` is the assignment the request would LEAVE - the move route passes it -
+ * and any employee in it who is not me is a reassignment, which the scoped key never grants.
+ * A groomer may move their own 09:00 to 11:00; handing it to a colleague is the colleague's
+ * calendar and needs the all-staff key. The same code is answered for both refusals because the
+ * remedy is the same switch; only the sentence differs.
+ *
+ * Runs inside the route's transaction, on the same connection that holds the row lock, so what
+ * it reads about the assignment is what the write is about to change.
+ */
+async function assertAppointmentMutable(
+  tx: SqlExecutor,
+  context: { businessId: string; membershipId: string; isOwner: boolean; permissions: readonly string[] },
+  input: { appointmentId: string; nextEmployeeIds?: readonly string[] }
+): Promise<void> {
+  if (editsAllStaff(context)) return;
+  const me = await callerAssignment(tx, context, input.appointmentId);
+  if (!me?.assigned) {
+    throw notAssignedToYou(
+      "This appointment is assigned to another groomer. Changing other staff members' appointments needs appointments.edit_all_staff."
+    );
+  }
+  if (input.nextEmployeeIds?.some((employeeId) => employeeId !== me.employeeId)) {
+    throw notAssignedToYou(
+      "Reassigning an appointment to another groomer needs appointments.edit_all_staff."
+    );
+  }
+}
+
+/**
+ * MAY THE CALLER CREATE, CHANGE OR REMOVE THIS BLOCKED TIME.
+ *
+ * The blocked-time twin of `assertAppointmentMutable`, with the same shape and the same answer.
+ * `calendar.blocks_create` and `calendar.blocks_edit` mean "on my own calendar";
+ * `appointments.edit_all_staff` means "on anybody's" - a block is a scheduling constraint on one
+ * groomer's day, and the key that lets a front desk rearrange every groomer's day is the one
+ * that lets it block every groomer's day out.
+ *
+ * `employeeId` is whose calendar the block is on - the row's, or for a create the one being
+ * asked for - and `nextEmployeeId`, when the edit route passes it, is whose calendar the block
+ * would be on afterwards. Either one being somebody else is a refusal.
+ */
+async function assertBlockedTimeMutable(
+  tx: SqlExecutor,
+  context: { businessId: string; membershipId: string; isOwner: boolean; permissions: readonly string[] },
+  input: { employeeId: string; nextEmployeeId?: string }
+): Promise<void> {
+  if (editsAllStaff(context)) return;
+  const me = await callerEmployeeId(tx, context);
+  if (me === null || input.employeeId !== me) {
+    throw notAssignedToYou(
+      "This blocked time is on another groomer's calendar. Managing other staff members' blocked time needs appointments.edit_all_staff."
+    );
+  }
+  if (input.nextEmployeeId !== undefined && input.nextEmployeeId !== me) {
+    throw notAssignedToYou(
+      "Moving blocked time onto another groomer's calendar needs appointments.edit_all_staff."
+    );
+  }
 }
 
 export async function record(
@@ -3008,8 +3451,14 @@ export function registerRoutes(
     // answer instead of `undefined` reaching the label derivation.
     const stored = typeof business?.weightUnit === "string" ? business.weightUnit : "";
     const unit: WeightUnit = isWeightUnit(stored) ? stored : "lb";
+    // `employeeId` is the caller's own staff record, resolved from the membership - see
+    // `callerEmployeeId`. It is what lets a client tell "assigned to me" from "assigned to
+    // somebody else" and draw a scoped control disabled rather than watching it fail; the server
+    // makes the same determination again, from the same column, on every write.
+    const employeeId = await callerEmployeeId(db, context);
     return {
       ...context, account, business, supportedCurrencies,
+      employeeId,
       weightUnit: unit,
       weightTiers: weightTiers.map((tier) => ({
         code: tier.code,
@@ -5614,6 +6063,10 @@ export function registerRoutes(
     if (start.instant >= end.instant) return reply.code(400).send({ error:"Blocked time must end after it starts" });
     const created = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
+      // Whose calendar is being blocked out. `calendar.blocks_create` is scoped to the caller's
+      // own; naming another groomer needs `appointments.edit_all_staff`. Decided before the
+      // lock, so a refused request queues behind nobody.
+      await assertBlockedTimeMutable(tx, context, { employeeId: input.employeeId });
       // THE LOCK, THEN THE CHECK, THEN THE WRITE - ONE TRANSACTION, THE SCHEDULING AUTHORITY'S OWN
       // LOCK. `lockSchedulingResources` is the per-employee `pg_advisory_xact_lock` the four
       // booking call sites take; taking it here puts a block being created and a booking being
@@ -5850,6 +6303,12 @@ export function registerRoutes(
       // exist and leaves by the same 404 a made-up uuid does. Pawsh does not answer 403 here: that
       // would confirm the id names something real somewhere else.
       if (!current) return { kind: "missing" } as const;
+      // Whose block this is, and whose it would become. `blockedTimeUpdateSchema` carries
+      // `employeeId` exactly when it carries a schedule, so an absent one is "stays where it is".
+      await assertBlockedTimeMutable(tx, context, {
+        employeeId: current.employeeId,
+        ...(input.employeeId === undefined ? {} : { nextEmployeeId: input.employeeId })
+      });
       if (current.version !== input.version) return { kind: "stale" } as const;
 
       let moved: {
@@ -6071,6 +6530,7 @@ export function registerRoutes(
         for update
       `;
       if (!current) return { kind: "missing" } as const;
+      await assertBlockedTimeMutable(tx, context, { employeeId: current.employeeId });
       if (current.version !== query.version) return { kind: "stale" } as const;
       await tx`
         delete from blocked_times
@@ -6893,21 +7353,11 @@ export function registerRoutes(
     const context = auth(request);
     const { id } = idParams.parse(request.params);
     const query = body(customerNoteQuerySchema, request.query);
-    const [customer] = await db<{ id: string }[]>`
-      select id from customers where business_id=${context.businessId} and id=${id}
-    `;
-    if (!customer) return reply.code(404).send({ error: "Customer not found" });
-    const [items, totals] = await Promise.all([
-      customerNoteRows(db, {
-        businessId: context.businessId, customerId: id,
-        limit: query.pageSize, offset: (query.page - 1) * query.pageSize
-      }),
-      db<{ count: number }[]>`
-        select count(*)::int count from customer_notes
-        where business_id=${context.businessId} and customer_id=${id}
-      `
-    ]);
-    return { items, total: totals[0]?.count ?? 0, page: query.page, pageSize: query.pageSize };
+    const page = await customerNotesPage(db, {
+      businessId: context.businessId, customerId: id, page: query.page, pageSize: query.pageSize
+    });
+    if (!page) return reply.code(404).send({ error: "Customer not found" });
+    return page;
   });
 
   app.post("/api/customers/:id/notes", {
@@ -7216,20 +7666,9 @@ export function registerRoutes(
   }, async (request, reply) => {
     const context = auth(request);
     const { id } = idParams.parse(request.params);
-    const [customer] = await db<(AgreementRecipient & { archivedAt: Date | null })[]>`
-      select id,first_name,last_name,email,email_allowed,block_messages,archived_at
-      from customers where business_id=${context.businessId} and id=${id}
-    `;
-    if (!customer) return reply.code(404).send({ error: "Customer not found" });
-    const items = await customerAgreementRows(db, { businessId: context.businessId, customerId: id });
-    return {
-      customerId: id,
-      items,
-      summary: agreementSummary(items),
-      delivery: agreementDelivery(customer),
-      // An archived client is readable but nothing can be sent to or recorded against it.
-      customerArchived: customer.archivedAt !== null
-    };
+    const profile = await customerAgreementsProfile(db, { businessId: context.businessId, customerId: id });
+    if (!profile) return reply.code(404).send({ error: "Customer not found" });
+    return profile;
   });
 
   app.post("/api/customers/:id/agreements/:templateId/signature", {
@@ -7602,47 +8041,13 @@ export function registerRoutes(
   }, async (request, reply) => {
     const context = auth(request);
     const { id } = idParams.parse(request.params);
-    const [customer] = await db`select customer.*,employee.display_name preferred_employee_name
-      from customers customer left join employees employee
-        on employee.business_id=customer.business_id and employee.id=customer.preferred_employee_id
-      where customer.business_id=${context.businessId} and customer.id=${id}`;
-    if (!customer) return reply.code(404).send({ error: "Customer not found" });
-    const mayViewCare = mayViewPetCare(context);
-    const mayViewPayments = context.isOwner || context.permissions.includes("payments.view");
-    const [pets, upcoming, history, invoices, summary] = await Promise.all([
-      db`select * from pets where business_id=${context.businessId} and customer_id=${id} order by name,id`,
-      appointmentHistoryPage(db, {
-        businessId: context.businessId, scope: "customer", id,
-        limit: profileUpcomingLimit, offset: 0, direction: "upcoming"
-      }),
-      appointmentHistoryPage(db, {
-        businessId: context.businessId, scope: "customer", id,
-        limit: profileHistoryPreviewLimit, offset: 0, direction: "past"
-      }),
-      mayViewPayments
-        ? db`select id,invoice_number,status,subtotal_minor,discount_minor,tax_minor,tip_minor,
-              total_minor,balance_minor,created_at
-             from invoices where business_id=${context.businessId} and customer_id=${id}
-             order by created_at desc,id desc limit ${profileHistoryLimit}`
-        : Promise.resolve([]),
-      mayViewPayments
-        ? customerSalesSummary(db, { businessId: context.businessId, customerId: id })
-        : Promise.resolve(null)
-    ]);
-    const appointmentTotal = upcoming.total + history.total;
-    return {
-      customer,
-      pets: mayViewCare ? pets : pets.map((pet) => redactPetCare(pet)),
-      upcoming: { items: upcoming.items, total: upcoming.total },
-      history: { items: history.items, total: history.total },
-      appointmentTotal,
-      appointmentsTruncated:
-        upcoming.total > upcoming.items.length || history.total > history.items.length,
-      // Money is withheld rather than zeroed for staff without `payments.view`, so an empty
-      // summary is never mistaken for a client who has never spent anything.
-      summary,
-      invoices
-    };
+    const profile = await customerHistoryProfile(db, {
+      businessId: context.businessId, customerId: id,
+      mayViewCare: mayViewPetCare(context),
+      mayViewPayments: context.isOwner || context.permissions.includes("payments.view")
+    });
+    if (!profile) return reply.code(404).send({ error: "Customer not found" });
+    return profile;
   });
 
   app.get("/api/customers/:id/appointments", {
@@ -10204,14 +10609,48 @@ export function registerRoutes(
     `;
     if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
     const mayViewPayments = context.isOwner || context.permissions.includes("payments.view");
+    /**
+     * APPOINTMENT HISTORY: every audit row that is about this visit, projected for a person.
+     *
+     * WHICH ROWS. The appointment's own rows always. With `payments.view` (or ownership), the
+     * money that hangs off it too: its invoices, their payments, the refunds of those payments
+     * (`payment_refund` rows, joined through `payment_refunds.invoice_id`), and the coupon and
+     * credit rows that name one of its invoices in `after_data.invoiceId` - those two are filed
+     * under the coupon and the customer rather than the invoice, so the join is through the
+     * payload, which is the only place the invoice is named. Without the permission the feed is
+     * exactly the appointment-resource rows, and nothing money-shaped is on them: `amountMinor`,
+     * `method` and `totalMinor` are read only from the money actions, so a groomer's feed carries
+     * no amount anywhere. Service prices are appointment pricing, visible to anyone who may see
+     * the appointment, and stay.
+     *
+     * NEVER THE NOTE TEXT. `appointment.notes_edit` stores the booking note's before and after;
+     * this projection reads named scalars off the payloads and never spreads them, so the text
+     * cannot reach the response by accident. `appointment.operational_notes_edit` stores only
+     * whether a note is present.
+     *
+     * WHO. `actor.label` is the employee's display name when the acting user is a linked staff
+     * member, else the user's display name, else their email; `kind` is `staff` for a user and
+     * `system` for a row with no actor. Nothing is inferred from the label.
+     *
+     * NO BARE IDS FOR A PERSON TO READ. A groomer change carries both display names; a reschedule
+     * carries the other visit's start time beside its id, so the UI can say when rather than
+     * which uuid. Rows written before a payload carried enough to say more are projected without
+     * detail - `lines: null`, no groomer names - rather than guessed at.
+     */
     const rows = await db<{
       id: string; action: string; createdAt: Date; reason: string | null;
-      actorName: string | null; beforeData: Record<string, unknown> | null;
-      afterData: Record<string, unknown> | null;
+      actorId: string | null; actorName: string | null;
+      beforeData: Record<string, unknown> | null; afterData: Record<string, unknown> | null;
+      total: number;
     }[]>`
-      select event.id,event.action,event.created_at,event.reason,
+      with visit_invoices as (
+        select invoice.id from invoices invoice
+        where invoice.business_id=${context.businessId} and invoice.appointment_id=${id}
+      )
+      select event.id,event.action,event.created_at,event.reason,event.actor_id,
         event.before_data,event.after_data,
-        coalesce(actor_employee.display_name,actor_user.display_name,actor_user.email) as actor_name
+        coalesce(actor_employee.display_name,actor_user.display_name,actor_user.email) as actor_name,
+        count(*) over ()::int as total
       from audit_events event
       left join users actor_user on actor_user.id=event.actor_id
       left join business_memberships actor_membership
@@ -10222,36 +10661,170 @@ export function registerRoutes(
       where event.business_id=${context.businessId}
         and (
           (event.resource_type='appointment' and event.resource_id=${id})
-          or (${mayViewPayments} and event.resource_type='invoice' and event.resource_id in (
-            select invoice.id from invoices invoice
-            where invoice.business_id=${context.businessId} and invoice.appointment_id=${id}
-          ))
+          or (${mayViewPayments} and event.resource_type='invoice'
+            and event.resource_id in (select id from visit_invoices))
           or (${mayViewPayments} and event.resource_type='payment' and event.resource_id in (
             select payment.id from payments payment
-            join invoices invoice on invoice.business_id=payment.business_id and invoice.id=payment.invoice_id
-            where payment.business_id=${context.businessId} and invoice.appointment_id=${id}
+            where payment.business_id=${context.businessId} and payment.invoice_id in (select id from visit_invoices)
           ))
+          or (${mayViewPayments} and event.resource_type='payment_refund' and event.resource_id in (
+            select refund.id from payment_refunds refund
+            where refund.business_id=${context.businessId} and refund.invoice_id in (select id from visit_invoices)
+          ))
+          or (${mayViewPayments} and event.action in ('coupon.redeem','credit.redeem','credit.reverse')
+            and event.after_data->>'invoiceId' in (select id::text from visit_invoices))
         )
       order by event.created_at desc,event.id desc limit 200
     `;
     const scalar = (value: unknown): string | number | null =>
       typeof value === "string" || typeof value === "number" ? value : null;
-    return {
-      items: rows.map((row) => ({
+    const idList = (value: unknown): string[] =>
+      Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+    const lines = (value: unknown): AppointmentServiceLine[] | null => {
+      if (!Array.isArray(value)) return null;
+      return value.flatMap((entry) => {
+        if (!entry || typeof entry !== "object") return [];
+        const line = entry as Record<string, unknown>;
+        if (typeof line.name !== "string" || typeof line.durationMinutes !== "number" || typeof line.priceMinor !== "number") return [];
+        return [{
+          id: typeof line.id === "string" ? line.id : "", serviceId: typeof line.serviceId === "string" ? line.serviceId : "",
+          name: line.name, durationMinutes: line.durationMinutes, priceMinor: line.priceMinor,
+          linePosition: typeof line.linePosition === "number" ? line.linePosition : 0
+        }];
+      });
+    };
+    // Two small lookups over everything the rows name, so the feed carries names and times
+    // instead of the ids the payloads were written with.
+    const employeeIds = [...new Set(rows.flatMap((row) => [...idList(row.beforeData?.employeeIds), ...idList(row.afterData?.employeeIds)]))];
+    const relatedIds = [...new Set(rows.flatMap((row) => {
+      const related = scalar(row.afterData?.relatedAppointmentId);
+      return typeof related === "string" ? [related] : [];
+    }))];
+    const [employees, related] = await Promise.all([
+      employeeIds.length ? db<{ id: string; displayName: string }[]>`
+        select id,display_name from employees where business_id=${context.businessId} and id in ${db(employeeIds)}
+      ` : Promise.resolve([] as { id: string; displayName: string }[]),
+      relatedIds.length ? db<{ id: string; startAt: Date }[]>`
+        select id,start_at from appointments where business_id=${context.businessId} and id in ${db(relatedIds)}
+      ` : Promise.resolve([] as { id: string; startAt: Date }[])
+    ]);
+    const employeeName = new Map(employees.map((row) => [row.id, row.displayName]));
+    const relatedStart = new Map(related.map((row) => [row.id, row.startAt]));
+    const groomerLabel = (ids: string[]) => ids.map((employeeId) => employeeName.get(employeeId) ?? "a former staff member").join(", ");
+    const moneyActions = new Set([
+      "invoice.create", "payment.record", "payment.void", "payment.refund.request", "payment.refund.completed",
+      "payment.refund.failed", "coupon.redeem", "credit.redeem", "credit.reverse"
+    ]);
+    const items = rows.map((row) => {
+      const money = mayViewPayments && moneyActions.has(row.action);
+      const at = row.createdAt.toISOString();
+      const actor = row.actorId === null
+        ? { label: "System", kind: "system" as const }
+        : { label: row.actorName ?? "Unknown account", kind: "staff" as const };
+      const fromGroomers = idList(row.beforeData?.employeeIds);
+      const toGroomers = idList(row.afterData?.employeeIds);
+      const groomerChanged = row.action === "appointment.move" && fromGroomers.length > 0
+        && (fromGroomers.length !== toGroomers.length || fromGroomers.some((employeeId) => !toGroomers.includes(employeeId)));
+      const relatedId = scalar(row.afterData?.relatedAppointmentId);
+      const relatedAt = typeof relatedId === "string" ? relatedStart.get(relatedId) : undefined;
+      const lineEdit = row.action === "appointment.service.duration_edit" || row.action === "appointment.service.price_edit";
+      return {
         id: row.id,
         action: row.action,
+        at,
         createdAt: row.createdAt,
+        actor,
         actorName: row.actorName,
         reason: row.reason,
         fromStatus: scalar(row.beforeData?.status),
         toStatus: scalar(row.afterData?.status),
         fromStartAt: scalar(row.beforeData?.startAt),
         toStartAt: scalar(row.afterData?.startAt),
-        amountMinor: scalar(row.afterData?.amountMinor),
-        method: scalar(row.afterData?.method),
-        totalMinor: scalar(row.afterData?.totalMinor)
-      }))
-    };
+        fromEndAt: scalar(row.beforeData?.endAt),
+        toEndAt: scalar(row.afterData?.endAt),
+        fromGroomer: groomerChanged ? groomerLabel(fromGroomers) : null,
+        toGroomer: groomerChanged ? groomerLabel(toGroomers) : null,
+        // Booked with, and changed from/to. Null on a row whose payload predates `lines`, which
+        // the client renders as "Services changed" with no list rather than a guess.
+        lines: row.action === "appointment.create"
+          ? { before: null, after: lines(row.afterData?.lines) }
+          : row.action === "appointment.services.update"
+            ? { before: lines(row.beforeData?.lines), after: lines(row.afterData?.lines) }
+            : null,
+        line: lineEdit ? {
+          name: typeof row.afterData?.name === "string" ? row.afterData.name : null,
+          fromDurationMinutes: scalar(row.beforeData?.durationMinutes),
+          toDurationMinutes: scalar(row.afterData?.durationMinutes),
+          fromPriceMinor: scalar(row.beforeData?.priceMinor),
+          toPriceMinor: scalar(row.afterData?.priceMinor)
+        } : null,
+        amountMinor: money ? scalar(row.afterData?.amountMinor) : null,
+        method: money ? scalar(row.afterData?.method) : null,
+        // `invoice.create` stores `calculateInvoice`'s breakdown, whose key is `total`; the
+        // projection asked for `totalMinor` and so has answered null for every invoice ever raised.
+        totalMinor: money ? scalar(row.afterData?.totalMinor ?? row.afterData?.total) : null,
+        // The other end of a reschedule: on `appointment.rescheduled_from` the visit this one
+        // replaced, on `appointment.rescheduled_as` the visit that replaced this one. Null on
+        // every other entry. The start time rides beside the id so the line can say when.
+        relatedAppointmentId: relatedId,
+        relatedAppointmentStartAt: relatedAt ? relatedAt.toISOString() : null
+      };
+    });
+    return { items, count: rows[0]?.total ?? 0 };
+  });
+
+  /**
+   * THE CLIENT BEHIND AN APPOINTMENT, for the rail beside it.
+   *
+   * Gated on `appointments.view` - the caller can already read the appointment, and this is the
+   * appointment's customer described the way the Clients tab describes them. It exists because
+   * the rail used to be three reads of `/api/customers/:customerId/...`, each gated on
+   * `customers.view`, which a groomer working the dog may not hold: the rail then drew nothing,
+   * for the one person in the building who most needed the "hates the dryer" note. This route
+   * does NOT grant `customers.view` by another name. It answers only for the customer of an
+   * appointment the caller may see, and the Clients tab and every `/api/customers` route are
+   * untouched.
+   *
+   * THE THREE SHAPES ARE THE THREE ROUTES' SHAPES, built by the same three builders, so a client
+   * that renders the rail from the Clients tab and one that renders it from here are rendering
+   * one contract. `notes` is the first page at the note route's own default page size.
+   *
+   * MONEY IS WITHHELD WITHOUT `payments.view`, exactly as the history route withholds it - the
+   * same `mayViewPayments`, the same builder, so `summary` is null and `invoices` is empty -
+   * and `financialsWithheld` SAYS SO, because a rail that has to infer "withheld" from "empty"
+   * would draw a client who has never been invoiced and a client whose invoices it may not see
+   * the same way. Pet care is redacted on the same rule the pet routes use.
+   *
+   * A tenant-scoped read at every step: the appointment is looked up in the caller's business,
+   * and the builders scope the customer to it again. Another salon's appointment id, or a made-up
+   * one, leaves by the same 404.
+   */
+  app.get("/api/appointments/:id/client", {
+    preHandler: [authenticate, requirePermission("appointments.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [appointment] = await db<{ customerId: string }[]>`
+      select customer_id from appointments where business_id=${context.businessId} and id=${id}
+    `;
+    if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
+    const mayViewPayments = context.isOwner || context.permissions.includes("payments.view");
+    const notesPage = customerNoteQuerySchema.parse({});
+    const [history, notes, agreements] = await Promise.all([
+      customerHistoryProfile(db, {
+        businessId: context.businessId, customerId: appointment.customerId,
+        mayViewCare: mayViewPetCare(context), mayViewPayments
+      }),
+      customerNotesPage(db, {
+        businessId: context.businessId, customerId: appointment.customerId,
+        page: notesPage.page, pageSize: notesPage.pageSize
+      }),
+      customerAgreementsProfile(db, {
+        businessId: context.businessId, customerId: appointment.customerId
+      })
+    ]);
+    if (!history || !notes || !agreements) return reply.code(404).send({ error: "Appointment not found" });
+    return { history, notes, agreements, financialsWithheld: !mayViewPayments };
   });
 
   app.post("/api/appointments", {
@@ -10264,10 +10837,18 @@ export function registerRoutes(
     const employeeIds=[primaryEmployeeId];
     const canonicalizationVersion="appointment.create:v2" as const;
     const normalizedServiceIds=[...new Set(input.serviceIds)].sort();
+    // `rescheduledFromAppointmentId` joins the canonical form ONLY WHEN IT IS SENT. A field the
+    // hash does not cover is a field a replay cannot tell apart, and "this booking replaces that
+    // one" is part of what was asked for - but appending it unconditionally would change the
+    // hash of every request that does not carry it, and naming that a v3 would need the check
+    // constraint 0015 put on `scheduling_request_replays.canonicalization_version` widened. So
+    // a request without it hashes exactly as v2 always has, and one with it hashes as a longer
+    // form no request without it can produce.
     const requestHash=schedulingCanonicalHash("appointment.create",canonicalizationVersion,[
       input.locationId,input.customerId,input.petId,[...employeeIds].sort(),normalizedServiceIds,input.localStart,
       input.disambiguation??null,input.expectedLocationVersion,input.availabilityOverride,input.overrideConflict,
-      input.overrideReason??null,input.notes??null
+      input.overrideReason??null,input.notes??null,
+      ...(input.rescheduledFromAppointmentId ? [input.rescheduledFromAppointmentId] : [])
     ]);
     const appointmentId = randomUUID();
     const result = await db.begin(async (tx) => {
@@ -10291,6 +10872,35 @@ export function registerRoutes(
         ) as available
       `;
       if (!participants?.available) throw new Error("The selected customer or pet is unavailable");
+      /**
+       * THE VISIT THIS ONE REPLACES, if the caller says it replaces one.
+       *
+       * Rebooking a cancelled visit is a new appointment - new row, new services snapshot, new
+       * version 1 - and NOT a resurrection of the old one: `cancelled` and `no_show` are
+       * terminal in `canTransition`, the cancelled row is what the audit trail and the
+       * no-show count are about, and it is never written again. What the operator wants kept is
+       * the THREAD - that this Tuesday is last Tuesday, rebooked - and the thread is recorded
+       * through the same mechanism every other fact about an appointment's life is: two audit
+       * events, one on each row, that `GET /api/appointments/:id/activity` already reads. No
+       * column, no foreign key, no migration.
+       *
+       * Validated here, before any lock is taken and before anything is written, against the
+       * caller's own business: the source must exist HERE and must be a visit that was called
+       * off. A scheduled or completed source is refused because "rescheduled from" a visit that
+       * still stands, or that happened, is not a fact the trail should carry. Another salon's
+       * appointment id is refused by the same answer a made-up one gets, because the tenant
+       * predicate is what finds it.
+       */
+      if (input.rescheduledFromAppointmentId) {
+        const [source] = await tx<{ status: AppointmentStatus }[]>`
+          select status from appointments
+          where business_id=${context.businessId} and id=${input.rescheduledFromAppointmentId}
+        `;
+        if (!source || (source.status !== "cancelled" && source.status !== "no_show")) {
+          throw new SchedulingRequestError(400, "RESCHEDULE_SOURCE_INVALID",
+            "Only a cancelled or no-show appointment can be rescheduled from.");
+        }
+      }
       await tx`select pg_advisory_xact_lock_shared(hashtextextended(${'location-settings:' + input.locationId},0))`;
       const [location] = await tx<{ timezone:string; version:number }[]>`
         select timezone,version from locations
@@ -10407,12 +11017,33 @@ export function registerRoutes(
              ${index + 1})
         `;
       }
+      // `lines` is what was booked, as the history projection renders it, so "Booked" can list
+      // the services without a second read that would show the list as it stands today.
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "appointment.create",
         resourceType: "appointment", resourceId: appointment.id,
-        after: { startAt, endAt, employeeIds },
+        after: { startAt, endAt, employeeIds, lines: await appointmentServiceLines(tx, context.businessId, appointment.id) },
         reason: input.overrideReason, eventType: "AppointmentCreated"
       });
+      if (input.rescheduledFromAppointmentId) {
+        // Both ends of the thread, so either appointment's history names the other. The source
+        // row itself is not touched - no column, no version, no `updated_at` - because nothing
+        // about the cancelled visit changed; something happened NEXT TO it, and that is what an
+        // audit event is for. No `eventType`: nothing downstream consumes a rebooking as such,
+        // and the `AppointmentCreated` event above already carries the new visit.
+        await record(tx, {
+          businessId: context.businessId, actorId: context.userId,
+          action: "appointment.rescheduled_from", resourceType: "appointment",
+          resourceId: appointment.id,
+          after: { relatedAppointmentId: input.rescheduledFromAppointmentId, startAt, endAt }
+        });
+        await record(tx, {
+          businessId: context.businessId, actorId: context.userId,
+          action: "appointment.rescheduled_as", resourceType: "appointment",
+          resourceId: input.rescheduledFromAppointmentId,
+          after: { relatedAppointmentId: appointment.id, startAt, endAt }
+        });
+      }
       if (overrideApplied) {
         await record(tx, {
           businessId: context.businessId,
@@ -10477,6 +11108,9 @@ export function registerRoutes(
         where business_id=${context.businessId} and id=${id} for update
       `;
       if (!current) return null;
+      // Whose appointment this is, before whether it may move: the `operations.*` key the
+      // caller holds is scoped to their own appointments unless they hold the all-staff key.
+      await assertAppointmentMutable(tx, context, { appointmentId: id });
       const assignments=await tx<{employeeId:string}[]>`select employee_id from appointment_employees where business_id=${context.businessId} and appointment_id=${id}`;
       await lockSchedulingResources(tx, context.businessId, assignments.map(assignment=>assignment.employeeId));
       if (input.version && current.version !== input.version) {
@@ -10593,6 +11227,7 @@ export function registerRoutes(
         where business_id=${context.businessId} and id=${id} for update
       `;
       if (!current) return null;
+      await assertAppointmentMutable(tx, context, { appointmentId: id });
       // Optional, exactly as it is on `/times`, `/services` and `/operations`: a caller that knows
       // which version it read may say so and be refused if somebody else has written since. The
       // row lock above is what makes the comparison honest.
@@ -10669,6 +11304,7 @@ export function registerRoutes(
         where business_id=${context.businessId} and id=${id} for update
       `;
       if (!current) return null;
+      await assertAppointmentMutable(tx, context, { appointmentId: id });
       if (input.version && current.version !== input.version) return { stale: true } as const;
       /**
        * NOTHING MAY BE RECORDED AS HAVING HAPPENED IN THE FUTURE, measured against the database's
@@ -10753,6 +11389,11 @@ export function registerRoutes(
         where business_id=${context.businessId} and id=${id} and version=${input.version} for update
       `;
       if (!current) throw new SchedulingRequestError(409,"STALE_APPOINTMENT","Appointment changed or no longer exists");
+      // Whose appointment this is, and whose it would become. A groomer holding only the scoped
+      // `appointments.edit` may move their own booking in time and may not hand it to anybody
+      // else; `employeeIds` is the assignment this request would leave, so passing it is what
+      // turns "is this mine" into "would it still be".
+      await assertAppointmentMutable(tx, context, { appointmentId: id, nextEmployeeIds: employeeIds });
       if (current.status !== "scheduled") throw new Error("Only scheduled appointments can be moved");
       const currentAssignments=await tx<{employeeId:string}[]>`select employee_id from appointment_employees where business_id=${context.businessId} and appointment_id=${id}`;
       await tx`select pg_advisory_xact_lock_shared(hashtextextended(${'location-settings:' + current.locationId},0))`;
@@ -10841,10 +11482,13 @@ export function registerRoutes(
         returning *
       `;
       for(const employeeId of employeeIds)await tx`insert into appointment_employees(business_id,appointment_id,employee_id) values (${context.businessId},${id},${employeeId})`;
+      // `before.employeeIds` beside `after.employeeIds`, so a groomer change is recoverable from
+      // the row itself: the history projection names both groomers when they differ and says
+      // nothing about groomers when they do not.
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "appointment.move",
         resourceType: "appointment", resourceId: id,
-        before: { startAt: current.startAt, endAt: current.endAt },
+        before: { startAt: current.startAt, endAt: current.endAt, employeeIds: currentAssignments.map((row) => row.employeeId) },
         after: { startAt, endAt, employeeIds },
         reason: input.overrideReason, eventType: "AppointmentUpdated"
       });
@@ -10900,62 +11544,172 @@ export function registerRoutes(
     const context = auth(request);
     const { id } = idParams.parse(request.params);
     const input = body(operationalUpdateSchema, request.body);
-    const [updated] = input.version
-      ? await db`
-          update appointments set operational_notes=${input.operationalNotes ?? null},
-            version=version+1, updated_by=${context.userId}, updated_at=now()
-          where business_id=${context.businessId} and id=${id} and version=${input.version}
-            and status in ('checked_in','in_service') returning *
-        `
-      : await db`
-          update appointments set operational_notes=${input.operationalNotes ?? null},
-            version=version+1, updated_by=${context.userId}, updated_at=now()
-          where business_id=${context.businessId} and id=${id}
-            and status in ('checked_in','in_service') returning *
-        `;
-    if (!updated) return reply.code(404).send({ error: "Active service appointment not found" });
-    return updated;
+    /**
+     * THE SERVICE NOTE'S WINDOW IS THE VISIT, INCLUDING ITS END. `checked_in` and `in_service`
+     * were always accepted; `completed` joins them because the note is written about work that
+     * was done, and the moment the groomer has the most to say about it - "matted behind the
+     * ears, went with a 5 all over, check the left dewclaw next time" - is the moment the dog
+     * is handed back, which is after Complete has been pressed. Refusing the note there sent the
+     * groomer to find somebody who could reopen the appointment, for a field that changes no
+     * money and no schedule. `scheduled`, `cancelled` and `no_show` stay outside the window: no
+     * service has been performed, so there is nothing to note.
+     *
+     * A ROW LOCK AND A SCOPE CHECK BEFORE THE WRITE, in one transaction, which is why this is no
+     * longer a single UPDATE. The operations key the caller holds is scoped to their own
+     * appointments unless they hold the all-staff key, and that has to be decided against the
+     * row before it is written.
+     *
+     * THREE REFUSALS, TOLD APART. A row that does not exist in this business, and a row that
+     * exists but is outside the window, both answer 404 as they always did: from the editor's
+     * side there is no service appointment to write to, and the sentence says so. A row that is
+     * inside the window but whose `version` has moved on answers 409 in the shape
+     * `PATCH /api/appointments/:id` uses for the same case, because the remedy is different:
+     * the editor's copy is stale, and a refresh - not a shrug - is what fixes it. Folding the
+     * stale case into the 404 hid that from the editor, which is what this change undoes. The
+     * order is unchanged: permission gate, lock and lookup, scope, window, version, write.
+     */
+    const result = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const [current] = await tx<{ id: string; status: string; version: number; operationalNotes: string | null }[]>`
+        select id, status, version, operational_notes from appointments
+        where business_id=${context.businessId} and id=${id} for update
+      `;
+      if (!current) return null;
+      await assertAppointmentMutable(tx, context, { appointmentId: id });
+      if (!["checked_in", "in_service", "completed"].includes(current.status)) return null;
+      if (input.version && input.version !== current.version) return { stale: true } as const;
+      const operationalNotes = input.operationalNotes ?? null;
+      const [updated] = await tx`
+        update appointments set operational_notes=${operationalNotes},
+          version=version+1, updated_by=${context.userId}, updated_at=now()
+        where business_id=${context.businessId} and id=${id} and version=${current.version}
+          and status in ('checked_in','in_service','completed') returning *
+      `;
+      if (!updated) return null;
+      // THAT the note was edited, and whether there is one - never WHAT it says. The service note
+      // is the groomer's own words about a dog, and the audit trail is read by everybody who can
+      // read the appointment's history; `appointment.notes_edit` carries the booking note's text
+      // and the history projection has to strip it on the way out. This row carries nothing to
+      // strip. `present` is "says something": null and blank are the same absence.
+      const present = (value: string | null) => value !== null && value.trim() !== "";
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "appointment.operational_notes_edit", resourceType: "appointment", resourceId: id,
+        before: { present: present(current.operationalNotes) }, after: { present: present(operationalNotes) }
+      });
+      return updated;
+    });
+    if (!result) return reply.code(404).send({ error: "Active service appointment not found" });
+    if ("stale" in result) return reply.code(409).send({ error: "Appointment changed; refresh before continuing" });
+    return result;
   });
 
+  /**
+   * THE WORK LIST, WHOLE - a keyed upsert of `appointment_services`.
+   *
+   * WHAT CHANGED. This route used to delete every row for the appointment and reinsert from the
+   * submitted list, which was fine while every row was a copy of the catalog: re-resolving them
+   * cost nothing. It stopped being fine the moment a line could be edited for this appointment
+   * (`PATCH /api/appointments/:id/services/:lineId` below): adding a nail trim to a visit whose
+   * bath had been priced by hand would have quietly put the bath back on the price book, and every
+   * `appointment_services.id` changed on every edit, so nothing outside the row could refer to a
+   * line. Now a line sent WITH its `id` keeps its row and every snapshot on it - name, duration,
+   * price, pricing class, weight tier, resolution source - untouched; a line without one (or with
+   * an id this appointment does not own, which is refused the same way rather than trusted) is a
+   * new row resolved from the catalog exactly as a booking resolves it; and rows not named are
+   * deleted. The flat `serviceIds` body is read as lines without ids, so an older client gets the
+   * re-resolve-everything behaviour it always had.
+   *
+   * TWO PASSES OVER `line_position`, because `appointment_service_position_unique` (0054) is not
+   * deferrable: kept rows are first moved out of the way to positions no final row can hold, then
+   * every row lands at its body position. The order is the body's order, kept and new alike, so a
+   * reorder with no other change is still a real edit and lands as one.
+   *
+   * THE NEW WINDOW GOES THROUGH THE SAME GUARDS A MOVE DOES. `end_at` follows the sum of the
+   * durations, and this route used to write it past whatever was already there: neither the
+   * overlap policy nor the groomer's blocked time was consulted, so extending a visit by a service
+   * could run it straight through a lunch block that a move onto the same minutes would have been
+   * refused for. `guardAppointmentWindow` is the guard sequence `/schedule` runs -
+   * `findSchedulingConflicts` with the same override rule, then `refuseStaffAvailability` with
+   * `TIME_BLOCKED` never bypassable - so the two routes cannot disagree about the same minutes.
+   *
+   * Only NEW lines are checked against the catalog (active, offered by the groomer, priced): a
+   * kept line is an assignment that already stands, and a restriction written after the booking
+   * must not strand it - the rule `ensureGroomersOfferServices` states for a reschedule.
+   *
+   * ANSWERS THE CALENDAR ROW, where it used to answer `{ id, endAt }`. The row carries both
+   * fields, so nothing that read the old answer breaks, and a detail screen re-renders from the
+   * projection it opened with rather than merging two shapes - the reason `/times` and the record
+   * edit answer the same way.
+   */
   app.put("/api/appointments/:id/services", {
     preHandler: [authenticate, requirePermission("appointments.edit")]
   }, async (request, reply) => {
     const context = auth(request);
     const { id } = idParams.parse(request.params);
     const input = body(appointmentServicesSchema, request.body);
+    const requested: { id?: string | undefined; serviceId: string }[] =
+      input.lines ?? (input.serviceIds ?? []).map((serviceId) => ({ serviceId }));
     const result = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
-      const [appointment] = await tx<{ startAt: Date; status: string; employeeId: string;petId:string; version: number; schedulingTimezone:string }[]>`
-        select start_at,status,employee_id,pet_id,version,scheduling_timezone from appointments
-        where business_id=${context.businessId} and id=${id} for update
-      `;
+      const overrideAuthorized = await authorizeConflictOverride(tx, context, input.overrideConflict);
+      if (input.overrideConflict && !overrideAuthorized) {
+        throw new SchedulingRequestError(403,"PERMISSION_DENIED","Missing permission: appointments.override_conflict");
+      }
+      const appointment = await lockAppointmentForServiceEdit(tx, context, id);
       if (!appointment) return null;
-      const assigned=await tx<{employeeId:string}[]>`select employee_id from appointment_employees where business_id=${context.businessId} and appointment_id=${id}`;
-      await lockSchedulingResources(tx, context.businessId, assigned.map(row=>row.employeeId));
-      if (input.version && appointment.version !== input.version) {
-        return { stale: true } as const;
+      if (input.version && appointment.version !== input.version) return { stale: true } as const;
+      await refuseServiceEditOutsideWindow(tx, context.businessId, id, appointment.status);
+      const before = await appointmentServiceLines(tx, context.businessId, id);
+      const owned = new Map(before.map((line) => [line.id, line]));
+      const keptIds = new Set<string>();
+      const plan = requested.map((line) => {
+        const existing = line.id ? owned.get(line.id) : undefined;
+        // A row may be kept once. Naming it twice is two lines with one id, and the second is a
+        // new line for the same service rather than a second reference to the first.
+        if (existing && !keptIds.has(existing.id) && existing.serviceId === line.serviceId) {
+          keptIds.add(existing.id);
+          return { kind: "kept" as const, id: existing.id };
+        }
+        return { kind: "new" as const, serviceId: line.serviceId };
+      });
+      const newServiceIds = plan.flatMap((line) => line.kind === "new" ? [line.serviceId] : []);
+      const employeeIds = appointment.employeeIds;
+      let resolved = new Map<string, Awaited<ReturnType<typeof resolveServicePrices>>[number]>();
+      if (newServiceIds.length) {
+        await ensureBookingResourcesAvailable(tx,{businessId:context.businessId,employeeIds,serviceIds:newServiceIds});
+        await ensureGroomersOfferServices(tx,{businessId:context.businessId,employeeIds,serviceIds:newServiceIds});
+        const catalog=await resolveServicePrices(tx,{businessId:context.businessId,petId:appointment.petId,serviceIds:[...new Set(newServiceIds)]});
+        const unresolved=catalog.find(service=>service.status!=="resolved");
+        if(unresolved)throw new Error(unresolved.status==="weight_required"?"Weight required to determine pricing.":`${unresolved.name} price is unresolved.`);
+        resolved = new Map(catalog.map((service) => [service.serviceId, service]));
       }
-      if (!["scheduled","checked_in","in_service"].includes(appointment.status)) {
-        throw new Error("Services cannot be changed in the current appointment state");
+      const removedIds = before.filter((line) => !keptIds.has(line.id)).map((line) => line.id);
+      if (removedIds.length) {
+        await tx`
+          delete from appointment_services
+          where business_id=${context.businessId} and appointment_id=${id} and id in ${tx(removedIds)}
+        `;
       }
-      const invoice = await tx`
-        select id from invoices where business_id=${context.businessId} and appointment_id=${id} and status<>'void'
-      `;
-      if (invoice.length) throw new Error("Services cannot change after checkout begins");
-      await ensureBookingResourcesAvailable(tx,{businessId:context.businessId,employeeIds:assigned.map(row=>row.employeeId),serviceIds:input.serviceIds});
-      await ensureGroomersOfferServices(tx,{businessId:context.businessId,
-        employeeIds:assigned.map(row=>row.employeeId),serviceIds:input.serviceIds});
-      const catalog=await resolveServicePrices(tx,{businessId:context.businessId,petId:appointment.petId,serviceIds:input.serviceIds});
-      const unresolved=catalog.find(service=>service.status!=="resolved");
-      if(unresolved)throw new Error(unresolved.status==="weight_required"?"Weight required to determine pricing.":`${unresolved.name} price is unresolved.`);
-      // THE DELETE IS WHAT MAKES `appointment_service_position_unique` SAFE HERE. Every row for
-      // the appointment goes first, inside this transaction, so the reinsert below refills an
-      // empty key space and no intermediate state holds two rows at one position. The positions it
-      // writes are 1..n over `catalog`, which is the edited order the request submitted, so an
-      // edit RENUMBERS the sheet rather than appending to it - reordering three services with no
-      // other change is a real edit and lands as one.
-      await tx`delete from appointment_services where business_id=${context.businessId} and appointment_id=${id}`;
-      for (const [index, service] of catalog.entries()) {
+      // Pass one: kept rows out of the way. Final positions are 1..n; parking at n+1.. keeps the
+      // unique key clear whatever order the rows are then walked in.
+      const parked = [...keptIds];
+      for (const [index, lineId] of parked.entries()) {
+        await tx`
+          update appointment_services set line_position=${plan.length + index + 1}
+          where business_id=${context.businessId} and appointment_id=${id} and id=${lineId}
+        `;
+      }
+      // Pass two: every row at its body position, kept rows by update and new rows by insert.
+      for (const [index, line] of plan.entries()) {
+        if (line.kind === "kept") {
+          await tx`
+            update appointment_services set line_position=${index + 1}
+            where business_id=${context.businessId} and appointment_id=${id} and id=${line.id}
+          `;
+          continue;
+        }
+        const service = resolved.get(line.serviceId)!;
         await tx`
           insert into appointment_services
             (business_id,appointment_id,service_id,service_name_snapshot,duration_minutes_snapshot,price_minor_snapshot,pricing_class_snapshot,weight_tier_snapshot,resolution_source_snapshot,line_position)
@@ -10963,25 +11717,132 @@ export function registerRoutes(
             ${service.durationMinutes},${service.priceMinor!},${service.pricingClass},${service.weightTierCode},${service.resolutionSource},${index + 1})
         `;
       }
-      const minutes = catalog.reduce((sum, service) => sum + service.durationMinutes, 0);
-      const endAt = new Date(appointment.startAt.getTime() + minutes * 60_000);
-      if (localDateForInstant(endAt,appointment.schedulingTimezone) !== localDateForInstant(appointment.startAt,appointment.schedulingTimezone)) {
-        throw new Error("Appointments may not cross local midnight during the controlled pilot");
-      }
-      await tx`
-        update appointments set end_at=${endAt},version=version+1,updated_by=${context.userId},updated_at=now()
-        where business_id=${context.businessId} and id=${id}
-      `;
+      const after = await appointmentServiceLines(tx, context.businessId, id);
+      const endAt = await settleAppointmentWindow(tx, context, {
+        appointment, lines: after, overrideConflict: input.overrideConflict,
+        overrideAuthorized, availabilityOverride: input.availabilityOverride,
+        overrideReason: input.overrideReason ?? null
+      });
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "appointment.services.update",
         resourceType: "appointment", resourceId: id,
-        after: { serviceIds: input.serviceIds, endAt }, eventType: "AppointmentUpdated"
+        before: { lines: before, endAt: appointment.endAt },
+        after: { lines: after, endAt, serviceIds: after.map((line) => line.serviceId) },
+        reason: input.overrideReason, eventType: "AppointmentUpdated"
       });
-      return { id, endAt };
+      return { edited: true } as const;
     });
     if (!result) return reply.code(404).send({ error: "Appointment not found" });
     if ("stale" in result) return reply.code(409).send({ error: "Appointment changed; refresh before continuing" });
-    return result;
+    const [appointment] = await appointmentCalendarRows(db, db`
+      a.business_id=${context.businessId} and a.id=${id}
+    `);
+    if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
+    return mayViewPetCare(context) ? appointment : redactPetCare(appointment);
+  });
+
+  /**
+   * ONE LINE OF THE WORK LIST, EDITED IN PLACE - the duration reserved for it, the price for it,
+   * or both - for THIS appointment only. The catalog is not read and not written: an operator who
+   * knows this particular dog takes ninety minutes to dry is not saying every dog does.
+   *
+   * TWO PERMISSIONS, ONE ROUTE. The duration is calendar time and needs what every other change
+   * to the calendar needs: `appointments.edit`, scoped to the caller's own appointments by
+   * `assertAppointmentMutable`. The price is money, and needs `appointments.service_price_edit`
+   * ON TOP OF that. Managers hold it (0045 granted it to every role that could already do
+   * everything); the Groomer and Receptionist presets do not, so a groomer may lengthen their own
+   * visit and may not re-price it. The refusal names the key, in the sentence
+   * `requirePermission` uses, so a role editor can act on it. It is checked before the row is
+   * locked, since nothing about the row can change the answer.
+   *
+   * `resolution_source_snapshot = 'manual'` marks the row as edited for this appointment. The
+   * column is free text (0012, no CHECK) and every other value in it names a price-book rule, so
+   * the projection can say "edited" without a second column and the keyed upsert above keeps the
+   * mark when the list is next changed.
+   *
+   * A DURATION CHANGE IS A CHANGE TO THE WINDOW and goes through `settleAppointmentWindow` - the
+   * `/schedule` guard sequence - exactly as the list edit does. A price change alone touches no
+   * minute of the calendar and skips it. Both bump `appointments.version`, because a detail screen
+   * holding the old row is holding a stale one either way.
+   *
+   * 404 for a line this appointment does not own, found under the tenant predicate, so another
+   * salon's line id and a made-up one leave by the same door.
+   */
+  app.patch("/api/appointments/:id/services/:lineId", {
+    preHandler: [authenticate, requirePermission("appointments.edit")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id, lineId } = appointmentServiceLineParams.parse(request.params);
+    const input = body(appointmentServiceLineEditSchema, request.body);
+    if (input.priceMinor !== undefined && !can(context, "appointments.service_price_edit")) {
+      return reply.code(403).send({ error: "Missing permission: appointments.service_price_edit" });
+    }
+    const result = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      const overrideAuthorized = await authorizeConflictOverride(tx, context, input.overrideConflict);
+      if (input.overrideConflict && !overrideAuthorized) {
+        throw new SchedulingRequestError(403,"PERMISSION_DENIED","Missing permission: appointments.override_conflict");
+      }
+      const appointment = await lockAppointmentForServiceEdit(tx, context, id);
+      if (!appointment) return null;
+      const before = (await appointmentServiceLines(tx, context.businessId, id)).find((line) => line.id === lineId);
+      if (!before) return null;
+      if (input.version && appointment.version !== input.version) return { stale: true } as const;
+      await refuseServiceEditOutsideWindow(tx, context.businessId, id, appointment.status);
+      const durationMinutes = input.durationMinutes ?? before.durationMinutes;
+      const priceMinor = input.priceMinor ?? before.priceMinor;
+      const durationChanged = durationMinutes !== before.durationMinutes;
+      const priceChanged = priceMinor !== before.priceMinor;
+      // Saving the values the row already holds is not an edit: nothing is written, nothing is
+      // marked manual, no version moves, and the caller gets the row back as it stands.
+      if (!durationChanged && !priceChanged) return { edited: false } as const;
+      await tx`
+        update appointment_services
+        set duration_minutes_snapshot=${durationMinutes}, price_minor_snapshot=${priceMinor},
+          resolution_source_snapshot='manual'
+        where business_id=${context.businessId} and appointment_id=${id} and id=${lineId}
+      `;
+      const after = await appointmentServiceLines(tx, context.businessId, id);
+      const line = { lineId, serviceId: before.serviceId, name: before.name };
+      let endAt = appointment.endAt;
+      if (durationChanged) {
+        endAt = await settleAppointmentWindow(tx, context, {
+          appointment, lines: after, overrideConflict: input.overrideConflict,
+          overrideAuthorized, availabilityOverride: input.availabilityOverride,
+          overrideReason: input.overrideReason ?? null
+        });
+        await record(tx, {
+          businessId: context.businessId, actorId: context.userId,
+          action: "appointment.service.duration_edit", resourceType: "appointment", resourceId: id,
+          before: { ...line, durationMinutes: before.durationMinutes, endAt: appointment.endAt },
+          after: { ...line, durationMinutes, endAt },
+          reason: input.overrideReason, eventType: "AppointmentUpdated"
+        });
+      } else {
+        // The price alone: no minute of the calendar moved, so no window guard and no outbox
+        // event, but the row the client holds is stale and the version says so.
+        await tx`
+          update appointments set version=version+1,updated_by=${context.userId},updated_at=now()
+          where business_id=${context.businessId} and id=${id}
+        `;
+      }
+      if (priceChanged) {
+        await record(tx, {
+          businessId: context.businessId, actorId: context.userId,
+          action: "appointment.service.price_edit", resourceType: "appointment", resourceId: id,
+          before: { ...line, priceMinor: before.priceMinor },
+          after: { ...line, priceMinor }
+        });
+      }
+      return { edited: true } as const;
+    });
+    if (!result) return reply.code(404).send({ error: "Appointment service not found" });
+    if ("stale" in result) return reply.code(409).send({ error: "Appointment changed; refresh before continuing" });
+    const [appointment] = await appointmentCalendarRows(db, db`
+      a.business_id=${context.businessId} and a.id=${id}
+    `);
+    if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
+    return mayViewPetCare(context) ? appointment : redactPetCare(appointment);
   });
 
   app.post("/api/appointments/:id/checkout", {
@@ -11524,8 +12385,34 @@ export function registerRoutes(
     return reply.code(200).send(outcome.result);
   });
 
+  /**
+   * THE INVOICE READ, AND THE ONE PLACE A GROOMER MAY SEE A BILL.
+   *
+   * `payments.view` reads any invoice in the business, as it always has. Without it, a caller
+   * may still read an invoice when BOTH hold: the invoice's appointment is assigned to the
+   * caller's own employee record - `callerAssignment`, the same resolution every appointment
+   * write uses, from the session and never from the request - AND the invoice is settled. The
+   * owner's decision was "for paid appointments, groomers can view invoices", and "paid" here is
+   * `invoiceSettledStatuses` - `paid`, `partially_refunded`, `refunded` - because that is what
+   * the domain already means by "was this visit paid for": a refunded invoice is one that was
+   * paid and then had money go back, and reading only `paid` would hide a groomer's own bill the
+   * first time a salon issued a refund against it. `open` and `partially_paid` are still owing
+   * and are not paid; `void` was never chargeable. Both are refused.
+   *
+   * NOTHING ELSE WIDENS. Recording a tender, voiding a payment, refunding, and the client's
+   * transaction history all keep their own gates; this is a read of one document about one visit
+   * the caller did. The refusal is the plain `Missing permission: payments.view`, on purpose:
+   * the caller holds no key that this invoice is out of scope for - `payments.view` is the key
+   * that reads any bill, and the groomer's own paid bill is an exception to needing it, not a
+   * scoped grant of it. A client draws the Invoice control from the same rule, off facts it
+   * already has: `GET /api/me` names the caller's `employeeId`, and the appointment row carries
+   * `employeeId`, `groomers` and `invoiceStatus`.
+   *
+   * The tenant check comes first and is unchanged: an invoice outside the caller's business is
+   * a 404 for everybody, before any question of whose appointment it is.
+   */
   app.get("/api/invoices/:id/receipt", {
-    preHandler: [authenticate, requirePermission("payments.view")]
+    preHandler: [authenticate]
   }, async (request, reply) => {
     const context = auth(request);
     const { id } = idParams.parse(request.params);
@@ -11566,6 +12453,11 @@ export function registerRoutes(
       where i.business_id=${context.businessId} and i.id=${id}
     `;
     if (!invoice) return reply.code(404).send({ error: "Invoice not found" });
+    if (!context.isOwner && !context.permissions.includes("payments.view")) {
+      const settled = invoiceSettledStatuses.includes(invoice.status as InvoiceStatus);
+      const me = settled ? await callerAssignment(db, context, String(invoice.appointmentId)) : undefined;
+      if (!me?.assigned) return reply.code(403).send({ error: "Missing permission: payments.view" });
+    }
     // Refunds are read beside the payments, never instead of them. The original payment stays
     // visible exactly as it was recorded - it is what the customer's card was charged - and the
     // refund is a second line that says what went back. `tipRefundedMinor` is reported because the

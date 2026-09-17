@@ -74,7 +74,7 @@ const LIFECYCLE_VALUES = slice(
 );
 const DURATION = slice(
   "function lifecycleDurationLabel(minutes){",
-  "\n/**\n * Checked in, checked out and duration, derived"
+  "\n/**\n * Checked in, checked out and duration - THE STORED COLUMNS FIRST"
 );
 /** The stamp on a lifecycle time, which is how it reaches the preference layer. */
 const STAMP = slice("function activityStamp(value){", "\nfunction appointmentActivityLine(");

@@ -65,6 +65,7 @@ interface BlockModule {
   timePickerClock(input: { type: string; value: string }): string;
   timePickerWrite(input: { type: string; value: string }, clock: string): void;
   setHourFormat(format: "12" | "24"): void;
+  setBlockDrag(value: boolean): void;
 }
 
 /**
@@ -100,12 +101,17 @@ function loadBlockModule(hourFormat: "12" | "24" = "12"): BlockModule {
     const formatPrefLocalWeekdayDate=(value)=>String(value);
     const state={calendar:{selectedDate:"2026-09-08"}};
     const allowed=()=>true;
+    // Whether THIS session may drag a band is decided by blockedTimeDragAvailable (permission,
+    // fine pointer, single-day span, ownership) and is exercised in the browser; here it is a
+    // switch so the band's anatomy can be asserted with and without the attribute.
+    let BLOCK_DRAG=false;
+    const blockedTimeDragAvailable=()=>BLOCK_DRAG;
   `;
   const exported = `
     return {blockedTimePlacement,blockedTimeColumnLayout,blockedTimeBand,blockedTimeAccessibleName,
       blockedTimePlusHour,blockedTimeClockField,timePickerSelection,
       timePickerClockOf,timePickerValues,timePickerMarkup,timePickerClock,timePickerWrite,
-      setHourFormat:(format)=>{HOUR_FORMAT=format;}};
+      setHourFormat:(format)=>{HOUR_FORMAT=format;},setBlockDrag:(value)=>{BLOCK_DRAG=value;}};
   `;
   const factory = new Function(
     "escape", "escapeAttr", "document",
@@ -272,18 +278,35 @@ describe("a stacked band is still a band", () => {
     expect(name(first)).not.toBe(name(second));
   });
 
-  it("stays out of drag and drop however many lanes it is in", () => {
+  it("is never a drop target and never an appointment, however many lanes it is in", () => {
     for (const markup of bands()) {
-      // The three attributes `calendarDragCard` and `calendarDropSlot` look for. A band that grew
-      // any of them would become draggable, or a drop target, and stop being refused by the server.
+      // The two attributes `calendarDropSlot` and the appointment drag look for. A band that grew
+      // either would become a drop target, or be mistaken for a card, and a drag onto a lunch
+      // would stop reaching the scheduling authority that refuses it.
       expect(markup).not.toContain("data-appointment-id");
-      expect(markup).not.toContain("data-draggable");
       expect(markup).not.toContain("data-slot");
+      // Not draggable for a session that may not move it.
+      expect(markup).not.toContain("data-draggable");
       // And the anatomy that says "block" rather than "booking" is untouched.
       expect(markup).toContain('class="calendar-block"');
       expect(markup).toContain('data-testid="calendar-block"');
       expect(markup).toContain("calendar-block-open");
     }
+  });
+
+  it("carries the drag attribute exactly when this session may move it, and nothing else changes", () => {
+    const app = loadBlockModule();
+    const block = { id: "b1", employeeId: "e1", employeeName: "Grace", reason: "Lunch",
+      scheduledLocalStart: "2026-09-08T12:00", scheduledLocalEnd: "2026-09-08T12:30", colorSlot: null };
+    const still = app.blockedTimeBand(block, "grid-row:1");
+    app.setBlockDrag(true);
+    const movable = app.blockedTimeBand(block, "grid-row:1");
+    expect(still).not.toContain("data-draggable");
+    expect(movable).toContain('data-draggable="true"');
+    // The same band otherwise: same id, same label, still no drop or appointment identity.
+    expect(movable.replace(' data-draggable="true"', "")).toBe(still);
+    expect(movable).not.toContain("data-slot");
+    expect(movable).not.toContain("data-appointment-id");
   });
 
   it("keeps a colour on a stacked band", () => {

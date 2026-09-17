@@ -134,8 +134,12 @@ function client(
     $: (selector: string) => {
       if (selector === "#slot-menu") return menu;
       if (selector === "#booking-error") return { textContent: "" };
+      if (selector === "#booking-title") return { textContent: "" };
       throw new Error(`the fake document was asked for ${selector}, which it does not model`);
     },
+    // Rescheduling hands the dialog a carry-over to resolve against the catalog; none of these
+    // openings is one, so the resolver answers "not a reschedule".
+    resolveRescheduleCarryOver: () => null,
     bookingScope: () => ({ showModal() { shown.count += 1; } }),
     bq: () => null,
     resetBookingState: () => {},

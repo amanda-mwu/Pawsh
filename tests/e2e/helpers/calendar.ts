@@ -70,3 +70,33 @@ export async function dragAppointmentToSlot(
   await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, { steps: 8 });
   await page.mouse.up();
 }
+
+/**
+ * BRING THE CALENDAR TO THE FIXTURE'S APPOINTMENT ON A PHONE.
+ *
+ * A phone opens the calendar on TODAY in the day view - that is the product decision - while the
+ * fixtures book on next Monday. A desk opens on the week and lands on the first booked day, so
+ * the card is simply there; on a phone it is a day or a week away. This is the phone's way to it:
+ * switch to the week, and page forward until the card is drawn. On a desk, where the card is
+ * already on screen, it does nothing.
+ */
+export async function revealAppointmentOnCalendar(page: Page, appointmentId: string): Promise<void> {
+  const card = page.locator(`[data-appointment-id="${appointmentId}"]`).first();
+  // Polled rather than read once: `networkidle` returns before the grid's own reads settle (see
+  // `calendarRedraw` above), and a card that is about to be painted must not be paged past.
+  const drawn = async (): Promise<boolean> => {
+    try { await expect.poll(() => card.count(), { timeout: 2_500 }).toBeGreaterThan(0); return true; }
+    catch { return false; }
+  };
+  if (await drawn()) return;
+  const view = page.locator("#calendar-view-select");
+  if (await view.inputValue() === "day") {
+    await view.selectOption("week");
+    if (await drawn()) return;
+  }
+  for (let step = 0; step < 6; step += 1) {
+    await page.locator("#calendar-next-week").click();
+    if (await drawn()) return;
+  }
+  await expect(card).toBeAttached();
+}

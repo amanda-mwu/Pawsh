@@ -9,6 +9,7 @@ import {
   expectUnauthenticatedSurface,
 } from "./helpers/responsive.js";
 import { bookAppointment, chooseBookingClient, openBooking } from "./helpers/booking.js";
+import { revealAppointmentOnCalendar } from "./helpers/calendar.js";
 async function openNavigation(page:Page){if(await page.locator("#mobile-nav-toggle").isVisible()&&await page.getByTestId("nav-calendar").isHidden())await page.locator("#mobile-nav-toggle").click();}
 
 test("@responsive auth navigation reload and logout remain coherent",async({page,tenant},testInfo)=>{
@@ -74,7 +75,8 @@ test("@responsive calendar booking remains usable and persistent",async({page,te
   await openNavigation(page);
   await page.getByTestId("nav-calendar").click();
   await expectNoDocumentOverflow(page,testInfo);
-  await expectCriticalTarget(page.getByTestId("calendar-add-appointment"));
+  // The one door into booking is the header's + New, so it is the critical target.
+  await expectCriticalTarget(page.getByTestId("new-action-trigger"));
   await bookAppointment(page,{
     customerId:tenant.customerId,petId:tenant.petId,employeeId:tenant.employeeId,
     startAt:`${tenant.anchor}T09:00`
@@ -100,9 +102,18 @@ test("@responsive calendar booking remains usable and persistent",async({page,te
   await expectAuthenticatedSurface(page);
   await openNavigation(page);
   await page.getByTestId("nav-calendar").click();
+  // A phone opens on today; the booking is next Monday, so the calendar is paged to it.
+  await page.waitForLoadState("networkidle");
+  await revealAppointmentOnCalendar(page,await bookedAppointmentId(page,tenant));
   await expect(page.getByTestId("calendar-list")).toContainText("Charlie");
   await expectNoDocumentOverflow(page,testInfo);
 });
+
+/** The id of the one visit this tenant has, read off the API rather than the screen. */
+async function bookedAppointmentId(page:Page,tenant:{anchor:string}):Promise<string>{
+  const rows=await page.evaluate(async(anchor)=>(await (await fetch(`/api/appointments?localDate=${anchor}&days=1`,{credentials:"include"})).json()) as Array<{id:string}>,tenant.anchor);
+  return rows[0]!.id;
+}
 
 test("@responsive groomer day view remains contained and touch accessible",async({page,request,tenant},testInfo)=>{
   await createAppointment(request,tenant,{localStart:`${tenant.anchor}T09:00`});

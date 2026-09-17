@@ -144,9 +144,12 @@ describeDatabase("single appointment detail", () => {
       petName: "Detail Pet", breed: "Poodle", employeeName: "Detail Groomer"
     });
     expect(row.groomers).toEqual([{ id: expect.any(String), displayName: "Detail Groomer" }]);
+    // `id` is the `appointment_services` row the line edit addresses; `linePosition` is the sheet
+    // order; `resolutionSource` names the price-book rule the snapshot came from, or 'manual'
+    // once the line has been edited for this appointment.
     expect(row.services).toEqual([{
       id: expect.any(String), name: "Detail Groom", durationMinutes: 60,
-      priceMinor: 6500, serviceId: expect.any(String)
+      priceMinor: 6500, serviceId: expect.any(String), linePosition: 1, resolutionSource: "fixed"
     }]);
     expect(row).toHaveProperty("invoiceStatus");
     expect(row).toHaveProperty("invoiceBalanceMinor");

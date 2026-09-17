@@ -138,9 +138,11 @@ describeDatabase("appointment move lock", () => {
     });
     petId = pet.json().id;
 
-    // Two non-owner members, differing only in whether they hold `appointments.edit`. The editor
-    // stands in for the receptionist preset that holds the move today; the viewer stands for the
-    // groomer preset that does not.
+    // Two non-owner members, differing in whether they hold `appointments.edit`. The editor
+    // stands in for the receptionist preset, which holds the move on anybody's appointment - and
+    // so, like that preset, holds `appointments.edit_all_staff` as well, because the edit key on
+    // its own reaches only appointments assigned to the caller's own employee record and this
+    // member has none. The viewer stands for a member with no edit key at all.
     const seedMember = async (label: string, permissions: readonly string[]) => {
       const email = `move-lock-${label}-${suffix}@example.test`;
       const password = `correct horse move lock ${label}`;
@@ -159,7 +161,8 @@ describeDatabase("appointment move lock", () => {
       return sessionCookie(login);
     };
     editorCookie = await seedMember("editor",
-      ["calendar.view", "appointments.view", "appointments.create", "appointments.edit"]);
+      ["calendar.view", "appointments.view", "appointments.create", "appointments.edit",
+        "appointments.edit_all_staff"]);
     viewerCookie = await seedMember("viewer",
       ["calendar.view", "appointments.view", "operations.check_in"]);
   });

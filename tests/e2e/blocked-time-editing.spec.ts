@@ -110,7 +110,9 @@ test("opens the block behind the band, with everything the block actually says",
     const band = page.getByTestId("calendar-block");
     await expect(band).toHaveAttribute("data-block-slot", "5");
     // Still not a card, still not a slot - the two attributes the drag and the drop key off.
-    expect(await band.getAttribute("data-draggable")).toBeNull();
+    // Draggable for an owner, who may move any block - and still never a drop target, never an
+    // appointment. `tests/e2e/blocked-time-drag.spec.ts` walks the drag itself.
+    expect(await band.getAttribute("data-draggable")).toBe("true");
     expect(await band.getAttribute("data-appointment-id")).toBeNull();
     expect(await band.getAttribute("data-slot")).toBeNull();
 
@@ -453,10 +455,11 @@ test("shows a member without calendar.blocks_edit a readable block and no way to
     await createBlock(request, tenant, {
       localStart: `${tenant.anchor}T12:00`, localEnd: `${tenant.anchor}T12:30`, reason: "Lunch"
     });
+    // WITHOUT THE KEY, BY NAME. The Groomer preset grants `calendar.blocks_edit` for the
+    // groomer's own blocks now, so the role this test is about is spelled out rather than read
+    // off the preset: a member who may look at the calendar and may not change any block.
     const groomer = await createMember(request, `groomer+${tenant.runId}@pawsh-test.example`,
-      [...permissionPresets.groomer!]);
-    expect(permissionPresets.groomer, "the preset this test is about must not grant the edit key")
-      .not.toContain("calendar.blocks_edit");
+      permissionPresets.groomer!.filter((key) => key !== "calendar.blocks_edit"));
 
     await login(page, groomer.email);
     const mutations = countBlockMutations(page);
@@ -482,6 +485,38 @@ test("shows a member without calendar.blocks_edit a readable block and no way to
       .toContainText("You do not have permission to change blocked time");
 
     // Dismissing still costs nothing, and nothing was attempted on the way in.
+    await page.getByTestId("blocked-time-cancel").click();
+    await expect(page.getByTestId("blocked-time-dialog")).toBeHidden();
+    expect(mutations).toEqual({ patch: 0, delete: 0 });
+  });
+
+test("shows a groomer another staff member's block read-only, naming the scope key rather than the edit key",
+  async ({ page, request, tenant }) => {
+    // The block is Grace's. This member holds `calendar.blocks_edit` but no employee record and
+    // no `appointments.edit_all_staff`, so the block is not theirs: every field is read-only and
+    // the sentence names the key that would lift it. A session linked to Grace's own record sees
+    // the same drawer editable - `tests/e2e/groomer-scope.spec.ts` walks that half.
+    await createAppointment(request, tenant, { localStart: `${tenant.anchor}T09:00` });
+    await createBlock(request, tenant, {
+      localStart: `${tenant.anchor}T12:00`, localEnd: `${tenant.anchor}T12:30`, reason: "Lunch"
+    });
+    const groomer = await createMember(request, `other-groomer+${tenant.runId}@pawsh-test.example`,
+      [...new Set([...permissionPresets.groomer!, "calendar.blocks_edit", "calendar.blocks_create"])]);
+
+    await login(page, groomer.email);
+    const mutations = countBlockMutations(page);
+    await openCalendar(page);
+    await openBlock(page);
+
+    await expect(page.getByTestId("blocked-time-update")).toBeDisabled();
+    await expect(page.getByTestId("blocked-time-update")).toHaveAttribute("title", /appointments\.edit_all_staff/u);
+    await expect(page.getByTestId("blocked-time-delete")).toBeDisabled();
+    await expect(page.getByTestId("blocked-time-delete")).toHaveAttribute("title", /appointments\.edit_all_staff/u);
+    await expect(page.getByTestId("blocked-time-date")).toBeDisabled();
+    await expect(page.getByTestId("blocked-time-locked")).toContainText("assigned to another groomer (appointments.edit_all_staff)");
+    // And the band itself is not draggable for this session.
+    await expect(page.getByTestId("calendar-block").first()).not.toHaveAttribute("data-draggable", "true");
+
     await page.getByTestId("blocked-time-cancel").click();
     await expect(page.getByTestId("blocked-time-dialog")).toBeHidden();
     expect(mutations).toEqual({ patch: 0, delete: 0 });
@@ -1446,7 +1481,8 @@ test("puts the same picker on both ends of the create dialog, and on nothing els
     expect(creates[0]!.localEnd).toBe(`${tenant.anchor}T15:45`);
 
     // AND NOWHERE ELSE. The seam is Block Time; booking still uses the browser's own control.
-    await page.getByTestId("calendar-add-appointment").click();
+    await page.getByTestId("new-action-trigger").click();
+    await page.getByTestId("new-action-menu").getByRole("menuitem", { name: "New Appointment" }).click();
     await expect(page.getByTestId("booking-dialog")).toBeVisible();
     await expect(page.getByTestId("booking-dialog").locator(".time-picker-trigger")).toHaveCount(0);
   });
@@ -1460,7 +1496,7 @@ test("disables the clock for a member who cannot change the block, rather than h
       localStart: `${tenant.anchor}T12:00`, localEnd: `${tenant.anchor}T12:30`, reason: "Lunch"
     });
     const groomer = await createMember(request, `clock+${tenant.runId}@pawsh-test.example`,
-      [...permissionPresets.groomer!]);
+      permissionPresets.groomer!.filter((key) => key !== "calendar.blocks_edit"));
 
     await login(page, groomer.email);
     await openCalendar(page);

@@ -325,6 +325,14 @@ label{gap:5px;margin-bottom:12px}
 
 /* Modals: one header/body/footer rhythm, and never taller than the viewport. */
 #modal-form{padding:20px 22px}
+/* THE EDIT SERVICE DIALOG. The service named once across the grid, then its two figures. A price
+   the role may not change is drawn as a VALUE with its reason, in the shape Settings uses for the
+   tax rate - never as a disabled input, which reads as a control somebody forgot to switch on. */
+.line-edit-name{margin:0 0 var(--space-3);font-size:15px}
+.line-edit-readonly{display:grid;gap:5px;margin-bottom:12px;font-size:13px}
+.line-edit-readonly-label{font-weight:600}
+.line-edit-readonly-value{font-size:17px;font-weight:700;font-variant-numeric:tabular-nums}
+.line-edit-readonly .fine{line-height:1.45}
 .modal-head{margin-bottom:var(--space-3);padding-bottom:var(--space-3);border-bottom:1px solid var(--line)}
 .modal-head h3{margin:0}
 .modal-actions{margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
@@ -433,7 +441,7 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
    .day-slot is intentionally absent - its height is grid-row driven. */
 [data-testid="new-customer"],[data-testid="account-trigger"],[data-testid="logout"],
 [data-testid="nav-customers"],[data-testid="modal-submit"],.modal-actions .close,
-[data-testid="calendar-add-appointment"],#calendar-view-select,
+[data-testid="new-action-trigger"],#calendar-view-select,
 .primary-nav button{min-height:44px}
 [data-testid="account-trigger"],[data-testid="logout"],.modal-actions .close{min-width:44px}
 @media (pointer:coarse){:root{--control-h:44px;--icon-btn:44px;--control-h-compact:44px}.compact{padding:8px 13px}}
@@ -569,8 +577,8 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
   .calendar-month-view{grid-template-columns:repeat(7,minmax(132px,1fr));min-width:930px}
   .month-day-money{display:none}
 }
-/* Phones keep the toolbar's "+ Add booking" and per-slot booking in day view, so
-   the per-cell "+" gives up its space rather than crowding the date. */
+/* Phones keep the header's + New menu and per-slot booking in day view, so the per-cell "+"
+   gives up its space rather than crowding the date. */
 @media(max-width:580px){
   .calendar-month-view{grid-template-columns:repeat(7,minmax(118px,1fr));min-width:832px}
   .calendar-month-day{min-height:332px}
@@ -1296,6 +1304,16 @@ label:has(> input[type="checkbox"]),label:has(> input[type="radio"]){
 .appointment-activity-body{padding:10px 12px}
 .activity-feed{display:grid;gap:7px;margin:0;padding:0;list-style:none}
 .activity-feed li{padding-left:12px;border-left:2px solid var(--line);color:var(--ink);font-size:12px;line-height:1.55}
+/* ONE ENTRY IS `what · who · when` ON A LINE, and its from → to beneath. A list, not cards: the
+   history is read down, and a border round every line is a border round the whole thing. The
+   head wraps rather than truncates on a phone, so the actor and the time are never cut off. */
+.activity-entry{display:grid;gap:2px}
+.activity-entry-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 6px}
+.activity-what{font-weight:700}
+.activity-who,.activity-when,.activity-sep{color:var(--muted)}
+.activity-when{font-variant-numeric:tabular-nums}
+.activity-detail{color:var(--ink);font-variant-numeric:tabular-nums}
+.activity-reason{color:var(--muted);font-style:italic}
 .activity-empty{margin:0;color:var(--muted);font-size:12px}
 
 /* ---------------------------------------------------------------------------
@@ -1321,6 +1339,10 @@ label:has(> input[type="checkbox"]),label:has(> input[type="radio"]){
 .photo-strip{display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px}
 .photo-tile{position:relative;width:118px;max-width:100%;margin:0;border-radius:var(--radius-sm);background:var(--paper);overflow:hidden}
 .photo-tile img{display:block;width:100%;height:100%;object-fit:cover}
+/* The tile is a button now - pressing it opens the photo full size - so the button fills the
+   figure and the image fills the button. No chrome of its own: the photo is the control. */
+.photo-open{display:block;width:100%;height:100%;min-height:0;padding:0;border:0;border-radius:0;background:transparent;cursor:zoom-in}
+.photo-open:focus-visible{outline:3px solid var(--coral);outline-offset:-3px}
 .photo-remove{position:absolute;top:4px;right:4px;width:24px;height:24px;padding:0;border:0;border-radius:50%;background:rgba(32,37,34,.72);color:#fff;font-size:15px;line-height:1}
 .photo-remove:hover:not(:disabled){background:var(--danger)}
 .photo-add{display:grid;place-content:center;gap:2px;width:118px;aspect-ratio:4 / 3;border:1px dashed var(--line);border-radius:var(--radius-sm);background:var(--paper);color:var(--link);font-size:20px}
@@ -1331,6 +1353,33 @@ label:has(> input[type="checkbox"]),label:has(> input[type="radio"]){
 
 @media(max-width:580px){
   .photo-tile,.photo-add{width:calc(50% - 4px)}
+}
+
+/* == THE PHOTO LIGHTBOX ==
+   A <dialog> on a dark ground, sized to the photo rather than to a form: as wide as the viewport
+   allows, the image scaled to fit whatever height is left under its one-line head. The head is
+   the caption and the surface's own close control; on a coarse pointer the X takes the 44px floor
+   the appointment surface's does, because on a phone it is the only way out. */
+.photo-lightbox{
+  width:min(1100px,calc(100vw - 24px));max-width:none;max-height:calc(100dvh - 24px);
+  padding:0;border:0;border-radius:var(--radius-lg);overflow:hidden;
+  background:var(--ink);color:#fff;
+}
+.photo-lightbox::backdrop{background:rgba(32,37,34,.82)}
+.photo-lightbox[open]{display:grid;grid-template-rows:auto minmax(0,1fr)}
+.photo-lightbox-head{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);padding:var(--space-2) var(--space-2) var(--space-2) var(--space-4)}
+.photo-lightbox-caption{margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600;color:rgba(255,255,255,.88)}
+.photo-lightbox .surface-close{flex:none;color:rgba(255,255,255,.88)}
+.photo-lightbox .surface-close:hover{background:rgba(255,255,255,.14);color:#fff}
+.photo-lightbox-body{display:grid;place-items:center;min-height:0;padding:0 var(--space-3) var(--space-3)}
+.photo-lightbox img{display:block;max-width:100%;max-height:calc(100dvh - 24px - 60px);width:auto;height:auto;object-fit:contain}
+.photo-lightbox-error{margin:var(--space-5) 0;color:rgba(255,255,255,.88);font-size:13px}
+@media(pointer:coarse){
+  .photo-lightbox .surface-close{width:44px;height:44px;min-height:44px}
+}
+@media(max-width:640px){
+  .photo-lightbox{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}
+  .photo-lightbox .surface-close{width:44px;height:44px;min-height:44px}
 }
 
 /* ---------------------------------------------------------------------------
@@ -2529,6 +2578,27 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
   border:0;border-top:1px solid var(--line);border-radius:0;background:transparent;
 }
 #appointment-detail .appointment-service-row:first-of-type{border-top:0}
+/* THE WORK LIST ROW: the name over `$price · N min`, and the line's own pencil at the end. The
+   pencil takes the shared `.icon-action` box and the in-card brand ink the groomer pencil takes,
+   so the two edit affordances on this surface read as one kind of thing. An edited line says so
+   in a small mark beside its name and quotes the catalog beneath the figures, in the muted ink,
+   so the hand-set figure is the one the eye lands on. */
+#appointment-detail .appointment-service-row{align-items:center}
+#appointment-detail .appointment-service-row>.icon-action{border-color:var(--brand);color:var(--brand)}
+#appointment-detail .appointment-service-row>.icon-action:hover,
+#appointment-detail .appointment-service-row>.icon-action:focus-visible{
+  border-color:var(--brand-strong);background:var(--brand-tint);color:var(--brand-strong);
+}
+#appointment-detail .appointment-service-row>.icon-action:disabled,
+#appointment-detail .appointment-service-row>.icon-action:disabled:hover{
+  border-color:var(--line);background:var(--surface-2);color:var(--muted);
+}
+.service-line-edited{
+  display:inline-block;margin-left:4px;padding:1px 6px;border-radius:999px;
+  background:var(--brand-tint);color:var(--brand-strong);font-size:10.5px;font-weight:700;
+  letter-spacing:.02em;vertical-align:middle;
+}
+.service-line-catalog{color:var(--muted);font-variant-numeric:tabular-nums}
 
 /* A BORDERED CARD WITH NO CONTROL IN IT IS NOT A CARD. The discount row's entire payload is one
    muted sentence saying where discounts are applied; it was costing 79px and a full card edge to
@@ -3501,3 +3571,48 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
 /* NEVER TWO EYES. Edge draws a reveal control of its own inside every password field; Chrome does
    not. Suppressing it leaves exactly one affordance in every browser, and it is ours. */
 input[type="password"]::-ms-reveal,input[type="password"]::-ms-clear{display:none}
+
+/* == Block time drags too ==
+   Same affordance as a card, same lift while it travels. The band keeps `pointer-events:none`
+   mid-drag so the slot underneath stays findable, exactly as `.appointment-block.dragging` does. */
+.calendar-block[data-draggable="true"],.calendar-block[data-draggable="true"] .calendar-block-open{cursor:grab}
+body.calendar-dragging .calendar-block[data-draggable="true"],body.calendar-dragging .calendar-block[data-draggable="true"] .calendar-block-open{cursor:grabbing}
+.calendar-block.dragging{z-index:30;pointer-events:none;opacity:.92;box-shadow:0 10px 24px rgba(32,37,34,.28)}
+@media(hover:none){.calendar-block[data-draggable="true"],.calendar-block[data-draggable="true"] .calendar-block-open{cursor:pointer}}
+
+/* == The calendar toolbar on a phone ==
+   Human QA: the general mobile pass improved things, but the calendar toolbar was still a stack of
+   full-size controls - twelve of them over five rows before the grid began. The two that
+   duplicated the header's + New menu are gone from the markup at every width; what is left is laid
+   out as THREE ROWS, each a full 44px tall, in the order a phone needs them:
+
+     Today   <-  Wed, Sep 17  ->          where am I, and how do I move
+     Day/Week/Month     Agenda|Calendar   what shape is the schedule in
+     Groomers ................  print gear  who is shown, and the two tools
+
+   `display:contents` on the two wrapper divs lets the toolbar itself place every control by
+   grid area, so the DOM order (which the desktop layout and the tab order still follow) does not
+   have to change. Nothing here shrinks a touch target: the heights come from the shared coarse-
+   pointer floor above, and the range label is the one thing allowed to give up width. */
+@media(max-width:580px){
+  /* Three fluid columns and two fixed 44px ones. The two fixed columns are the icon tools' own
+     and nothing else is measured against them: the view select takes two fluid columns, the
+     mode toggle the third plus both fixed ones, so the two halves of row two come out level. */
+  .calendar-toolbar{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) 44px 44px;grid-template-areas:"today nav nav nav nav" "view view mode mode mode" "filter filter filter print gear";gap:8px;align-items:stretch;margin-bottom:10px}
+  /* Written as children of the toolbar, because `.calendar-toolbar>div{display:flex}` above is
+     more specific than the class alone and would keep the wrappers as flex rows. */
+  .calendar-toolbar>.calendar-toolbar-main,.calendar-toolbar>.calendar-toolbar-actions{display:contents}
+  #calendar-today{grid-area:today;min-height:44px}
+  .calendar-date-nav{grid-area:nav;justify-content:space-between;gap:4px;min-width:0}
+  .calendar-date-nav strong{min-width:0;flex:1;font-size:13px;line-height:1.2;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .calendar-date-nav button{min-width:44px;min-height:44px}
+  .calendar-view-select{grid-area:view;width:auto}
+  .calendar-view-select select{width:100%;min-height:44px}
+  .calendar-display-toggle{grid-area:mode;display:flex}
+  .calendar-display-toggle button{flex:1;min-height:44px;padding:7px 6px;font-size:13px;white-space:nowrap}
+  .groomer-filter{grid-area:filter;flex:none;min-width:0}
+  .groomer-filter>summary{width:100%;min-height:44px}
+  [data-testid="print-agenda"]{grid-area:print}
+  [data-testid="calendar-settings"]{grid-area:gear}
+  .calendar-tool-button{width:44px;height:44px}
+}

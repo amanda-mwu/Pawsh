@@ -105,8 +105,10 @@ describe("permission catalog", () => {
     // Migrations are historical records and must not be edited when the tuple grows, so none of
     // these names the whole tuple on its own: 0041 seeded roles from the presets as they stood
     // then, 0043 added the reporting taxonomy to the roles that already had `reports.view`, 0045
-    // added the Role Permission taxonomy to the roles that already held all 46, and 0055 gave the
-    // two block keys to every role that could already block time out.
+    // added the Role Permission taxonomy to the roles that already held all 46, 0055 gave the
+    // two block keys to every role that could already block time out, and 0057 gave
+    // `appointments.edit_all_staff` to every role holding a staff-scoped key and the three scoped
+    // keys to the built-in Groomer.
     //
     // TOGETHER THEY MUST COVER IT. A permission named in none of them is one that exists in code,
     // is grantable through the editor, and that NO EXISTING ROLE HAS - so every workspace silently
@@ -116,7 +118,7 @@ describe("permission catalog", () => {
     const named = new Set<string>();
     const chain = [
       "0041_roles.sql", "0043_report_dashboard_taxonomy.sql", "0045_permission_taxonomy.sql",
-      "0055_blocked_time_management.sql"
+      "0055_blocked_time_management.sql", "0057_staff_scheduling_scope.sql"
     ];
     for (const file of chain) {
       const sql = (await readFile(`migrations/${file}`, "utf8")).replaceAll("\r\n", "\n");
@@ -153,6 +155,13 @@ describe("permission catalog", () => {
     //         route was gated on until the dedicated key started enforcing. This is the link the
     //         RECEPTIONIST rides: it holds `appointments.edit`, held neither block key after 0045,
     //         and would silently have lost the button without it.
+    //   0057  runs two steps IN ORDER. First `appointments.edit_all_staff` to every role holding
+    //         any of `appointments.edit` / `calendar.blocks_create` / `calendar.blocks_edit` -
+    //         "the roles that can reach across the staff today", which the Receptionist rides
+    //         for the same reason it rode 0055. Then the three scoped keys to the built-in
+    //         Groomer, which matched nothing in the first step precisely because the steps ran
+    //         in that order. The Groomer must come out WITHOUT the all-staff key, and this test
+    //         reproduces the order rather than the result so a reversal is caught.
     //
     // A NEW MIGRATION IN THIS CHAIN MUST BE ADDED HERE. That is not busywork: this test is the
     // only thing pinning the frozen SQL literals to the live definitions, and a link left out
@@ -163,6 +172,7 @@ describe("permission catalog", () => {
     const reportingSql = await read("0043_report_dashboard_taxonomy.sql");
     const permissionSql = await read("0045_permission_taxonomy.sql");
     const blockSql = await read("0055_blocked_time_management.sql");
+    const scopeSql = await read("0057_staff_scheduling_scope.sql");
     const stringsIn = (sql: string) => [...sql.matchAll(/'([^']+)'/g)].map((match) => match[1]!);
     const granted = (sql: string) =>
       stringsIn(/permissions \|\| array\[([\s\S]*?)\]/.exec(sql)![1]!);
@@ -179,11 +189,29 @@ describe("permission catalog", () => {
     // in a comment to say which precedent it is following, and an unanchored match reads the
     // prose instead of the statement.
     const blockPredicate = /^where '([a-z_.]+)' = any\(permissions\)/m.exec(blockSql)![1]!;
+    // 0057's two statements, split at each `update roles` and read IN FILE ORDER, because the
+    // order is the property under test: the Groomer must not be in the all-staff step's match.
+    const scopeSteps = scopeSql.split(/^update roles$/m).slice(1).map((statement) => ({
+      granted: granted(statement),
+      // Step 1: `where permissions && array[...]::text[]`. Step 2: `where built_in and
+      // lower(name) = '<name>'`. Each is anchored to the start of a line for 0055's reason.
+      overlaps: /^where permissions && array\[([\s\S]*?)\]::text\[\]/m.exec(statement)
+        ? stringsIn(/^where permissions && array\[([\s\S]*?)\]::text\[\]/m.exec(statement)![1]!)
+        : null,
+      builtInNamed: /^where built_in and lower\(name\) = '([a-z]+)'/m.exec(statement)?.[1] ?? null
+    }));
     expect(taxonomy.length).toBeGreaterThan(0);
     expect(permissionTaxonomy.length).toBeGreaterThan(0);
     expect(blockPair).toEqual(["calendar.blocks_create", "calendar.blocks_edit"]);
     expect(blockPredicate).toBe("appointments.edit");
     expect(alreadyEverything.length).toBeGreaterThan(0);
+    expect(scopeSteps.map((step) => step.granted)).toEqual([
+      ["appointments.edit_all_staff"],
+      ["appointments.edit", "calendar.blocks_create", "calendar.blocks_edit"]
+    ]);
+    expect(scopeSteps[0]!.overlaps)
+      .toEqual(["appointments.edit", "calendar.blocks_create", "calendar.blocks_edit"]);
+    expect(scopeSteps[1]!.builtInNamed).toBe("groomer");
 
     const seeded = new Map(
       [...roles.matchAll(/\('(\w+)',\s*array\[([^\]]*)\]/g)]
@@ -203,6 +231,14 @@ describe("permission catalog", () => {
       }
       // 0055's: every role that could already block time out.
       if (migrated.has(blockPredicate)) for (const permission of blockPair) migrated.add(permission);
+      // 0057's, step by step and in order: the all-staff key to every role overlapping the three
+      // scoped keys, THEN the three scoped keys to the built-in named in the second step.
+      for (const step of scopeSteps) {
+        const matches = step.overlaps
+          ? step.overlaps.some((permission) => migrated.has(permission))
+          : role.name.toLowerCase() === step.builtInNamed;
+        if (matches) for (const permission of step.granted) migrated.add(permission);
+      }
       expect([...migrated].sort(), role.name).toEqual([...role.permissions].sort());
     }
   });

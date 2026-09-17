@@ -129,6 +129,9 @@ function client(today = "2026-09-10"): Client {
     renderAppointments: () => { renders.count += 1; },
     renderAccountIdentity: () => {}, renderLocationSwitcher: () => {},
     reconcileGroomerFilter: () => {}, applyPermissions: () => {},
+    // The phone's first positioning (today, day view) is decided by the viewport and exercised in
+    // the browser; this file is the desktop's window, so the phone default never applies here.
+    applyPhoneCalendarDefaults: () => false,
     renderDashboard: () => {}, renderCustomersEnhanced: () => {}, renderRoles: () => {},
     renderServices: () => {}, renderReports: () => {},
     schedulingZone: () => "UTC",

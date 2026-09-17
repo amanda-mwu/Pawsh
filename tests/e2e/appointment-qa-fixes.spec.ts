@@ -2,6 +2,7 @@ import { test, expect, login, createAppointment, createMember, prepareReceipt, p
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 import { contrastRatio } from "./helpers/contrast.js";
 import { expectCriticalTarget } from "./helpers/responsive.js";
+import { revealAppointmentOnCalendar } from "./helpers/calendar.js";
 
 /**
  * THE SIX THINGS HUMAN QA FOUND ON THE APPOINTMENT SURFACE, held in a real browser.
@@ -11,8 +12,8 @@ import { expectCriticalTarget } from "./helpers/responsive.js";
  * what the cascade does to it, which is what every finding in that pass was about:
  *
  *   THE GROOMER'S FOOTER, as a groomer, on a visit that was checked in on the server - Ready for
- *       Pickup enabled and leading, Save asleep with its reason, and the reason gone the moment
- *       the note is dirty and back when it is clean again.
+ *       Pickup enabled and leading, no footer Save at all, and the service note committing from
+ *       its own block.
  *   THE PENCIL'S CONTRAST, measured off the rendered page in every state it has, because a
  *       glyph's legibility is a property of the paint, not of the source.
  *   THE PET CONTEXT IN A DIALOG, where the defect was a grid stretching a pill to its neighbour's
@@ -26,7 +27,8 @@ import { expectCriticalTarget } from "./helpers/responsive.js";
 
 const GROOMER_PRESET = [
   "calendar.view", "appointments.view", "pets.view", "pets.care.view",
-  "operations.check_in", "operations.perform_service", "operations.complete"
+  "operations.check_in", "operations.perform_service", "operations.complete",
+  "appointments.edit", "calendar.blocks_create", "calendar.blocks_edit"
 ];
 
 const detail = (page: Page): Locator => page.getByTestId("appointment-detail-surface");
@@ -47,6 +49,7 @@ async function openDetail(page: Page, appointmentId: string): Promise<void> {
   await openNavigation(page);
   await page.getByTestId("nav-calendar").click();
   await page.waitForLoadState("networkidle");
+  await revealAppointmentOnCalendar(page, appointmentId);
   await page.locator(`[data-appointment-id="${appointmentId}"] .calendar-open`).first().click();
   await expect(detail(page)).toBeVisible();
 }
@@ -63,53 +66,53 @@ async function paint(locator: Locator): Promise<{ ink: string; fill: string; foc
   });
 }
 
-test("a groomer's checked-in footer leads with Ready for Pickup, and Save says why it sleeps",
+test("a groomer's checked-in footer leads with Ready for Pickup, and the service note commits from its block",
   async ({ page, request, tenant }) => {
+    // BACKEND-DEPENDENT for the groomer half: the member is linked to the fixture employee so the
+    // visit is THEIRS, which needs `employeeId` on `GET /api/me` for the scope rule to allow it.
     const appointment = await createAppointment(request, tenant);
     await transition(request, appointment.id, "checked_in", appointment.version);
     const member = await createMember(request, `groomer+${tenant.runId}@pawsh-test.example`, GROOMER_PRESET);
+    const linked = await request.put(`/api/employees/${tenant.employeeId}`, { data: { membershipId: member.membershipId } });
+    expect(linked.ok(), await linked.text()).toBeTruthy();
     await login(page, member.email, password);
     await openDetail(page, appointment.id);
 
     const ready = detail(page).getByTestId("appointment-ready");
-    const save = detail(page).getByTestId("appointment-save");
     // THE ONE ENABLED ACTION IS THE PRIMARY. Before this, a disabled Save held the slot and the
     // footer was read as "no Ready for Pickup".
     await expect(ready).toBeEnabled();
     await expect(ready).toHaveClass(/\bprimary\b/);
     await expect(detail(page).locator("footer .primary")).toHaveCount(1);
     await expect(detail(page).getByTestId("appointment-take-payment")).toHaveCount(0);
+    // THERE IS NO FOOTER SAVE. Its only job was the service note, and a commit a screen away from
+    // the field it committed is what human QA typed into and lost.
+    await expect(detail(page).getByTestId("appointment-save")).toHaveCount(0);
 
-    // SAVE IS ASLEEP AND SAYS SO, as a title - the same channel every refusal on this footer uses.
-    await expect(save).toBeDisabled();
-    await expect(save).not.toHaveClass(/\bprimary\b/);
-    await expect(save).toHaveAttribute("title", /Nothing to save yet/u);
-
-    // THE SERVICE NOTE SAYS IT IS EDITABLE. Empty, so it is Add; the press lands the caret.
+    // THE SERVICE NOTE IS AN EDITOR OF ITS OWN. Empty, so it is Add; the press opens the box with
+    // the caret in it and Save beside it.
     const edit = detail(page).getByTestId("appointment-service-note-edit");
     await expect(edit).toHaveText("Add");
     await expect(edit).toHaveAttribute("aria-label", "Add service note");
+    await expect(edit).toBeEnabled();
     await edit.click();
-    const field = detail(page).getByTestId("appointment-note-input");
+    const field = detail(page).getByTestId("appointment-service-note-input");
     await expect(field).toBeFocused();
-
-    // Dirty: Save wakes and the reason leaves with the sleep. Clean again: both return.
     await field.fill("Clipped short around the paws at the owner's request.");
-    await expect(save).toBeEnabled();
-    await expect(save).not.toHaveAttribute("title");
-    await field.fill("");
-    await expect(save).toBeDisabled();
-    await expect(save).toHaveAttribute("title", /Nothing to save yet/u);
+    await detail(page).getByTestId("appointment-service-note-save").click();
 
-    // And saved, the sibling control follows what the server now holds.
-    await field.fill("Clipped short around the paws at the owner's request.");
-    await save.click();
+    // Saved, the heading follows what the server now holds, and the note reads as text.
     await expect(edit).toHaveText("Edit");
     await expect(edit).toHaveAttribute("aria-label", "Edit service note");
+    await expect(detail(page).getByTestId("appointment-service-note"))
+      .toHaveText("Clipped short around the paws at the owner's request.");
   });
 
 test("a settled visit never leads with an Invoice the groomer cannot open", async ({ page, request, tenant }) => {
   const { appointment } = await prepareReceipt(request, tenant);
+  // A member with no employee record of their own: the visit is nobody's, so the receipt route's
+  // own-settled-visit allowance does not reach them and only payments.view would. The case where
+  // it DOES reach the groomer - their own paid visit - is `groomer-scope.spec.ts`.
   const member = await createMember(request, `groomer-paid+${tenant.runId}@pawsh-test.example`, GROOMER_PRESET);
   await login(page, member.email, password);
   await openDetail(page, appointment.id);
@@ -219,8 +222,8 @@ test("compact controls are compact on a fine pointer", async ({ page, request, t
     const box = await page.locator(selector).boundingBox();
     expect(box!.height, selector).toBeLessThanOrEqual(32);
   }
-  // The one calendar control the 44px contract names stays 44 even though it is `.compact`.
-  await expectCriticalTarget(page.getByTestId("calendar-add-appointment"));
+  // The one booking door the 44px contract names stays 44 even though it is `.compact`.
+  await expectCriticalTarget(page.getByTestId("new-action-trigger"));
 
   await page.locator(`[data-appointment-id="${appointment.id}"] .calendar-open`).first().click();
   await expect(detail(page)).toBeVisible();
@@ -239,6 +242,7 @@ test("@responsive compact controls keep the 44px floor on a coarse pointer, foot
     await page.getByTestId("nav-calendar").click();
     await page.waitForLoadState("networkidle");
     await expectCriticalTarget(page.locator("#calendar-today"));
+    await revealAppointmentOnCalendar(page, appointment.id);
     // The period arrows are as wide as an arrow and always were; the floor this rule owns is the
     // height, and 44 is what it must still be.
     for (const selector of ["#calendar-prev-week", "#calendar-next-week"]) {

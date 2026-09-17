@@ -87,9 +87,10 @@ test("the surface is its own dialog, and the checkout and ticket levels stand re
   await expect(page.getByTestId("appointment-service-row")).toHaveCount(1);
 
   // A scheduled appointment cannot be checked out and has no service note to write, so neither
-  // control is drawn. Absent, not disabled.
+  // control is drawn. Absent, not disabled. (There is no footer Save in any status any more.)
   await expect(page.getByTestId("appointment-take-payment")).toHaveCount(0);
   await expect(page.getByTestId("appointment-save")).toHaveCount(0);
+  await expect(page.getByTestId("appointment-service-note-edit")).toHaveCount(0);
   await expect(page.getByTestId("appointment-cancel")).toBeVisible();
   await expect(page.getByTestId("appointment-no-show")).toBeVisible();
   await expect(page.getByTestId("appointment-book-again")).toBeVisible();
@@ -131,6 +132,21 @@ test("the lifecycle strip reports derived times and says so only while something
   await expect(page.getByTestId("lifecycle-duration")).toHaveText(/^Duration: \d+ min$/);
   // Both moments are on the record, so the explanation has nothing to explain.
   await expect(page.getByTestId("lifecycle-note")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  // A CANCELLATION IS NOT A CHECK-OUT. The stored column stays empty on cancel (0049), and the
+  // strip used to read the cancellation's own audit row as the moment the visit ended - "Checked
+  // out: 1:36 PM" on a visit that never began. The history line underneath is the one that says
+  // "Cancelled", and the strip says nothing.
+  const cancelled = await createAppointment(request, tenant, { localStart: `${tenant.anchor}T15:00` });
+  const refusal = await request.post(`/api/appointments/${cancelled.id}/transition`, {
+    data: { status: "cancelled", version: cancelled.version }
+  });
+  expect(refusal.ok(), await refusal.text()).toBeTruthy();
+  await openFromCalendar(page, cancelled.id);
+  await expect(page.getByTestId("lifecycle-in")).toHaveText("Checked in: not recorded");
+  await expect(page.getByTestId("lifecycle-out")).toHaveText("Checked out: not recorded");
+  await expect(page.getByTestId("lifecycle-duration")).toHaveText("Duration: not recorded");
 });
 
 test("one history entry per level: Back dismisses the surface and a reload lands with it closed", async ({
@@ -236,14 +252,14 @@ test("a terminal appointment offers only what still means something", async ({
   ]) {
     await expect(page.getByTestId(control), control).toHaveCount(0);
   }
-  // A cancelled visit still has a work sheet, from BOTH entry points. Nothing on the sheet asserts
-  // the visit happened, and an operator reprinting it for a cancellation they are chasing is an
-  // ordinary thing to do. What the state still decides is the PRIMARY SLOT and nothing else: there
-  // is nothing to come to a cancelled appointment for, so Close keeps it.
-  await expect(page.getByTestId("appointment-ticket")).toBeVisible();
+  // A cancelled visit still has a work sheet. Nothing on the sheet asserts the visit happened, and
+  // an operator reprinting it for a cancellation they are chasing is an ordinary thing to do.
+  // What the state decides is the PRIMARY SLOT: the one thing a cancelled visit is still waiting
+  // for is to be booked again, so Reschedule leads for an owner, and Close is the way out.
   await expect(page.getByTestId("appointment-ticket")).toBeVisible();
   await expect(page.getByTestId("appointment-ticket")).toHaveClass(/secondary/);
-  await expect(page.getByTestId("appointment-close")).toHaveClass(/primary/);
+  await expect(page.getByTestId("appointment-reschedule")).toHaveClass(/primary/);
+  await expect(page.getByTestId("appointment-close")).toHaveClass(/secondary/);
   // The SERVICE note is closed on a cancelled visit - it is written while a dog is on the table
   // - so it is text rather than a field. The APPOINTMENT note is a different field with no
   // status window: an owner can still correct what the client asked for on a visit that never
@@ -301,7 +317,8 @@ test("the client rail can fail without taking the main column with it", async ({
 }) => {
   const appointment = await createAppointment(request, tenant, { localStart: `${tenant.anchor}T09:00` });
   await login(page, tenant.ownerEmail);
-  await page.route("**/api/customers/*/history", (route) =>
+  // The rail's one read is the appointment-scoped client context.
+  await page.route("**/api/appointments/*/client", (route) =>
     route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"Not found"}' })
   );
   await openFromCalendar(page, appointment.id);
@@ -313,7 +330,7 @@ test("the client rail can fail without taking the main column with it", async ({
   await expect(page.getByTestId("appointment-service-row")).toHaveCount(1);
   await expect(page.getByTestId("appointment-lifecycle")).toContainText("Checked in:");
 
-  await page.unroute("**/api/customers/*/history");
+  await page.unroute("**/api/appointments/*/client");
   await rail.getByTestId("appointment-client-retry").click();
   await expect(rail.getByRole("tab")).toHaveText(["Pets", "Appointments", "Cards"]);
   await expect(rail).toContainText("Emma Johnson");
@@ -337,7 +354,7 @@ test("the surface preserves Activities, Photos and Report Cards", async ({
   const activity = page.getByTestId("appointment-activity");
   await expect(activity.locator("[data-activity-count]")).toHaveText(/^\(\d+\)$/);
   await activity.locator("summary").click();
-  await expect(activity.locator(".activity-feed li").filter({ hasText: "Appointment created" }))
+  await expect(activity.locator(".activity-feed li").filter({ hasText: "Created" }))
     .toHaveCount(1);
   await expect(page.getByTestId("appointment-photos").locator(".photo-pet summary"))
     .toContainText("Charlie");

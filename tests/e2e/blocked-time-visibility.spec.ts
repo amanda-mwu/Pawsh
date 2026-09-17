@@ -176,7 +176,7 @@ test("shows the block's detail on hover, in the calendar's one tooltip", async (
   await expect(preview).toBeHidden();
 });
 
-test("keeps the band out of every interaction this seam does not own", async ({ page, request, tenant }) => {
+test("keeps the band out of every interaction it does not own: a drop target and a slot", async ({ page, request, tenant }) => {
   const appointment = await createAppointment(request, tenant, { localStart: `${tenant.anchor}T09:00` });
   await createBlock(request, tenant, {
     localStart: `${tenant.anchor}T12:00`, localEnd: `${tenant.anchor}T12:30`, reason: "Lunch"
@@ -188,23 +188,35 @@ test("keeps the band out of every interaction this seam does not own", async ({ 
 
   const band = page.getByTestId("calendar-block");
   await expect(band).toHaveCount(1);
-  // Not a card: `calendarDragCard` only ever returns `.appointment-block[data-draggable="true"]`.
-  expect(await band.getAttribute("data-draggable")).toBeNull();
+  // Not a card: no appointment identity, and never the card's class. It IS draggable for an owner
+  // - `tests/e2e/blocked-time-drag.spec.ts` walks that - which is a different thing from being a
+  // card, because a band is never a drop target.
   await expect(band).not.toHaveClass(/appointment-block/);
+  expect(await band.getAttribute("data-appointment-id")).toBeNull();
   // Not a slot: `calendarDropSlot` and the slot menu both key off `[data-slot]`.
   expect(await band.getAttribute("data-slot")).toBeNull();
   await expect(page.locator('[data-testid="calendar-block"] [data-slot]')).toHaveCount(0);
 
-  // Pressing and travelling on the band starts no drag, so nothing is offered to reschedule.
-  const box = await boxOf(page, '[data-testid="calendar-block"]');
-  await page.mouse.move(centreX(box), centreY(box));
+  // Pressing and travelling on the band is a MOVE gesture now, and a move asks before it does
+  // anything: the question comes up, Cancel answers it, and nothing else opened - not the
+  // booking modal, and not the Block Time dialog, because a press that travelled is not a click.
+  // Hovered first, so the press lands on the band as it is laid out NOW rather than where it was
+  // measured a redraw ago - the day grid is repainted wholesale after its reads settle.
+  const grip = band.locator(".calendar-block-label");
+  await grip.hover();
+  const box = (await grip.boundingBox())!;
   await page.mouse.down();
-  await page.mouse.move(centreX(box), centreY(box) + 60, { steps: 6 });
+  // Upwards, onto the empty 11:00 row: the 12:00 band sits at the foot of the scrolled grid, and a
+  // travel downwards would leave the visible slots altogether.
+  await page.mouse.move(centreX(box), centreY(box) - 60, { steps: 6 });
   await page.mouse.up();
+  await expect(page.getByTestId("stacked-dialog")).toBeVisible();
+  await expect(page.getByTestId("blocked-time-move-question")).toBeVisible();
+  await page.getByTestId("stacked-dialog-dismiss").click();
   await expect(page.getByTestId("stacked-dialog")).toBeHidden();
   await expect(page.getByTestId("modal")).toBeHidden();
-  // A press that travelled is not a click on the band either, so the Block Time dialog stays shut.
   await expect(page.getByTestId("blocked-time-dialog")).toBeHidden();
+  await expect(band).toContainText("12:00 PM–12:30 PM");
 
   // Clicking opens the block, and ONLY the block. The band sits over a slot, so the thing being
   // held here is that it never falls through to the slot menu or the booking workspace: a band is
@@ -446,11 +458,11 @@ test("reads a partial overlap as an overlap, and two blocks that merely touch as
       .not.toHaveAttribute("aria-label", /\d of \d$/);
   });
 
-test("keeps a stacked band out of drag and drop, and still refuses the drop underneath it",
+test("keeps a stacked band out of drop, and still refuses the drop underneath it",
   async ({ page, request, tenant }) => {
-    // Narrower bands are still bands. The three attributes that would make one a card - an
-    // appointment id, a draggable flag, a slot - must still be absent however many lanes it is in,
-    // and the slot underneath must still take the drop and still come back TIME_BLOCKED.
+    // Narrower bands are still bands. The two attributes that would make one a card or a target -
+    // an appointment id, a slot - must still be absent however many lanes it is in, and the slot
+    // underneath must still take the drop and still come back TIME_BLOCKED.
     const appointment = await createAppointment(request, tenant, { localStart: `${tenant.anchor}T09:00` });
     await createBlock(request, tenant, { localStart: `${tenant.anchor}T12:00`, localEnd: `${tenant.anchor}T12:30`, reason: "One" });
     await createBlock(request, tenant, { localStart: `${tenant.anchor}T12:00`, localEnd: `${tenant.anchor}T12:30`, reason: "Two" });
@@ -462,7 +474,6 @@ test("keeps a stacked band out of drag and drop, and still refuses the drop unde
     for (const reason of ["One", "Two"]) {
       const band = page.getByTestId("calendar-block").filter({ hasText: reason });
       expect(await band.getAttribute("data-appointment-id")).toBeNull();
-      expect(await band.getAttribute("data-draggable")).toBeNull();
       expect(await band.getAttribute("data-slot")).toBeNull();
       // Two lanes, so both bands say so, and each says which one it is.
       await expect(band).toHaveAttribute("data-block-lanes", "2");

@@ -669,7 +669,9 @@ test("@smoke the lock takes the move affordance away and says why",async({page,r
 
   // Nothing else is gated. Editing services, changing status and booking are not moves.
   await expect(page.getByTestId("appointment-scheduled")).toBeVisible();
-  await expect(page.getByTestId("calendar-add-appointment")).toBeEnabled();
+  await page.getByTestId("new-action-trigger").click();
+  await expect(page.getByTestId("new-action-menu").getByRole("menuitem", { name: "New Appointment" })).toBeEnabled();
+  await page.keyboard.press("Escape");
 
   // The appointment detail is the other place Move is offered, and it answers the same question.
   //

@@ -1,5 +1,5 @@
 import { test, expect, login, createMember, createAppointment, password } from "./fixtures/tenant.js";
-import type { Page } from "@playwright/test";
+import type { APIRequestContext, Page } from "@playwright/test";
 
 /**
  * WHAT A GROOMER IS OFFERED ON THE CALENDAR, AND WHAT THEY ARE TOLD INSTEAD.
@@ -32,6 +32,17 @@ const GROOMER_PRESET = [
   "operations.check_in", "operations.perform_service", "operations.complete"
 ];
 
+/**
+ * A groomer OWNS the fixture visit only when their membership is the fixture employee's. The
+ * operations routes and the surface both ask "is this appointment mine" now, so a member who is
+ * a groomer in name but linked to no employee record can look and cannot press. Linking is one
+ * PATCH on the employee. BACKEND-DEPENDENT: the surface reads its own id off `GET /api/me`.
+ */
+async function linkToEmployee(api: APIRequestContext, employeeId: string, membershipId: string): Promise<void> {
+  const linked = await api.put(`/api/employees/${employeeId}`, { data: { membershipId } });
+  expect(linked.ok(), await linked.text()).toBeTruthy();
+}
+
 async function calendar(page: Page): Promise<void> {
   await page.getByTestId("nav-calendar").click();
   await page.waitForLoadState("networkidle");
@@ -47,9 +58,16 @@ test("a groomer is offered no booking gesture anywhere on the grid", async ({
   await login(page, member.email, password);
   await calendar(page);
 
-  // The toolbar always gated correctly; it is asserted here so that the grid's silence below is
-  // read as the same rule rather than as the calendar being broken.
-  await expect(page.getByTestId("calendar-add-appointment")).toBeHidden();
+  // The header's + New menu is the one door into booking, and it says why it is shut: disabled
+  // with the missing keys named, so the grid's silence below is read as the same rule rather
+  // than as the calendar being broken.
+  await page.getByTestId("new-action-trigger").click();
+  const newAppointment = page.getByTestId("new-action-menu").getByRole("menuitem", { name: "New Appointment" });
+  await expect(newAppointment).toBeDisabled();
+  await expect(newAppointment).toHaveAttribute("title", /appointments\.create/u);
+  await page.keyboard.press("Escape");
+  // And no second door: the toolbar no longer carries its own booking button.
+  await expect(page.getByTestId("calendar-add-appointment")).toHaveCount(0);
 
   // THE GRID. Not one cell carries the hook `bindCalendarInteractions` binds the menu to, so
   // there is no press that can open it.
@@ -64,7 +82,7 @@ test("a groomer is offered no booking gesture anywhere on the grid", async ({
   await expect(page.locator(".day-slot[data-slot]")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /create appointment/i })).toHaveCount(0);
 
-  // The month cell's `+` is the toolbar's button in another place, and answers to the same gate.
+  // The month cell's `+` is the header's New Appointment in another place, and answers to the same gate.
   await page.locator("#calendar-view-select").selectOption("month");
   await page.waitForLoadState("networkidle");
   await expect(page.locator("[data-month-book-date]")).toHaveCount(0);
@@ -86,7 +104,9 @@ test("a receptionist keeps every one of those gestures", async ({ page, request,
   await login(page, member.email, password);
   await calendar(page);
 
-  await expect(page.getByTestId("calendar-add-appointment")).toBeVisible();
+  await page.getByTestId("new-action-trigger").click();
+  await expect(page.getByTestId("new-action-menu").getByRole("menuitem", { name: "New Appointment" })).toBeEnabled();
+  await page.keyboard.press("Escape");
   const slot = page.locator(".week-slot[data-slot]").first();
   await slot.scrollIntoViewIfNeeded();
   await slot.click();
@@ -107,11 +127,13 @@ test("a groomer's appointment says why it is inert instead of showing nothing", 
   tenant
 }) => {
   const member = await createMember(request, `groomer-detail+${tenant.runId}@pawsh-test.example`, GROOMER_PRESET);
+  await linkToEmployee(request, tenant.employeeId, member.membershipId);
   const appointment = await createAppointment(request, tenant, { localStart: `${tenant.anchor}T09:00` });
   await login(page, member.email, password);
   await calendar(page);
 
-  // Every client read the rail would have made, recorded. There should be none.
+  // Every read against the customer routes, recorded. There should be none: the rail reads the
+  // appointment-scoped `GET /api/appointments/:id/client` instead, which the groomer may open.
   const clientReads: string[] = [];
   page.on("request", (event) => {
     const path = new URL(event.url()).pathname;
@@ -122,10 +144,12 @@ test("a groomer's appointment says why it is inert instead of showing nothing", 
   const detail = page.getByTestId("appointment-detail");
   await expect(detail).toBeVisible();
 
-  // THE RAIL. A refusal, named, with nothing to press and no claim that anything failed.
+  // THE RAIL IS DRAWN FOR THE GROOMER. BACKEND-DEPENDENT: `GET /api/appointments/:id/client`.
+  // The same rail every role gets - identity, notes, the three tabs - with nothing financial in
+  // it, and no read of a route this role cannot open.
   const rail = page.getByTestId("appointment-client-rail");
-  await expect(rail).toContainText("Client records are not part of this role");
-  await expect(rail).toContainText("customers.view");
+  await expect(rail).toContainText("Emma Johnson");
+  await expect(rail.getByRole("tab")).toHaveText(["Pets", "Appointments", "Cards"]);
   await expect(page.getByTestId("appointment-client-retry")).toHaveCount(0);
   await expect(rail).not.toContainText("could not be loaded");
   expect(clientReads).toEqual([]);
@@ -174,6 +198,7 @@ test("a groomer checks a pet in and hands it back, both from the visit itself", 
    * rather than a shift.
    */
   const member = await createMember(request, `groomer-lifecycle+${tenant.runId}@pawsh-test.example`, GROOMER_PRESET);
+  await linkToEmployee(request, tenant.employeeId, member.membershipId);
   const appointment = await createAppointment(request, tenant, { localStart: `${tenant.anchor}T11:00` });
   await login(page, member.email, password);
   await calendar(page);

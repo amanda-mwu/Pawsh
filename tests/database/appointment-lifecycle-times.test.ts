@@ -137,12 +137,19 @@ describeDatabase("stored appointment check-in and check-out times", () => {
         method: "POST", url: "/api/auth/login", payload: { email, password }
       }));
     };
+    // The operator is a front desk that checks ANY dog in, so it holds the all-staff key
+    // alongside the operations keys: those are scoped to the caller's own appointments since
+    // `appointments.edit_all_staff` started enforcing, and this member has no employee record.
+    // It still holds no `appointments.edit`, which is the gate this file is about.
     operatorCookie = await member("operator", [
-      "calendar.view", "appointments.view",
+      "calendar.view", "appointments.view", "appointments.edit_all_staff",
       "operations.check_in", "operations.perform_service", "operations.complete"
     ]);
+    // `appointments.edit` alone reaches only appointments assigned to the caller's own employee
+    // record, and this member has none; `appointments.edit_all_staff` is what lets a front desk
+    // correct anybody's times, and every role holding the edit key when 0057 ran holds it too.
     editorCookie = await member("editor", [
-      "calendar.view", "appointments.view", "appointments.edit"
+      "calendar.view", "appointments.view", "appointments.edit", "appointments.edit_all_staff"
     ]);
   }, 30_000);
 

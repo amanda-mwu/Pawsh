@@ -166,7 +166,7 @@ describeDatabase("D1 scheduling regression", () => {
     `;
     const [membership] = await db<{ id: string }[]>`
       insert into business_memberships(business_id,user_id,role_id)
-      values (${businessId},${user!.id},${await roleFor(db, businessId, ["calendar.view","appointments.view","appointments.create","appointments.edit"])})
+      values (${businessId},${user!.id},${await roleFor(db, businessId, ["calendar.view","appointments.view","appointments.create","appointments.edit","appointments.edit_all_staff"])})
       returning id
     `;
     memberId = membership!.id;

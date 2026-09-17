@@ -63,11 +63,13 @@ test("a settled visit's note is written, read back, carried onto the Ticket and 
   await openFromCalendar(page, appointment.id);
 
   // The read state: no note, and one control to add one. The service note is a different field
-  // and its window closed when the visit completed, so it has no field here at all.
+  // with its own Add: on a completed visit it is still writable, and it draws no field until its
+  // Add is pressed, so nothing here is a standing textarea.
   await expect(recordNote(page)).toContainText("No appointment note.");
   await expect(recordNote(page).locator("textarea")).toHaveCount(0);
   await expect(page.getByTestId("appointment-service-note")).toHaveCount(0);
-  await expect(page.getByTestId("appointment-note-input")).toHaveCount(0);
+  await expect(page.getByTestId("appointment-service-note-input")).toHaveCount(0);
+  await expect(page.getByTestId("appointment-service-note-edit")).toHaveText("Add");
   await expect(page.getByTestId("appointment-save")).toHaveCount(0);
 
   await page.getByTestId("appointment-note-edit").click();
@@ -252,9 +254,10 @@ test("the two notes coexist: editing one never disturbs what is typed in the oth
   await login(page, tenant.ownerEmail);
   await openFromCalendar(page, appointment.id);
 
-  // Both are writable at once here, and only here: the service note's window is open because the
-  // dog is checked in, and the appointment note's is always open.
-  const serviceField = page.getByTestId("appointment-note-input");
+  // Both are writable at once here: the service note's window is open because the dog is checked
+  // in, and the appointment note's is always open. Each is its own editor with its own Save.
+  await page.getByTestId("appointment-service-note-edit").click();
+  const serviceField = page.getByTestId("appointment-service-note-input");
   await serviceField.fill("Ears looked sore on arrival.");
 
   await page.getByTestId("appointment-note-edit").click();
@@ -268,9 +271,10 @@ test("the two notes coexist: editing one never disturbs what is typed in the oth
     .toHaveText("Client asked for a shorter body.");
   await expect(serviceField).toHaveValue("Ears looked sore on arrival.");
 
-  // And the footer Save still writes the service note and only the service note.
-  await page.getByTestId("appointment-save").click();
+  // And the service note's own Save writes the service note and only the service note.
+  await page.getByTestId("appointment-service-note-save").click();
   await expect(page.locator("#toast")).toContainText("Service note saved");
+  await expect(page.getByTestId("appointment-service-note")).toHaveText("Ears looked sore on arrival.");
   const stored = await (await request.get(`/api/appointments/${appointment.id}`)).json();
   expect(stored.operationalNotes).toBe("Ears looked sore on arrival.");
   expect(stored.notes).toBe("Client asked for a shorter body.");

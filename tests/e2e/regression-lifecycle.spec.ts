@@ -156,9 +156,9 @@ test("@regression-lifecycle appointment detail reports its reference, billing st
   await activity.locator("summary").click();
   await expect(activity).toHaveAttribute("open", "");
   const feed = activity.locator(".activity-feed li");
-  await expect(feed.filter({ hasText: "Appointment created" })).toHaveCount(1);
+  await expect(feed.filter({ hasText: "Created" })).toHaveCount(1);
   await expect(feed.filter({ hasText: "Checked in" })).toHaveCount(1);
-  await expect(feed.filter({ hasText: "Marked completed" })).toHaveCount(1);
+  await expect(feed.filter({ hasText: "Ready for pickup" })).toHaveCount(1);
   // Every line is attributable. The owner has no employee record here, so the feed falls back to
   // their account identity rather than leaving the entry unattributed.
   await expect(feed.first()).toContainText(tenant.ownerEmail.split("@")[0]!);

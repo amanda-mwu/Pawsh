@@ -168,10 +168,25 @@ export type Permission = (typeof permissions)[number];
 export const permissionPresets: Record<string, readonly Permission[]> = {
   groomer: [
     "calendar.view", "appointments.view", "pets.view", "pets.care.view",
-    "operations.check_in", "operations.perform_service", "operations.complete"
+    "operations.check_in", "operations.perform_service", "operations.complete",
+    // A GROOMER MAY RUN THEIR OWN DAY. `appointments.edit` and the two block keys are scoped by
+    // `appointments.edit_all_staff`, which this preset deliberately does NOT hold: with the three
+    // below and without that one, a groomer may move, re-service and annotate the appointments
+    // assigned to them and block out their own calendar, and is refused the moment they reach for
+    // anybody else's. The server resolves "assigned to me" from `employees.membership_id`, never
+    // from anything the client sends. `migrations/0057_staff_scheduling_scope.sql` gives the same
+    // three keys to every built-in Groomer that already exists.
+    "appointments.edit", "calendar.blocks_create", "calendar.blocks_edit"
   ],
   receptionist: [
     "calendar.view", "appointments.view", "appointments.create", "appointments.edit",
+    // THE FRONT DESK WORKS EVERY GROOMER'S CALENDAR, AND WENT ON DOING SO WHEN THE SCOPE KEY
+    // GRADUATED. `appointments.edit` meant "any appointment" until `appointments.edit_all_staff`
+    // started enforcing; from then on it means "the appointments assigned to me", and a
+    // receptionist is assigned nothing. Without this key the preset would keep the switch and
+    // lose the capability - the silent revocation 0043, 0045 and 0055 were each written to
+    // prevent. 0057 does the same for every role that already exists.
+    "appointments.edit_all_staff",
     "appointments.cancel",
     // THE FRONT DESK BLOCKS TIME OUT, AND WENT ON DOING SO WHEN THE DEDICATED KEYS GRADUATED.
     // `POST /api/blocked-times` was gated on `appointments.edit` from 0001 until the pair below
@@ -330,15 +345,35 @@ export const unenforcedPermissions: ReadonlySet<Permission> = new Set<Permission
   // switch does not gate anything yet, because it does not. The `calendar.blocks_*` pair was on
   // that list and has since taken its turn; see where it left this set below.
   //
-  // The four scope keys - `appointments.view_all_staff`, `appointments.edit_all_staff`,
-  // `customers.view_all`, `dashboard.all_staff` - are the sharpest and must graduate last, with a
-  // decision of their own. They are the only permissions here whose ABSENCE removes access: a
-  // groomer who sees the whole calendar today would see only their own the moment they are
-  // enforced. That is a deliberate reduction, not a split, and it is not this change's to make.
+  // The scope keys - `appointments.view_all_staff`, `customers.view_all`, `dashboard.all_staff`,
+  // and until it graduated `appointments.edit_all_staff` - are the sharpest and graduate last,
+  // each with a decision of its own. They are the only permissions here whose ABSENCE removes
+  // access: a groomer who sees the whole calendar today would see only their own the moment
+  // `view_all_staff` is enforced. That is a deliberate reduction, not a split, and it is not this
+  // change's to make.
   // ---------------------------------------------------------------------------------------------
   "appointments.view_all_staff",
-  "appointments.edit_all_staff",
-  "appointments.service_price_edit",
+  // `appointments.edit_all_staff` GRADUATED HERE and is deliberately absent, the first of the four
+  // scope keys to do so - and it did so as a WIDENING rather than the reduction the paragraph
+  // above warns about, which is what made it safe to take first. Every route that edits an
+  // appointment or a blocked time now asks whether the row is assigned to the caller's own
+  // employee record, and this key is what says the answer does not matter. Nobody who could
+  // edit before lost the ability: the Receptionist preset gained the key in the same change and
+  // `migrations/0057_staff_scheduling_scope.sql` gave it to every existing role that held
+  // `appointments.edit` or either block key. What CHANGED is that a Groomer may now edit their
+  // own appointments and block out their own calendar, which they could not do at all before.
+  //
+  // IT MUST NOT COME BACK HERE. It refuses somebody now, and a switch that refuses while the
+  // editor says "Not yet available in Pawsh" is the lie this list exists to prevent.
+  //
+  // `appointments.service_price_edit` GRADUATED HERE and is deliberately absent. It gates the
+  // `priceMinor` half of `PATCH /api/appointments/:id/services/:lineId` - re-pricing one service
+  // on one appointment - on top of the `appointments.edit` the route requires for the duration
+  // half. No migration and no preset change: 0045 granted the key to every role that could
+  // already do everything, so a Manager holds it, and the Groomer and Receptionist presets never
+  // held it and gain nothing - a groomer may lengthen their own visit and may not re-price it.
+  // Like `customers.credit_edit` before it, leaving it here once it refuses somebody would tell
+  // an owner the switch does nothing while it is in fact refusing their staff.
   "appointments.online_booking_accept",
   "checkout.split_tips",
   "payments.edit",

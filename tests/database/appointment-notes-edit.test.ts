@@ -88,8 +88,10 @@ describeDatabase("editing the appointment note", () => {
    * Seats a member holding EXACTLY one of the shipped role presets.
    *
    * The presets are imported rather than restated, so "which built-in roles may edit an
-   * appointment" is answered by the catalogue itself. If Groomer ever gains `appointments.edit`,
-   * the denial case below fails rather than quietly asserting something that stopped being true.
+   * appointment" is answered by the catalogue itself. The Groomer case below asserts the
+   * catalogue's own answer - the key, but scoped to the groomer's own appointments - so a change
+   * to the preset fails it rather than quietly leaving it asserting something that stopped being
+   * true.
    */
   async function seat(label: string, permissions: readonly string[]): Promise<string> {
     const email = `notes-${label}-${suffix}@example.test`;
@@ -309,13 +311,18 @@ describeDatabase("editing the appointment note", () => {
       }
     });
 
-    it("refuses the built-in Groomer, who holds no appointment-edit authority", async () => {
-      // Asserted against the catalogue, not against the role's name.
-      expect(permissionPresets.groomer).not.toContain("appointments.edit");
+    it("refuses the built-in Groomer an appointment that is not theirs", async () => {
+      // Asserted against the catalogue, not against the role's name: the Groomer HOLDS the edit
+      // key and NOT the all-staff key, so the refusal is about whose appointment this is. This
+      // groomer is seated with no employee record, so nothing is assigned to them; the
+      // staff-scheduling-scope suite covers the groomer who is assigned.
+      expect(permissionPresets.groomer).toContain("appointments.edit");
+      expect(permissionPresets.groomer).not.toContain("appointments.edit_all_staff");
       const created = await book("Groomer must not rewrite this");
       const refused = await editNote(created.id, { notes: "Rewritten" }, groomerCookie);
       expect(refused.statusCode, refused.body).toBe(403);
-      expect(refused.json().error).toContain("appointments.edit");
+      expect(refused.json().code).toBe("NOT_ASSIGNED_TO_YOU");
+      expect(refused.json().error).toContain("appointments.edit_all_staff");
       expect((await storedNote(created.id)).notes).toBe("Groomer must not rewrite this");
     });
 

@@ -142,6 +142,7 @@ function client(status = "scheduled", { railFails = "forbidden" as "forbidden" |
       cards: { data: null, failed: false },
       client: { loaded: false, failed: false, refused: false },
       note: { open: false, draft: null, baseVersion: null, conflict: null, error: null, saving: false },
+      serviceNote: { open: false, draft: null, baseVersion: null, conflict: null, error: null, saving: false },
       permissions: null
     };
     surface.permissions = {};
@@ -159,17 +160,18 @@ function client(status = "scheduled", { railFails = "forbidden" as "forbidden" |
   const api = (path: string): Promise<unknown> => {
     reads.push(path);
     if (railFails === "forbidden") {
-      return Promise.reject(Object.assign(new Error("Missing permission: customers.view"), { status: 403 }));
+      return Promise.reject(Object.assign(new Error("Missing permission: appointments.view"), { status: 403 }));
     }
     return Promise.reject(new Error("Failed to fetch"));
   };
 
   const scope: Record<string, unknown> = {
     escape, escapeAttr, railBody, api,
-    state: { clientProfile: null, pets: [] },
-    $: () => null,
-    loadClientNotes: (customerId: string) => { reads.push(`/api/customers/${customerId}/notes`); return Promise.resolve([]); },
-    loadClientAgreements: (customerId: string) => { reads.push(`/api/customers/${customerId}/agreements`); return Promise.resolve([]); }
+    // The session OWNS the fixture visit (assigned to e1), so this file's five controls answer
+    // to the permission alone; the ownership rule has its own block in
+    // tests/ui/appointment-dominant-slot.test.ts.
+    state: { me: { employeeId: "e1" }, clientProfile: null, pets: [] },
+    $: () => null
   };
 
   const names = Object.keys(scope);
@@ -302,48 +304,42 @@ describe("a control the VISIT does not allow stays absent", () => {
 });
 
 describe("the client rail tells a refusal and a failure apart", () => {
-  it("a groomer's rail states the missing permission and makes no request at all", async () => {
-    const app = client("scheduled");
+  it("a groomer's rail makes ONE appointment-scoped read, and no read of /api/customers", async () => {
+    // The rail used to make three reads against the customer routes, all `customers.view`-gated,
+    // so a groomer got a refusal drawn without asking. It reads
+    // `GET /api/appointments/:id/client` now - the same three payloads under `appointments.view`,
+    // which is the key that let this visit be opened - so the groomer at the table gets the rail.
+    const app = client("scheduled", { railFails: "offline" });
     app.grant("calendar.view", "appointments.view", "pets.view");
 
     await app.loadClient();
 
-    // The three 403s — and the three `/api/me` reconciliations and calendar re-renders `api()`
-    // spends on them — are gone because the reads never happen.
-    expect(app.reads).toEqual([]);
-    expect(app.rail()).toContain("customers.view");
-    expect(app.rail()).toContain("Client records are not part of this role");
+    expect(app.reads).toEqual([`/api/appointments/${app.surface.item.id}/client`]);
+    expect(app.reads.some((path) => path.startsWith("/api/customers/"))).toBe(false);
   });
 
-  it("a refusal offers nothing to press, because there is nothing a retry could change", async () => {
+  it("a 403 is a refusal: named, with nothing to press, and no claim that anything failed", async () => {
     const app = client("scheduled");
     app.grant("calendar.view", "appointments.view");
 
     await app.loadClient();
 
+    expect(app.surface.client.refused).toBe(true);
+    expect(app.rail()).toContain("Client records are not part of this role");
+    expect(app.rail()).toContain("appointments.view");
     expect(app.rail()).not.toContain("appointment-client-retry");
     expect(app.rail()).not.toContain("Retry");
     expect(app.rail()).not.toContain("could not be loaded");
   });
 
-  it("the surface draws that refusal from its first paint, never a Loading claim", () => {
+  it("the surface promises a load from its first paint for every role that can open the visit", () => {
     const app = client("scheduled");
     app.grant("calendar.view", "appointments.view");
 
+    expect(app.derive().viewClient).toBe(true);
     const markup = draw(app);
-    expect(markup).toContain("Client records are not part of this role");
-    expect(markup).not.toContain("Loading client…");
-  });
-
-  it("a 403 that arrives anyway — permissions moved mid-session — is still a refusal", async () => {
-    const app = client("scheduled");
-    app.grant("calendar.view", "appointments.view", "customers.view");
-
-    await app.loadClient();
-
-    expect(app.reads.length).toBeGreaterThan(0);
-    expect(app.surface.client.refused).toBe(true);
-    expect(app.rail()).not.toContain("Retry");
+    expect(markup).toContain("Loading client…");
+    expect(markup).not.toContain("Client records are not part of this role");
   });
 
   it("a genuine network failure keeps its Retry", async () => {
@@ -356,14 +352,5 @@ describe("the client rail tells a refusal and a failure apart", () => {
     expect(app.surface.client.refused).toBe(false);
     expect(app.rail()).toContain("The client record could not be loaded");
     expect(app.rail()).toContain("appointment-client-retry");
-  });
-
-  it("a permitted rail loads and draws the client summary", async () => {
-    const app = client("scheduled", { railFails: "offline" });
-    app.grant("calendar.view", "appointments.view", "customers.view");
-    expect(app.derive().viewClient).toBe(true);
-    // The read itself is exercised by the two failure paths above; what matters here is that the
-    // permitted actor's surface promises a load rather than refusing one.
-    expect(draw(app)).toContain("Loading client…");
   });
 });

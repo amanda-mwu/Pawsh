@@ -9,10 +9,20 @@ import { expect, type Page } from "@playwright/test";
  * Tests drive it through these helpers so the sequence lives in one place.
  */
 
-/** Open the workspace from the calendar's add button and wait for it to be interactive. */
+/**
+ * Open the workspace from the ONE door there is - the header's + New menu - and wait for it to
+ * be interactive. The calendar toolbar's `+ Add booking` used to be a second door bound to the
+ * same action; it is gone, so every spec that books starts here.
+ */
 export async function openBooking(page: Page): Promise<void> {
-  await page.getByTestId("calendar-add-appointment").click();
+  await page.getByTestId("new-action-trigger").click();
+  await page.getByTestId("new-action-menu").getByRole("menuitem", { name: "New Appointment" }).click();
   await expect(page.getByTestId("booking-client-search")).toBeVisible();
+}
+
+/** The header's New Appointment item, for specs that assert its gate rather than press it. */
+export function newAppointmentItem(page: Page) {
+  return page.getByTestId("new-action-menu").getByRole("menuitem", { name: "New Appointment" });
 }
 
 /**

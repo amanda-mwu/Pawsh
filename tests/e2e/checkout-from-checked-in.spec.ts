@@ -1,5 +1,6 @@
 import { test, expect, login, createAppointment } from "./fixtures/tenant.js";
 import { checkoutSurface, chooseMethod } from "./helpers/checkout.js";
+import { revealAppointmentOnCalendar } from "./helpers/calendar.js";
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 
 /**
@@ -57,6 +58,7 @@ async function invoiceState(api: APIRequestContext, invoiceId: string): Promise<
 async function openDetail(page: Page, appointmentId: string): Promise<void> {
   await page.getByTestId("nav-calendar").click();
   await page.waitForLoadState("networkidle");
+  await revealAppointmentOnCalendar(page, appointmentId);
   await page.locator(`[data-appointment-id="${appointmentId}"] .calendar-open`).first().click();
   await expect(detail(page)).toBeVisible();
 }

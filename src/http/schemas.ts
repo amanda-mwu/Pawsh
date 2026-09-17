@@ -729,7 +729,11 @@ export const appointmentSchema = z.object({
   notes: z.string().max(5000).nullish(),
   availabilityOverride: z.boolean().default(false),
   overrideConflict: z.boolean().default(false),
-  overrideReason: z.string().trim().min(3).max(500).nullish()
+  overrideReason: z.string().trim().min(3).max(500).nullish(),
+  // The cancelled or no-show visit this booking replaces, when it replaces one. The server
+  // checks it names such a visit in the caller's business and records the lineage on both
+  // appointments' activity; the shape of what comes back is unchanged. See the create route.
+  rescheduledFromAppointmentId: z.string().uuid().optional()
 }).superRefine((value, context) => {
   if (value.employeeIds) context.addIssue({code:"custom",path:["employeeIds"],message:"An appointment can only be assigned to one groomer."});
   if (value.availabilityOverride && !value.overrideReason) {
@@ -1255,9 +1259,77 @@ export const appointmentMoveSchema = z.object({
   }
 });
 
+/**
+ * ONE LINE OF THE WORK LIST, as `PUT /api/appointments/:id/services` takes it.
+ *
+ * `id` names an existing `appointment_services` row on this appointment and means "keep this row
+ * and everything snapshotted on it". Without an `id` - or with one this appointment does not own -
+ * the line is a new row, resolved from the catalog as a booking resolves it. The distinction is
+ * what lets an operator add a nail trim to a visit whose bath was already priced by hand without
+ * the bath silently going back to the price book.
+ */
+export const appointmentServiceLineSchema = z.object({
+  id: z.string().uuid().optional(),
+  serviceId: z.string().uuid()
+}).strict();
+
+/**
+ * The work list, whole. EXACTLY ONE of the two spellings:
+ *
+ *   `lines`       the keyed form - existing rows kept by id, the rest new;
+ *   `serviceIds`  the older flat form, still accepted, read as `lines` without ids - every row
+ *                 re-resolved from the catalog, which is what it always did.
+ *
+ * Both together is refused rather than reconciled, because two lists that disagree have no right
+ * answer and a client that sends both has a bug worth hearing about.
+ *
+ * `overrideConflict`, `availabilityOverride` and `overrideReason` are `appointmentMoveSchema`'s,
+ * with the same defaults and the same rule about the reason, because changing the services
+ * changes `end_at` and the new window goes through the guard sequence a move goes through.
+ */
 export const appointmentServicesSchema = z.object({
-  serviceIds: z.array(z.string().uuid()).min(1),
-  version: z.number().int().positive().optional()
+  lines: z.array(appointmentServiceLineSchema).min(1).max(50).optional(),
+  serviceIds: z.array(z.string().uuid()).min(1).max(50).optional(),
+  version: z.number().int().positive().optional(),
+  availabilityOverride: z.boolean().default(false),
+  overrideConflict: z.boolean().default(false),
+  overrideReason: z.string().trim().min(3).max(500).nullish()
+}).strict().superRefine((value, context) => {
+  if (!value.lines === !value.serviceIds) {
+    context.addIssue({ code: "custom", path: ["lines"], message: "Send either lines or serviceIds" });
+  }
+  if (value.availabilityOverride && !value.overrideReason) {
+    context.addIssue({ code: "custom", path: ["overrideReason"], message: "Override reason is required" });
+  }
+});
+
+export const appointmentServiceLineParams = z.object({
+  id: z.string().uuid(),
+  lineId: z.string().uuid()
+});
+
+/**
+ * Editing one line in place - `PATCH /api/appointments/:id/services/:lineId`.
+ *
+ * At least one of the two fields. `durationMinutes` is calendar time reserved for the line and
+ * is capped at a day because an appointment may not cross local midnight anyway; the route
+ * refuses the midnight crossing with the same sentence a booking gets. `priceMinor` is the price
+ * for this appointment only; the catalog is untouched.
+ */
+export const appointmentServiceLineEditSchema = z.object({
+  durationMinutes: z.number().int().positive().max(24 * 60).optional(),
+  priceMinor: z.number().int().min(0).optional(),
+  version: z.number().int().positive().optional(),
+  availabilityOverride: z.boolean().default(false),
+  overrideConflict: z.boolean().default(false),
+  overrideReason: z.string().trim().min(3).max(500).nullish()
+}).strict().superRefine((value, context) => {
+  if (value.durationMinutes === undefined && value.priceMinor === undefined) {
+    context.addIssue({ code: "custom", path: ["durationMinutes"], message: "Send a duration, a price, or both" });
+  }
+  if (value.availabilityOverride && !value.overrideReason) {
+    context.addIssue({ code: "custom", path: ["overrideReason"], message: "Override reason is required" });
+  }
 });
 
 export const voidPaymentSchema = z.object({

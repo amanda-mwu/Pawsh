@@ -208,9 +208,14 @@ describeDatabase("blocking time out", () => {
       expect(refused.statusCode, refused.body).toBe(403);
       expect(refused.json().error).toContain("calendar.blocks_create");
 
-      // And the new key alone IS enough: it is a permission in its own right, not a second switch
-      // that has to be held alongside the one it replaced.
-      const newKeyOnly = await sessionWith(["calendar.view", "calendar.blocks_create"]);
+      // And the new key IS enough: it is a permission in its own right, not a second switch that
+      // has to be held alongside the one it replaced. It travels with `appointments.edit_all_staff`
+      // because the block here is on another groomer's calendar and this member has no employee
+      // record of their own; the scope rule is pinned by the staff-scheduling-scope suite, and this
+      // case is about which permission key the route consults.
+      const newKeyOnly = await sessionWith([
+        "calendar.view", "calendar.blocks_create", "appointments.edit_all_staff"
+      ]);
       expect((await blockTime({
         localStart: `${WINTER}T10:00`, localEnd: `${WINTER}T10:30`, cookie: newKeyOnly
       })).statusCode).toBe(201);

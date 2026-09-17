@@ -23,7 +23,7 @@ import { appointmentStatuses, canEnterCheckout } from "@pawsh/domain";
  *   the same -> `true`, or the list gains `in_service`
  *       "withholds it on every status the server refuses" fails.
  *
- *   `primarySlot==="checkout"?"secondary":"primary"` on Save -> `"primary"`
+ *   the ticket's `primarySlot==="ticket"?"primary":"secondary"` -> `"primary"`
  *       "draws one primary button" fails.
  *
  *   `&&(!invoiced||appointmentInvoiceOutstanding(...))` dropped from `checkout`
@@ -90,6 +90,8 @@ function client(status: string, invoice: Record<string, unknown> = {}): Module {
     const allowed = () => true;
     const appointmentsLocked = () => false;
     const appointmentMoveAllowed = () => true;
+    // Every key held includes appointments.edit_all_staff, so scope never refuses here.
+    const state = { me: { employeeId: null }, clientProfile: null, pets: [] };
     const appointmentBillingChip = () => ({ tone: "neutral", label: "Unbilled" });
     const appointmentLockNoteMarkup = () => "";
     const appointmentActivityMarkup = () => "<!--activity-->";
@@ -110,6 +112,7 @@ function client(status: string, invoice: Record<string, unknown> = {}): Module {
       cards: { data: null, failed: false },
       client: { loaded: false, failed: false, refused: false },
       note: { open: false, draft: null, baseVersion: null, conflict: null, error: null, saving: false },
+      serviceNote: { open: false, draft: null, baseVersion: null, conflict: null, error: null, saving: false },
       permissions: null
     };
     const HISTORY_INITIAL_ROWS = 10;
@@ -120,7 +123,7 @@ function client(status: string, invoice: Record<string, unknown> = {}): Module {
       derive,
       markup: () => { surface.permissions = derive(); return appointmentSurfaceMarkup(surface); }
     };`;
-  const scope: Record<string, unknown> = { escape, escapeAttr, state: { clientProfile: null, pets: [] } };
+  const scope: Record<string, unknown> = { escape, escapeAttr };
   const names = Object.keys(scope);
   const factory = new Function(
     ...names, [prelude, OUTSTANDING, NOTES, SURFACE, DERIVE, exported].join("\n")
@@ -173,53 +176,50 @@ describe("the checkout affordance follows the server's own eligibility rule", ()
   });
 
   it("draws one primary button on a checked-in footer, not two", () => {
-    // Save is the primary action on a visit still being worked, and Take Payment never used to
-    // appear beside it. They meet now, and the footer's `primarySlot` rule decides which is which.
+    // Ready for Pickup and Take Payment meet on a checked-in visit, and the footer's
+    // `primarySlot` rule decides which is which: the money.
     const markup = client("checked_in").markup();
-    const save = control(markup, "appointment-save");
+    const ready = control(markup, "appointment-ready");
     const take = control(markup, "appointment-take-payment");
-    expect(save, "Save was not drawn on a checked-in visit").not.toBeNull();
+    expect(ready, "Ready for Pickup was not drawn on a checked-in visit").not.toBeNull();
     expect(take, "Take Payment was not drawn on a checked-in visit").not.toBeNull();
     expect(take).toContain("primary");
-    expect(save).not.toContain("primary");
+    expect(ready).not.toContain("primary");
   });
 
   it("gives the slot to the workflow action where there is nothing to collect", () => {
-    // An in-service visit cannot be billed, so the thing it is waiting for is Complete - and
-    // Save yields to it exactly as it yields to Take Payment on a checked-in one. One primary,
-    // whichever it is.
+    // An in-service visit cannot be billed, so the thing it is waiting for is Complete. One
+    // primary, whichever it is.
     const markup = client("in_service").markup();
     expect(control(markup, "appointment-take-payment")).toBeNull();
     expect(control(markup, "appointment-complete")).toContain("primary");
-    expect(control(markup, "appointment-save")).not.toContain("primary");
     expect([...markup.matchAll(/<button[^>]*class="primary /gu)]).toHaveLength(1);
   });
 });
 
-describe("the checked-in footer offers the three things a counter does", () => {
-  it("draws Ready for Pickup, Take Payment and Save, and exactly one primary", () => {
+describe("the checked-in footer offers the two things a counter does", () => {
+  it("draws Ready for Pickup and Take Payment, and exactly one primary", () => {
     const markup = client("checked_in").markup();
     const ready = control(markup, "appointment-ready");
     const take = control(markup, "appointment-take-payment");
-    const save = control(markup, "appointment-save");
 
     expect(ready, "Ready for Pickup was not drawn").not.toBeNull();
     expect(take, "Take Payment was not drawn").not.toBeNull();
-    expect(save, "Save was not drawn").not.toBeNull();
     // Money outranks the rest, which is the footer's own stated rule.
     expect(take).toContain("primary");
     expect(ready).not.toContain("primary");
-    expect(save).not.toContain("primary");
     expect([...markup.matchAll(/<button[^>]*class="primary /gu)]).toHaveLength(1);
   });
 
-  it("starts Save asleep, because nothing has been changed yet", () => {
-    // A Save that is always pressable says an edit is waiting when none is, and pressing it
-    // writes the note back over itself. What wakes it is the textarea differing from what was
-    // loaded, which only a live surface can do - `tests/e2e/checked-in-footer.spec.ts` walks it.
-    const save = control(client("checked_in").markup(), "appointment-save");
-    expect(save).toContain("disabled");
-    expect(save).toContain('aria-disabled="true"');
+  it("carries no Save in the footer: each note commits inside its own block", () => {
+    // The footer Save's only job was the service note, and a commit that lived a screen away from
+    // the field it committed was the defect human QA hit. The note has its own Save now, drawn
+    // only while its editor is open; the footer draws none in any status.
+    for (const status of appointmentStatuses) {
+      const markup = client(status).markup();
+      expect(control(markup, "appointment-save"), status).toBeNull();
+      expect(markup, status).not.toContain('data-testid="appointment-service-note-save"');
+    }
   });
 
   it("offers Ready for Pickup on a checked-in visit and on no other", () => {
@@ -355,19 +355,24 @@ describe("the footer separates what the visit is waiting for from everything els
         utility: ["appointment-cancel", "appointment-no-show", "appointment-book-again", "appointment-ticket"]
       },
       checked_in: {
-        lead: ["appointment-ready", "appointment-save", "appointment-take-payment"],
+        lead: ["appointment-ready", "appointment-take-payment"],
         utility: ["appointment-book-again", "appointment-ticket"]
       },
       in_service: {
-        lead: ["appointment-save", "appointment-complete"],
+        lead: ["appointment-complete"],
         utility: ["appointment-book-again", "appointment-ticket"]
       },
+      // ONCE THE VISIT IS COMPLETED THE SHEET MOVES TO THE LEAD ZONE. Human QA looked for Print
+      // Ticket where the primary lives after Ready for Pickup and did not find it in the quiet
+      // group; it now stands beside the money, still one control and still outranked by it.
       completed: {
-        lead: ["appointment-take-payment"],
-        utility: ["appointment-book-again", "appointment-ticket"]
+        lead: ["appointment-ticket", "appointment-take-payment"],
+        utility: ["appointment-book-again"]
       },
-      cancelled: { lead: [], utility: ["appointment-ticket", "appointment-close"] },
-      no_show: { lead: [], utility: ["appointment-ticket", "appointment-close"] }
+      // A CANCELLED VISIT LEADS WITH RESCHEDULE - booking it again is the one thing it is still
+      // waiting for - and keeps the sheet and the way out in the utility group.
+      cancelled: { lead: ["appointment-reschedule"], utility: ["appointment-ticket", "appointment-close"] },
+      no_show: { lead: ["appointment-reschedule"], utility: ["appointment-ticket", "appointment-close"] }
     };
     for (const status of appointmentStatuses) {
       const markup = client(status).markup();
@@ -377,8 +382,8 @@ describe("the footer separates what the visit is waiting for from everything els
   });
 
   it("never crowds the lead zone past three controls", () => {
-    // Three is the worst case and it is checked-in: the money, the next step, and the Save that
-    // belongs beside it. Everything else was moved out rather than made smaller.
+    // Three is the worst case and it is a settled visit: the sheet, the bill and, when a void
+    // reopens the bill, the money. Everything else was moved out rather than made smaller.
     for (const status of appointmentStatuses) {
       expect(zone(client(status).markup(), "lead").length, status).toBeLessThanOrEqual(3);
     }
@@ -396,12 +401,13 @@ describe("the footer separates what the visit is waiting for from everything els
     expect([...markup.matchAll(/is-strong/gu)]).toHaveLength(1);
   });
 
-  it("keeps the settled bill leading its own visit", () => {
+  it("keeps the settled bill leading its own visit, with the sheet beside it", () => {
     const markup = client("completed", {
       invoiceId: "inv-1", invoiceStatus: "paid", invoiceBalanceMinor: 0
     }).markup();
-    expect(zone(markup, "lead")).toEqual(["appointment-invoice"]);
+    expect(zone(markup, "lead")).toEqual(["appointment-ticket", "appointment-invoice"]);
     expect(control(markup, "appointment-invoice")).toContain("primary");
-    expect(zone(markup, "utility")).toEqual(["appointment-ticket", "appointment-close"]);
+    expect(control(markup, "appointment-ticket")).not.toContain("primary");
+    expect(zone(markup, "utility")).toEqual(["appointment-close"]);
   });
 });

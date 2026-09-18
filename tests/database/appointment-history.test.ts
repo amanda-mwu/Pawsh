@@ -388,13 +388,31 @@ describeDatabase("appointment history", () => {
         expect(item.totalMinor).toBeNull();
         expect(item.method).toBeNull();
       }
-      const body = JSON.stringify(items);
-      expect(body).not.toContain(invoiceId);
-      expect(body).not.toContain("7000");
-      expect(body).not.toContain("5000");
-      expect(body).not.toContain("2000");
-      expect(body).not.toContain("1000");
-      expect(body).not.toContain("500");
+      // NO AMOUNT REACHES THE GROOMER THROUGH ANY FIELD. Walked as values rather than searched as
+      // text: a substring scan of the serialised body matched "500" inside a row id once
+      // (`37a5b99f-…-80b1ad8fd15b` is as likely to carry the digits as a timestamp is), which
+      // read as a leak that never happened. Ids and instants are the only fields free of the
+      // check; every other value, at any depth, must be none of the amounts this invoice moved.
+      const amounts = new Set([7000, 5000, 2000, 1000, 500]);
+      const opaque = new Set(["id", "at", "createdAt", "relatedAppointmentId", "relatedAppointmentStartAt"]);
+      const walk = (value: unknown, path: string): void => {
+        if (value === null || value === undefined) return;
+        if (typeof value === "number") {
+          expect(amounts.has(value), `${path} carries an amount: ${value}`).toBe(false);
+        } else if (typeof value === "string") {
+          expect(value, `${path} names the invoice`).not.toBe(invoiceId);
+          expect(amounts.has(Number(value)), `${path} carries an amount as text: ${value}`).toBe(false);
+        } else if (Array.isArray(value)) {
+          value.forEach((entry, index) => walk(entry, `${path}[${index}]`));
+        } else if (typeof value === "object") {
+          for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+            if (opaque.has(key)) continue;
+            walk(entry, `${path}.${key}`);
+          }
+        }
+      };
+      walk(items, "items");
+      expect(JSON.stringify(items)).not.toContain(invoiceId);
       // And the same rows are what a payments viewer sees once the money is set aside.
       const full = await history(appointmentId, receptionist);
       expect(full.items.filter((item) => item.action.startsWith("appointment.")).map((item) => item.id))

@@ -11,13 +11,14 @@ import { dragAppointmentToSlot } from "./helpers/calendar.js";
  * `NOT_ASSIGNED_TO_YOU`; this walk holds the UI's mirror of that rule in a real browser, with two
  * members each linked to their own employee record:
  *
- *   ON A COLLEAGUE'S VISIT every scoped control is drawn, disabled, and names the key that would
- *       lift it - not the permission the member already holds.
+ *   ON A COLLEAGUE'S VISIT every scoped control is drawn, disabled, and says whose visit it is -
+ *       a sentence, never the key that would lift it (`tests/ui/permission-copy.test.ts` holds
+ *       that line across the whole file).
  *   ON THEIR OWN VISIT the same controls are pressable and the work goes through.
  *   ON THE GRID their own card drags and a colleague's does not; a drop onto a colleague's column
- *       is refused on the client, by name, before any request.
+ *       is refused on the client, in a sentence, before any request.
  *   BLOCK TIME is scoped the same way: the create dialog offers only themselves, their own block
- *       is editable and movable, a colleague's is read-only with the scope key named.
+ *       is editable and movable, a colleague's is read-only and says whose calendar it is on.
  *
  * BACKEND-DEPENDENT throughout: the surface reads its own employee id off `GET /api/me`, which
  * the seam contract adds. Until then every member owns nothing and every scoped control is
@@ -29,6 +30,10 @@ import { dragAppointmentToSlot } from "./helpers/calendar.js";
 const GROOMER = [...new Set([...permissionPresets.groomer!, "appointments.edit", "calendar.blocks_create", "calendar.blocks_edit", "appointments.cancel"])];
 /** The scope refusal, as the operator reads it: a sentence, never the key behind it. */
 const SCOPE = "This appointment is assigned to another groomer";
+/** The same rule on a block, said about a block. */
+const BLOCK_SCOPE = "This blocked time is on another groomer's calendar";
+/** What a drop onto a colleague's column says, before any request. */
+const REASSIGN = "You do not have permission to move this onto another groomer's calendar.";
 
 const detail = (page: Page): Locator => page.getByTestId("appointment-detail-surface");
 
@@ -91,14 +96,14 @@ async function openDetail(page: Page, appointmentId: string): Promise<void> {
   await expect(detail(page)).toBeVisible();
 }
 
-test("a groomer sees a colleague's visit refused by scope, with the key named, and their own open",
+test("a groomer sees a colleague's visit refused by scope, in a sentence, and their own open",
   async ({ page, request, tenant }) => {
     const { grace, graces, gabriels } = await twoGroomers(request, tenant);
     await login(page, grace.email, password);
     await openCalendar(page);
 
-    // GABRIEL'S VISIT. Drawn, disabled, and each control names the scope key rather than the key
-    // Grace already holds.
+    // GABRIEL'S VISIT. Drawn, disabled, and each control says whose visit it is rather than
+    // naming a key Grace already holds.
     await openDetail(page, gabriels.id);
     for (const testid of ["appointment-groomer-edit", "appointment-adjust-services", "appointment-note-edit", "appointment-check-in", "appointment-cancel", "appointment-no-show"]) {
       const control = detail(page).getByTestId(testid);
@@ -127,13 +132,13 @@ test("a groomer sees a colleague's visit refused by scope, with the key named, a
     await expect(detail(page).getByTestId("appointment-ready")).toBeEnabled();
   });
 
-test("the card's overflow menu is gated the same way: a colleague's items are disabled with the key named",
+test("the card's overflow menu is gated the same way: a colleague's items are disabled and say whose visit it is",
   async ({ page, request, tenant }) => {
     const { grace, graces, gabriels } = await twoGroomers(request, tenant);
     await login(page, grace.email, password);
     await openCalendar(page);
 
-    // GABRIEL'S CARD. Drawn, disabled, and each item names the scope key.
+    // GABRIEL'S CARD. Drawn, disabled, and each item carries the scope sentence.
     const theirs = page.locator(`.week-appointment[data-appointment-id="${gabriels.id}"]`);
     await theirs.getByRole("button", { name: /Appointment actions for/ }).click();
     for (const name of ["Check in", "Move", "Cancel appointment", "No show"]) {
@@ -171,9 +176,10 @@ test("on the grid a groomer drags their own card and not a colleague's, and cann
       await route.continue();
     });
     // Her own card onto Gabriel's column: refused before the confirmation and before any request,
-    // naming the key.
+    // in a sentence.
     await dragAppointmentToSlot(page, { appointmentId: graces.id, slot: `${tenant.anchor}T13:00`, groomerId: gabriel.id });
-    await expect(page.locator("#toast")).toContainText("appointments.edit_all_staff");
+    await expect(page.locator("#toast")).toContainText(REASSIGN);
+    await expect(page.locator("#toast")).not.toContainText("edit_all_staff");
     await expect(page.getByTestId("stacked-dialog")).toBeHidden();
     expect(scheduleCalls).toEqual([]);
     // Her own card within her own column: the ordinary confirmation, then the ordinary PATCH.
@@ -205,15 +211,16 @@ test("block time is scoped the same way: create offers only themselves, a collea
     await expect(staff.locator(`option[value="${gabriel.id}"]`)).toHaveCount(0);
     await page.getByTestId("modal").getByRole("button", { name: "Close" }).click();
 
-    // GABRIEL'S LUNCH: openable, read-only, the scope named in words, and not draggable.
+    // GABRIEL'S LUNCH: openable, read-only, the scope said in words about a block, and not draggable.
     const band = page.getByTestId("calendar-block").first();
     await expect(band).not.toHaveAttribute("data-draggable", "true");
     await band.locator(".calendar-block-open").click();
     await expect(page.getByTestId("blocked-time-dialog")).toBeVisible();
     await expect(page.getByTestId("blocked-time-update")).toBeDisabled();
-    await expect(page.getByTestId("blocked-time-update")).toHaveAttribute("title", SCOPE);
+    await expect(page.getByTestId("blocked-time-update")).toHaveAttribute("title", BLOCK_SCOPE);
     await expect(page.getByTestId("blocked-time-delete")).toBeDisabled();
-    await expect(page.getByTestId("blocked-time-locked")).toContainText(SCOPE);
+    await expect(page.getByTestId("blocked-time-locked")).toContainText(BLOCK_SCOPE);
+    await expect(page.getByTestId("blocked-time-locked")).not.toContainText(SCOPE);
     await expect(page.getByTestId("blocked-time-locked")).not.toContainText("edit_all_staff");
     await page.getByTestId("blocked-time-cancel").click();
   });

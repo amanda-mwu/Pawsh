@@ -60,6 +60,7 @@ describeDatabase("appointment service lines", () => {
   let groomId = "";
   let bathId = "";
   let nailsId = "";
+  let teethId = "";
 
   let employeeA = "";
   let employeeB = "";
@@ -96,7 +97,7 @@ describeDatabase("appointment service lines", () => {
   async function employeeFor(displayName: string, membershipId: string | null): Promise<string> {
     const response = await app.inject({
       method: "POST", url: "/api/employees", headers: { cookie: ownerCookie },
-      payload: { displayName, serviceIds: [groomId, bathId, nailsId], ...(membershipId ? { membershipId } : {}) }
+      payload: { displayName, serviceIds: [groomId, bathId, nailsId, teethId], ...(membershipId ? { membershipId } : {}) }
     });
     expect(response.statusCode, response.body).toBe(201);
     return response.json().id as string;
@@ -121,8 +122,11 @@ describeDatabase("appointment service lines", () => {
   }
 
   const stored = async (id: string) => {
-    const [row] = await db<{ version: number; endAt: Date; startAt: Date; conflictOverridden: boolean }[]>`
-      select version,start_at,end_at,conflict_overridden from appointments where business_id=${businessId} and id=${id}
+    const [row] = await db<{
+      version: number; endAt: Date; startAt: Date; conflictOverridden: boolean; availabilityOverridden: boolean;
+    }[]>`
+      select version,start_at,end_at,conflict_overridden,availability_overridden
+      from appointments where business_id=${businessId} and id=${id}
     `;
     return row!;
   };
@@ -183,6 +187,7 @@ describeDatabase("appointment service lines", () => {
     groomId = await service("Lines Groom", 60, 8000);
     bathId = await service("Lines Bath", 30, 4000);
     nailsId = await service("Lines Nails", 15, 1500);
+    teethId = await service("Lines Teeth", 10, 1000);
 
     const customer = await app.inject({
       method: "POST", url: "/api/customers", headers: { cookie: ownerCookie },
@@ -253,6 +258,132 @@ describeDatabase("appointment service lines", () => {
       expect(lines(row!.afterData)).toEqual([["Lines Bath", 45, 4000, 1], ["Lines Nails", 15, 1500, 2]]);
       expect(typeof row!.beforeData!.endAt).toBe("string");
       expect(typeof row!.afterData!.endAt).toBe("string");
+    });
+
+    it("keeps the tail of a longer sheet, reversed, without tripping the position key", async () => {
+      // Four lines at 1..4; the body keeps the last two, in the other order, and drops the first
+      // two. Kept rows are parked before they are renumbered, and the parking range has to be
+      // clear of every position a row STILL holds: parking at `plan.length + 1` would have put
+      // Teeth at 3, where Nails still sat, and `appointment_service_position_unique` would have
+      // refused the whole edit with a 23505. The range starts above the highest current position.
+      const booking = await book(employeeA, [groomId, bathId, nailsId, teethId]);
+      const before = (await detail(booking.id)).services;
+      expect(before.map((line) => line.linePosition)).toEqual([1, 2, 3, 4]);
+      const nails = before.find((line) => line.serviceId === nailsId)!;
+      const teeth = before.find((line) => line.serviceId === teethId)!;
+      const response = await putLines(booking.id, ownerCookie, {
+        version: booking.version,
+        lines: [{ id: teeth.id, serviceId: teethId }, { id: nails.id, serviceId: nailsId }]
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      const rows = await storedLines(booking.id);
+      // Positions 1..2, contiguous, in body order, and the same two rows: ids and snapshots kept.
+      expect(rows.map((row) => [row.id, row.linePosition])).toEqual([[teeth.id, 1], [nails.id, 2]]);
+      expect(rows.map((row) => [row.name, row.durationMinutes, row.priceMinor]))
+        .toEqual([["Lines Teeth", 10, 1000], ["Lines Nails", 15, 1500]]);
+      const { startAt, endAt } = await stored(booking.id);
+      expect(minutesBetween(startAt, endAt)).toBe(25);
+    });
+
+    it("records the availability override it was asked for, as a move does", async () => {
+      // A groomer who works 09:00 to 10:00 every day, booked for the hour. Adding a bath runs the
+      // visit to 10:30, past their hours: refused without the override, written with it - and
+      // the row says it was, exactly as `POST /api/appointments` and `PATCH .../schedule` record
+      // their overrides. `settleAppointmentWindow` honoured the flag and never wrote it.
+      const employeeC = await employeeFor("Groomer C", null);
+      for (const weekday of [0, 1, 2, 3, 4, 5, 6]) {
+        await db`
+          insert into employee_working_hours(business_id,employee_id,weekday,start_time,end_time)
+          values (${businessId},${employeeC},${weekday},'09:00','10:00')
+        `;
+      }
+      const booking = await book(employeeC, [groomId]);
+      expect((await stored(booking.id)).availabilityOverridden).toBe(false);
+      const refused = await putLines(booking.id, ownerCookie, { serviceIds: [groomId, bathId] });
+      expect(refused.statusCode, refused.body).toBe(409);
+      expect(refused.json().code).toBe("OUTSIDE_STAFF_HOURS");
+      expect((await stored(booking.id)).availabilityOverridden).toBe(false);
+
+      const overridden = await putLines(booking.id, ownerCookie, {
+        serviceIds: [groomId, bathId], availabilityOverride: true, overrideReason: "Client can only make the morning"
+      });
+      expect(overridden.statusCode, overridden.body).toBe(200);
+      const after = await stored(booking.id);
+      expect(after.availabilityOverridden).toBe(true);
+      expect(minutesBetween(after.startAt, after.endAt)).toBe(90);
+      const [row] = await audit(booking.id, "appointment.services.update");
+      expect(row).toBeDefined();
+      const [reason] = await db<{ reason: string | null }[]>`
+        select reason from audit_events
+        where business_id=${businessId} and resource_id=${booking.id} and action='appointment.services.update'
+        order by created_at desc limit 1
+      `;
+      expect(reason!.reason).toBe("Client can only make the morning");
+
+      // The same flag on the line edit, which shares the settle. Trimming the bath to five
+      // minutes still ends at 10:05, past the hour, so the override is still needed and still
+      // recorded.
+      const bath = (await detail(booking.id)).services.find((line) => line.serviceId === bathId)!;
+      const trimmed = await patchLine(booking.id, bath.id, ownerCookie,
+        { durationMinutes: 5, availabilityOverride: true, overrideReason: "Quick rinse" });
+      expect(trimmed.statusCode, trimmed.body).toBe(200);
+      expect((await stored(booking.id)).availabilityOverridden).toBe(true);
+      // And the flag records THE REQUEST, as the move route's does: dropping the bath brings the
+      // visit back inside the hour, the request asks for no override, and the row says so.
+      const inside = await putLines(booking.id, ownerCookie, { serviceIds: [groomId] });
+      expect(inside.statusCode, inside.body).toBe(200);
+      expect((await stored(booking.id)).availabilityOverridden).toBe(false);
+    });
+
+    it("does not re-judge an unchanged window, so a groomer can reorder their own double-booked visit", async () => {
+      // The desk double-books on purpose: a groom-and-bath at 09:00 for Groomer A, then a groom
+      // at 10:00 for the same groomer, over the bath. The owner holds the override key, so the
+      // second lands and is recorded. The groomer holds no such key, and every no-geometry edit
+      // to THEIR OWN first visit used to re-judge its unchanged window against the second and
+      // refuse them, 409, for an overlap somebody else had already decided.
+      const day = nextDay();
+      const mine = await book(employeeA, [groomId, bathId], "09:00", day);
+      const over = await book(employeeA, [groomId], "10:00", day);
+      expect((await stored(over.id)).conflictOverridden).toBe(true);
+      const before = await stored(mine.id);
+      expect(before.conflictOverridden).toBe(false);
+      const lines = (await detail(mine.id)).services;
+
+      // A pure reorder: same rows, same minutes, the window exactly where it was.
+      const reordered = await putLines(mine.id, groomerA, {
+        version: before.version,
+        lines: [...lines].reverse().map((line) => ({ id: line.id, serviceId: line.serviceId }))
+      });
+      expect(reordered.statusCode, reordered.body).toBe(200);
+      const afterReorder = await stored(mine.id);
+      expect((await storedLines(mine.id)).map((row) => row.serviceId)).toEqual([bathId, groomId]);
+      expect(afterReorder.endAt).toEqual(before.endAt);
+      expect(afterReorder.version).toBe(before.version + 1);
+      // The recorded verdict stands: nothing re-judged, nothing re-recorded.
+      expect(afterReorder.conflictOverridden).toBe(false);
+      expect(await audit(mine.id, "appointment.conflict_override")).toEqual([]);
+
+      // A price alone, from the groomer's own key, on the same overlapped visit.
+      const groom = (await detail(mine.id)).services.find((line) => line.serviceId === groomId)!;
+      const repriced = await patchLine(mine.id, groom.id, groomerA, { priceMinor: 8500 });
+      expect(repriced.statusCode, repriced.body).toBe(200);
+
+      // The same rows re-resolved from the flat body sum to the same minutes: still unchanged,
+      // still not judged.
+      const flat = await putLines(mine.id, groomerA, { serviceIds: [groomId, bathId] });
+      expect(flat.statusCode, flat.body).toBe(200);
+      expect((await stored(mine.id)).endAt).toEqual(before.endAt);
+
+      // Growing the window IS new geometry and is judged in full: the groomer runs into the
+      // 10:00 visit and, holding no override key, is refused.
+      const grown = (await detail(mine.id)).services.find((line) => line.serviceId === groomId)!;
+      const extended = await patchLine(mine.id, grown.id, groomerA, { durationMinutes: 90 });
+      expect(extended.statusCode, extended.body).toBe(409);
+      expect(extended.json().code).toBe("SCHEDULING_CONFLICT");
+      expect((await stored(mine.id)).endAt).toEqual(before.endAt);
+      const longer = await putLines(mine.id, groomerA, { serviceIds: [groomId, bathId, nailsId] });
+      expect(longer.statusCode, longer.body).toBe(409);
+      expect(longer.json().code).toBe("SCHEDULING_CONFLICT");
     });
 
     it("renumbers a pure reorder and keeps every id", async () => {

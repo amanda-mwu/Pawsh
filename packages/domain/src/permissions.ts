@@ -377,7 +377,7 @@ export const unenforcedPermissions: ReadonlySet<Permission> = new Set<Permission
   // employee record, and this key is what says the answer does not matter. Nobody who could
   // edit before lost the ability: the Receptionist preset gained the key in the same change and
   // `migrations/0057_staff_scheduling_scope.sql` gave it to every existing role that held
-  // `appointments.edit` or either block key. What CHANGED is that a Groomer may now edit their
+  // `appointments.create`, `appointments.edit` or either block key. What CHANGED is that a Groomer may now edit their
   // own appointments and block out their own calendar, which they could not do at all before.
   //
   // IT MUST NOT COME BACK HERE. It refuses somebody now, and a switch that refuses while the

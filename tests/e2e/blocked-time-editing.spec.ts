@@ -490,12 +490,14 @@ test("shows a member without calendar.blocks_edit a readable block and no way to
     expect(mutations).toEqual({ patch: 0, delete: 0 });
   });
 
-test("shows a groomer another staff member's block read-only, naming the scope key rather than the edit key",
+test("shows a groomer another staff member's block read-only, saying whose calendar it is on rather than naming a key",
   async ({ page, request, tenant }) => {
     // The block is Grace's. This member holds `calendar.blocks_edit` but no employee record and
     // no `appointments.edit_all_staff`, so the block is not theirs: every field is read-only and
-    // the sentence names the key that would lift it. A session linked to Grace's own record sees
-    // the same drawer editable - `tests/e2e/groomer-scope.spec.ts` walks that half.
+    // the sentence says so about a BLOCK - not the appointment surface's "this appointment is
+    // assigned to another groomer", which the drawer borrowed for a while and which read as
+    // nonsense over Lunch. A session linked to Grace's own record sees the same drawer editable -
+    // `tests/e2e/groomer-scope.spec.ts` walks that half.
     await createAppointment(request, tenant, { localStart: `${tenant.anchor}T09:00` });
     await createBlock(request, tenant, {
       localStart: `${tenant.anchor}T12:00`, localEnd: `${tenant.anchor}T12:30`, reason: "Lunch"
@@ -509,12 +511,13 @@ test("shows a groomer another staff member's block read-only, naming the scope k
     await openBlock(page);
 
     await expect(page.getByTestId("blocked-time-update")).toBeDisabled();
-    await expect(page.getByTestId("blocked-time-update")).toHaveAttribute("title", "This appointment is assigned to another groomer");
+    await expect(page.getByTestId("blocked-time-update")).toHaveAttribute("title", "This blocked time is on another groomer's calendar");
     await expect(page.getByTestId("blocked-time-delete")).toBeDisabled();
-    await expect(page.getByTestId("blocked-time-delete")).toHaveAttribute("title", "This appointment is assigned to another groomer");
+    await expect(page.getByTestId("blocked-time-delete")).toHaveAttribute("title", "This blocked time is on another groomer's calendar");
     await expect(page.getByTestId("blocked-time-date")).toBeDisabled();
-    await expect(page.getByTestId("blocked-time-locked")).toContainText("This appointment is assigned to another groomer. Everything here is read-only.");
+    await expect(page.getByTestId("blocked-time-locked")).toContainText("This blocked time is on another groomer's calendar. Everything here is read-only.");
     await expect(page.getByTestId("blocked-time-locked")).not.toContainText("edit_all_staff");
+    await expect(page.getByTestId("blocked-time-locked")).not.toContainText("appointment");
     // And the band itself is not draggable for this session.
     await expect(page.getByTestId("calendar-block").first()).not.toHaveAttribute("data-draggable", "true");
 

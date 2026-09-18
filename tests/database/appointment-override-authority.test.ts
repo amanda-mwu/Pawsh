@@ -151,9 +151,12 @@ describeDatabase("scheduling override authority, on both routes that write it", 
       ["calendar.view", "appointments.view", "appointments.create", "appointments.edit",
         "appointments.edit_all_staff", "appointments.override_conflict"]);
     // Holds `appointments.create` and NOT `appointments.edit`: the caller the availability
-    // override on create exists to refuse.
+    // override on create exists to refuse. It holds `appointments.edit_all_staff` for the same
+    // reason the editors do: `appointments.create` is scoped to the caller's own calendar, this
+    // member has no employee record, and without the all-staff key the create route would answer
+    // `NOT_ASSIGNED_TO_YOU` before the override authority under test is ever consulted.
     creatorCookie = await seedMember("creator",
-      ["calendar.view", "appointments.view", "appointments.create"]);
+      ["calendar.view", "appointments.view", "appointments.create", "appointments.edit_all_staff"]);
     // Holds `appointments.edit` and NOT `appointments.override_conflict`.
     plainEditorCookie = await seedMember("plain-editor",
       ["calendar.view", "appointments.view", "appointments.create", "appointments.edit",

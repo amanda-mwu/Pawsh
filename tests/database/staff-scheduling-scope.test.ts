@@ -4,6 +4,8 @@ import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
 import { hashPassword } from "../../src/security/passwords.js";
+import { decodablePng } from "../support/images.js";
+import { multipartUpload } from "../support/multipart.js";
 import { roleFor } from "../support/roles.js";
 
 /**
@@ -19,10 +21,13 @@ import { roleFor } from "../support/roles.js";
  * The file states that contract from the outside, through the routes, with real sessions:
  *
  *   - a groomer linked to their employee record may edit, re-service, annotate, transition and
- *     move their own appointment, and is refused a colleague's on every one of those routes with
- *     one code, `NOT_ASSIGNED_TO_YOU`, naming the key that would change the answer;
+ *     move their own appointment, photograph it and write its report card, and is refused a
+ *     colleague's on every one of those routes with one code, `NOT_ASSIGNED_TO_YOU`, naming the
+ *     key that would change the answer;
  *   - moving their own appointment onto a colleague is a reassignment and is refused the same
  *     way, because the scoped key never grants somebody else's calendar;
+ *   - booking is scoped the same way: `appointments.create` without the all-staff key books
+ *     onto the caller's own calendar and no other;
  *   - the same for blocked time, on create, edit, move and delete;
  *   - a member holding the scoped keys with NO employee record owns nothing and is refused
  *     everything, which is what step 1 of migration 0057 exists to make unreachable for any role
@@ -65,11 +70,16 @@ describeDatabase("staff scheduling scope", () => {
 
   let employeeA = "";
   let employeeB = "";
+  let employeeC = "";
   let groomerA = "";
   let groomerB = "";
   let receptionist = "";
   /** Holds every scoped key and the operations keys, and NO employee record. */
   let unlinkedEditor = "";
+  /** Holds `appointments.create` and not the all-staff key, linked to employee C. */
+  let booker = "";
+  /** The same role, with NO employee record. */
+  let unlinkedBooker = "";
 
   let rivalCookie = "";
   let rivalAppointmentId = "";
@@ -157,6 +167,21 @@ describeDatabase("staff scheduling scope", () => {
   const transition = (id: string, sessionCookie: string, status: string) =>
     request("POST", `/api/appointments/${id}/transition`, sessionCookie, { status });
 
+  /** One photograph of the appointment's pet, through the real multipart route. */
+  const uploadPhoto = (id: string, sessionCookie: string) => {
+    const body = multipartUpload({
+      metadata: { petId, phase: "before", uploadRequestId: crypto.randomUUID() },
+      file: decodablePng(), filename: "before.png", contentType: "image/png"
+    });
+    return app.inject({
+      method: "POST", url: `/api/appointments/${id}/photos`,
+      payload: body.payload, headers: { ...body.headers, cookie: sessionCookie }
+    });
+  };
+
+  const createReportCard = (id: string, sessionCookie: string) =>
+    request("POST", `/api/appointments/${id}/report-cards`, sessionCookie, { petId, note: "Good dog" });
+
   /** Every appointment mutation the scope rule guards, against one appointment, from one session. */
   async function everyMutation(id: string, sessionCookie: string) {
     const { version } = await stored(id);
@@ -174,7 +199,11 @@ describeDatabase("staff scheduling scope", () => {
       operations: await request("PATCH", `/api/appointments/${id}/operations`, sessionCookie,
         { operationalNotes: "note" }),
       transition: await transition(id, sessionCookie, "checked_in"),
-      schedule: await move(id, sessionCookie, employeeId, startLocal, (await stored(id)).version)
+      schedule: await move(id, sessionCookie, employeeId, startLocal, (await stored(id)).version),
+      // The two `operations.perform_service` writes that are not a status: a photograph and a
+      // report card are both writes to the appointment they hang off.
+      photo: await uploadPhoto(id, sessionCookie),
+      reportCard: await createReportCard(id, sessionCookie)
     };
   }
 
@@ -242,6 +271,13 @@ describeDatabase("staff scheduling scope", () => {
     employeeB = await employeeFor("Groomer B", groomerSeatB.membershipId);
 
     receptionist = (await seat("receptionist", permissionPresets.receptionist!)).cookie;
+    // A booking-only role, as an owner might author for a part-time groomer who takes their own
+    // bookings: `appointments.create` and the two view keys, no edit key, no all-staff key.
+    const bookingOnly = ["calendar.view", "appointments.view", "appointments.create"];
+    const bookerSeat = await seat("booker", bookingOnly);
+    booker = bookerSeat.cookie;
+    employeeC = await employeeFor("Booker C", bookerSeat.membershipId);
+    unlinkedBooker = (await seat("unlinked-booker", bookingOnly)).cookie;
     unlinkedEditor = (await seat("unlinked", [
       "calendar.view", "appointments.view", "appointments.edit",
       "operations.check_in", "operations.perform_service", "operations.complete",
@@ -335,8 +371,52 @@ describeDatabase("staff scheduling scope", () => {
       const before = await stored(theirs.id);
       const outcomes = await everyMutation(theirs.id, groomerA);
       for (const [label, response] of Object.entries(outcomes)) expectScopeRefusal(response, label);
-      // Nothing was written: not a note, not a version, not a status.
+      // Nothing was written: not a note, not a version, not a status, not a photo, not a card.
       expect(await stored(theirs.id)).toEqual(before);
+      const [attached] = await db<{ photos: number; cards: number }[]>`
+        select
+          (select count(*)::int from appointment_photos where business_id=${businessId} and appointment_id=${theirs.id}) as photos,
+          (select count(*)::int from appointment_report_cards where business_id=${businessId} and appointment_id=${theirs.id}) as cards
+      `;
+      expect(attached).toEqual({ photos: 0, cards: 0 });
+    });
+
+    it("photographs their own appointment and writes its report card, and is refused a colleague's", async () => {
+      // `operations.perform_service` gates all three routes, and every one of them is scoped as
+      // `/transition` is: the person doing the groom is the person taking the pictures, and the
+      // groom is theirs. Neither route ran the scope check before this change.
+      const mine = await booked(employeeA);
+      const photo = await uploadPhoto(mine.id, groomerA);
+      expect(photo.statusCode, photo.body).toBe(201);
+      const card = await createReportCard(mine.id, groomerA);
+      expect(card.statusCode, card.body).toBe(201);
+      const cardId = card.json().id as string;
+      const cardVersion = card.json().version as number;
+
+      // A colleague cannot edit or remove what the groomer attached, either.
+      expectScopeRefusal(await request("PATCH", `/api/report-cards/${cardId}`, groomerB,
+        { note: "Not yours", version: cardVersion }), "edit A's card as B");
+      expectScopeRefusal(await request("DELETE", `/api/report-cards/${cardId}`, groomerB), "delete A's card as B");
+      expectScopeRefusal(await request("DELETE", `/api/appointment-photos/${photo.json().id}`, groomerB), "delete A's photo as B");
+      const [still] = await db<{ note: string; photos: number }[]>`
+        select
+          (select note from appointment_report_cards where business_id=${businessId} and id=${cardId}) as note,
+          (select count(*)::int from appointment_photos where business_id=${businessId} and appointment_id=${mine.id}) as photos
+      `;
+      expect(still).toEqual({ note: "Good dog", photos: 1 });
+
+      // The groomer edits and removes their own; the receptionist, holding the all-staff key,
+      // reaches anybody's.
+      const edited = await request("PATCH", `/api/report-cards/${cardId}`, groomerA, { note: "Very good dog", version: cardVersion });
+      expect(edited.statusCode, edited.body).toBe(200);
+      const deskEdit = await request("PATCH", `/api/report-cards/${cardId}`, receptionist,
+        { note: "Front desk addendum", version: edited.json().version });
+      expect(deskEdit.statusCode, deskEdit.body).toBe(403);
+      // The Receptionist preset holds no `operations.perform_service`, so that 403 is the
+      // permission's own, not a scope refusal.
+      expect(deskEdit.json()).toEqual({ error: "Missing permission: operations.perform_service" });
+      expect((await request("DELETE", `/api/appointment-photos/${photo.json().id}`, groomerA)).statusCode).toBe(204);
+      expect((await request("DELETE", `/api/report-cards/${cardId}`, groomerA)).statusCode).toBe(204);
     });
 
     it("may move their own appointment in time but not onto a colleague", async () => {
@@ -378,6 +458,52 @@ describeDatabase("staff scheduling scope", () => {
       for (const [label, response] of Object.entries(outcomes)) expectScopeRefusal(response, label);
       const block = await createBlock(employeeA, unlinkedEditor);
       expectScopeRefusal(block, "block create");
+    });
+  });
+
+  describe("booking onto a calendar", () => {
+    it("lets a booking-only role book its own calendar and refuses a colleague's", async () => {
+      // `appointments.create` is scoped exactly as `appointments.edit` is. This role holds no
+      // edit key at all, so nothing but the create route is in question.
+      const own = await book(employeeC, booker);
+      expect(own.statusCode, own.body).toBe(201);
+      expect((await stored(own.json().id)).employeeId).toBe(employeeC);
+
+      const [before] = await db<{ count: number }[]>`
+        select count(*)::int as count from appointments where business_id=${businessId} and employee_id=${employeeB}
+      `;
+      const theirs = await book(employeeB, booker);
+      expectScopeRefusal(theirs, "book onto B");
+      expect(theirs.json().error).toContain("another groomer's calendar");
+      const [after] = await db<{ count: number }[]>`
+        select count(*)::int as count from appointments where business_id=${businessId} and employee_id=${employeeB}
+      `;
+      expect(after!.count).toBe(before!.count);
+    });
+
+    it("refuses a booking-only member with no employee record every calendar", async () => {
+      // Nothing can be assigned to them, so there is no calendar of their own to book onto.
+      for (const employeeId of [employeeA, employeeB, employeeC]) {
+        expectScopeRefusal(await book(employeeId, unlinkedBooker), `unlinked onto ${employeeId}`);
+      }
+    });
+
+    it("lets the Receptionist and the owner book onto anybody's calendar", async () => {
+      for (const employeeId of [employeeA, employeeB, employeeC]) {
+        const desk = await book(employeeId, receptionist);
+        expect(desk.statusCode, `receptionist onto ${employeeId}: ${desk.body}`).toBe(201);
+        const owner = await book(employeeId, ownerCookie);
+        expect(owner.statusCode, `owner onto ${employeeId}: ${owner.body}`).toBe(201);
+      }
+    });
+
+    it("still answers a missing create key with the key's own shape", async () => {
+      // The Groomer preset holds no `appointments.create`; a groomer booking their OWN calendar
+      // is told about the key, not about the assignment, because scope comes after the gate.
+      expect(permissionPresets.groomer).not.toContain("appointments.create");
+      const refused = await book(employeeA, groomerA);
+      expect(refused.statusCode).toBe(403);
+      expect(refused.json()).toEqual({ error: "Missing permission: appointments.create" });
     });
   });
 

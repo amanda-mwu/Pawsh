@@ -75,7 +75,6 @@ test("the surface is its own dialog, and the checkout and ticket levels stand re
   await expect(page.getByTestId("checkout-surface")).toBeHidden();
   await expect(page.getByTestId("ticket-surface")).toBeHidden();
   await expect(page.getByTestId("appointment-ticket")).toBeVisible();
-  await expect(page.getByTestId("appointment-ticket")).toBeVisible();
 
   await expect(page.getByTestId("appointment-reference"))
     .toContainText(`Appointment #${appointment.id.slice(0, 8)}`);

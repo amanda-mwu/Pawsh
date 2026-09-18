@@ -1402,7 +1402,9 @@ function calendarDragAvailable(){return appointmentMoveAllowed()&&globalThis.mat
  * for an appointment and for a block alike. Same column, or no column information at all, is
  * never a reassignment.
  */
-const CALENDAR_REASSIGN_REFUSAL="Moving this to another groomer needs appointments.edit_all_staff.";
+// The same sentence shape `permissionRefusalSentence` gives every other refusal, written out so the
+// constant stands on its own where `tests/ui` slice this region without the helper.
+const CALENDAR_REASSIGN_REFUSAL="You do not have permission to move this onto another groomer's calendar.";
 function calendarReassignAllowed(fromGroomerId,toGroomerId){
   if(!fromGroomerId||!toGroomerId||fromGroomerId===toGroomerId)return true;
   return allowed("appointments.edit_all_staff");
@@ -1589,7 +1591,7 @@ function endCalendarDrag(commit){
   if(!slot||slot.dataset.slot===drag.fromSlot&&slot.dataset.slotGroomer===drag.fromGroomer)return;
   // REASSIGNING IS NOT MOVING. Landing on another groomer's column changes who does the work,
   // and the schedule route requires `appointments.edit_all_staff` for that; the refusal is made
-  // here, before the confirmation and before any request, with the key named.
+  // here, before the confirmation and before any request, as a sentence and never the key.
   if(!calendarReassignAllowed(drag.fromGroomer,slot.dataset.slotGroomer)){toast(CALENDAR_REASSIGN_REFUSAL);return;}
   // The gesture is not the commit. `confirmAppointmentDrop` resolves only once its dialog has
   // CLOSED, so the request - and, if the server refuses, the Move dialog - runs with the top layer
@@ -2254,12 +2256,12 @@ function blockedTimeStaffOptions(block){
 function blockedTimeEditorMarkup(block){
   // Two refusals, told apart. Without the key the drawer is read-only and says so; with the key
   // but on another staff member's block it is read-only and says whose block it is - the same
-  // sentence the appointment surface uses for the same rule.
+  // rule the appointment surface applies, in a sentence about a block rather than a visit.
   const permitted=allowed("calendar.blocks_edit"),scoped=blockedTimeScopeAllows(block);
   const editable=permitted&&scoped,span=blockedTimeSpan(block);
   const refusal=action=>refusalAttributes(!permitted
     ?permissionRefusalSentence(`${action} blocked time`)
-    :APPOINTMENT_SCOPE_REFUSAL);
+    :BLOCK_SCOPE_REFUSAL);
   const scheduleEditable=editable&&span.editable;
   const date=block.scheduledLocalStart.slice(0,10);
   const startTime=block.scheduledLocalStart.slice(11,16),endTime=block.scheduledLocalEnd.slice(11,16);
@@ -2274,7 +2276,7 @@ function blockedTimeEditorMarkup(block){
     +`<div class="drawer-body blocked-time-body">`
     +`<form id="blocked-time-form" class="blocked-time-fields" data-testid="blocked-time-form">`
     +(permitted?"":locked("You do not have permission to change blocked time. Everything here is read-only."))
-    +(permitted&&!scoped?locked(`${APPOINTMENT_SCOPE_REFUSAL}. Everything here is read-only.`):"")
+    +(permitted&&!scoped?locked(`${BLOCK_SCOPE_REFUSAL}. Everything here is read-only.`):"")
     +(editable&&!span.editable?locked("This block runs across more than one day, which the date and time fields below cannot express. Its staff member, colour and note can still be changed here."):"")
     +`<div class="blocked-time-schedule">`
     +`<label>Date<input type="date" name="localDate" data-testid="blocked-time-date" value="${escapeAttr(date)}" required ${scheduleEditable?"":"disabled"}></label>`
@@ -2906,8 +2908,9 @@ function adjustServices(id,record=null) {
  *
  * TWO FIELDS, TWO KEYS. The duration is calendar time and needs what the dialog was opened under,
  * `appointments.edit` on a visit in scope. The price is money and needs
- * `appointments.service_price_edit` on top; without it the price is drawn as TEXT with the key
- * named beneath it, never as a greyed field that looks like a control somebody forgot to enable.
+ * `appointments.service_price_edit` on top; without it the price is drawn as TEXT with the
+ * switch's own label beneath it, never as a greyed field that looks like a control somebody forgot
+ * to enable.
  * The request then carries no `priceMinor` at all, so the server is never asked for what the
  * screen did not offer.
  *
@@ -3040,8 +3043,8 @@ function checkoutEstimate(host,base,tipMinor){
 }
 
 // Checked in, checked out and duration. The stored columns are the record; the audit trail is the
-// fallback for a visit that predates them, which is why the derivation note is only said when a
-// shown value actually came from the feed.
+// fallback for a visit that predates them. Nobody is told which of the two a value came from - the
+// History disclosure IS the activity, so a note saying so explained what was already on screen.
 function appointmentLifecycleValues(item,activity){
   const derived=appointmentLifecycleTimes(activity?.items||[]);
   const checkedIn=item?.checkedInAt||derived.checkedIn;
@@ -3049,8 +3052,7 @@ function appointmentLifecycleValues(item,activity){
   const minutes=checkedIn&&finished
     ? Math.max(0,Math.round((new Date(finished)-new Date(checkedIn))/60000))
     : null;
-  const stored=Boolean(item?.checkedInAt&&item?.checkedOutAt);
-  return {checkedIn,finished,minutes,stored};
+  return {checkedIn,finished,minutes};
 }
 
 // The Invoice and the Receipt, through `previewPrintRoot` below. The <h1> is prepended here because
@@ -3065,10 +3067,9 @@ function printFinancialRoot(title,body,className){
 /**
  * THE PRINTING MECHANISM ITSELF, STATED ONCE.
  *
- * Every printable document in the product - the Ticket, the Invoice, the Receipt, a single
- * appointment and the agenda - reaches paper the same way: a `.print-root` <section> appended to
- * <body>, which `body>*:not(.print-root){display:none!important}` in styles.css is the only thing
- * that reveals. No second window and no separate page. The root is torn down a second later, once
+ * Every printable document in the product - the Ticket, the Invoice, the Receipt and the agenda -
+ * reaches paper the same way: a `.print-root` <section> appended to <body>, which
+ * `body>*:not(.print-root){display:none!important}` in styles.css is the only thing that reveals. No second window and no separate page. The root is torn down a second later, once
  * the print dialog has taken its copy.
  *
  * What differs between documents is the class that says which one it is and the markup it carries,
@@ -7497,7 +7498,7 @@ function newActionItems(){return [...newActionMenu.querySelectorAll('[role="menu
  * The gates are the same predicates the slot menu uses - `bookingRefusalReason` (three keys:
  * booking cannot draw without the client and pet reads) and `blockingRefusalReason`
  * (`calendar.blocks_create`, which is what the route requires) - so the reason on a disabled item
- * names the key, and the menu and the grid cannot disagree.
+ * is the same sentence the grid gives, and the menu and the grid cannot disagree.
  */
 function syncNewActionAvailability(){if(!newActionMenu)return;const refusals={"new-appointment":bookingRefusalReason(),"quick-existing":bookingRefusalReason(),"blocked-time":blockingRefusalReason()};for(const [action,refusal] of Object.entries(refusals)){const item=newActionMenu.querySelector(`[data-new-action="${action}"]`);if(!item)continue;item.disabled=Boolean(refusal);item.setAttribute("aria-disabled",String(Boolean(refusal)));if(refusal)item.title=refusal;else item.removeAttribute("title");}}
 function closeNewActionMenu({restoreFocus=false}={}){if(!newActionMenu)return;newActionMenu.hidden=true;newActionMenu.style.removeProperty("top");newActionTrigger.setAttribute("aria-expanded","false");if(restoreFocus)newActionTrigger.focus();}
@@ -15881,7 +15882,7 @@ function appointmentRecordNoteMarkup(surface){
  *
  * `operations.perform_service` AND SCOPE. The permission is the route's; the scope is the
  * ownership rule every mutating appointment route now enforces, so a groomer opening a colleague's
- * visit sees Edit refused with the key named rather than a 403 after typing.
+ * visit sees Edit refused, with the reason on it, rather than a 403 after typing.
  */
 function appointmentServiceNoteMarkup(surface){
   const {item,permissions:can,serviceNote:note}=surface;
@@ -15987,6 +15988,9 @@ function appointmentPermissionRefusal(action){
  */
 const APPOINTMENT_SCOPE_REFUSAL="This appointment is assigned to another groomer";
 function appointmentScopeRefusal(){return refusalAttributes(APPOINTMENT_SCOPE_REFUSAL);}
+// The same rule on a block, said about a block: the drawer used to borrow the appointment sentence
+// and told an operator looking at Lunch that "this appointment" belonged to somebody else.
+const BLOCK_SCOPE_REFUSAL="This blocked time is on another groomer's calendar";
 function myEmployeeId(){return state.me?.employeeId||null;}
 function assignedToMe(item){
   const mine=myEmployeeId();
@@ -16094,7 +16098,7 @@ function appointmentActivityCountLabel(state){
  * THE PENCIL FOLLOWS THE SAME TWO HALVES AS EVERY OTHER CONTROL HERE. The STATE half -
  * `adjustServicesOffered`, the route's own window: scheduled, checked in or in service, and no
  * invoice yet - withholds it where the server would refuse the write. The PERMISSION-AND-SCOPE
- * half draws it disabled with the key named, as the groomer pencil above it is drawn.
+ * half draws it disabled with its reason on it, as the groomer pencil above it is drawn.
  */
 function appointmentServiceRowsMarkup(surface){
   const {model,permissions:can}=surface;
@@ -16301,7 +16305,7 @@ function appointmentSurfaceMarkup(surface){
    * THE CANCELLED ROW IS NEVER MUTATED and no new lifecycle status exists: the old visit stays
    * cancelled, the new one is scheduled, and the feed on each names the other.
    *
-   * Needs `appointments.create`, drawn disabled with the key named without it - the same rule
+   * Needs `appointments.create`, drawn disabled with its reason on it without it - the same rule
    * Book Again on a live visit follows.
    */
   const reschedule=can.rescheduleOffered
@@ -16453,8 +16457,9 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
        * rule exactly - absent, never disabled - because withholding a transition the server would
        * refuse is honest and a control that could never apply here explains nothing. The plain
        * half is the PERMISSION, and a control the visit allows but this role may not use is drawn
-       * `disabled aria-disabled="true"` with a title naming the key, which is what the blocked-time
-       * drawer's Update and Delete do and what the Invoice button on this very footer does.
+       * `disabled aria-disabled="true"` with a title saying what cannot be done, which is what the
+       * blocked-time drawer's Update and Delete do and what the Invoice button on this very footer
+       * does.
        *
        * THE APPOINTMENT LOCK STAYS ON THE STATE SIDE. It is a workspace setting rather than a
        * permission - nobody's role changes when it goes on - and `appointmentLockNoteMarkup` is
@@ -16632,7 +16637,7 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
       // without being ready, which is why this sits beside Take Payment rather than replacing it.
       //
       // Split like the other five: the STATE half withholds it where it could never apply, and the
-      // PERMISSION half draws it disabled with the key named.
+      // PERMISSION half draws it disabled with its reason on it.
       readyOffered:status==="checked_in",
       ready:status==="checked_in"&&allowed("operations.complete")&&mine,
       readyRefusal:appointmentRefusal(item,"mark work as finished","operations.complete"),

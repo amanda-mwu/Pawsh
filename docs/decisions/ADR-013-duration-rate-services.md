@@ -8,13 +8,13 @@ no billable-time column anywhere on `appointment_services`. No migration has
 been written and no route has been changed. The owner has asked for the design
 and nothing else, and this record is the design.
 
-The migration number used below is `0057`. **It is not reserved.** The highest
-file in `migrations/` is `0056_blocked_time_mutation_metadata.sql` and the
-local database's `schema_migrations` agrees, so `0057` is free as this is
-written; it is not held. Migration numbers in this repository are allocated when
-a file is written, in the order files are written, and ADR-012 records what
-happens to a record that assumes otherwise. Read `0057` throughout as "the next
-free number at the time the migration is actually written".
+The migration number used below is `0057`. **It is not reserved, and it has
+since been taken**: `0057_staff_scheduling_scope.sql` is now the highest file in
+`migrations/`, so the next free number as this is read is `0058`. Migration
+numbers in this repository are allocated when a file is written, in the order
+files are written, and ADR-012 records what happens to a record that assumes
+otherwise. Read `0057` throughout as "the next free number at the time the
+migration is actually written".
 
 ## The problem, stated once
 

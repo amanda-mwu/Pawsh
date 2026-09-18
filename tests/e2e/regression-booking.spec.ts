@@ -93,7 +93,9 @@ test("@regression-booking presents a conflict to a role that cannot overlap, and
   const member = await createMember(
     request,
     `scheduler-recovery+${tenant.runId}@pawsh-test.example`,
-    ["calendar.view","appointments.view","appointments.create","customers.view","pets.view","services.manage"]
+    // A desk member with no employee record of its own: booking onto a groomer's calendar is
+    // all-staff scheduling, so the role carries the key 0057 gives every such role.
+    ["calendar.view","appointments.view","appointments.create","appointments.edit_all_staff","customers.view","pets.view","services.manage"]
   );
   await login(page, member.email);
   await page.getByTestId("nav-calendar").click();
@@ -161,7 +163,7 @@ test("@regression-booking hides override UX and denies direct intent without per
     request,
     `scheduler+${tenant.runId}@pawsh-test.example`,
     [
-      "calendar.view","appointments.view","appointments.create",
+      "calendar.view","appointments.view","appointments.create","appointments.edit_all_staff",
       "customers.view","pets.view","services.manage"
     ]
   );
@@ -194,7 +196,7 @@ test("@regression-booking hides override UX and denies direct intent without per
 test("@regression-booking a revoked override key is decided by the server on the next request", async ({ page, request, tenant }) => {
   await createAppointment(request, tenant, { startAt: zonedIso(tenant.anchor, 9) });
   const retainedPermissions = [
-    "calendar.view","appointments.view","appointments.create",
+    "calendar.view","appointments.view","appointments.create","appointments.edit_all_staff",
     "customers.view","pets.view","services.manage"
   ];
   const member = await createMember(

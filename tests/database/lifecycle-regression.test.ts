@@ -225,9 +225,13 @@ describeDatabase("D2 appointment lifecycle regression", () => {
       values (${bookerEmail},${bookerEmail},${await hashPassword("correct horse lifecycle booker")})
       returning id
     `;
+    // The booker holds `appointments.edit_all_staff` alongside `appointments.create`: the create
+    // key is scoped to the caller's own calendar, this member has no employee record, and the
+    // occupancy probes below book onto the salon's groomer. Without the all-staff key every probe
+    // would be `NOT_ASSIGNED_TO_YOU` rather than the 201/409 the lifecycle contract is about.
     await db`
       insert into business_memberships(business_id,user_id,role_id)
-      values (${businessId},${booker!.id},${await roleFor(db, businessId, ["calendar.view", "appointments.view", "appointments.create"])})
+      values (${businessId},${booker!.id},${await roleFor(db, businessId, ["calendar.view", "appointments.view", "appointments.create", "appointments.edit_all_staff"])})
     `;
     const bookerLogin = await app.inject({
       method: "POST",

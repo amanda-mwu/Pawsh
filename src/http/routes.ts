@@ -1959,8 +1959,26 @@ async function refuseServiceEditOutsideWindow(
  * rule is what keeps it from changing. `locationClosed: false` is therefore an input the resolver
  * is handed rather than a fact this established, which the six-step contract allows.
  *
- * Writes `end_at`, `conflict_overridden` and the version in one statement, so what the guard
- * judged is what the row says.
+ * AN UNCHANGED WINDOW IS NOT JUDGED FOR OVERLAP. A reorder, or a duration edit that sums to the
+ * same minutes, leaves `end_at` where it was; there is no new geometry to decide, and the overlap
+ * the row may already sit in was judged - and permitted, and recorded - when it was booked, moved
+ * or extended. Re-judging it here refused a groomer without `appointments.override_conflict` a
+ * price change on their own appointment because the desk had deliberately double-booked it, the
+ * same refusal the `/transition` route had to step around for the same reason. So when the
+ * window is unchanged `judgeSchedulingConflicts` is not consulted, `end_at` and
+ * `conflict_overridden` are not written (the 0002 and 0015 triggers fire on any UPDATE that names
+ * `end_at`, changed or not, and read neither the old row nor the flag), and the recorded verdict
+ * stands. Any other window - grown or shrunk - is judged as a move is, in full: `end_at` has to
+ * be written, the trigger will look, and `conflict_overridden` is recomputed from what the row
+ * now overlaps rather than carried over from a window it no longer occupies.
+ *
+ * The staff-availability guard still runs on every call, unchanged window included: its ordinary-
+ * hours refusals are bypassable by every caller here, and a block is a constraint the row is
+ * measured against whenever it is written.
+ *
+ * Writes `end_at`, `conflict_overridden`, `availability_overridden` and the version in one
+ * statement, so what the guard judged is what the row says. `availability_overridden` records the
+ * request's flag exactly as `POST /api/appointments` and `PATCH .../schedule` record theirs.
  */
 async function settleAppointmentWindow(
   tx: Transaction,
@@ -1981,13 +1999,18 @@ async function settleAppointmentWindow(
   if (localDateForInstant(endAt, appointment.schedulingTimezone) !== localDateForInstant(startAt, appointment.schedulingTimezone)) {
     throw new Error("Appointments may not cross local midnight during the controlled pilot");
   }
-  const conflicts = (await Promise.all(appointment.employeeIds.map((employeeId) => findSchedulingConflicts(tx, {
-    businessId: context.businessId, employeeId, startAt, endAt, excludeAppointmentId: appointment.id
-  })))).flat();
-  const { overrideApplied } = await judgeSchedulingConflicts(tx, context, {
-    appointmentId: appointment.id, conflicts,
-    overrideRequested: input.overrideConflict, overrideAuthorized: input.overrideAuthorized
-  });
+  const windowUnchanged = endAt.getTime() === appointment.endAt.getTime();
+  let conflicts: SchedulingConflict[] = [];
+  let overrideApplied = false;
+  if (!windowUnchanged) {
+    conflicts = (await Promise.all(appointment.employeeIds.map((employeeId) => findSchedulingConflicts(tx, {
+      businessId: context.businessId, employeeId, startAt, endAt, excludeAppointmentId: appointment.id
+    })))).flat();
+    ({ overrideApplied } = await judgeSchedulingConflicts(tx, context, {
+      appointmentId: appointment.id, conflicts,
+      overrideRequested: input.overrideConflict, overrideAuthorized: input.overrideAuthorized
+    }));
+  }
   const refusal = await refuseStaffAvailability(tx, {
     businessId: context.businessId, locationId: appointment.locationId,
     timeZone: appointment.schedulingTimezone, employeeIds: appointment.employeeIds,
@@ -1996,8 +2019,17 @@ async function settleAppointmentWindow(
   if (refusal && !(input.availabilityOverride && availabilityOverrideMayBypass(refusal.reason))) {
     throw staffAvailabilityError(refusal, true);
   }
+  if (windowUnchanged) {
+    await tx`
+      update appointments set availability_overridden=${input.availabilityOverride},
+        version=version+1,updated_by=${context.userId},updated_at=now()
+      where business_id=${context.businessId} and id=${appointment.id}
+    `;
+    return endAt;
+  }
   await tx`
     update appointments set end_at=${endAt},conflict_overridden=${overrideApplied},
+      availability_overridden=${input.availabilityOverride},
       version=version+1,updated_by=${context.userId},updated_at=now()
     where business_id=${context.businessId} and id=${appointment.id}
   `;
@@ -2626,10 +2658,12 @@ function notAssignedToYou(message: string): SchedulingRequestError {
  * MAY THE CALLER CHANGE THIS APPOINTMENT.
  *
  * Every appointment mutation - the record edit, the recorded times, the move, the service
- * sheet, the service note, the lifecycle transition - passes through here AFTER its own
- * permission gate and AFTER the row has been found in the caller's tenant, and BEFORE anything is
- * written. `appointments.edit` and the `operations.*` keys mean "on appointments assigned to
- * me"; `appointments.edit_all_staff` means "on anybody's".
+ * sheet, the service note, the lifecycle transition, a photograph added or removed, a report
+ * card created, edited or deleted - passes through here AFTER its own permission gate and AFTER
+ * the row has been found in the caller's tenant, and BEFORE anything is written.
+ * `appointments.edit` and the `operations.*` keys mean "on appointments assigned to me";
+ * `appointments.edit_all_staff` means "on anybody's". Booking, which has no row yet, asks the
+ * same question of the calendars it would land on in `assertBookingOnOwnCalendar`.
  *
  * "Assigned to me" is `appointments.employee_id` OR an `appointment_employees` row naming my
  * employee record. Both are consulted because both are written: the create and move routes keep
@@ -2660,6 +2694,31 @@ async function assertAppointmentMutable(
   if (input.nextEmployeeIds?.some((employeeId) => employeeId !== me.employeeId)) {
     throw notAssignedToYou(
       "Reassigning an appointment to another groomer needs appointments.edit_all_staff."
+    );
+  }
+}
+
+/**
+ * MAY THE CALLER BOOK ONTO THESE CALENDARS.
+ *
+ * The create-route third of the scope rule. There is no row yet to be "assigned to me", so the
+ * question is the one the move route asks with `nextEmployeeIds`: would every groomer the
+ * booking lands on be me? `appointments.create` without `appointments.edit_all_staff` books the
+ * caller's own calendar and no other; a member with no employee record owns no calendar and is
+ * refused every booking, which is the honest reading of the scoped key for somebody nothing can
+ * be assigned to. `migrations/0057_staff_scheduling_scope.sql` grants the all-staff key to every
+ * role that held `appointments.create` when it ran, so no existing booking desk lands there.
+ */
+async function assertBookingOnOwnCalendar(
+  tx: SqlExecutor,
+  context: { businessId: string; membershipId: string; isOwner: boolean; permissions: readonly string[] },
+  employeeIds: readonly string[]
+): Promise<void> {
+  if (editsAllStaff(context)) return;
+  const me = await callerEmployeeId(tx, context);
+  if (me === null || employeeIds.some((employeeId) => employeeId !== me)) {
+    throw notAssignedToYou(
+      "Booking onto another groomer's calendar needs appointments.edit_all_staff."
     );
   }
 }
@@ -10112,6 +10171,10 @@ export function registerRoutes(
       where business_id=${context.businessId} and id=${id} and status<>'cancelled'
     `;
     if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
+    // Whose appointment this is: `operations.perform_service` is scoped to the caller's own
+    // appointments, as it is on `/transition` and the service note, and a photograph is a write
+    // to the appointment it is attached to.
+    await assertAppointmentMutable(db, context, { appointmentId: id });
     if (appointment.petId !== metadata.petId) {
       return reply.code(400).send({ error: "That pet is not on this appointment" });
     }
@@ -10283,6 +10346,8 @@ export function registerRoutes(
         where business_id=${context.businessId} and id=${id} for update
       `;
       if (!photo) return null;
+      // Removing a photograph is a write to the appointment it belongs to, scoped as adding one is.
+      await assertAppointmentMutable(tx, context, { appointmentId: photo.appointmentId });
       await tx`delete from appointment_photos where business_id=${context.businessId} and id=${id}`;
       await record(tx, {
         businessId: context.businessId, actorId: context.userId,
@@ -10412,6 +10477,9 @@ export function registerRoutes(
       where business_id=${context.businessId} and id=${id} and status<>'cancelled'
     `;
     if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
+    // Whose appointment this is: `operations.perform_service` is scoped to the caller's own
+    // appointments, and a report card is written about the visit the caller performed.
+    await assertAppointmentMutable(db, context, { appointmentId: id });
     if (appointment.petId !== input.petId) {
       return reply.code(400).send({ error: "That pet is not on this appointment" });
     }
@@ -10456,6 +10524,9 @@ export function registerRoutes(
         where business_id=${context.businessId} and id=${id} for update
       `;
       if (!current) return { missing: true } as const;
+      // Scope before staleness, in the order every appointment write answers: whose it is, then
+      // whether the editor's copy is current.
+      await assertAppointmentMutable(tx, context, { appointmentId: current.appointmentId });
       if (current.version !== input.version) return { stale: true } as const;
       await tx`
         update appointment_report_cards
@@ -10490,6 +10561,7 @@ export function registerRoutes(
         where business_id=${context.businessId} and id=${id} for update
       `;
       if (!current) return null;
+      await assertAppointmentMutable(tx, context, { appointmentId: current.appointmentId });
       await tx`delete from appointment_report_cards where business_id=${context.businessId} and id=${id}`;
       await record(tx, {
         businessId: context.businessId, actorId: context.userId,
@@ -10942,6 +11014,15 @@ export function registerRoutes(
       if (input.overrideConflict && !overrideAuthorized) {
         throw new SchedulingRequestError(403,"PERMISSION_DENIED","Missing permission: appointments.override_conflict");
       }
+      // WHOSE CALENDAR THE BOOKING LANDS ON. `appointments.create` is scoped exactly as
+      // `appointments.edit` is: without `appointments.edit_all_staff` it books onto the caller's
+      // OWN calendar - the employee record whose `membership_id` is this session's - and nobody
+      // else's. A groomer who may not move a colleague's 09:00 may not book one onto them
+      // either, and a member with no employee record has no calendar to book onto. The check
+      // sits after the permission answers above, as every scope check in this file does, and
+      // before anything is looked up or locked. `employeeIds` is the assignment the booking
+      // would leave, so every id in it is asked, not only the primary.
+      await assertBookingOnOwnCalendar(tx, context, employeeIds);
       const [participants] = await tx<{ available: boolean }[]>`
         select exists (
           select 1 from customers customer
@@ -11786,12 +11867,18 @@ export function registerRoutes(
           where business_id=${context.businessId} and appointment_id=${id} and id in ${tx(removedIds)}
         `;
       }
-      // Pass one: kept rows out of the way. Final positions are 1..n; parking at n+1.. keeps the
-      // unique key clear whatever order the rows are then walked in.
+      // Pass one: kept rows out of the way, at positions no row holds NOW and none will hold
+      // AFTERWARDS. The parking range starts above the larger of the two: above `plan.length`,
+      // so pass two can put a row at any final position 1..n without meeting a parked one; and
+      // above the highest position any current row sits at, so parking itself cannot land on a
+      // kept row that has not been moved yet. Parking above `plan.length` alone was not enough:
+      // shortening the sheet from four lines to two and keeping the two TAIL rows parked the
+      // first of them at 3, where the other kept row still sat, and the unique key refused it.
+      const parkBase = Math.max(plan.length, ...before.map((line) => line.linePosition));
       const parked = [...keptIds];
       for (const [index, lineId] of parked.entries()) {
         await tx`
-          update appointment_services set line_position=${plan.length + index + 1}
+          update appointment_services set line_position=${parkBase + index + 1}
           where business_id=${context.businessId} and appointment_id=${id} and id=${lineId}
         `;
       }

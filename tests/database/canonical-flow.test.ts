@@ -206,12 +206,16 @@ describeDatabase("canonical Pawsh workflow", () => {
     // `appointments.override_conflict`, and a holder is let through an overlap without the 409
     // round trip - so two owner bookings racing for one slot now BOTH land, the loser recorded as
     // an override. The overlap refusal this case pins is the one a caller without the key gets.
+    // The desk holds `appointments.edit_all_staff` because `appointments.create` is scoped to the
+    // caller's own calendar and the desk has no employee record: without it every booking here
+    // would be refused as `NOT_ASSIGNED_TO_YOU` before the overlap is ever judged. The Receptionist
+    // preset carries the same key for the same reason.
     const deskInvitation = await app.inject({
       method: "POST", url: "/api/members/invitations", headers: { cookie: ownerCookie },
       payload: {
         email: `desk-${suffix}@example.test`,
         roleId: await createRole(app, ownerCookie, `Desk ${suffix}`,
-          ["calendar.view", "appointments.view", "appointments.create"])
+          ["calendar.view", "appointments.view", "appointments.create", "appointments.edit_all_staff"])
       }
     });
     expect(deskInvitation.statusCode, deskInvitation.body).toBe(201);

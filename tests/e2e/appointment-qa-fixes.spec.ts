@@ -3,6 +3,7 @@ import type { APIRequestContext, Locator, Page } from "@playwright/test";
 import { contrastRatio } from "./helpers/contrast.js";
 import { expectCriticalTarget, expectEffectiveTarget } from "./helpers/responsive.js";
 import { revealAppointmentOnCalendar } from "./helpers/calendar.js";
+import { permissionPresets } from "@pawsh/domain";
 
 /**
  * THE SIX THINGS HUMAN QA FOUND ON THE APPOINTMENT SURFACE, held in a real browser.
@@ -25,11 +26,9 @@ import { revealAppointmentOnCalendar } from "./helpers/calendar.js";
  * Chromium, which is what makes the coarse-pointer floor an assertion rather than a hope.
  */
 
-const GROOMER_PRESET = [
-  "calendar.view", "appointments.view", "pets.view", "pets.care.view",
-  "operations.check_in", "operations.perform_service", "operations.complete",
-  "appointments.edit", "calendar.blocks_create", "calendar.blocks_edit"
-];
+// THE BUILT-IN GROOMER, as the domain defines it, so the footer under test is the one a real
+// groomer sees and a key joining or leaving the preset is felt here rather than restated.
+const GROOMER_PRESET = [...permissionPresets.groomer!];
 
 const detail = (page: Page): Locator => page.getByTestId("appointment-detail-surface");
 

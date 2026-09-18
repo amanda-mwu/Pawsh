@@ -319,9 +319,13 @@ describeDatabase("D1 scheduling regression", () => {
     const lacksBasePermission = await create(memberCookie, employeeA, startAt, { overrideConflict: true });
     expect(lacksBasePermission.statusCode).toBe(403);
 
+    // `appointments.edit_all_staff` rides along from here on because `appointments.create` is
+    // scoped to the caller's own calendar and this member has no employee record: the roles
+    // below are about the override key, and without the all-staff key the create route would
+    // answer `NOT_ASSIGNED_TO_YOU` before the override key is consulted at all.
     await db`
       update business_memberships
-      set role_id=${await roleFor(db, businessId, ["appointments.create","appointments.override_conflict"])}
+      set role_id=${await roleFor(db, businessId, ["appointments.create","appointments.edit_all_staff","appointments.override_conflict"])}
       where id=${memberId}
     `;
     // Holding the key IS the override: the member is not refused and asked to say so, the
@@ -334,11 +338,12 @@ describeDatabase("D1 scheduling regression", () => {
     });
     await db`
       update business_memberships
-      set role_id=${await roleFor(db, businessId, ["appointments.create"])}
+      set role_id=${await roleFor(db, businessId, ["appointments.create","appointments.edit_all_staff"])}
       where id=${memberId}
     `;
     const stale = await create(memberCookie, employeeA, startAt, { overrideConflict: true });
     expect(stale.statusCode).toBe(403);
+    expect(stale.json().error).toContain("appointments.override_conflict");
 
     // Exactly one override on the member's record: the booking they made while holding the key.
     // None of the three refusals above left one.

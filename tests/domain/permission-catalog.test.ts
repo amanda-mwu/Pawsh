@@ -156,12 +156,14 @@ describe("permission catalog", () => {
     //         RECEPTIONIST rides: it holds `appointments.edit`, held neither block key after 0045,
     //         and would silently have lost the button without it.
     //   0057  runs two steps IN ORDER. First `appointments.edit_all_staff` to every role holding
-    //         any of `appointments.edit` / `calendar.blocks_create` / `calendar.blocks_edit` -
-    //         "the roles that can reach across the staff today", which the Receptionist rides
-    //         for the same reason it rode 0055. Then the three scoped keys to the built-in
-    //         Groomer, which matched nothing in the first step precisely because the steps ran
-    //         in that order. The Groomer must come out WITHOUT the all-staff key, and this test
-    //         reproduces the order rather than the result so a reversal is caught.
+    //         any of `appointments.create` / `appointments.edit` / `calendar.blocks_create` /
+    //         `calendar.blocks_edit` - "the roles that can reach across the staff today", which
+    //         the Receptionist rides for the same reason it rode 0055 - EXCEPT a built-in named
+    //         Groomer, which the step skips by name so that a Groomer an owner had hand-widened
+    //         cannot be handed the salon. Then the three scoped keys to the built-in Groomer.
+    //         The Groomer must come out WITHOUT the all-staff key, and this test reproduces the
+    //         order and the exclusion rather than the result, so a reversal or a dropped
+    //         exclusion is caught.
     //
     // A NEW MIGRATION IN THIS CHAIN MUST BE ADDED HERE. That is not busywork: this test is the
     // only thing pinning the frozen SQL literals to the live definitions, and a link left out
@@ -211,7 +213,9 @@ describe("permission catalog", () => {
       overlaps: /^where permissions && array\[([\s\S]*?)\]::text\[\]/m.exec(statement)
         ? stringsIn(/^where permissions && array\[([\s\S]*?)\]::text\[\]/m.exec(statement)![1]!)
         : null,
-      builtInNamed: /^where built_in and lower\(name\) = '([a-z]+)'/m.exec(statement)?.[1] ?? null
+      builtInNamed: /^where built_in and lower\(name\) = '([a-z]+)'/m.exec(statement)?.[1] ?? null,
+      // Step 1's exclusion: `and not (built_in and lower(name) = '<name>')`, on its own line.
+      exceptBuiltInNamed: /^ {2}and not \(built_in and lower\(name\) = '([a-z]+)'\)/m.exec(statement)?.[1] ?? null
     }));
     expect(taxonomy.length).toBeGreaterThan(0);
     expect(permissionTaxonomy.length).toBeGreaterThan(0);
@@ -223,8 +227,10 @@ describe("permission catalog", () => {
       ["appointments.edit", "calendar.blocks_create", "calendar.blocks_edit"]
     ]);
     expect(scopeSteps[0]!.overlaps)
-      .toEqual(["appointments.edit", "calendar.blocks_create", "calendar.blocks_edit"]);
+      .toEqual(["appointments.create", "appointments.edit", "calendar.blocks_create", "calendar.blocks_edit"]);
+    expect(scopeSteps[0]!.exceptBuiltInNamed).toBe("groomer");
     expect(scopeSteps[1]!.builtInNamed).toBe("groomer");
+    expect(scopeSteps[1]!.exceptBuiltInNamed).toBeNull();
 
     const seeded = new Map(
       [...roles.matchAll(/\('(\w+)',\s*array\[([^\]]*)\]/g)]
@@ -244,11 +250,13 @@ describe("permission catalog", () => {
       }
       // 0055's: every role that could already block time out.
       if (migrated.has(blockPredicate)) for (const permission of blockPair) migrated.add(permission);
-      // 0057's, step by step and in order: the all-staff key to every role overlapping the three
-      // scoped keys, THEN the three scoped keys to the built-in named in the second step.
+      // 0057's, step by step and in order: the all-staff key to every role overlapping the four
+      // narrowed keys except the built-in the step names, THEN the three scoped keys to the
+      // built-in named in the second step.
       for (const step of scopeSteps) {
         const matches = step.overlaps
           ? step.overlaps.some((permission) => migrated.has(permission))
+            && role.name.toLowerCase() !== step.exceptBuiltInNamed
           : role.name.toLowerCase() === step.builtInNamed;
         if (matches) for (const permission of step.granted) migrated.add(permission);
       }

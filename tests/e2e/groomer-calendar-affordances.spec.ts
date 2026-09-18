@@ -19,15 +19,20 @@ import type { APIRequestContext, Page } from "@playwright/test";
  *   Five controls on that appointment rendered as `""` and silently vanished, leaving a screen with
  *   nothing on it and no reason given.
  *
- * NOTHING HERE CHANGES A PRESET. The member below is created with exactly the seven permissions
- * `permissionPresets.groomer` holds, restated so that a change to the preset shows up here as a
- * disagreement rather than passing silently.
+ * NOTHING HERE CHANGES A PRESET, AND THE ROLE BELOW IS NOT ONE. The member is created with the
+ * seven permissions the built-in Groomer held before `appointments.edit` and the two block keys
+ * joined it (`migrations/0057_staff_scheduling_scope.sql`; `permissionPresets.groomer` now holds
+ * eleven). Those four are deliberately left out: the grid under test is the one a role with NO
+ * scheduling key sees - not one empty slot is a control - and a groomer who may block their own
+ * calendar sees a different grid, which `tests/e2e/groomer-scope.spec.ts` walks with the real
+ * preset. The seven are restated here rather than derived, so the subset cannot drift with the
+ * preset and silently change what this file is about.
  *
  * The `page` fixture fails any test that produces a console error or an unhandled rejection, so
  * "no page error" is asserted on every one of these by construction — which is the half of the
  * booking defect that had no visible symptom at all.
  */
-const GROOMER_PRESET = [
+const UNSCHEDULED_GROOMER = [
   "calendar.view", "appointments.view", "pets.view", "pets.care.view",
   "operations.check_in", "operations.perform_service", "operations.complete"
 ];
@@ -53,7 +58,7 @@ test("a groomer is offered no booking gesture anywhere on the grid", async ({
   request,
   tenant
 }) => {
-  const member = await createMember(request, `groomer+${tenant.runId}@pawsh-test.example`, GROOMER_PRESET);
+  const member = await createMember(request, `groomer+${tenant.runId}@pawsh-test.example`, UNSCHEDULED_GROOMER);
   await createAppointment(request, tenant, { localStart: `${tenant.anchor}T09:00` });
   await login(page, member.email, password);
   await calendar(page);
@@ -97,7 +102,7 @@ test("a receptionist keeps every one of those gestures", async ({ page, request,
   // assertion in the test above and be a worse defect than the one being fixed.
   const member = await createMember(request, `front+${tenant.runId}@pawsh-test.example`, [
     "calendar.view", "appointments.view", "appointments.create", "appointments.edit",
-    "appointments.cancel", "calendar.blocks_create", "calendar.blocks_edit",
+    "appointments.edit_all_staff", "appointments.cancel", "calendar.blocks_create", "calendar.blocks_edit",
     "customers.view", "customers.edit", "pets.view", "pets.edit", "pets.care.view",
     "operations.check_in", "checkout.perform", "payments.view"
   ]);
@@ -126,7 +131,7 @@ test("a groomer's appointment says why it is inert instead of showing nothing", 
   request,
   tenant
 }) => {
-  const member = await createMember(request, `groomer-detail+${tenant.runId}@pawsh-test.example`, GROOMER_PRESET);
+  const member = await createMember(request, `groomer-detail+${tenant.runId}@pawsh-test.example`, UNSCHEDULED_GROOMER);
   await linkToEmployee(request, tenant.employeeId, member.membershipId);
   const appointment = await createAppointment(request, tenant, { localStart: `${tenant.anchor}T09:00` });
   await login(page, member.email, password);
@@ -198,7 +203,7 @@ test("a groomer checks a pet in and hands it back, both from the visit itself", 
    * the capability so that a future change to the preset or to the gate has to break a test
    * rather than a shift.
    */
-  const member = await createMember(request, `groomer-lifecycle+${tenant.runId}@pawsh-test.example`, GROOMER_PRESET);
+  const member = await createMember(request, `groomer-lifecycle+${tenant.runId}@pawsh-test.example`, UNSCHEDULED_GROOMER);
   await linkToEmployee(request, tenant.employeeId, member.membershipId);
   const appointment = await createAppointment(request, tenant, { localStart: `${tenant.anchor}T11:00` });
   await login(page, member.email, password);

@@ -3629,11 +3629,22 @@ body.calendar-dragging .calendar-block[data-draggable="true"],body.calendar-drag
   .header-actions{gap:6px}
   header>.header-services{padding:8px}
 }
-/* On the narrowest phones the title and the four header controls do not share a row: the account
-   button was being pushed past the right edge at 320px, where the html's `overflow-x:hidden`
-   simply cut it off. The title takes its own line and the controls keep theirs. */
+/* THE HEADER WRAPS WHEN ITS CONTROLS DO NOT FIT, NOT AT A WIDTH SOMEBODY MEASURED. The first
+   version wrapped the title onto its own row at 360px and below, which was the width at which the
+   account button fell off the right edge on the machine it was measured on. On a runner whose
+   system font is wider - `Ubuntu` leads the stack, and it is - the same four controls needed
+   392px and were cut off at 375 and 390, where the html's `overflow-x:hidden` hides the
+   evidence. So the row is allowed to wrap on every phone width: the title keeps whatever it
+   needs, the controls sit to its right while they fit, and when they do not they take the next
+   row, right-aligned, without a breakpoint having to guess the font. */
+@media(max-width:580px){
+  header{flex-wrap:wrap;row-gap:4px;column-gap:8px}
+  header>div:first-child{flex:1 1 auto;min-width:0}
+  header>.header-services{margin-left:auto}
+  /* And if only the action group wraps, it keeps the right edge rather than falling to the left. */
+  .header-actions{margin-left:auto}
+}
 @media(max-width:360px){
-  header{flex-wrap:wrap;row-gap:4px}
   header>div:first-child{flex:1 1 100%}
 }
 

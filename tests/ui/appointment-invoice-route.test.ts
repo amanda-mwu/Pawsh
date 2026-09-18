@@ -95,9 +95,11 @@ const BILLING = slice(
  * the surface draws for a control or a rail this actor's role does not reach, and it calls both.
  */
 const SURFACE = slice(
-  "function appointmentPermissionRefusal(action,permission){",
+  "function appointmentPermissionRefusal(action){",
   "\n/**\n * The appointment detail surface: level 1 of the stack."
 );
+/** The three permission-copy helpers every refusal builder goes through. */
+const REFUSAL_COPY = slice("const SERVER_PERMISSION_REFUSAL=", "\nfunction settleUnauthenticated() {");
 /**
  * `derive`, lifted out of `openCalendarAppointment`'s closure by its own declaration. This is the
  * single place the surface decides what the actor may do with this visit, so it is run rather than
@@ -378,7 +380,7 @@ ${HISTORY_BINDING}
   const factory = new Function(
     "escape",
     "escapeAttr",
-    [prelude, GATES, MODE, REFUNDS, RENDERERS, DOCUMENT, BILLING, SURFACE, exported].join("\n")
+    [prelude, REFUSAL_COPY, GATES, MODE, REFUNDS, RENDERERS, DOCUMENT, BILLING, SURFACE, exported].join("\n")
   ) as (escape: unknown, escapeAttr: unknown) => ClientModule;
   return factory(escape, escapeAttr);
 }

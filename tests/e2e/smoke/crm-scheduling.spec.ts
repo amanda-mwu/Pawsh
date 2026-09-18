@@ -28,7 +28,7 @@ test("@smoke CRM search persists and booking filters pets by customer",async({pa
   await expect(page.locator(`input[name="bookingPet"][value="${tenant.petId}"]`)).toHaveCount(0);
 });
 
-test("@smoke scheduling rejects overlap and blocked time but permits adjacency",async({page,request,tenant})=>{
+test("@smoke scheduling lets the owner overlap, refuses blocked time, and permits adjacency",async({page,request,tenant})=>{
   await login(page,tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
   const createAt=(time:string)=>bookAppointment(page,{
@@ -37,11 +37,14 @@ test("@smoke scheduling rejects overlap and blocked time but permits adjacency",
   });
   await createAt("09:00");
   await expect(page.getByTestId("calendar-list")).toContainText("Charlie");
+  // AN OWNER BOOKS OVER ANOTHER APPOINTMENT WITHOUT BEING ASKED. Overlap used to be a 409 that
+  // named the clash and, for this role, offered "Book anyway"; the rule now is that a role holding
+  // appointments.override_conflict simply books, and the overlap is recorded on the audit trail.
+  // A groomer still gets the refusal - that case lives in the scheduling specs.
   await createAt("09:30");
-  await expect(page.locator("#booking-error")).toContainText("overlapping appointment");
-  await page.getByTestId("booking-dialog").getByRole("button",{name:"Cancel",exact:true}).click();
-  await createAt("10:30");
   await expect(page.getByTestId("calendar-list").getByText("Charlie")).toHaveCount(2);
+  await createAt("10:30");
+  await expect(page.getByTestId("calendar-list").getByText("Charlie")).toHaveCount(3);
   await request.post("/api/blocked-times",{data:{
     employeeId:tenant.employeeId,locationId:tenant.locationId,localStart:`${tenant.anchor}T13:00`,
     localEnd:`${tenant.anchor}T14:00`,expectedLocationVersion:tenant.locationVersion,reason:"Smoke blocked time"

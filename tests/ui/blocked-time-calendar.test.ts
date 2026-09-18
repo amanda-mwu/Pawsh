@@ -82,6 +82,7 @@ function loadBlockModule(hourFormat: "12" | "24" = "12"): BlockModule {
   const prelude = `
     "use strict";
     let HOUR_FORMAT=${JSON.stringify(hourFormat)};
+    const FIVE_MINUTE_STEP_ATTR='step="300"';
     const groomerSlotNames=["Plum","Steel blue","Teal","Amber","Olive","Mulberry","Umber","Indigo","Rose","Ocean"];
     const groomerPaletteSize=groomerSlotNames.length;
     const prefHourFormat=()=>HOUR_FORMAT;

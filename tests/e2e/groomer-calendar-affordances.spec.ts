@@ -59,12 +59,12 @@ test("a groomer is offered no booking gesture anywhere on the grid", async ({
   await calendar(page);
 
   // The header's + New menu is the one door into booking, and it says why it is shut: disabled
-  // with the missing keys named, so the grid's silence below is read as the same rule rather
-  // than as the calendar being broken.
+  // with the reason on it, so the grid's silence below is read as the same rule rather than as
+  // the calendar being broken. The reason is a sentence and never a permission key.
   await page.getByTestId("new-action-trigger").click();
   const newAppointment = page.getByTestId("new-action-menu").getByRole("menuitem", { name: "New Appointment" });
   await expect(newAppointment).toBeDisabled();
-  await expect(newAppointment).toHaveAttribute("title", /appointments\.create/u);
+  await expect(newAppointment).toHaveAttribute("title", "You do not have permission to book appointments");
   await page.keyboard.press("Escape");
   // And no second door: the toolbar no longer carries its own booking button.
   await expect(page.getByTestId("calendar-add-appointment")).toHaveCount(0);
@@ -154,18 +154,19 @@ test("a groomer's appointment says why it is inert instead of showing nothing", 
   await expect(rail).not.toContainText("could not be loaded");
   expect(clientReads).toEqual([]);
 
-  // THE CONTROLS. Drawn, disabled, and each naming the key it needs.
-  for (const [testid, permission] of [
-    ["appointment-groomer-edit", "appointments.edit"],
-    ["appointment-note-edit", "appointments.edit"],
-    ["appointment-adjust-services", "appointments.edit"],
-    ["appointment-cancel", "appointments.cancel"],
-    ["appointment-no-show", "appointments.cancel"]
+  // THE CONTROLS. Drawn, disabled, and each saying what it cannot do - in words, never as the
+  // key behind it.
+  for (const [testid, action] of [
+    ["appointment-groomer-edit", "change the groomer or the time"],
+    ["appointment-note-edit", "edit the appointment note"],
+    ["appointment-adjust-services", "change the services on this appointment"],
+    ["appointment-cancel", "cancel appointments"],
+    ["appointment-no-show", "mark an appointment as a no-show"]
   ]) {
     const control = detail.getByTestId(testid!);
     await expect(control, `${testid} vanished instead of explaining itself`).toBeVisible();
     await expect(control).toBeDisabled();
-    await expect(control).toHaveAttribute("title", new RegExp(permission!.replace(".", "\\.")));
+    await expect(control).toHaveAttribute("title", `You do not have permission to ${action}`);
   }
 
   // AND THE OTHER HALF OF THE RULE, in the same browser. Check In is a STATE question: a

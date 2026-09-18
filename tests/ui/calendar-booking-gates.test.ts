@@ -56,6 +56,8 @@ const GATES = slice(
   "function calendarBookingAvailable(){",
   "\n// Drag is a fine-pointer affordance on top of that."
 );
+/** The three permission-copy helpers every refusal builder goes through. */
+const REFUSAL_COPY = slice("const SERVER_PERMISSION_REFUSAL=", "\nfunction settleUnauthenticated() {");
 /** The menu's gate, applied on every open rather than once at sign-in. */
 const MENU = slice("function syncSlotMenuAvailability() {", "\nfunction openSlotMenu(slot) {");
 /** The dialog's own two guards. */
@@ -154,7 +156,7 @@ function client(
     calendarSlotAttributes,bookingRefusalReason,blockingRefusalReason,syncSlotMenuAvailability,
     openBookingDialog};`;
   const factory = new Function(
-    ...names, [RUN_ONCE, GATES, MENU, BOOKING, exported].join("\n")
+    ...names, [REFUSAL_COPY, RUN_ONCE, GATES, MENU, BOOKING, exported].join("\n")
   ) as (...args: unknown[]) => Omit<Client, "items" | "reads" | "toasts" | "shown">;
 
   return { ...factory(...names.map((name) => scope[name])), items, reads, toasts, shown };
@@ -218,7 +220,7 @@ describe("an empty slot is a control only for a session that can act on it", () 
     const app = client(["calendar.view", "appointments.view", "appointments.create", "pets.view"]);
     expect(app.calendarBookingAvailable()).toBe(false);
     expect(app.calendarSlotActionable()).toBe(false);
-    expect(app.bookingRefusalReason()).toContain("customers.view");
+    expect(app.bookingRefusalReason()).toBe("You do not have permission to book appointments");
   });
 });
 
@@ -229,14 +231,10 @@ describe("the slot menu says which of its two items this session may use", () =>
 
     expect(app.items.add.disabled).toBe(true);
     expect(app.items.add.attributes["aria-disabled"]).toBe("true");
-    expect(app.items.add.title).toContain("appointments.create");
-    expect(app.items.add.title).toContain("customers.view");
+    expect(app.items.add.title).toBe("You do not have permission to book appointments");
 
     expect(app.items.block.disabled).toBe(true);
-    // The key `POST /api/blocked-times` actually requires, not the one the toolbar still reads.
-    expect(app.items.block.title).toBe(
-      "You do not have permission to block time (calendar.blocks_create)"
-    );
+    expect(app.items.block.title).toBe("You do not have permission to block time");
   });
 
   it("offers a receptionist both, with nothing to explain", () => {
@@ -274,17 +272,15 @@ describe("openBookingDialog fails safely wherever it is reached from", () => {
     expect(app.reads).toEqual([]);
     expect(app.shown.count).toBe(0);
     expect(app.toasts).toHaveLength(1);
-    expect(app.toasts[0]).toContain("You do not have permission to book appointments");
-    expect(app.toasts[0]).toContain("customers.view");
+    expect(app.toasts[0]).toBe("You do not have permission to book appointments");
   });
 
-  it("names every key that is missing, not just the first", async () => {
+  it("says the same thing however many keys are missing, and never names one", async () => {
     const app = client(["calendar.view", "appointments.view"]);
     await app.openBookingDialog();
 
-    expect(app.toasts[0]).toContain("appointments.create");
-    expect(app.toasts[0]).toContain("customers.view");
-    expect(app.toasts[0]).toContain("pets.view");
+    expect(app.toasts[0]).toBe("You do not have permission to book appointments");
+    expect(app.toasts[0]).not.toMatch(/[a-z_]+\.[a-z_]+/u);
   });
 
   it("with the permissions, it prefetches and shows the workspace", async () => {

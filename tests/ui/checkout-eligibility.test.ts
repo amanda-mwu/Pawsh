@@ -41,9 +41,11 @@ function slice(from: string, to: string): string {
 
 /** The footer markup, and the permission-refusal attributes it interpolates. */
 const SURFACE = slice(
-  "function appointmentPermissionRefusal(action,permission){",
+  "function appointmentPermissionRefusal(action){",
   "\n/**\n * The appointment detail surface: level 1 of the stack."
 );
+/** The three permission-copy helpers every refusal builder goes through. */
+const REFUSAL_COPY = slice("const SERVER_PERMISSION_REFUSAL=", "\nfunction settleUnauthenticated() {");
 /** The single place the surface decides what this actor may do with this visit. */
 const DERIVE = slice("  const derive=()=>{", "\n  /**\n   * The appointment note redraws");
 /** Whether a bill that exists still owes anything. */
@@ -126,7 +128,7 @@ function client(status: string, invoice: Record<string, unknown> = {}): Module {
   const scope: Record<string, unknown> = { escape, escapeAttr };
   const names = Object.keys(scope);
   const factory = new Function(
-    ...names, [prelude, OUTSTANDING, NOTES, SURFACE, DERIVE, exported].join("\n")
+    ...names, [prelude, REFUSAL_COPY, OUTSTANDING, NOTES, SURFACE, DERIVE, exported].join("\n")
   ) as (...args: unknown[]) => Module;
   return factory(...names.map((name) => scope[name]));
 }

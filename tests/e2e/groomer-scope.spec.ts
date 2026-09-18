@@ -27,7 +27,8 @@ import { dragAppointmentToSlot } from "./helpers/calendar.js";
 // The Groomer preset plus the cancel key: a custom role, so that Cancel and No show are DRAWN on
 // the card and the surface and the scope alone decides whether they are pressable.
 const GROOMER = [...new Set([...permissionPresets.groomer!, "appointments.edit", "calendar.blocks_create", "calendar.blocks_edit", "appointments.cancel"])];
-const SCOPE = /appointments\.edit_all_staff/u;
+/** The scope refusal, as the operator reads it: a sentence, never the key behind it. */
+const SCOPE = "This appointment is assigned to another groomer";
 
 const detail = (page: Page): Locator => page.getByTestId("appointment-detail-surface");
 
@@ -104,7 +105,6 @@ test("a groomer sees a colleague's visit refused by scope, with the key named, a
       await expect(control, `${testid} vanished instead of explaining itself`).toBeVisible();
       await expect(control).toBeDisabled();
       await expect(control).toHaveAttribute("title", SCOPE);
-      await expect(control).toHaveAttribute("title", /assigned to another groomer/u);
     }
     // Nothing disabled is promoted: no primary at all on a visit Grace cannot move on.
     await expect(detail(page).locator("footer .primary")).toHaveCount(0);
@@ -205,7 +205,7 @@ test("block time is scoped the same way: create offers only themselves, a collea
     await expect(staff.locator(`option[value="${gabriel.id}"]`)).toHaveCount(0);
     await page.getByTestId("modal").getByRole("button", { name: "Close" }).click();
 
-    // GABRIEL'S LUNCH: openable, read-only, the scope key named, and not draggable.
+    // GABRIEL'S LUNCH: openable, read-only, the scope named in words, and not draggable.
     const band = page.getByTestId("calendar-block").first();
     await expect(band).not.toHaveAttribute("data-draggable", "true");
     await band.locator(".calendar-block-open").click();
@@ -213,7 +213,8 @@ test("block time is scoped the same way: create offers only themselves, a collea
     await expect(page.getByTestId("blocked-time-update")).toBeDisabled();
     await expect(page.getByTestId("blocked-time-update")).toHaveAttribute("title", SCOPE);
     await expect(page.getByTestId("blocked-time-delete")).toBeDisabled();
-    await expect(page.getByTestId("blocked-time-locked")).toContainText("appointments.edit_all_staff");
+    await expect(page.getByTestId("blocked-time-locked")).toContainText(SCOPE);
+    await expect(page.getByTestId("blocked-time-locked")).not.toContainText("edit_all_staff");
     await page.getByTestId("blocked-time-cancel").click();
   });
 

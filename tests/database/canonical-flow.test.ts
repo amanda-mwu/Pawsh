@@ -202,12 +202,36 @@ describeDatabase("canonical Pawsh workflow", () => {
   });
 
   it("enforces half-open scheduling and database overlap protection", async () => {
+    // A BOOKING-ONLY DESK, because the owner is no longer the caller to race here. The owner holds
+    // `appointments.override_conflict`, and a holder is let through an overlap without the 409
+    // round trip - so two owner bookings racing for one slot now BOTH land, the loser recorded as
+    // an override. The overlap refusal this case pins is the one a caller without the key gets.
+    const deskInvitation = await app.inject({
+      method: "POST", url: "/api/members/invitations", headers: { cookie: ownerCookie },
+      payload: {
+        email: `desk-${suffix}@example.test`,
+        roleId: await createRole(app, ownerCookie, `Desk ${suffix}`,
+          ["calendar.view", "appointments.view", "appointments.create"])
+      }
+    });
+    expect(deskInvitation.statusCode, deskInvitation.body).toBe(201);
+    const deskAccepted = await app.inject({
+      method: "POST", url: "/api/auth/invitations/accept",
+      payload: {
+        token: new URL(deskInvitation.json().acceptancePath, "http://localhost").searchParams.get("invite"),
+        password: "desk correct horse battery"
+      }
+    });
+    expect(deskAccepted.statusCode, deskAccepted.body).toBe(200);
+    const deskCookie = cookie(deskAccepted);
     const create = () => app.inject({
-      method: "POST", url: "/api/appointments", headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
+      method: "POST", url: "/api/appointments", headers: { cookie: deskCookie, "idempotency-key": crypto.randomUUID() },
       payload: { locationId, customerId, petId, employeeId, serviceIds: [serviceId], localStart:"2031-08-01T09:00",expectedLocationVersion:2 }
     });
     const [first, racing] = await Promise.all([create(), create()]);
     expect([first.statusCode, racing.statusCode].sort()).toEqual([201, 409]);
+    const refused = first.statusCode === 409 ? first : racing;
+    expect(refused.json()).toMatchObject({ code: "SCHEDULING_CONFLICT", canOverride: false });
     appointmentId = (first.statusCode === 201 ? first : racing).json().id;
 
     const adjacent = await app.inject({

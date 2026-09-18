@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  BLOCKED_TIME_TOLERANCE_MINUTES,
   MINUTES_PER_DAY,
   availabilityOverrideMayBypass,
   availabilityRefusalCodes,
+  blockedTimeIntersectionPermitted,
   clockMinutes,
   coversWindow,
   dayPeriodForInstants,
+  instantMinutes,
+  intersectionMinutes,
   refuseWindow,
   resolveEffectiveAvailability,
   type AvailabilityInputs,
@@ -547,5 +551,78 @@ describe("what an availability override may and may not bypass", () => {
     expect(reasons.filter(availabilityOverrideMayBypass)).toEqual([
       "outside_staff_hours", "outside_business_hours"
     ]);
+  });
+});
+
+/**
+ * THE FIFTEEN-MINUTE TOLERANCE BETWEEN A BLOCK AND AN APPOINTMENT, AS ARITHMETIC.
+ *
+ * The routes apply it in two frames - instants for a block over bookings, wall-clock minutes for
+ * a booking over blocks - and both come down to this one comparison. The boundaries are pinned
+ * here so that a `<` written for a `<=` fails a unit test before it fails a salon.
+ */
+describe("the blocked-time tolerance", () => {
+  const period = (startMinute: number, endMinute: number) => ({ startMinute, endMinute });
+  const appointment = period(600, 660); // 10:00 to 11:00
+
+  it("is fifteen minutes", () => {
+    expect(BLOCKED_TIME_TOLERANCE_MINUTES).toBe(15);
+  });
+
+  it("measures the length of the intersection, never negative, and symmetrically", () => {
+    expect(intersectionMinutes(period(540, 600), appointment)).toBe(0);   // touching at the start
+    expect(intersectionMinutes(period(660, 720), appointment)).toBe(0);   // touching at the end
+    expect(intersectionMinutes(period(0, 60), appointment)).toBe(0);      // nowhere near
+    expect(intersectionMinutes(period(590, 605), appointment)).toBe(5);
+    expect(intersectionMinutes(period(645, 720), appointment)).toBe(15);
+    expect(intersectionMinutes(period(644, 720), appointment)).toBe(16);
+    expect(intersectionMinutes(period(615, 645), appointment)).toBe(30);  // a block inside the groom
+    expect(intersectionMinutes(period(0, MINUTES_PER_DAY), appointment)).toBe(60); // the groom inside a block
+    expect(intersectionMinutes(appointment, period(645, 720))).toBe(intersectionMinutes(period(645, 720), appointment));
+  });
+
+  it("permits zero, five and fifteen minutes and refuses sixteen, from either end", () => {
+    // The block ends after the appointment starts.
+    expect(blockedTimeIntersectionPermitted(period(540, 600), appointment)).toBe(true);
+    expect(blockedTimeIntersectionPermitted(period(540, 605), appointment)).toBe(true);
+    expect(blockedTimeIntersectionPermitted(period(540, 615), appointment)).toBe(true);
+    expect(blockedTimeIntersectionPermitted(period(540, 616), appointment)).toBe(false);
+    expect(blockedTimeIntersectionPermitted(period(540, 660), appointment)).toBe(false);
+    // The block starts before the appointment ends.
+    expect(blockedTimeIntersectionPermitted(period(660, 720), appointment)).toBe(true);
+    expect(blockedTimeIntersectionPermitted(period(655, 720), appointment)).toBe(true);
+    expect(blockedTimeIntersectionPermitted(period(645, 720), appointment)).toBe(true);
+    expect(blockedTimeIntersectionPermitted(period(644, 720), appointment)).toBe(false);
+    expect(blockedTimeIntersectionPermitted(period(600, 720), appointment)).toBe(false);
+  });
+
+  it("refuses a short block inside a long appointment, because the intersection is the block", () => {
+    const longGroom = period(540, 780); // 09:00 to 13:00
+    expect(blockedTimeIntersectionPermitted(period(600, 630), longGroom)).toBe(false);
+    expect(blockedTimeIntersectionPermitted(period(600, 615), longGroom)).toBe(true);
+    expect(blockedTimeIntersectionPermitted(period(600, 616), longGroom)).toBe(false);
+  });
+
+  it("judges each block on its own, so two ten-minute clips are two permitted intersections", () => {
+    const before = period(540, 610);
+    const after = period(650, 720);
+    expect(blockedTimeIntersectionPermitted(before, appointment)).toBe(true);
+    expect(blockedTimeIntersectionPermitted(after, appointment)).toBe(true);
+    expect(intersectionMinutes(before, appointment) + intersectionMinutes(after, appointment)).toBe(20);
+  });
+
+  it("gives the same answer in the instant frame as on the wall clock", () => {
+    const at = (local: string) => resolveWallTime(local, zone).instant;
+    const block = instantMinutes({ startAt: at("2026-03-10T10:45"), endAt: at("2026-03-10T12:00") });
+    const groom = instantMinutes({ startAt: at("2026-03-10T10:00"), endAt: at("2026-03-10T11:00") });
+    expect(intersectionMinutes(block, groom)).toBe(15);
+    expect(blockedTimeIntersectionPermitted(block, groom)).toBe(true);
+    const wider = instantMinutes({ startAt: at("2026-03-10T10:44"), endAt: at("2026-03-10T12:00") });
+    expect(blockedTimeIntersectionPermitted(wider, groom)).toBe(false);
+    // The wall-clock projection of the same rows agrees with the instants on an ordinary day.
+    const projected = dayPeriodForInstants(
+      { startAt: at("2026-03-10T10:45"), endAt: at("2026-03-10T12:00") }, "2026-03-10", zone
+    )!;
+    expect(blockedTimeIntersectionPermitted(projected, period(600, 660))).toBe(true);
   });
 });

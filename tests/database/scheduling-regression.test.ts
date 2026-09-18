@@ -185,15 +185,20 @@ describeDatabase("D1 scheduling regression", () => {
 
   it("serializes simultaneous normal bookings while allowing different employees", async () => {
     const startAt = "2032-01-05T17:00:00.000Z";
+    // THE MEMBER, NOT THE OWNER, RACES HERE. The owner holds `appointments.override_conflict`,
+    // and a holder is let through an overlap without the 409 round trip, so two owner bookings
+    // for one slot would both land. The member holds `appointments.create` and not the key, and
+    // is the caller the refusal is written for - `canOverride: false`, because anybody the field
+    // could say true for is never refused in the first place.
     armBarrier();
     const results = await Promise.all([
-      create(ownerCookie, employeeA, startAt),
-      create(ownerCookie, employeeA, startAt)
+      create(memberCookie, employeeA, startAt),
+      create(memberCookie, employeeA, startAt)
     ]);
     expect(results.map((result) => result.statusCode).sort()).toEqual([201, 409]);
     expect(results.find((result) => result.statusCode === 409)?.json()).toMatchObject({
       code: "SCHEDULING_CONFLICT",
-      canOverride: true
+      canOverride: false
     });
     const [count] = await db<{ count: number }[]>`
       select count(*)::integer as count
@@ -207,14 +212,27 @@ describeDatabase("D1 scheduling regression", () => {
     expect(otherEmployee.statusCode).toBe(201);
   });
 
-  it("applies only explicit authorized conflicts and records one atomic override audit", async () => {
+  it("lets a holder of the override key through an overlap, asked or not, and records each one", async () => {
     const startAt = "2032-01-06T17:00:00.000Z";
     const existing = await create(ownerCookie, employeeA, startAt);
     expect(existing.statusCode).toBe(201);
-    const conflict = await create(ownerCookie, employeeA, startAt);
-    expect(conflict.statusCode).toBe(409);
-    expect(conflict.json().conflicts).toHaveLength(1);
 
+    // WITHOUT THE FLAG. The owner holds `appointments.override_conflict`, so the overlap is
+    // not a question to send back: the booking lands, the row says `conflict_overridden`, and
+    // the override audit names the appointment it was laid over - the same trail an explicit
+    // override has always left. `overrideRequested` is what the body said; the other three are
+    // what the server decided.
+    const implicit = await create(ownerCookie, employeeA, startAt);
+    expect(implicit.statusCode, implicit.body).toBe(201);
+    expect(implicit.json().scheduling).toEqual({
+      conflictDetected: true,
+      overrideRequested: false,
+      overrideAuthorized: true,
+      overrideApplied: true
+    });
+    expect(implicit.json().conflictOverridden).toBe(true);
+
+    // WITH THE FLAG, which is still accepted and now redundant for this caller.
     const overridden = await create(ownerCookie, employeeA, startAt, { overrideConflict: true });
     expect(overridden.statusCode).toBe(201);
     expect(overridden.json().scheduling).toEqual({
@@ -223,20 +241,28 @@ describeDatabase("D1 scheduling regression", () => {
       overrideAuthorized: true,
       overrideApplied: true
     });
-    const [appointments, audits] = await Promise.all([
+    const overrideAudit = (id: string) => db<{ count: number; overlapped: unknown[] }[]>`
+      select count(*)::integer as count,
+        coalesce(jsonb_agg(after_data->'conflictingAppointmentIds'), '[]'::jsonb) as overlapped
+      from audit_events
+      where business_id=${businessId} and resource_id=${id} and action='appointment.conflict_override'
+    `;
+    const [appointments, [implicitAudit], [explicitAudit], [stored]] = await Promise.all([
       db<{ count: number }[]>`
         select count(*)::integer as count from appointments
         where business_id=${businessId} and employee_id=${employeeA} and start_at=${startAt}
       `,
-      db<{ count: number }[]>`
-        select count(*)::integer as count from audit_events
-        where business_id=${businessId}
-          and resource_id=${overridden.json().id}
-          and action='appointment.conflict_override'
+      overrideAudit(implicit.json().id),
+      overrideAudit(overridden.json().id),
+      db<{ conflictOverridden: boolean }[]>`
+        select conflict_overridden from appointments where id=${implicit.json().id}
       `
     ]);
-    expect(appointments[0]?.count).toBe(2);
-    expect(audits[0]?.count).toBe(1);
+    expect(appointments[0]?.count).toBe(3);
+    expect(implicitAudit!.count).toBe(1);
+    expect(JSON.stringify(implicitAudit!.overlapped)).toContain(existing.json().id);
+    expect(explicitAudit!.count).toBe(1);
+    expect(stored!.conflictOverridden).toBe(true);
 
     const noConflict = await create(ownerCookie, employeeB, "2032-01-06T20:00:00.000Z", {
       overrideConflict: true
@@ -283,6 +309,7 @@ describeDatabase("D1 scheduling regression", () => {
       role: "owner"
     });
     expect(clientClaims.statusCode).toBe(409);
+    expect(clientClaims.json()).toMatchObject({ code: "SCHEDULING_CONFLICT", canOverride: false });
 
     await db`
       update business_memberships
@@ -297,9 +324,14 @@ describeDatabase("D1 scheduling regression", () => {
       set role_id=${await roleFor(db, businessId, ["appointments.create","appointments.override_conflict"])}
       where id=${memberId}
     `;
+    // Holding the key IS the override: the member is not refused and asked to say so, the
+    // booking lands and the override is recorded against them - the one audit row the count at
+    // the end of this case expects.
     const loaded = await create(memberCookie, employeeA, startAt);
-    expect(loaded.statusCode).toBe(409);
-    expect(loaded.json().canOverride).toBe(true);
+    expect(loaded.statusCode, loaded.body).toBe(201);
+    expect(loaded.json().scheduling).toEqual({
+      conflictDetected: true, overrideRequested: false, overrideAuthorized: true, overrideApplied: true
+    });
     await db`
       update business_memberships
       set role_id=${await roleFor(db, businessId, ["appointments.create"])}
@@ -308,19 +340,26 @@ describeDatabase("D1 scheduling regression", () => {
     const stale = await create(memberCookie, employeeA, startAt, { overrideConflict: true });
     expect(stale.statusCode).toBe(403);
 
-    const [audit] = await db<{ count: number }[]>`
-      select count(*)::integer as count from audit_events
+    // Exactly one override on the member's record: the booking they made while holding the key.
+    // None of the three refusals above left one.
+    const [audit] = await db<{ count: number; resourceIds: string[] }[]>`
+      select count(*)::integer as count, coalesce(array_agg(resource_id), '{}') as resource_ids
+      from audit_events
       where business_id=${businessId} and action='appointment.conflict_override'
         and actor_id=(select user_id from business_memberships where id=${memberId})
     `;
-    expect(audit?.count).toBe(0);
+    expect(audit?.count).toBe(1);
+    expect(audit?.resourceIds).toEqual([loaded.json().id]);
   });
 
   it("keeps mixed normal and override races valid for either serialization order", async () => {
     const startAt = "2032-01-10T17:00:00.000Z";
+    // The "normal" booking is the member's, who holds no override key; the owner's is the one
+    // that may be laid over it. Whichever wins the lock, the outcome has to be one of the two
+    // consistent states below and never a third.
     armBarrier();
     const [normal, override] = await Promise.all([
-      create(ownerCookie, employeeA, startAt),
+      create(memberCookie, employeeA, startAt),
       create(ownerCookie, employeeA, startAt, { overrideConflict: true })
     ]);
     expect([normal.statusCode, override.statusCode].every((status) => [201,409].includes(status))).toBe(true);
@@ -386,18 +425,30 @@ describeDatabase("D1 scheduling regression", () => {
     expect(existing.statusCode).toBe(201);
     expect(movable.statusCode).toBe(201);
 
+    // The member holds `appointments.edit` and `appointments.edit_all_staff` - enough to move
+    // anybody's booking - and not the override key, so the move onto the other booking is refused
+    // and the row does not move. Stated here rather than inherited, because an earlier case in
+    // this file re-roles the member on its way through.
+    await db`
+      update business_memberships
+      set role_id=${await roleFor(db, businessId, ["calendar.view","appointments.view","appointments.edit","appointments.edit_all_staff"])}
+      where id=${memberId}
+    `;
     const rejected = await app.inject({
       method: "PATCH",
       url: `/api/appointments/${movable.json().id}/schedule`,
-      headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
+      headers: { cookie: memberCookie, "idempotency-key": crypto.randomUUID() },
       payload: { employeeId: employeeA, localStart:formatWallTime(existingStart,"America/Los_Angeles"),expectedLocationVersion:1, version: movable.json().version }
     });
-    expect(rejected.statusCode).toBe(409);
+    expect(rejected.statusCode, rejected.body).toBe(409);
+    expect(rejected.json()).toMatchObject({ code: "SCHEDULING_CONFLICT", canOverride: false });
     const [unchanged] = await db<{ startAt: Date }[]>`
       select start_at from appointments where id=${movable.json().id}
     `;
     expect(unchanged?.startAt.toISOString()).toBe(movableStart);
 
+    // The owner asks for nothing and is let through: the same move, the same minutes, the
+    // override applied and recorded because the caller holds the key.
     const moved = await app.inject({
       method: "PATCH",
       url: `/api/appointments/${movable.json().id}/schedule`,
@@ -405,12 +456,19 @@ describeDatabase("D1 scheduling regression", () => {
       payload: {
         employeeId: employeeA,
         localStart:formatWallTime(existingStart,"America/Los_Angeles"),expectedLocationVersion:1,
-        version: movable.json().version,
-        overrideConflict: true
+        version: movable.json().version
       }
     });
-    expect(moved.statusCode).toBe(200);
-    expect(moved.json().scheduling.overrideApplied).toBe(true);
+    expect(moved.statusCode, moved.body).toBe(200);
+    expect(moved.json().scheduling).toEqual({
+      conflictDetected: true, overrideRequested: false, overrideAuthorized: true, overrideApplied: true
+    });
+    const [moveAudit] = await db<{ count: number }[]>`
+      select count(*)::integer as count from audit_events
+      where business_id=${businessId} and resource_id=${movable.json().id}
+        and action='appointment.conflict_override' and after_data->>'operation'='reschedule'
+    `;
+    expect(moveAudit?.count).toBe(1);
   });
 
   it("orders cross-employee reschedule locks without deadlock", async () => {
@@ -441,6 +499,132 @@ describeDatabase("D1 scheduling regression", () => {
       })
     ]);
     expect(results.map((result) => result.statusCode)).toEqual([200,200]);
+  });
+
+  /**
+   * BOTH SIDES OF AN INTENTIONAL OVERLAP CAN BE WORKED.
+   *
+   * The two conflict triggers (0002 and 0015) fire on `update of ... status` and re-run the
+   * overlap check whenever the new status occupies time, without reading `conflict_overridden`.
+   * Until `/transition` set the override GUC for the row it was moving, checking in EITHER side of
+   * a deliberately double-booked pair tripped the trigger and came back as a 409
+   * `SCHEDULING_CONFLICT` with `canOverride: false` - to a front desk that was not scheduling
+   * anything. A lifecycle move changes no geometry, so nothing it does can create an overlap the
+   * booking path did not already judge; the route now says so to the trigger.
+   */
+  it("checks in and starts both sides of an intentional overlap, and leaves a plain visit's lifecycle alone", async () => {
+    const startAt = "2032-01-20T18:00:00.000Z";
+    const first = await create(ownerCookie, employeeA, startAt);
+    expect(first.statusCode, first.body).toBe(201);
+    const second = await create(ownerCookie, employeeA, startAt, { overrideConflict: true });
+    expect(second.statusCode, second.body).toBe(201);
+    expect(second.json().scheduling.overrideApplied).toBe(true);
+    const transition = (id: string, status: string) => app.inject({
+      method: "POST", url: `/api/appointments/${id}/transition`,
+      headers: { cookie: ownerCookie }, payload: { status }
+    });
+    const status = async (id: string) => {
+      const [row] = await db<{ status: string }[]>`select status from appointments where id=${id}`;
+      return row!.status;
+    };
+    for (const id of [first.json().id, second.json().id]) {
+      const checkedIn = await transition(id, "checked_in");
+      expect(checkedIn.statusCode, checkedIn.body).toBe(200);
+      expect(checkedIn.json().status).toBe("checked_in");
+      expect(await status(id)).toBe("checked_in");
+    }
+    for (const id of [first.json().id, second.json().id]) {
+      const started = await transition(id, "in_service");
+      expect(started.statusCode, started.body).toBe(200);
+      expect(await status(id)).toBe("in_service");
+    }
+    // The overlap itself is untouched by working it: both rows still occupy the same hour, one
+    // marked as the override it was.
+    const [rows] = await db<{ count: number; overridden: number }[]>`
+      select count(*)::integer as count, count(*) filter (where conflict_overridden)::integer as overridden
+      from appointments where business_id=${businessId} and employee_id=${employeeA}
+        and start_at=${startAt} and status='in_service'
+    `;
+    expect(rows).toEqual({ count: 2, overridden: 1 });
+
+    // A visit nobody overlapped goes through every state exactly as before, with the audit trail
+    // it always left.
+    const plain = await create(ownerCookie, employeeB, startAt);
+    expect(plain.statusCode, plain.body).toBe(201);
+    for (const step of ["checked_in", "in_service", "completed"]) {
+      const moved = await transition(plain.json().id, step);
+      expect(moved.statusCode, `${step}: ${moved.body}`).toBe(200);
+      expect(await status(plain.json().id)).toBe(step);
+    }
+    const [audits] = await db<{ count: number }[]>`
+      select count(*)::integer as count from audit_events
+      where business_id=${businessId} and resource_id=${plain.json().id}
+        and action in ('appointment.checked_in','appointment.in_service','appointment.completed')
+    `;
+    expect(audits?.count).toBe(3);
+  });
+
+  /**
+   * THE FIVE-MINUTE GRID. Every scheduled wall-clock time - a booking's start, a move's start, a
+   * block's two ends - is refused off a five-minute mark, with a sentence the form can show. A
+   * RECORDED time is not a scheduled one: the check-in stamp on `/times` is when something
+   * happened and is left at minute precision.
+   */
+  it("refuses a scheduled time off the five-minute grid on every route that takes one, and only those", async () => {
+    const offGrid = "2032-01-21T17:07:00.000Z"; // 09:07 local
+    const fiveMinute = /five-minute/;
+    const booked = await create(ownerCookie, employeeA, offGrid);
+    expect(booked.statusCode, booked.body).toBe(400);
+    expect(booked.body).toMatch(fiveMinute);
+
+    const onGrid = await create(ownerCookie, employeeA, "2032-01-21T17:00:00.000Z");
+    expect(onGrid.statusCode, onGrid.body).toBe(201);
+    const moved = await app.inject({
+      method: "PATCH", url: `/api/appointments/${onGrid.json().id}/schedule`,
+      headers: { cookie: ownerCookie, "idempotency-key": crypto.randomUUID() },
+      payload: { employeeId: employeeA, localStart: "2032-01-21T10:07", expectedLocationVersion: 1, version: onGrid.json().version }
+    });
+    expect(moved.statusCode, moved.body).toBe(400);
+    expect(moved.body).toMatch(fiveMinute);
+
+    const blockPayload = (localStart: string, localEnd: string) => ({
+      employeeId: employeeA, locationId, localStart, localEnd, expectedLocationVersion: 1, reason: "Grid"
+    });
+    for (const [localStart, localEnd] of [["2032-01-22T12:07", "2032-01-22T13:00"], ["2032-01-22T12:00", "2032-01-22T13:01"]]) {
+      const block = await app.inject({
+        method: "POST", url: "/api/blocked-times", headers: { cookie: ownerCookie },
+        payload: blockPayload(localStart!, localEnd!)
+      });
+      expect(block.statusCode, block.body).toBe(400);
+      expect(block.body).toMatch(fiveMinute);
+    }
+    const block = await app.inject({
+      method: "POST", url: "/api/blocked-times", headers: { cookie: ownerCookie },
+      payload: blockPayload("2032-01-22T12:00", "2032-01-22T13:00")
+    });
+    expect(block.statusCode, block.body).toBe(201);
+    const nudged = await app.inject({
+      method: "PATCH", url: `/api/blocked-times/${block.json().id}`, headers: { cookie: ownerCookie },
+      payload: {
+        version: block.json().version, employeeId: employeeA,
+        localStart: "2032-01-22T12:05", localEnd: "2032-01-22T13:03", expectedLocationVersion: 1
+      }
+    });
+    expect(nudged.statusCode, nudged.body).toBe(400);
+    expect(nudged.body).toMatch(fiveMinute);
+
+    // The recorded check-in is an instant, not a grid time.
+    const checkedIn = await app.inject({
+      method: "POST", url: `/api/appointments/${onGrid.json().id}/transition`,
+      headers: { cookie: ownerCookie }, payload: { status: "checked_in" }
+    });
+    expect(checkedIn.statusCode, checkedIn.body).toBe(200);
+    const corrected = await app.inject({
+      method: "PATCH", url: `/api/appointments/${onGrid.json().id}/times`,
+      headers: { cookie: ownerCookie },
+      payload: { checkedInAt: "2026-01-05T10:07:00.000Z", checkedOutAt: null }
+    });
+    expect(corrected.statusCode, corrected.body).toBe(200);
   });
 
   it("makes cancellation nonblocking and keeps the transition auditable", async () => {
@@ -475,10 +659,10 @@ describeDatabase("D1 scheduling regression", () => {
       }
     });
     expect(hours.statusCode).toBe(204);
-    // 16:59Z is 08:59 in the salon's own clock - one minute before the shift starts. The refusal
+    // 16:55Z is 08:55 in the salon's own clock - one grid mark before the shift starts. The refusal
     // names WHICH boundary stopped it, which is the whole point of the four codes: this one is the
     // groomer's hours, and the blocked-time case below is not.
-    const beforeShift = await create(ownerCookie, employeeA, "2032-01-14T16:59:00.000Z");
+    const beforeShift = await create(ownerCookie, employeeA, "2032-01-14T16:55:00.000Z");
     expect(beforeShift.statusCode, beforeShift.body).toBe(409);
     expect(beforeShift.json().code).toBe("OUTSIDE_STAFF_HOURS");
     expect((await create(ownerCookie, employeeA, "2032-01-14T17:00:00.000Z")).statusCode).toBe(201);

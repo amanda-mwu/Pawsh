@@ -1,7 +1,7 @@
 import { test, expect, login, createAppointment, createMember, prepareReceipt, password } from "./fixtures/tenant.js";
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 import { contrastRatio } from "./helpers/contrast.js";
-import { expectCriticalTarget } from "./helpers/responsive.js";
+import { expectCriticalTarget, expectEffectiveTarget } from "./helpers/responsive.js";
 import { revealAppointmentOnCalendar } from "./helpers/calendar.js";
 
 /**
@@ -120,7 +120,7 @@ test("a settled visit never leads with an Invoice the groomer cannot open", asyn
   const invoice = detail(page).getByTestId("appointment-invoice");
   // Drawn, disabled, and naming its reason - the bill exists and the footer says so.
   await expect(invoice).toBeDisabled();
-  await expect(invoice).toHaveAttribute("title", /payments\.view|permission to view invoices/u);
+  await expect(invoice).toHaveAttribute("title", "You do not have permission to view invoices");
   await expect(invoice).not.toHaveClass(/\bprimary\b/);
   // The slot passes to the next enabled action on a completed visit: the sheet.
   await expect(detail(page).getByTestId("appointment-ticket")).toHaveClass(/\bprimary\b/);
@@ -155,15 +155,16 @@ test("the groomer pencil clears 4.5:1 at rest, on hover, on focus and when refus
     expect(focus.focusVisible, "the focus rule is the one being measured").toBe(true);
     expect(contrastRatio(focus.ink, focus.fill), `focus ${focus.ink} on ${focus.fill}`).toBeGreaterThanOrEqual(4.5);
 
-    // REFUSED: the same control for a role without appointments.edit. Disabled, with its reason,
-    // and still legible - a control whose job while disabled is to be found and to explain.
+    // REFUSED: the same control for a groomer looking at a visit that is not theirs - the member
+    // is linked to no employee, so the scope refuses it. Disabled, with its reason, and still
+    // legible - a control whose job while disabled is to be found and to explain.
     const member = await createMember(request, `groomer-pencil+${tenant.runId}@pawsh-test.example`, GROOMER_PRESET);
     // `login()` clears the session cookie and starts from the sign-in page.
     await login(page, member.email, password);
     await openDetail(page, appointment.id);
     const refused = detail(page).getByTestId("appointment-groomer-edit");
     await expect(refused).toBeDisabled();
-    await expect(refused).toHaveAttribute("title", /appointments\.edit/u);
+    await expect(refused).toHaveAttribute("title", "This appointment is assigned to another groomer");
     const disabled = await paint(refused);
     expect(contrastRatio(disabled.ink, disabled.fill), `disabled ${disabled.ink} on ${disabled.fill}`).toBeGreaterThanOrEqual(4.5);
   });
@@ -241,13 +242,17 @@ test("@responsive compact controls keep the 44px floor on a coarse pointer, foot
     await openNavigation(page);
     await page.getByTestId("nav-calendar").click();
     await page.waitForLoadState("networkidle");
-    await expectCriticalTarget(page.locator("#calendar-today"));
+    // The toolbar on a phone paints its controls at 36px and reaches 44 through a hit area, so
+    // it is measured as what a finger can press (`expectEffectiveTarget`); the footer below is
+    // the painted box, as it always was.
+    await expectEffectiveTarget(page.locator("#calendar-today"));
     await revealAppointmentOnCalendar(page, appointment.id);
-    // The period arrows are as wide as an arrow and always were; the floor this rule owns is the
-    // height, and 44 is what it must still be.
+    const phone = (testInfo.project.use.viewport?.width ?? 1280) <= 580;
     for (const selector of ["#calendar-prev-week", "#calendar-next-week"]) {
-      const box = await page.locator(selector).boundingBox();
-      expect(box!.height, selector).toBeGreaterThanOrEqual(44);
+      // A tablet keeps the desktop toolbar, whose period arrows are as wide as an arrow and always
+      // were; the floor that rule owns is the height, and 44 is what it must still be.
+      if (phone) await expectEffectiveTarget(page.locator(selector));
+      else expect((await page.locator(selector).boundingBox())!.height, selector).toBeGreaterThanOrEqual(44);
     }
     await page.locator(`[data-appointment-id="${appointment.id}"] .calendar-open`).first().click();
     await expect(detail(page)).toBeVisible();

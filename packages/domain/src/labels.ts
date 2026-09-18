@@ -226,6 +226,9 @@ export const permissionHints: Partial<Record<Permission, string>> = {
   // Two existing keys whose taxonomy label understates them badly enough to mislead.
   "team.manage": "Also required to view the team, send and read invitations, and open the roles editor.",
   "payments.view": "Covers the invoice on any appointment, paid or not.",
+  // The overlap rule no longer asks a holder twice, so the switch is the whole decision and the
+  // sentence has to say what it decides - and what it does not.
+  "appointments.override_conflict": "Book, move or extend an appointment over another one on the same staff member's calendar, without being asked to confirm. Every overlap is recorded. Blocked time is never overridden.",
 
   "appointments.view_all_staff": "See appointments assigned to every staff member, not only your own.",
   "appointments.edit_all_staff": "Change and reassign appointments assigned to every staff member, not only your own, and manage any staff member's blocked time.",

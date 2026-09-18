@@ -38,6 +38,14 @@ import { createDatabase, type Database } from "../../src/db/client.js";
  *
  * 4. NON-BYPASSABILITY. There is no flag, and adding one later has to break a test.
  *
+ * 5. THE TOLERANCE. The rule is no longer "no overlap at all": a block and an appointment may
+ *    intersect by up to `BLOCKED_TIME_TOLERANCE_MINUTES` (fifteen), measured as the length of the
+ *    intersection, per block, in BOTH directions - a block laid over a booking and a booking laid
+ *    over a block - and past that it is refused exactly as it always was. The boundary cases in
+ *    "where the boundary is" therefore overlap by thirty minutes or more, and the tolerance has a
+ *    describe of its own that walks both edges at 0, 5, 15, 16 and 60. The closing sweep counts
+ *    intersections PAST the tolerance, because tolerated ones are supposed to exist by then.
+ *
  * EVERY TIME HERE IS AMERICA/LOS_ANGELES, and the cases alternate between February (PST, UTC-8)
  * and July (PDT, UTC-7), following every Block Time seam before this one. A UTC salon cannot fail
  * a wall-clock case at all, and a fixed-offset implementation passes one half of the year.
@@ -200,8 +208,13 @@ describeDatabase("a blocked time may not cover a booked appointment", () => {
    * got a 409" and "no overlap exists" are different claims and only the second one is the
    * invariant. The predicate is the occupancy definition spelled out once, here, in the test's own
    * voice: if production ever narrows or widens its own, this disagrees.
+   *
+   * `beyondMinutes` is the tolerance, restated in SQL: a block and a booking that intersect by
+   * at most that many minutes are allowed to coexist, so the invariant is "no intersection LONGER
+   * than the tolerance", and that is what the sweep and the race cases count. Passing 0 counts
+   * every intersection, which the sweep also does - to prove the tolerated ones are really there.
    */
-  const overlapCount = async (): Promise<number> => {
+  const overlapCount = async (beyondMinutes = 15): Promise<number> => {
     const [row] = await db<{ count: number }[]>`
       select count(*)::int as count
       from blocked_times block
@@ -213,6 +226,8 @@ describeDatabase("a blocked time may not cover a booked appointment", () => {
         and appointment.status in ('scheduled','checked_in','in_service')
         and tstzrange(block.start_at,block.end_at,'[)')
             && tstzrange(appointment.start_at,appointment.end_at,'[)')
+        and least(block.end_at,appointment.end_at) - greatest(block.start_at,appointment.start_at)
+            > make_interval(mins => ${beyondMinutes})
     `;
     return row!.count;
   };
@@ -347,6 +362,10 @@ describeDatabase("a blocked time may not cover a booked appointment", () => {
    * blocking the hour before every appointment impossible. A closed `[]` comparison or a `<=`
    * written by hand fails exactly these two cases and passes every other case in this file, which
    * is why they are first.
+   *
+   * THE REFUSALS HERE ALL OVERLAP BY THIRTY MINUTES OR MORE, deliberately: they are about the
+   * occupancy definition, and a thirty-minute intersection is past the fifteen-minute tolerance
+   * whichever way it is measured. The tolerance's own edges are the next describe's.
    */
   describe("where the boundary is", () => {
     it("allows a block that ends exactly when an appointment starts", async () => {
@@ -402,6 +421,166 @@ describeDatabase("a blocked time may not cover a booked appointment", () => {
         localStart: `${day}T10:00`, localEnd: `${day}T11:00`, employeeId: otherEmployeeId
       });
       expect(response.statusCode, response.body).toBe(201);
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------
+  /**
+   * THE FIFTEEN-MINUTE TOLERANCE, AT BOTH EDGES, IN BOTH DIRECTIONS, ON EVERY PATH.
+   *
+   * The quantity is the LENGTH OF THE INTERSECTION - not who started first, not how much of the
+   * block or the booking is covered - so the same fifteen minutes is allowed whether the block runs
+   * into the start of the booking or the booking runs into the start of the block, and a block that
+   * sits wholly inside a booking is measured by its own length. Each block is judged on its own:
+   * two blocks clipping one booking by ten minutes each are two permitted intersections. Block
+   * against block is never judged at all - Pawsh has no such rule and this describe does not add
+   * one.
+   *
+   * Every fixture appointment is one sixty-minute groom at the wall clock `book` is given.
+   */
+  describe("the fifteen-minute tolerance", () => {
+    const expectBlocked = (response: { statusCode: number; body: string; json: () => any }, code: string) => {
+      expect(response.statusCode, response.body).toBe(409);
+      expect(response.json()).toMatchObject({ code, canOverride: false });
+    };
+
+    it("allows a block ending 0, 5 or 15 minutes after the appointment starts, and refuses 20 and 60", async () => {
+      for (const end of ["10:00", "10:05", "10:15"]) {
+        const day = nextDay();
+        await booked(`${day}T10:00`);
+        const response = await blockTime({ localStart: `${day}T09:00`, localEnd: `${day}T${end}` });
+        expect(response.statusCode, `${end}: ${response.body}`).toBe(201);
+      }
+      // Every scheduled time is on the five-minute grid, so the sixteenth minute cannot be reached
+      // by placing a block or a booking - twenty is the first refusal the grid can express. The
+      // service-line case below reaches sixteen the one way a length can: a 91-minute duration.
+      for (const end of ["10:20", "11:00"]) {
+        const day = nextDay();
+        await booked(`${day}T10:00`);
+        expectBlocked(await blockTime({ localStart: `${day}T09:00`, localEnd: `${day}T${end}` }),
+          "BLOCK_TIME_APPOINTMENT_CONFLICT");
+      }
+    });
+
+    it("allows a block starting 0, 5 or 15 minutes before the appointment ends, and refuses 20 and 60", async () => {
+      for (const start of ["11:00", "10:55", "10:45"]) {
+        const day = nextDay();
+        await booked(`${day}T10:00`);
+        const response = await blockTime({ localStart: `${day}T${start}`, localEnd: `${day}T12:00` });
+        expect(response.statusCode, `${start}: ${response.body}`).toBe(201);
+      }
+      for (const start of ["10:40", "10:00"]) {
+        const day = nextDay();
+        await booked(`${day}T10:00`);
+        expectBlocked(await blockTime({ localStart: `${day}T${start}`, localEnd: `${day}T12:00` }),
+          "BLOCK_TIME_APPOINTMENT_CONFLICT");
+      }
+    });
+
+    it("measures a block inside a longer appointment by the block's own length", async () => {
+      const day = nextDay();
+      await booked(`${day}T10:00`);
+      // Fifteen minutes in the middle of the groom: inside the tolerance, however it is placed.
+      const short = await blockTime({ localStart: `${day}T10:20`, localEnd: `${day}T10:35` });
+      expect(short.statusCode, short.body).toBe(201);
+      // Twenty minutes in the middle of the groom: the intersection is the block, and too long.
+      const inside = await blockTime({ localStart: `${day}T10:20`, localEnd: `${day}T10:40` });
+      expectBlocked(inside, "BLOCK_TIME_APPOINTMENT_CONFLICT");
+    });
+
+    it("applies the same tolerance to a block being moved onto a booking", async () => {
+      const day = nextDay();
+      await booked(`${day}T10:00`);
+      const block = await created({ localStart: `${day}T13:00`, localEnd: `${day}T14:00` });
+      // Ten minutes into the end of the groom: allowed.
+      const nudged = await patch(block.id, await movePayload({
+        version: block.version, localStart: `${day}T10:50`, localEnd: `${day}T11:50`
+      }));
+      expect(nudged.statusCode, nudged.body).toBe(200);
+      // Twenty minutes in: refused, and the block stays where the allowed move put it.
+      const refused = await patch(block.id, await movePayload({
+        version: nudged.json().version, localStart: `${day}T10:40`, localEnd: `${day}T11:40`
+      }));
+      expectBlocked(refused, "BLOCK_TIME_APPOINTMENT_CONFLICT");
+      const [stored] = await db<{ version: number; startAt: Date }[]>`
+        select version,start_at from blocked_times where id=${block.id}
+      `;
+      expect(stored!.version).toBe(nudged.json().version);
+      expect(stored!.startAt.toISOString()).toBe(nudged.json().startAt);
+    });
+
+    it("lets a booking be taken 5 or 15 minutes into a block, and refuses 20", async () => {
+      // The block first, then the booking: the appointment side of the same rule.
+      for (const [start, allowed] of [["10:55", true], ["10:45", true], ["10:40", false]] as const) {
+        const day = nextDay();
+        await created({ localStart: `${day}T09:00`, localEnd: `${day}T11:00` });
+        const response = await book(`${day}T${start}`);
+        if (allowed) expect(response.statusCode, `${start}: ${response.body}`).toBe(201);
+        else expectBlocked(response, "TIME_BLOCKED");
+      }
+      // And a booking that ENDS inside a block, at the same three distances.
+      for (const [start, allowed] of [["10:05", true], ["10:15", true], ["10:20", false]] as const) {
+        const day = nextDay();
+        await created({ localStart: `${day}T11:00`, localEnd: `${day}T13:00` });
+        const response = await book(`${day}T${start}`);
+        if (allowed) expect(response.statusCode, `${start}: ${response.body}`).toBe(201);
+        else expectBlocked(response, "TIME_BLOCKED");
+      }
+    });
+
+    it("lets a booking be moved 10 minutes onto a block, and refuses 20", async () => {
+      const day = nextDay();
+      await created({ localStart: `${day}T11:00`, localEnd: `${day}T12:00` });
+      const appointment = await booked(`${day}T09:00`);
+      const nudged = await move(appointment.id, { localStart: `${day}T10:10`, version: appointment.version });
+      expect(nudged.statusCode, nudged.body).toBe(200);
+      const refused = await move(appointment.id, { localStart: `${day}T10:20`, version: nudged.json().version });
+      expectBlocked(refused, "TIME_BLOCKED");
+      const [stored] = await db<{ startAt: Date }[]>`select start_at from appointments where id=${appointment.id}`;
+      expect(stored!.startAt.toISOString()).toBe(nudged.json().startAt);
+    });
+
+    it("lets a service line be lengthened 15 minutes into a block, and refuses 16", async () => {
+      const day = nextDay();
+      const appointment = await booked(`${day}T09:00`);
+      await created({ localStart: `${day}T10:15`, localEnd: `${day}T11:00` });
+      const detail = await app.inject({
+        method: "GET", url: `/api/appointments/${appointment.id}`, headers: { cookie: ownerCookie }
+      });
+      const lineId = (detail.json() as { services: { id: string }[] }).services[0]!.id;
+      const edit = (durationMinutes: number) => app.inject({
+        method: "PATCH", url: `/api/appointments/${appointment.id}/services/${lineId}`,
+        headers: { cookie: ownerCookie }, payload: { durationMinutes }
+      });
+      // 90 minutes ends at 10:30, fifteen into the block. A line's duration is not on the grid -
+      // it is a length, not a time - so 91 really is the sixteenth minute.
+      const fifteen = await edit(90);
+      expect(fifteen.statusCode, fifteen.body).toBe(200);
+      const sixteen = await edit(91);
+      expectBlocked(sixteen, "TIME_BLOCKED");
+      const [stored] = await db<{ endAt: Date }[]>`select end_at from appointments where id=${appointment.id}`;
+      expect(stored!.endAt.toISOString()).toBe(new Date(fifteen.json().endAt).toISOString());
+    });
+
+    it("judges each block on its own, so a booking clipping two blocks by ten minutes each is allowed", async () => {
+      const day = nextDay();
+      await created({ localStart: `${day}T09:00`, localEnd: `${day}T10:10` });
+      await created({ localStart: `${day}T10:50`, localEnd: `${day}T12:00` });
+      const response = await book(`${day}T10:00`);
+      expect(response.statusCode, response.body).toBe(201);
+      // And the mirror: a block laid over two bookings, fifteen minutes into each.
+      const other = nextDay();
+      await booked(`${other}T09:00`);
+      await booked(`${other}T11:00`);
+      const between = await blockTime({ localStart: `${other}T09:45`, localEnd: `${other}T11:15` });
+      expect(between.statusCode, between.body).toBe(201);
+    });
+
+    it("has no block-versus-block rule: two blocks may overlap each other entirely", async () => {
+      const day = nextDay();
+      await created({ localStart: `${day}T09:00`, localEnd: `${day}T12:00` });
+      const second = await blockTime({ localStart: `${day}T10:00`, localEnd: `${day}T11:00` });
+      expect(second.statusCode, second.body).toBe(201);
     });
   });
 
@@ -958,7 +1137,8 @@ describeDatabase("a blocked time may not cover a booked appointment", () => {
    * `appointments.override_conflict`, because two bookings in one hour is a judgement call a salon
    * is allowed to make. A block over a booking is not: it is a calendar that contradicts itself,
    * and there is no operator intent that makes it coherent. `canOverride` is therefore a constant
-   * rather than a permission lookup, and no flag reaches the routes.
+   * rather than a permission lookup, and no flag reaches the routes. The tolerance did not change
+   * this: an intersection past fifteen minutes is refused whoever asks and whatever they send.
    */
   describe("non-bypassable", () => {
     it("ignores an overrideConflict flag on create and still refuses", async () => {
@@ -1121,7 +1301,10 @@ describeDatabase("a blocked time may not cover a booked appointment", () => {
    * supposed to be allowed, where a boundary written one character wrong produces a silent overlap
    * rather than a failed assertion.
    */
-  it("leaves no blocked time overlapping an occupying appointment anywhere in the workspace", async () => {
+  it("leaves no blocked time intersecting an occupying appointment beyond the tolerance anywhere in the workspace", async () => {
     expect(await overlapCount()).toBe(0);
+    // The tolerated intersections the cases above wrote are really there, so the sweep is
+    // counting something rather than passing over an empty join.
+    expect(await overlapCount(0)).toBeGreaterThan(0);
   });
 });

@@ -57,8 +57,11 @@ describeDatabase("appointment service availability",()=>{
     await expect(db`insert into appointment_employees(business_id,appointment_id,employee_id) values (${businessId},${booking.json().id},${secondEmployeeId})`).rejects.toThrow();
     const legacyMove=await app.inject({method:"PATCH",url:`/api/appointments/${booking.json().id}/schedule`,headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},payload:{employeeId,employeeIds:[employeeId,secondEmployeeId],localStart:"2034-04-17T14:00",expectedLocationVersion:1,version:booking.json().version}});
     expect(legacyMove.statusCode).toBe(400);expect(JSON.stringify(legacyMove.json())).toContain("An appointment can only be assigned to one groomer.");
+    // The owner holds `appointments.override_conflict`, so the same slot again is not refused:
+    // the overlap is let through and recorded as an override, without the 409 round trip.
     const conflict=await app.inject({method:"POST",url:"/api/appointments",headers:{cookie:ownerCookie,"idempotency-key":crypto.randomUUID()},payload:{locationId,customerId,petId,employeeId,serviceIds:[primaryId],localStart:"2034-04-17T13:00",expectedLocationVersion:1}});
-    expect(conflict.statusCode).toBe(409);
+    expect(conflict.statusCode,conflict.body).toBe(201);
+    expect(conflict.json().scheduling).toEqual({conflictDetected:true,overrideRequested:false,overrideAuthorized:true,overrideApplied:true});
     const defaults=await app.inject({method:"GET",url:`/api/pets/${petId}/booking-defaults`,headers:{cookie:ownerCookie}});
     expect(defaults.statusCode).toBe(200);
     expect(defaults.json().groomers.map((item:{id:string})=>item.id)).toEqual([employeeId]);

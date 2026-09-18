@@ -13,6 +13,28 @@ import {appointmentLockModes,businessTypes,dateFormats,hourFormats,weightUnits,u
 export const idParams = z.object({ id: z.string().uuid() });
 export const locationParams = z.object({ locationId: z.string().uuid() });
 
+/**
+ * A WALL-CLOCK MINUTE ON THE SALON'S SCHEDULING GRID: `YYYY-MM-DDTHH:MM`, on a five-minute mark.
+ *
+ * Every scheduled time an operator places - an appointment's start, a block's two ends - is a
+ * local wall clock resolved against the location's timezone later, so the shape is a zone-less
+ * minute. The FIVE-MINUTE rule is the calendar's own resolution: the grid is drawn in five-minute
+ * rows and the availability slots are cut on them, so a start at :07 is a time the interface
+ * cannot draw and the next request cannot land beside, and until this refinement the server took
+ * it. It is refused as a 400 with a sentence the form can show, rather than rounded, because a
+ * silently moved time is a booking nobody asked for.
+ *
+ * ONLY SCHEDULED TIMES. `appointmentTimesSchema` records when a check-in actually HAPPENED as an
+ * instant with an offset; a stamp of the real moment is not on any grid and is left alone.
+ *
+ * The minute is read off the string rather than through a Date: the regex has already fixed the
+ * positions, and no zone is involved in whether 09:07 is a grid mark.
+ */
+const localWallMinute = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/).refine(
+  (value) => Number(value.slice(14, 16)) % 5 === 0,
+  { message: "Times must be on a five-minute mark (:00, :05, :10 ... :55)." }
+);
+
 export const signupSchema = z.object({
   email: z.string().email().max(320),
   password: passwordSchema,
@@ -722,7 +744,7 @@ export const appointmentSchema = z.object({
   petId: z.string().uuid(),
   employeeId: z.string().uuid(),
   employeeIds: z.array(z.string().uuid()).min(1).max(20).optional(),
-  localStart: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/),
+  localStart: localWallMinute,
   disambiguation: z.enum(["earlier", "later"]).optional(),
   expectedLocationVersion: z.number().int().positive(),
   serviceIds: z.array(z.string().uuid()).min(1),
@@ -1107,8 +1129,8 @@ export const closureDaysSchema = z.object({
 export const blockedTimeSchema = z.object({
   employeeId: z.string().uuid(),
   locationId: z.string().uuid(),
-  localStart: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/),
-  localEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/),
+  localStart: localWallMinute,
+  localEnd: localWallMinute,
   startDisambiguation: z.enum(["earlier", "later"]).optional(),
   endDisambiguation: z.enum(["earlier", "later"]).optional(),
   expectedLocationVersion: z.number().int().positive(),
@@ -1174,8 +1196,8 @@ export const blockedTimeUpdateSchema = z.object({
   // edit including one that changes nothing, so "409" always means one thing: your copy is stale.
   version: z.number().int().positive(),
   employeeId: z.string().uuid().optional(),
-  localStart: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/).optional(),
-  localEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/).optional(),
+  localStart: localWallMinute.optional(),
+  localEnd: localWallMinute.optional(),
   startDisambiguation: z.enum(["earlier", "later"]).optional(),
   endDisambiguation: z.enum(["earlier", "later"]).optional(),
   expectedLocationVersion: z.number().int().positive().optional(),
@@ -1245,7 +1267,7 @@ export const operationalUpdateSchema = z.object({
 export const appointmentMoveSchema = z.object({
   employeeId: z.string().uuid(),
   employeeIds: z.array(z.string().uuid()).min(1).max(20).optional(),
-  localStart: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/),
+  localStart: localWallMinute,
   disambiguation: z.enum(["earlier", "later"]).optional(),
   expectedLocationVersion: z.number().int().positive(),
   version: z.number().int().positive(),

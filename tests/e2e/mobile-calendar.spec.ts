@@ -1,7 +1,7 @@
 import { test, expect, login, createAppointment, createMember, password } from "./fixtures/tenant.js";
 import type { Page } from "@playwright/test";
 import { permissionPresets } from "@pawsh/domain";
-import { expectCriticalTarget, expectNoDocumentOverflow } from "./helpers/responsive.js";
+import { expectCriticalTarget, expectEffectiveTarget, expectNoDocumentOverflow } from "./helpers/responsive.js";
 
 /**
  * THE CALENDAR ON A PHONE.
@@ -12,8 +12,12 @@ import { expectCriticalTarget, expectNoDocumentOverflow } from "./helpers/respon
  * that can exercise them (the `@responsive` tag runs this under iPhone and Pixel as well as
  * desktop Chromium; the phone assertions skip themselves on a desktop viewport):
  *
- *   THE TOOLBAR FITS. No horizontal overflow, every control at the 44px floor, and fewer of them:
- *       the two that duplicated the header's + New are gone from the markup at every width.
+ *   THE TOOLBAR FITS. No horizontal overflow, every control a 44px EFFECTIVE target, and fewer of
+ *       them: the two that duplicated the header's + New are gone from the markup at every width.
+ *       A second QA pass found three rows of 44px boxes still too spacious, so the controls now
+ *       PAINT at 36px and reach 44px through an invisible hit area - which is why the toolbar is
+ *       measured with `expectEffectiveTarget` (what `elementFromPoint` answers) rather than the
+ *       bounding box, and why its height is held under 130px rather than 170.
  *   ONE DOOR INTO BOOKING. The header's + New menu; the toolbar's `+ Add booking` is not drawn.
  *   THE CALENDAR OPENS ON TODAY, IN THE DAY VIEW, on a phone. A desk looking ahead keeps the
  *       desktop week; a phone is opened to answer "what is happening now".
@@ -66,20 +70,25 @@ test("@responsive the calendar toolbar fits a phone: no overflow, 44px targets, 
     await expect(menu.getByRole("menuitem", { name: "New Block Time" })).toBeEnabled();
     await page.keyboard.press("Escape");
 
-    // Every remaining toolbar control is a full touch target in the phone layout. (A tablet keeps
-    // the desktop toolbar, whose period arrows are as wide as an arrow and always were.)
+    // Every remaining toolbar control is a full EFFECTIVE touch target in the phone layout, and
+    // paints no taller than 36px. (A tablet keeps the desktop toolbar, whose period arrows are as
+    // wide as an arrow and always were.)
     if (phoneWidth(testInfo)) {
       for (const selector of ["#calendar-today", "#calendar-prev-week", "#calendar-next-week", "#calendar-view-select",
         "#groomer-filter-trigger", "[data-testid=print-agenda]", "[data-testid=calendar-settings]",
         "#calendar-agenda-mode", "#calendar-calendar-mode"]) {
-        await expectCriticalTarget(page.locator(selector));
+        await expectEffectiveTarget(page.locator(selector));
+      }
+      for (const selector of ["#calendar-today", "#calendar-prev-week", "#groomer-filter-trigger", "[data-testid=print-agenda]", "#calendar-agenda-mode"]) {
+        const box = await page.locator(selector).boundingBox();
+        expect(box!.height, `${selector} paints compact`).toBeLessThanOrEqual(38);
       }
       // And substantially fewer of them than the twelve QA counted: nine controls over three rows.
       const visible = await page.locator(".calendar-toolbar button, .calendar-toolbar select, .calendar-toolbar summary")
         .filter({ visible: true }).count();
       expect(visible).toBeLessThanOrEqual(9);
       const toolbar = await page.locator(".calendar-toolbar").boundingBox();
-      expect(toolbar!.height, "three rows of 44px plus gaps, not five").toBeLessThan(170);
+      expect(toolbar!.height, "three compact rows plus gaps").toBeLessThan(130);
     }
     await expectNoDocumentOverflow(page, testInfo);
   });

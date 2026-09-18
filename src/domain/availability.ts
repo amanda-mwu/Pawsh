@@ -54,6 +54,74 @@ export interface DayPeriod {
 
 export const MINUTES_PER_DAY = 24 * 60;
 
+/**
+ * HOW FAR A BLOCKED TIME AND AN APPOINTMENT MAY RUN INTO EACH OTHER BEFORE EITHER IS REFUSED.
+ *
+ * The block/appointment rule used to be zero tolerance: a block that clipped one minute of a
+ * booking refused it, and a booking that clipped one minute of a block was refused the same way.
+ * In a salon that is a false refusal several times a day - a lunch block that starts five minutes
+ * before a groom is due to finish, a groom booked ten minutes into the tail of a "back at two"
+ * block - for a situation nobody at the desk thinks of as a conflict. So the rule is a TOLERANCE,
+ * and it is stated once, here, for both directions of the invariant:
+ *
+ *   a block and an appointment may intersect by AT MOST this many minutes.
+ *
+ * The quantity compared is the LENGTH OF THE INTERSECTION of the two half-open intervals, not
+ * which one starts first and not how much of either is covered. That is what makes the rule
+ * symmetric - the same fifteen minutes whether the block is being laid over the booking or the
+ * booking is being taken over the block - and what makes a short block sitting in the middle of a
+ * long appointment a refusal: the intersection is the whole block, however long the groom around
+ * it is. Zero, five and fifteen minutes are allowed; sixteen is refused.
+ *
+ * EACH BLOCK IS JUDGED ON ITS OWN. A booking that clips one block by ten minutes at the start and
+ * another by ten at the end is inside the tolerance against each of them and is allowed; the two
+ * intersections are not summed. Two blocks are never judged against each other at all - there is
+ * no block-versus-block rule anywhere in Pawsh, and this file does not add one.
+ *
+ * WHERE THE CALLERS ARE. `refuseBlockOverAppointments` in `src/http/routes.ts` applies it to a
+ * block being created or moved, over the appointments `findSchedulingConflicts` found, in the
+ * instant frame. `refuseStaffAvailability` in the same file applies it to a booking being created,
+ * moved or extended, over the groomer's blocks, in the wall-clock frame `dayPeriodForInstants`
+ * projects them into - the frame step 5 subtracts in, so the tolerance and the residual agree.
+ * The two frames coincide on every ordinary day; on a fall-back date the projection over-subtracts
+ * the repeated hour, and the tolerance inherits that conservative reading rather than opening a
+ * second one.
+ *
+ * NOTHING ABOUT THIS IS OVERRIDABLE. An intersection past the tolerance is refused whoever asks -
+ * `TIME_BLOCKED` and `BLOCK_TIME_APPOINTMENT_CONFLICT` both keep `canOverride: false` - which is
+ * unchanged from the zero-tolerance rule; only the threshold moved.
+ */
+export const BLOCKED_TIME_TOLERANCE_MINUTES = 15;
+
+/**
+ * The length of the intersection of two half-open intervals, in whatever minute frame both are
+ * expressed in - wall-clock minutes of one local day for two `DayPeriod`s, or minutes since the
+ * epoch for two `instantMinutes` results. Zero when they do not overlap, and never negative.
+ */
+export function intersectionMinutes(left: DayPeriod, right: DayPeriod): number {
+  return Math.max(0, Math.min(left.endMinute, right.endMinute) - Math.max(left.startMinute, right.startMinute));
+}
+
+/**
+ * Whether a block and an appointment may coexist: their intersection is within the tolerance.
+ *
+ * Both arguments must be in the same frame. The parameter names say which is which only for the
+ * reader - the test is symmetric.
+ */
+export function blockedTimeIntersectionPermitted(block: DayPeriod, appointment: DayPeriod): boolean {
+  return intersectionMinutes(block, appointment) <= BLOCKED_TIME_TOLERANCE_MINUTES;
+}
+
+/**
+ * An instant range as a `DayPeriod`-shaped interval in minutes since the epoch, for handing two
+ * stored ranges to `intersectionMinutes` without projecting either onto a local day. Not a day
+ * period - the numbers are far larger than `MINUTES_PER_DAY` - and never handed to the resolver,
+ * which is why it is a separate constructor rather than an overload of `dayPeriodForInstants`.
+ */
+export function instantMinutes(range: { startAt: Date; endAt: Date }): DayPeriod {
+  return { startMinute: range.startAt.getTime() / 60_000, endMinute: range.endAt.getTime() / 60_000 };
+}
+
 /** One stored weekday row, from `employee_working_hours` or `business_hours`. */
 export interface WeekdayPeriod {
   weekday: number;
@@ -342,7 +410,9 @@ export function coversWindow(availability: EffectiveAvailability, window: DayPer
  * `fully_blocked` is the residual, and its wire code (`TIME_BLOCKED`) is the accurate one: the
  * window survived the staff hours and the salon hours, so the only thing left that can have
  * removed it is step 5. Note that the reason names a PARTIAL overlap here as readily as a day
- * blocked end to end - a block that clips one minute of the window still refuses it.
+ * blocked end to end - a block that runs sixteen minutes into the window refuses it. A block
+ * within `BLOCKED_TIME_TOLERANCE_MINUTES` of the window never reaches step 5 at all: the booking
+ * caller drops it before resolving, so it is not subtracted and cannot produce this reason.
  */
 export function refuseWindow(
   availability: EffectiveAvailability,

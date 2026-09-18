@@ -504,11 +504,13 @@ describeDatabase("staff availability precedence, through the booking routes", ()
       // The groomer's ordinary 09:00-17:00 would refuse a 01:30 booking before any block was
       // consulted, so the date gets a per-date window that reaches into the small hours.
       await setDateAvailability(FALL_BACK, { working: true, startTime: "00:00", endTime: "06:00" });
-      // ENTIRELY INSIDE THE FIRST OCCURRENCE, which is the whole point: 01:00 to 01:59 PDT is
-      // 08:00Z to 08:59Z. Ending at 02:00 instead would have run to 10:00Z and covered both
+      // ENTIRELY INSIDE THE FIRST OCCURRENCE, which is the whole point: 01:00 to 01:55 PDT is
+      // 08:00Z to 08:55Z. Ending at 02:00 instead would have run to 10:00Z and covered both
       // occurrences as instants, and the old predicate would then have refused both bookings below
-      // for reasons that had nothing to do with the wall clock.
-      const block = await blockTime(`${FALL_BACK}T01:00`, `${FALL_BACK}T01:59`, {
+      // for reasons that had nothing to do with the wall clock. 01:55 rather than 01:59 because
+      // every scheduled time is on a five-minute mark; a 01:30 booking still runs 25 minutes into
+      // the block, past the fifteen-minute tolerance, so the refusals below are the projection's.
+      const block = await blockTime(`${FALL_BACK}T01:00`, `${FALL_BACK}T01:55`, {
         startDisambiguation: "earlier", endDisambiguation: "earlier"
       });
       expect(block.statusCode, block.body).toBe(201);
@@ -516,7 +518,7 @@ describeDatabase("staff availability precedence, through the booking routes", ()
         select start_at,end_at from blocked_times where id=${block.json().id}
       `;
       expect(stored!.startAt.toISOString()).toBe(`${FALL_BACK}T08:00:00.000Z`);
-      expect(stored!.endAt.toISOString()).toBe(`${FALL_BACK}T08:59:00.000Z`);
+      expect(stored!.endAt.toISOString()).toBe(`${FALL_BACK}T08:55:00.000Z`);
 
       // "earlier" (08:30Z) overlaps the block as instants and was refused before this change too.
       // "later" (09:30Z) does NOT overlap it as instants - it is the second occurrence of the same

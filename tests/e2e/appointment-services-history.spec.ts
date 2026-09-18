@@ -200,7 +200,38 @@ test("a manager edits a line's minutes and then its price, and the history says 
     await expect(after.nth(0)).toContainText(/9:00 AM → .*1:00 PM/u);
   });
 
-test("a groomer lengthens their own visit, is shown the price as text, and adding a service keeps the minutes they set",
+/**
+ * A role WITHOUT `appointments.service_price_edit`. The shipped Groomer preset holds the key now -
+ * a groomer may price their own work - so the read-only price is a custom role's, built here from
+ * the preset with that one key left out, and it says why in words rather than as the key.
+ */
+test("a role without Edit service prices is shown the price as text, with the reason, and never a disabled input",
+  async ({ page, request, tenant }) => {
+    const keyless = GROOMER.filter((permission) => permission !== "appointments.service_price_edit");
+    const grace = await createMember(request, `grace-keyless+${tenant.runId}@pawsh-test.example`, keyless);
+    await link(request, tenant.employeeId, grace.membershipId);
+    const appointment = await createAppointment(request, tenant);
+    const [line] = (await visit(request, appointment.id)).services;
+    await login(page, grace.email, password);
+    await openDetail(page, appointment.id);
+
+    await row(page, line!.id).getByTestId("appointment-service-edit").click();
+    await expect(modal(page)).toBeVisible();
+    // The price is a value with its reason, not a field of any kind.
+    await expect(modal(page).getByTestId("service-line-price-readonly")).toBeVisible();
+    await expect(modal(page).getByTestId("service-line-price-value")).toHaveText("$85.00");
+    await expect(modal(page).getByTestId("service-line-price-readonly")).toContainText("Price changes need Edit service prices.");
+    await expect(modal(page).getByTestId("service-line-price-readonly")).not.toContainText("service_price_edit");
+    await expect(modal(page).getByTestId("field-price")).toHaveCount(0);
+    await expect(modal(page).locator("input[disabled]")).toHaveCount(0);
+    // The duration is still theirs to change.
+    await modal(page).getByTestId("field-durationMinutes").fill("120");
+    await page.getByTestId("modal-submit").click();
+    await expect(modal(page)).toBeHidden();
+    await expect(row(page, line!.id)).toContainText("$85.00 · 120 min");
+  });
+
+test("a groomer lengthens their own visit, may price it, and adding a service keeps the minutes they set",
   async ({ page, request, tenant }) => {
     const grace = await createMember(request, `grace+${tenant.runId}@pawsh-test.example`, GROOMER);
     await link(request, tenant.employeeId, grace.membershipId);
@@ -212,11 +243,10 @@ test("a groomer lengthens their own visit, is shown the price as text, and addin
 
     await row(page, line!.id).getByTestId("appointment-service-edit").click();
     await expect(modal(page)).toBeVisible();
-    // The price is a value with its reason, not a field of any kind.
-    await expect(modal(page).getByTestId("service-line-price-readonly")).toBeVisible();
-    await expect(modal(page).getByTestId("service-line-price-value")).toHaveText("$85.00");
-    await expect(modal(page).getByTestId("service-line-price-readonly")).toContainText("appointments.service_price_edit");
-    await expect(modal(page).getByTestId("field-price")).toHaveCount(0);
+    // The Groomer preset holds `appointments.service_price_edit`, so the price is a field here -
+    // offered by `allowed()`, with no read-only text and no key anywhere on the dialog.
+    await expect(modal(page).getByTestId("field-price")).toHaveValue("85.00");
+    await expect(modal(page).getByTestId("service-line-price-readonly")).toHaveCount(0);
     await expect(modal(page).locator("input[disabled]")).toHaveCount(0);
     await modal(page).getByTestId("field-durationMinutes").fill("120");
     await page.getByTestId("modal-submit").click();
@@ -226,6 +256,7 @@ test("a groomer lengthens their own visit, is shown the price as text, and addin
     await expect(row(page, line!.id).getByTestId("appointment-service-edited")).toBeVisible();
     expect(writes).toHaveLength(1);
     expect(writes[0]!.method).toBe("PATCH");
+    // The price was offered and left alone: an unchanged field is not re-sent as a price edit.
     expect(Object.keys(writes[0]!.body).sort()).toEqual(["durationMinutes", "version"]);
 
     // ── + ADD SERVICE, THROUGH THE CATALOG, KEEPS THE EDITED LINE ─────────────────────────

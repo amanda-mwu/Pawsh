@@ -66,9 +66,11 @@ const NOTES = slice(
   "\nfunction appointmentPermissionRefusal("
 );
 const SURFACE = slice(
-  "function appointmentPermissionRefusal(action,permission){",
+  "function appointmentPermissionRefusal(action){",
   "\n/**\n * The appointment detail surface: level 1 of the stack."
 );
+/** The three permission-copy helpers every refusal builder goes through. */
+const REFUSAL_COPY = slice("const SERVER_PERMISSION_REFUSAL=", "\nfunction settleUnauthenticated() {");
 const DERIVE = slice("  const derive=()=>{", "\n  /**\n   * The appointment note redraws");
 /** The calendar card's overflow menu, which is gated the way the surface is. */
 const CARD_MENU = slice("function calendarScopeAttrs(item){", "\n// The hash fallback.");
@@ -162,7 +164,7 @@ function client(
   };
   const names = Object.keys(scope);
   const factory = new Function(
-    ...names, [prelude, NOTES, SURFACE, DERIVE, exported].join("\n")
+    ...names, [prelude, REFUSAL_COPY, NOTES, SURFACE, DERIVE, exported].join("\n")
   ) as (...args: unknown[]) => Module;
   return factory(...names.map((name) => scope[name]));
 }
@@ -331,11 +333,11 @@ describe("a disabled control never steals the dominant slot", () => {
   });
 
   it("a cancelled visit leads with Reschedule for a role that can book, and with Close for one that cannot", () => {
-    // The groomer preset holds no appointments.create, so Reschedule is drawn refused with the key
-    // named and the slot passes to Close - the honest footer for a visit nobody here can rebook.
+    // The groomer preset holds no appointments.create, so Reschedule is drawn refused with its
+    // reason and the slot passes to Close - the honest footer for a visit nobody here can rebook.
     const groomer = client("cancelled", GROOMER).markup();
     expect(control(groomer, "appointment-reschedule")).toContain("disabled");
-    expect(control(groomer, "appointment-reschedule")).toContain("appointments.create");
+    expect(control(groomer, "appointment-reschedule")).toContain("You do not have permission to book appointments");
     expect(primaries(groomer)).toEqual(["appointment-close"]);
     for (const status of ["cancelled", "no_show"]) {
       const desk = client(status, EVERYTHING).markup();
@@ -461,17 +463,17 @@ describe("the service note is an editor of its own", () => {
     for (const status of ["scheduled", "cancelled", "no_show"]) {
       expect(button(client(status, EVERYTHING).markup()), status).toBeNull();
     }
-    // Drawn, disabled, and naming the key - the shape every other refusal on this surface takes.
+    // Drawn, disabled, and saying why - the shape every other refusal on this surface takes.
     const refused = button(client("checked_in", ["appointments.view"]).markup());
     expect(refused?.[0]).toContain("disabled");
-    expect(refused?.[0]).toContain("operations.perform_service");
+    expect(refused?.[0]).toContain("You do not have permission to write the service note");
     expect(client("checked_in", ["appointments.view"]).markup()).not.toContain('data-testid="appointment-service-note-input"');
   });
 });
 
 describe("ownership is a refusal of its own", () => {
   const OTHER = { groomers: [{ id: "e2", displayName: "Sam" }], employeeId: "e2" };
-  const SCOPE = "assigned to another groomer (appointments.edit_all_staff)";
+  const SCOPE = "This appointment is assigned to another groomer";
 
   it("a groomer on another groomer's visit is refused by scope, with the key named", () => {
     const markup = client("checked_in", GROOMER, OTHER).markup();
@@ -487,9 +489,9 @@ describe("ownership is a refusal of its own", () => {
     expect(control(client("in_service", GROOMER, OTHER).markup(), "appointment-complete")).toContain(SCOPE);
   });
 
-  it("the permission is named before the scope: a role without the key is told about the key", () => {
+  it("the permission is asked before the scope: a role without the key is told what it cannot do", () => {
     const markup = client("checked_in", ["appointments.view"], OTHER).markup();
-    expect(control(markup, "appointment-ready")).toContain("operations.complete");
+    expect(control(markup, "appointment-ready")).toContain("You do not have permission to mark work as finished");
     expect(control(markup, "appointment-ready")).not.toContain(SCOPE);
   });
 
@@ -538,12 +540,13 @@ describe("the calendar card's overflow menu is gated the way the surface is", ()
       const appointmentMoveAllowed = () => allowed("appointments.edit");
       const appointmentLockNoteMarkup = () => "";
     `;
-    const factory = new Function("escape", "state", [prelude, SURFACE, CARD_MENU, `return calendarAction(${JSON.stringify(item)});`].join("\n")) as
-      (escape: unknown, state: unknown) => string;
-    return factory(escape, { me: { employeeId: me } });
+    const escapeAttr = (value = "") => escape(value).replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+    const factory = new Function("escape", "escapeAttr", "state", [prelude, REFUSAL_COPY, SURFACE, CARD_MENU, `return calendarAction(${JSON.stringify(item)});`].join("\n")) as
+      (escape: unknown, escapeAttr: unknown, state: unknown) => string;
+    return factory(escape, escapeAttr, { me: { employeeId: me } });
   }
   const OTHER = { employeeId: "e2", groomers: [{ id: "e2", displayName: "Sam" }] };
-  const SCOPE = "assigned to another groomer (appointments.edit_all_staff)";
+  const SCOPE = "This appointment is assigned to another groomer";
   const item = (markup: string, label: string): string | null =>
     new RegExp(`<button[^>]*>${label}</button>`, "u").exec(markup)?.[0] ?? null;
 

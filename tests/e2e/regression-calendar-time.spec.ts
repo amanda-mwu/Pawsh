@@ -1,4 +1,4 @@
-import { createAppointment, expect, login, test } from "./fixtures/tenant.js";
+import { createAppointment, createMember, expect, login, password, test } from "./fixtures/tenant.js";
 import { chooseBookingClient, chooseBookingPet, openSlotAction } from "./helpers/booking.js";
 import { dragAppointmentToSlot, prefLocalDate } from "./helpers/calendar.js";
 
@@ -231,12 +231,15 @@ test("@regression-calendar-time confirms a dragged move and leaves the card alon
 /**
  * The confirmation is a gate in front of the request, not a second answer to a conflict.
  *
- * Pawsh keeps ONE conflict path: a refused move reopens the Move dialog on the slot the drop aimed
- * at, so an overridable overlap keeps its "Move anyway" and an availability refusal is corrected
- * where it was attempted. Confirming must land on that same path, which also means the
- * confirmation has to be off the top layer before the Move dialog opens over it.
+ * Overlaps are a permission now: a caller holding `appointments.override_conflict` drops onto a
+ * covered slot and the move is saved on that one request, with the overlap recorded and nothing
+ * further to confirm. Pawsh still keeps ONE conflict path for a caller without the key: the
+ * refusal reopens the Move dialog on the slot the drop aimed at, carrying the sentence and no
+ * button, so the time is corrected where it was attempted. Confirming must land on that same
+ * path, which also means the confirmation has to be off the top layer before the Move dialog opens
+ * over it.
  */
-test("@regression-calendar-time still reaches Move anyway after the drop is confirmed",async({page,request,tenant})=>{
+test("@regression-calendar-time a confirmed drop onto a covered slot is saved directly with the key",async({page,request,tenant})=>{
   await createAppointment(request,tenant,{
     localStart:`${tenant.anchor}T11:00`,customerId:tenant.rockyCustomerId,petId:tenant.rockyPetId
   });
@@ -245,21 +248,46 @@ test("@regression-calendar-time still reaches Move anyway after the drop is conf
   await page.getByTestId("nav-calendar").click();
   await page.waitForLoadState("networkidle");
 
-  // A slot already covered by another card is still a legal target - the server is the one that
-  // gets to answer with the conflict.
+  // A slot already covered by another card is a legal target, and for this role a permitted one.
   await dragAppointmentToSlot(page,{appointmentId:movable.id,slot:`${tenant.anchor}T11:00`,groomerId:tenant.employeeId});
   const confirm=page.getByTestId("stacked-dialog");
   await expect(confirm).toBeVisible();
   await confirm.getByTestId("stacked-dialog-confirm").click();
   await expect(confirm).toBeHidden();
 
-  // The refusal opens the Move dialog on the target the drop aimed at, exactly as it did before the
-  // confirmation existed.
+  await expect(page.getByTestId("modal")).toBeHidden();
+  await expect(page.getByTestId("confirm-conflict-override")).toHaveCount(0);
+  await expect(page.locator(`.week-appointment[data-appointment-id="${movable.id}"] time`)).toContainText("11:00");
+  await expect(page.getByTestId("conflict-override")).toHaveCount(0);
+});
+
+test("@regression-calendar-time a confirmed drop still reaches the Move dialog's refusal without the key",async({page,request,tenant})=>{
+  await createAppointment(request,tenant,{
+    localStart:`${tenant.anchor}T11:00`,customerId:tenant.rockyCustomerId,petId:tenant.rockyPetId
+  });
+  const movable=await createAppointment(request,tenant,{localStart:`${tenant.anchor}T09:00`});
+  const member=await createMember(request,`mover+${tenant.runId}@pawsh-test.example`,[
+    "calendar.view","appointments.view","appointments.create","appointments.edit","appointments.edit_all_staff",
+    "customers.view","pets.view"
+  ]);
+  await login(page,member.email,password);
+  await page.getByTestId("nav-calendar").click();
+  await page.waitForLoadState("networkidle");
+
+  await dragAppointmentToSlot(page,{appointmentId:movable.id,slot:`${tenant.anchor}T11:00`,groomerId:tenant.employeeId});
+  const confirm=page.getByTestId("stacked-dialog");
+  await expect(confirm).toBeVisible();
+  await confirm.getByTestId("stacked-dialog-confirm").click();
+  await expect(confirm).toBeHidden();
+
+  // The refusal opens the Move dialog on the target the drop aimed at, with the overlap named in a
+  // sentence and no button that this role could not press.
   await expect(page.getByTestId("modal")).toBeVisible();
   await expect(page.getByTestId("modal").getByRole("heading",{name:"Move appointment"})).toBeVisible();
   await expect(page.getByTestId("field-startAt")).toHaveValue(`${tenant.anchor}T11:00`);
-  await expect(page.getByTestId("confirm-conflict-override")).toHaveText("Move anyway");
-  await page.getByTestId("confirm-conflict-override").click();
-  await expect(page.getByTestId("modal")).toBeHidden();
-  await expect(page.getByTestId("conflict-override")).toHaveCount(1);
+  await expect(page.locator("#modal-error")).toContainText("already has an overlapping appointment");
+  await expect(page.locator("#modal-error")).toContainText("cannot book over another appointment");
+  await expect(page.locator("#modal-error").getByRole("button")).toHaveCount(0);
+  await expect(page.getByTestId("confirm-conflict-override")).toHaveCount(0);
+  await expect(page.locator(`.week-appointment[data-appointment-id="${movable.id}"] time`)).toContainText("9:00");
 });

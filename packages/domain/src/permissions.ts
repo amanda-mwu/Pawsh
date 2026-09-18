@@ -176,7 +176,15 @@ export const permissionPresets: Record<string, readonly Permission[]> = {
     // anybody else's. The server resolves "assigned to me" from `employees.membership_id`, never
     // from anything the client sends. `migrations/0057_staff_scheduling_scope.sql` gives the same
     // three keys to every built-in Groomer that already exists.
-    "appointments.edit", "calendar.blocks_create", "calendar.blocks_edit"
+    "appointments.edit", "calendar.blocks_create", "calendar.blocks_edit",
+    // AND MAY PRICE THEIR OWN WORK. `appointments.service_price_edit` is the price of ONE service
+    // on ONE appointment - the `priceMinor` half of `PATCH /api/appointments/:id/services/:lineId`
+    // - and nothing in the price book: Settings -> Services stays behind `services.manage`, which
+    // this preset does not hold. The route sits under `appointments.edit`, so the same scope rule
+    // applies: a groomer re-prices the appointments assigned to them and is refused anybody
+    // else's. Workspaces created before this key joined the preset need a data grant for their
+    // existing built-in Groomer, in the shape 0057 used, which is a migration of its own.
+    "appointments.service_price_edit"
   ],
   receptionist: [
     "calendar.view", "appointments.view", "appointments.create", "appointments.edit",
@@ -197,6 +205,15 @@ export const permissionPresets: Record<string, readonly Permission[]> = {
     // capability, so the preset gains the keys rather than the route keeping the looser gate.
     // `migrations/0055_blocked_time_management.sql` does the same for roles that already exist.
     "calendar.blocks_create", "calendar.blocks_edit",
+    // THE FRONT DESK DOUBLE-BOOKS ON PURPOSE, AND PRICES THE VISIT IN FRONT OF IT.
+    // `appointments.override_conflict` is the authority to place an appointment over another one
+    // - and, since the overlap rule stopped asking twice, a holder is let through without the 409
+    // round trip and the override is recorded as it always was. Blocked time is untouched by it.
+    // `appointments.service_price_edit` is the price of one service on one appointment, never the
+    // price book. Both ride `appointments.edit_all_staff` above, so the desk exercises them on any
+    // groomer's appointment. Existing built-in Receptionists need the two keys granted by a
+    // migration in 0057's shape; the preset alone reaches only workspaces created after it.
+    "appointments.override_conflict", "appointments.service_price_edit",
     "customers.view", "customers.edit", "pets.view", "pets.edit",
     "pets.care.view", "operations.check_in", "checkout.perform", "payments.view"
   ],
@@ -369,9 +386,12 @@ export const unenforcedPermissions: ReadonlySet<Permission> = new Set<Permission
   // `appointments.service_price_edit` GRADUATED HERE and is deliberately absent. It gates the
   // `priceMinor` half of `PATCH /api/appointments/:id/services/:lineId` - re-pricing one service
   // on one appointment - on top of the `appointments.edit` the route requires for the duration
-  // half. No migration and no preset change: 0045 granted the key to every role that could
-  // already do everything, so a Manager holds it, and the Groomer and Receptionist presets never
-  // held it and gain nothing - a groomer may lengthen their own visit and may not re-price it.
+  // half. It graduated with no migration and no preset change - 0045 had granted the key to
+  // every role that could already do everything, so a Manager held it and nobody else did. The
+  // Groomer and Receptionist presets hold it NOW, in `permissionPresets` above: pricing the visit
+  // in front of you is appointment-instance authority, not price-book authority, and the route's
+  // own scope rule keeps a groomer to their own appointments. Existing built-in Groomer and
+  // Receptionist roles need the same grant by migration, in 0057's shape.
   // Like `customers.credit_edit` before it, leaving it here once it refuses somebody would tell
   // an owner the switch does nothing while it is in fact refusing their staff.
   "appointments.online_booking_accept",

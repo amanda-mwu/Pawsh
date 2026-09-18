@@ -18,7 +18,7 @@ import { describe, expect, it } from "vitest";
  *   because a disabled control that could never apply here explains nothing. This is
  *   `calendarAction()`'s rule and it is unchanged.
  *
- *   WHAT THE ROLE DOES NOT ALLOW IS DISABLED, WITH THE KEY NAMED. This is what the blocked-time
+ *   WHAT THE ROLE DOES NOT ALLOW IS DISABLED, WITH THE REASON NAMED. This is what the blocked-time
  *   drawer's Update and Delete do, and what the Invoice button on this same footer already did.
  *
  * The two halves are asserted separately below, because collapsing them back into one flag is
@@ -61,9 +61,11 @@ const NOTES = slice(
 );
 /** The refusal attributes, the rail's refusal, and the surface that draws both. */
 const SURFACE = slice(
-  "function appointmentPermissionRefusal(action,permission){",
+  "function appointmentPermissionRefusal(action){",
   "\n/**\n * The appointment detail surface: level 1 of the stack."
 );
+/** The three permission-copy helpers every refusal builder goes through. */
+const REFUSAL_COPY = slice("const SERVER_PERMISSION_REFUSAL=", "\nfunction settleUnauthenticated() {");
 /** The single place the surface decides what this actor may do with this visit. */
 const DERIVE = slice("  const derive=()=>{", "\n  /**\n   * The appointment note redraws");
 /** The rail's three states, and the read behind them. */
@@ -180,7 +182,7 @@ function client(status = "scheduled", { railFails = "forbidden" as "forbidden" |
     return { grant, derive, appointmentSurfaceMarkup, loadClient, surface,
       rail: () => railBody.innerHTML };`;
   const factory = new Function(
-    ...names, [prelude, NOTES, SURFACE, DERIVE, DRAW_RAIL, LOAD_CLIENT, exported].join("\n")
+    ...names, [prelude, REFUSAL_COPY, NOTES, SURFACE, DERIVE, DRAW_RAIL, LOAD_CLIENT, exported].join("\n")
   ) as (...args: unknown[]) => Omit<Module, "reads">;
 
   return { ...factory(...names.map((name) => scope[name])), reads };
@@ -232,7 +234,7 @@ describe("a control the ROLE cannot use is disabled with the reason on it", () =
     }
   });
 
-  it("names the permission on each of the five, so it can be asked for by name", () => {
+  it("says what cannot be done on each of the five, and never the key behind it", () => {
     for (const [testid, permission, action] of FIVE) {
       // Each control is drawn in a status that offers it: the two footer controls need a
       // scheduled visit, the middle two need one that has been checked in.
@@ -242,7 +244,8 @@ describe("a control the ROLE cannot use is disabled with the reason on it", () =
       const button = control(draw(app), testid);
 
       expect(button, `${testid} was not drawn at all`).not.toBeNull();
-      expect(button).toContain(`title="You do not have permission to ${action} (${permission})"`);
+      expect(button).toContain(`title="You do not have permission to ${action}"`);
+      expect(button).not.toContain(permission);
     }
   });
 
@@ -326,7 +329,8 @@ describe("the client rail tells a refusal and a failure apart", () => {
 
     expect(app.surface.client.refused).toBe(true);
     expect(app.rail()).toContain("Client records are not part of this role");
-    expect(app.rail()).toContain("appointments.view");
+    expect(app.rail()).toContain("<strong>View appointments</strong>");
+    expect(app.rail()).not.toContain("appointments.view");
     expect(app.rail()).not.toContain("appointment-client-retry");
     expect(app.rail()).not.toContain("Retry");
     expect(app.rail()).not.toContain("could not be loaded");

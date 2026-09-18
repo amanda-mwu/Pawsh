@@ -200,7 +200,7 @@ test("without appointments.edit the note is text and Edit says why it cannot be 
   const edit = page.getByTestId("appointment-note-edit");
   await expect(edit).toBeVisible();
   await expect(edit).toBeDisabled();
-  await expect(edit).toHaveAttribute("title", /appointments\.edit/);
+  await expect(edit).toHaveAttribute("title", "You do not have permission to edit the appointment note");
   await expect(recordNote(page).locator("textarea")).toHaveCount(0);
   await expect(page.getByTestId("appointment-note-save")).toHaveCount(0);
 });

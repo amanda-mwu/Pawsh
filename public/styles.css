@@ -6,7 +6,7 @@ label{display:grid;gap:7px;font-size:13px;font-weight:600;margin-bottom:16px}inp
 main{padding:42px 4.5vw;min-width:0}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:34px}.header-actions{display:flex;align-items:center;gap:18px;color:var(--muted);font-size:13px}.metric-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:18px}.metric{background:var(--paper);border:1px solid rgba(0,0,0,.06);border-radius:15px;padding:22px;box-shadow:0 4px 20px rgba(0,0,0,.04)}.metric strong{font:600 32px var(--font-sans);display:block}.metric span{font-size:12px;color:var(--muted)}.content-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}.panel{background:var(--paper);border-radius:16px;padding:24px;box-shadow:0 5px 24px rgba(0,0,0,.05);border:1px solid rgba(0,0,0,.06)}.span-2{grid-column:span 2}.panel-head,.split-head{display:flex;justify-content:space-between;align-items:center}.split-head{margin-bottom:18px}.split-head button+button{margin-left:8px}.safety-panel{background:#e2e6e2;position:relative;overflow:hidden}.safety-panel>p:not(.eyebrow){color:var(--muted);line-height:1.5}.safety-mark{position:absolute;right:-20px;bottom:-35px;font:600 96px var(--font-sans);color:rgba(32,37,34,.05)}
 .appointment-list{display:grid;margin-top:14px}.appointment{display:grid;grid-template-columns:85px 1fr auto;align-items:center;gap:14px;padding:15px 2px;border-top:1px solid var(--line)}.appointment time{font-weight:700}.appointment .pet{font-weight:700}.appointment small{display:block;color:var(--muted);margin-top:3px}.appointment-actions{display:grid;justify-items:end;gap:2px}.appointment-actions .text-button{font-size:11px}.badge{font-size:11px;font-weight:700;padding:6px 9px;border-radius:20px;background:var(--mint);text-transform:capitalize}.badge.in_service{background:var(--info-tint);color:var(--info)}.badge.completed{background:var(--success-tint);color:var(--success)}.empty{color:var(--muted);padding:24px 0}.card-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:15px}.customer-card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:20px}.customer-card h3{font-size:20px}.customer-card p{font-size:13px;color:var(--muted)}.search{max-width:420px;margin-bottom:20px}.simple-list>div{padding:13px 0;border-top:1px solid var(--line);display:flex;justify-content:space-between}.simple-list small{color:var(--muted)}
 dialog{border:0;border-radius:18px;padding:0;width:min(650px,calc(100vw - 30px));max-height:calc(100dvh - 20px);overflow:auto;box-shadow:var(--shadow);background:var(--paper)}dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(3px)}#modal-form{padding:28px}.modal-head,.modal-actions{display:flex;justify-content:space-between;align-items:start}.close{border:0;background:none;font-size:25px;color:var(--muted);min-width:44px;min-height:44px}.modal-actions{justify-content:flex-end;gap:10px;margin-top:20px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.form-grid .wide,.form-grid .breed-hint,.form-grid .breed-other-field{grid-column:1/-1}#toast{position:fixed;right:24px;bottom:24px;background:var(--tooltip);color:#fff;padding:12px 18px;border-radius:9px;opacity:0;transform:translateY(10px);transition:.2s;pointer-events:none}#toast.show{opacity:1;transform:none}
-#modal-error span{display:block;margin-bottom:10px}.conflict-override{display:block;color:#9a6410;font-weight:700}
+#modal-error span{display:block;margin-bottom:10px}
 .permission-grid{border:1px solid var(--line);border-radius:10px;padding:15px;display:grid;grid-template-columns:1fr 1fr;gap:8px 15px}.permission-grid legend{font-weight:700;padding:0 6px}.permission-grid label{display:flex;align-items:center;gap:7px;margin:0;font-weight:500}.permission-grid input{width:auto}
 .card-actions{display:flex;gap:14px;border-top:1px solid var(--line);margin-top:14px;padding-top:8px}.pet-links{display:flex;flex-wrap:wrap;gap:5px;color:var(--muted)}.payment-receipt>div,.payment-receipt-record>div,.payment-receipt-purchase>div{display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid var(--line)}.receipt-total{font-size:18px}
 /* == the Invoice's money statement: grouped sections, not a ledger of equal rows ==
@@ -89,7 +89,7 @@ dialog{border:0;border-radius:18px;padding:0;width:min(650px,calc(100vw - 30px))
 .transfer-control{display:flex;grid-column:1/-1;align-items:center;gap:8px;padding:10px;border-radius:8px;background:#fdecea}.transfer-control input{width:auto}
 .history-list>div{display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid var(--line)}.history-list h4{margin:18px 0 8px}
 .directory-controls{display:grid;grid-template-columns:minmax(260px,2fr) repeat(3,minmax(130px,1fr));gap:12px;align-items:end}.directory-controls label{margin:0}.directory-table-wrap{overflow:auto;background:var(--paper);border:1px solid var(--line);border-radius:12px}.directory-table{width:100%;border-collapse:collapse;font-size:13px}.directory-table th,.directory-table td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}.directory-table th{position:sticky;top:0;background:var(--mint);z-index:1}.directory-row{cursor:pointer}.directory-row:hover,.directory-row:focus-within{background:#f7f8f6}.directory-customer{display:grid;gap:3px;min-width:210px}.directory-customer button{text-align:left;padding:0}.pet-summary{color:var(--muted);font-size:12px}.status-dot{display:inline-flex;align-items:center;gap:6px}.status-dot::before{content:"";width:8px;height:8px;border-radius:50%;background:#2f6f62}.status-dot.inactive::before{background:#68706b}.directory-pagination{display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-top:12px}.directory-pagination span{font-size:13px;color:var(--muted)}
-.calendar-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}.calendar-toolbar>div{display:flex;align-items:center;gap:8px}.inline-control{display:flex;align-items:center;gap:8px;margin:0}.inline-control select{padding:8px}.calendar-workspace{display:grid;grid-template-columns:220px minmax(0,1fr);gap:12px}.month-sidebar{align-self:start;background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:12px}.month-head,.month-weekdays,.month-grid{display:grid;grid-template-columns:repeat(7,1fr);align-items:center;text-align:center}.month-head{grid-template-columns:44px 1fr 44px}.month-head button{min-width:44px;min-height:44px;border:0;background:transparent}.month-weekdays{font-size:11px;color:var(--muted);font-weight:700}.month-grid button{position:relative;border:0;background:transparent;min-width:0;min-height:34px;border-radius:8px;padding:0}.month-grid button.outside{color:#68706b}.month-grid button.today{outline:2px solid var(--coral)}.month-grid button.selected{background:var(--brand);color:var(--on-brand)}.month-grid button.has-appointment::after{content:"";position:absolute;width:4px;height:4px;border-radius:50%;background:var(--coral);bottom:3px;left:calc(50% - 2px)}.week-scroll{overflow:auto;max-height:70vh;border:1px solid var(--line);border-radius:12px;background:var(--paper)}.week-grid{--slot-height:32px;display:grid;grid-template-columns:64px repeat(7,minmax(150px,1fr));min-width:1114px;position:relative}.week-corner,.week-day-head{position:sticky;top:0;z-index:5;background:var(--mint);border-bottom:1px solid var(--line);min-height:52px;padding:8px}.week-day-head{border-left:1px solid var(--line);text-align:center}.week-day-head.selected{background:#e2e6e2}.week-time{position:sticky;left:0;z-index:3;background:var(--paper);height:var(--slot-height);padding:3px 8px;color:var(--muted);font-size:11px;border-top:1px solid #e2e6e2}.week-slot{height:var(--slot-height);border-left:1px solid var(--line);border-top:1px solid #e2e6e2;background:transparent;min-width:44px;padding:0}.week-slot.closed{background:repeating-linear-gradient(135deg,#f7f8f6,#f7f8f6 5px,#e2e6e2 5px,#e2e6e2 10px);cursor:not-allowed}.week-slot:not(.closed):hover{background:#f7f8f6}.week-appointment{z-index:2;margin:2px 4px;border:0;border-left:4px solid #2f6f62;border-radius:7px;background:#e2e6e2;color:var(--ink);padding:5px 7px;text-align:left;overflow:hidden;min-height:28px;font-size:11px}.week-appointment strong,.week-appointment span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.week-appointment.status-in_service{border-color:var(--coral);background:#fdecea}.week-appointment.status-completed{border-color:#68706b;background:#e2e6e2}.week-appointment.overlap{margin-left:22px}.calendar-mobile-date{display:none}
+.calendar-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}.calendar-toolbar>div{display:flex;align-items:center;gap:8px}.inline-control{display:flex;align-items:center;gap:8px;margin:0}.inline-control select{padding:8px}.calendar-workspace{display:grid;grid-template-columns:220px minmax(0,1fr);gap:12px}.month-sidebar{align-self:start;background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:12px}.month-head,.month-weekdays,.month-grid{display:grid;grid-template-columns:repeat(7,1fr);align-items:center;text-align:center}.month-head{grid-template-columns:44px 1fr 44px}.month-head button{min-width:44px;min-height:44px;border:0;background:transparent}.month-weekdays{font-size:11px;color:var(--muted);font-weight:700}.month-grid button{position:relative;border:0;background:transparent;min-width:0;min-height:34px;border-radius:8px;padding:0}.month-grid button.outside{color:#68706b}.month-grid button.today{outline:2px solid var(--coral)}.month-grid button.selected{background:var(--brand);color:var(--on-brand)}.month-grid button.has-appointment::after{content:"";position:absolute;width:4px;height:4px;border-radius:50%;background:var(--coral);bottom:3px;left:calc(50% - 2px)}.week-scroll{overflow:auto;max-height:70vh;border:1px solid var(--line);border-radius:12px;background:var(--paper)}.week-grid{--slot-height:32px;display:grid;grid-template-columns:64px repeat(7,minmax(150px,1fr));min-width:1114px;position:relative}.week-corner,.week-day-head{position:sticky;top:0;z-index:5;background:var(--mint);border-bottom:1px solid var(--line);min-height:52px;padding:8px}.week-day-head{border-left:1px solid var(--line);text-align:center}.week-day-head.selected{background:#e2e6e2}.week-time{position:sticky;left:0;z-index:3;background:var(--paper);height:var(--slot-height);padding:3px 8px;color:var(--muted);font-size:11px;border-top:1px solid #e2e6e2}.week-slot{height:var(--slot-height);border-left:1px solid var(--line);border-top:1px solid #e2e6e2;background:transparent;min-width:44px;padding:0}.week-slot.closed{background:repeating-linear-gradient(135deg,#f7f8f6,#f7f8f6 5px,#e2e6e2 5px,#e2e6e2 10px);cursor:not-allowed}.week-slot:not(.closed):hover{background:#f7f8f6}.week-appointment{z-index:2;margin:2px 4px;border:0;border-left:4px solid #2f6f62;border-radius:7px;background:#e2e6e2;color:var(--ink);padding:5px 7px;text-align:left;overflow:hidden;min-height:28px;font-size:11px}.week-appointment strong,.week-appointment span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.week-appointment.status-in_service{border-color:var(--coral);background:#fdecea}.week-appointment.status-completed{border-color:#68706b;background:#e2e6e2}.calendar-mobile-date{display:none}
 button:focus-visible,a:focus-visible{outline:3px solid var(--coral);outline-offset:3px}.text-button,input,select{min-height:44px}.safety-context{margin-top:8px;padding:9px 11px;border:2px solid #b3261e;border-radius:9px;background:#fdecea;color:#b3261e}.safety-context p{margin:3px 0;font-size:12px;line-height:1.4}.safety-context strong{color:#b3261e}.rabies-expires_before_appointment,.rabies-expired{font-weight:700}.rabies-expires_before_appointment::before,.rabies-expired::before{content:"Attention: ";text-transform:uppercase}
 @media(max-width:900px){.auth-shell{grid-template-columns:1fr}.brand-panel{display:none}.app-shell{grid-template-columns:1fr}aside{height:auto;position:static;padding:18px 22px;flex-direction:row;align-items:center;gap:18px;overflow:visible}aside nav{display:flex;margin:0;gap:2px;overflow:auto}.aside-foot{display:block;margin:0 0 0 auto}.account-control{border:0;padding:0}.account-control>button{width:auto;min-width:54px}.account-summary{display:none}.account-menu{left:auto;right:0;top:62px;bottom:auto;min-width:210px}main{padding:28px 20px}.metric-grid{grid-template-columns:repeat(2,1fr)}.content-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.card-grid{grid-template-columns:repeat(2,1fr)}.directory-controls{grid-template-columns:1fr 1fr}.calendar-workspace{grid-template-columns:1fr}.month-sidebar{display:none}.calendar-toolbar{align-items:flex-start;flex-wrap:wrap}.profile-section{grid-template-columns:1fr;gap:14px}}@media(max-width:580px){header{align-items:start}.header-actions span{display:none}.metric-grid,.card-grid,.form-grid{grid-template-columns:1fr}.appointment{grid-template-columns:65px 1fr}.appointment .badge{display:none}aside .brand{display:none}aside{padding:10px;justify-content:flex-start;gap:8px}aside nav{flex:1;overflow:auto}nav button{font-size:12px;padding:10px 8px}.panel-head,.split-head{align-items:flex-start;gap:12px;flex-wrap:wrap}h2{font-size:28px}#modal-form{padding:20px}.directory-controls{grid-template-columns:1fr}.directory-table th:nth-child(n+3),.directory-table td:nth-child(n+3){display:none}.directory-pagination{justify-content:space-between}.calendar-toolbar>div{flex-wrap:wrap}.week-grid{grid-template-columns:58px repeat(7,minmax(150px,1fr))}.account-chevron{display:none}}
 .breed-combobox{position:relative}.breed-options{position:absolute;z-index:10;top:70px;left:0;right:0;max-height:240px;overflow:auto;border:1px solid var(--line);border-radius:10px;background:#fff;box-shadow:var(--shadow);padding:5px}.breed-options button{display:block;width:100%;min-height:44px;border:0;background:#fff;color:var(--ink);padding:10px;text-align:left}.breed-options button:hover,.breed-options button[aria-selected="true"]{background:var(--mint);outline:2px solid #2f6f62;outline-offset:-2px}.breed-options .breed-option-other{border-top:1px solid var(--line);font-weight:700}.breed-options button:only-child.breed-option-other{border-top:0}.breed-hint{margin:-8px 0 14px;color:var(--muted);font-size:12px;font-weight:400;line-height:1.4}.breed-hint[hidden]{display:none}.breed-other-field[hidden]{display:none}.breed-combobox input[aria-invalid="true"]{border-color:#b3261e}.rabies-profile-status{padding:10px;border-radius:9px;background:var(--mint);font-weight:700}
@@ -104,7 +104,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--coral);outline-offs
 @media(max-width:900px){aside{min-width:0}aside nav{min-width:0}.aside-foot{flex:0 0 auto}}
 .auth-access-request{margin-top:20px;padding-top:16px;border-top:1px solid var(--line);display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;color:var(--muted)}.access-request-section{border-top:1px solid var(--line);margin-top:18px;padding-top:14px}.access-request-section h4{margin:0 0 8px}.service-unavailable{color:var(--muted)}.service-unavailable small{display:block;font-weight:400;margin-left:24px}
 .compact-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.35rem .75rem}.compact-options label{display:flex;align-items:center;gap:.55rem;min-height:44px;margin:0;padding:.35rem .5rem;border:1px solid var(--line);border-radius:.45rem}.compact-options label:has(input:checked){background:var(--mint);border-color:#2f6f62}.compact-options input{flex:0 0 auto;width:auto}.compact-options small{display:block;color:var(--muted);margin-top:.1rem}.service-options{display:grid;gap:.75rem}.service-options section{margin:0}.service-options h4{margin:0 0 .3rem;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
-.calendar-view-toggle{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}.calendar-view-toggle button{min-height:40px;padding:7px 13px;border:0;border-right:1px solid var(--line);background:var(--paper);color:var(--ink);font-weight:700}.calendar-view-toggle button:last-child{border-right:0}.calendar-view-toggle button[aria-pressed="true"]{background:var(--brand);color:var(--on-brand)}.calendar-action{min-height:36px;padding:6px 9px;border:1px solid #68706b;border-radius:7px;background:#fff;color:var(--ink);font-size:11px;font-weight:700;text-align:left}.calendar-action:hover{background:var(--mint);border-color:#2f6f62}.calendar-action.destructive{color:#b3261e}.calendar-action:active{transform:translateY(1px)}.calendar-action:focus-visible,.calendar-action-trigger:focus-visible,.calendar-open:focus-visible,.week-slot:focus-visible,.day-slot:focus-visible{outline:3px solid rgba(179,38,30,.55);outline-offset:1px}.calendar-actions-menu{position:relative}.calendar-action-trigger{display:grid;place-items:center;width:34px;height:30px;padding:0;border:1px solid #e2e6e2;border-radius:7px;background:#fff;color:var(--ink);font-size:20px;line-height:1;font-weight:800}.calendar-action-trigger:hover,.calendar-action-trigger[aria-expanded="true"]{background:var(--mint);border-color:#68706b}.calendar-action-popover{position:absolute;right:0;z-index:20;display:grid;gap:5px;min-width:170px;padding:7px;border:1px solid var(--line);border-radius:8px;background:var(--paper);box-shadow:0 8px 20px rgba(0,0,0,.18)}.calendar-action-popover[hidden]{display:none}.rabies-needed{display:inline-flex!important;width:auto;margin:2px 0!important;padding:3px 7px;border:1px solid #b3261e;border-radius:999px;background:#fdecea;color:#b3261e;font-size:11px;white-space:nowrap}.week-appointment{width:calc(100% - 20px);justify-self:start;overflow:hidden}.week-appointment.overlap{width:calc(100% - 38px)}
+.calendar-view-toggle{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}.calendar-view-toggle button{min-height:40px;padding:7px 13px;border:0;border-right:1px solid var(--line);background:var(--paper);color:var(--ink);font-weight:700}.calendar-view-toggle button:last-child{border-right:0}.calendar-view-toggle button[aria-pressed="true"]{background:var(--brand);color:var(--on-brand)}.calendar-action{min-height:36px;padding:6px 9px;border:1px solid #68706b;border-radius:7px;background:#fff;color:var(--ink);font-size:11px;font-weight:700;text-align:left}.calendar-action:hover{background:var(--mint);border-color:#2f6f62}.calendar-action.destructive{color:#b3261e}.calendar-action:active{transform:translateY(1px)}.calendar-action:focus-visible,.calendar-action-trigger:focus-visible,.calendar-open:focus-visible,.week-slot:focus-visible,.day-slot:focus-visible{outline:3px solid rgba(179,38,30,.55);outline-offset:1px}.calendar-actions-menu{position:relative}.calendar-action-trigger{display:grid;place-items:center;width:34px;height:30px;padding:0;border:1px solid #e2e6e2;border-radius:7px;background:#fff;color:var(--ink);font-size:20px;line-height:1;font-weight:800}.calendar-action-trigger:hover,.calendar-action-trigger[aria-expanded="true"]{background:var(--mint);border-color:#68706b}.calendar-action-popover{position:absolute;right:0;z-index:20;display:grid;gap:5px;min-width:170px;padding:7px;border:1px solid var(--line);border-radius:8px;background:var(--paper);box-shadow:0 8px 20px rgba(0,0,0,.18)}.calendar-action-popover[hidden]{display:none}.rabies-needed{display:inline-flex!important;width:auto;margin:2px 0!important;padding:3px 7px;border:1px solid #b3261e;border-radius:999px;background:#fdecea;color:#b3261e;font-size:11px;white-space:nowrap}.week-appointment{width:calc(100% - 20px);justify-self:start;overflow:hidden}
 .day-grid{--slot-height:36px;display:grid;grid-template-columns:64px repeat(var(--groomer-count),minmax(190px,1fr));position:relative}.day-corner,.day-groomer{position:sticky;top:0;z-index:5;min-height:52px;padding:16px 8px;background:var(--mint);border-bottom:1px solid var(--line);font-weight:700;text-align:center}.day-corner{left:0;z-index:6}.day-time{position:sticky;left:0;z-index:3;height:var(--slot-height);padding:5px 8px;background:var(--paper);border-top:1px solid #e2e6e2;color:var(--muted);font-size:11px}.day-slot{z-index:1;height:var(--slot-height);min-width:44px;padding:0;border:0;border-left:1px solid var(--line);border-top:1px solid #e2e6e2;background:transparent}.day-slot:hover{background:#f7f8f6}.day-slot.closed{background:#f7f8f6;cursor:not-allowed}.day-appointment{z-index:2;width:calc(100% - 22px);justify-self:start;margin:2px 3px;overflow:hidden}.day-appointment .safety-context{max-height:32px;overflow:hidden}
 @media(max-width:580px){.calendar-view-toggle{width:100%}.calendar-view-toggle button{flex:1}.day-grid{--slot-height:44px;grid-template-columns:58px repeat(var(--groomer-count),minmax(180px,1fr))}.calendar-action{min-height:44px}}
 .calendar-view-toggle button{min-height:44px}
@@ -593,10 +593,13 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
    marked data-allow-horizontal-scroll, own the overflow. */
 .week-grid.week-groomer-grid{grid-template-columns:64px repeat(var(--week-lanes,7),minmax(160px,1fr))}
 .week-groomer-head{padding:7px 6px;font-size:11px}
-/* Stacked bookings still need to show the card underneath, but a 22px indent on a
-   narrow lane cost more than the layering was worth: the time range wrapped onto a
-   second line and pushed the pet name out of view. */
-.week-appointment.overlap{width:calc(100% - 32px);margin-left:14px}
+/* TWO APPOINTMENTS AT THE SAME TIME ARE TWO CARDS SIDE BY SIDE. Overlapping is permitted, and a
+   card drawn over another hid the dog underneath - which one was on top changed with the order the
+   server returned them in. The column is divided the way `.calendar-block[data-block-lanes]`
+   divides it for two bands: `appointmentColumnLayout` hands each card its lane and its cluster's
+   lane count. The 8px is the card's own 4px side margins, restated because the margin shorthand
+   no longer sets the left one; a card in one lane keeps its full width and its margins. */
+.week-appointment[data-card-lanes]{width:calc((100% - 8px)/var(--card-lanes) - 2px);margin-left:calc(4px + var(--card-lane)*(100% - 8px)/var(--card-lanes));margin-right:0;justify-self:start;min-width:0}
 /* A firmer rule at each day boundary keeps the seven days readable as days
    rather than as one undifferentiated run of lanes. */
 .week-day-start{border-left:2px solid var(--muted)}
@@ -839,8 +842,6 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 .appointment-block .service-primary,.appointment-block .service-addon{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .appointment-block .service-primary{color:var(--ink)}
 .appointment-block .service-addon{color:var(--muted)}
-.appointment-block .conflict-override{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--warning);font-size:9px}
-.appointment-block.density-short .conflict-override{display:none}
 .appointment-client{margin-top:auto;padding-top:2px;color:var(--ink);font-size:10px;font-weight:600}
 .appointment-block.density-short .appointment-client,.appointment-block.density-medium .appointment-client{display:none}
 /* Already clipped today by the card's overflow; stated explicitly so the flex body cannot start
@@ -1867,9 +1868,19 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
    ratio to a value the tint cannot follow: the palette's floor becomes 5.97:1 (Amber). Every
    --g-tint is near-white, so there is no swatch here that wants a light tick; deriving a
    light-on-dark branch would be machinery that never runs. An engine without color-mix() drops
-   this to currentColor, which is --ink on both surfaces that render the picker. */
+   this to currentColor, which is --ink on both surfaces that render the picker.
+   THE MARK IS A TICK, NOT A CHEVRON. It is two borders of an empty box turned 45 degrees, and
+   the box used to be SQUARE - 9 by 9 - so the two arms came out the same length and the mark
+   read as a symmetrical "v": the same glyph this product draws for "expand" on the + New
+   button, the account menu and every <details> summary, pointing the wrong way. Human QA called
+   it inverted twice, and the first fix only recoloured it. A tick has a short arm and a long one,
+   the long one rising to the right, so the box is 11 wide by 6 tall: after the turn the bottom
+   edge is the long arm and the left edge the short one. The translate lifts the vertex so the
+   mark sits on the disc's optical centre rather than hanging below it.
+   `tests/e2e/checkmark-rendering.spec.ts` reads the rendered pixels and fails on a symmetrical
+   mark, so the shape cannot quietly go back. */
 .staff-swatch:has(input:checked){border-color:var(--ink)}
-.staff-swatch:has(input:checked) .staff-swatch-dot::after{content:"";width:9px;height:9px;border:2px solid color-mix(in srgb,var(--g,var(--ink)) 65%,var(--ink));border-top:0;border-right:0;transform:translateY(-1px) rotate(-45deg)}
+.staff-swatch:has(input:checked) .staff-swatch-dot::after{content:"";width:11px;height:6px;border:2px solid color-mix(in srgb,var(--g,var(--ink)) 65%,var(--ink));border-top:0;border-right:0;transform:translate(0,-2px) rotate(-45deg)}
 .staff-swatch:has(input:focus-visible){outline:3px solid var(--coral);outline-offset:2px}
 .staff-swatch.is-auto .staff-swatch-dot{background:repeating-linear-gradient(135deg,var(--g-tint) 0 4px,var(--paper) 4px 8px)}
 .staff-swatch-auto{position:absolute;bottom:-2px;color:var(--muted);font-size:8.5px;font-weight:700;letter-spacing:.02em}
@@ -2389,7 +2400,6 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
 }
 .appointment-lifecycle strong{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
 .appointment-lifecycle strong.is-unrecorded{color:var(--muted);font-weight:400}
-.lifecycle-note{flex-basis:100%;margin:0}
 
 /* == Work column ==
    Pomelo drew one bordered card; the column carries several, so the card treatment lives on
@@ -3419,9 +3429,9 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
 .calendar-block[data-block-slot]{border-color:var(--g);background:repeating-linear-gradient(135deg,var(--g-tint),var(--g-tint) 5px,#d4dad5 5px,#d4dad5 10px)}
 /* TWO BLOCKS AT THE SAME TIME ARE TWO BANDS, NOT ONE.
    `blockedTimeColumnLayout` hands each band the lane it was given and the number of lanes its
-   cluster needs; this divides the column by that count. It is deliberately NOT `.week-appointment
-   .overlap`'s fixed 14px inset: that inset buys a second card one visible edge and buys a third
-   nothing at all, and a stack of blocks has no ceiling. Equal lanes keep every band's own label
+   cluster needs; this divides the column by that count. It is deliberately NOT a fixed inset, which
+   is what the appointment cards used to spend on an overlap: an inset buys a second card one
+   visible edge and buys a third nothing at all, and a stack has no ceiling. Equal lanes keep every band's own label
    readable from its own left edge, which is what makes each one findable rather than merely
    present. The 8px is `.calendar-block`'s own 4px gutters, restated here because the margin
    shorthand above no longer sets the left one. */
@@ -3580,39 +3590,130 @@ body.calendar-dragging .calendar-block[data-draggable="true"],body.calendar-drag
 .calendar-block.dragging{z-index:30;pointer-events:none;opacity:.92;box-shadow:0 10px 24px rgba(32,37,34,.28)}
 @media(hover:none){.calendar-block[data-draggable="true"],.calendar-block[data-draggable="true"] .calendar-block-open{cursor:pointer}}
 
+/* == The phone shell ==
+   Two things human QA found on a phone, both shared-shell defects rather than calendar ones.
+
+   THE BAR ABOVE THE PAGE WAS 92px TALL FOR ONE BUTTON. `aside{padding:24px 16px}` is written for
+   the desktop rail and sits later in this file than the phone's `aside{padding:10px}`, so at the
+   same specificity it won on every phone and the hamburger floated in a 92px band. Restated here,
+   at the end of the file, where the phone value wins.
+
+   THE NAVIGATION OPENED AS A STRIP. Pressing the hamburger set `.mobile-open`, which turned the
+   nav into a horizontally scrolling row squeezed between the bar and the page: three of nine
+   destinations visible, the rest reachable by a sideways scroll nothing hinted at, and no way to
+   close it but the same button. It is now what a phone expects of that button: a sheet that opens
+   OVER the page from the left edge, the destinations stacked and every one a full-width 44px row,
+   scrolling normally when the screen is short, with a dimmed backdrop behind it. The hamburger
+   stays above the sheet and becomes the close control - `app.js` swaps its glyph and its label,
+   and Escape or a press on the backdrop closes it too. Nothing about routing changed: the buttons
+   are the same buttons and pressing one still closes the sheet and shows the view. */
+@media(max-width:580px){
+  aside{padding:8px 10px;gap:8px}
+  .mobile-nav-toggle{position:relative;z-index:230;width:40px;height:40px;font-size:18px;line-height:1}
+  #app-view>aside:has(.primary-nav.mobile-open)::before{content:"";position:fixed;inset:0;z-index:210;background:rgba(32,37,34,.45)}
+  .primary-nav.mobile-open{
+    display:flex;flex-direction:column;gap:2px;
+    position:fixed;top:0;left:0;bottom:0;z-index:220;width:min(300px,86vw);
+    margin:0;padding:58px var(--space-3) var(--space-4);overflow-y:auto;overscroll-behavior:contain;
+    background:#e2e6e2;box-shadow:0 12px 28px rgba(32,37,34,.28);
+  }
+  .primary-nav.mobile-open button{flex:0 0 auto;width:100%;min-height:44px;padding:8px 10px;font-size:14px}
+  .primary-nav.mobile-open .nav-divider{display:block;height:1px;margin:6px 4px}
+  /* The page keeps a little less air on a phone: the header's margin and the page gutter were
+     desktop values, and on a 320px screen they were what pushed the first calendar row under
+     the fold. */
+  main{padding:12px}
+  header{margin-bottom:10px}
+  /* "+ New" is one word to a phone; the header used to let it wrap into two lines. */
+  .new-action-control>button{white-space:nowrap}
+  .header-actions{gap:6px}
+  header>.header-services{padding:8px}
+}
+/* On the narrowest phones the title and the four header controls do not share a row: the account
+   button was being pushed past the right edge at 320px, where the html's `overflow-x:hidden`
+   simply cut it off. The title takes its own line and the controls keep theirs. */
+@media(max-width:360px){
+  header{flex-wrap:wrap;row-gap:4px}
+  header>div:first-child{flex:1 1 100%}
+}
+
 /* == The calendar toolbar on a phone ==
-   Human QA: the general mobile pass improved things, but the calendar toolbar was still a stack of
-   full-size controls - twelve of them over five rows before the grid began. The two that
-   duplicated the header's + New menu are gone from the markup at every width; what is left is laid
-   out as THREE ROWS, each a full 44px tall, in the order a phone needs them:
+   Human QA, twice. The first pass cut twelve controls over five rows down to nine over three,
+   each a full 44px tall; the second pass said the result was still too spacious - three rows of
+   44px boxes with 8px between them, before a grid that is the reason the screen was opened.
+
+   THE VISUAL CONTROL IS 36px. THE TOUCH TARGET IS STILL 44. Every button and the groomer summary
+   draws at 36px and carries an invisible `::after` that reaches 4px above and below it (the same
+   pseudo-element hit area `.calendar-action-trigger::after` uses on the cards), so what a finger
+   can press is 44px tall while what the eye sees is a compact row. The rows are 6px apart, so two
+   hit areas never overlap. The view <select> cannot carry a pseudo-element, so it keeps its 44px
+   box and gives 4px of it away on each edge as transparent border: `background-clip:padding-box`
+   paints the field 36px tall inside it and an inset shadow draws the line where the border was,
+   and a -4px vertical margin keeps its row at 36px like the others. The hit areas reach 5px, not
+   4: an absolutely positioned pseudo-element measures from the PADDING box, and every one of
+   these controls carries a 1px border. The gaps are 8px so that two neighbouring hit areas - or
+   the select's box, which does reach into the gap - take no more than a few pixels from each
+   other; a later sibling wins the overlap, so the earlier one must be left 44 without it.
+   `tests/e2e/mobile-calendar.spec.ts` measures the EFFECTIVE target - what `elementFromPoint`
+   answers - and not the painted box, so this is held at 44 without a 44px box.
+
+   Layout is unchanged from the first pass: `display:contents` on the two wrapper divs lets the
+   toolbar place every control by grid area without touching DOM or tab order:
 
      Today   <-  Wed, Sep 17  ->          where am I, and how do I move
      Day/Week/Month     Agenda|Calendar   what shape is the schedule in
-     Groomers ................  print gear  who is shown, and the two tools
-
-   `display:contents` on the two wrapper divs lets the toolbar itself place every control by
-   grid area, so the DOM order (which the desktop layout and the tab order still follow) does not
-   have to change. Nothing here shrinks a touch target: the heights come from the shared coarse-
-   pointer floor above, and the range label is the one thing allowed to give up width. */
+     Groomers ................  print gear  who is shown, and the two tools */
 @media(max-width:580px){
-  /* Three fluid columns and two fixed 44px ones. The two fixed columns are the icon tools' own
-     and nothing else is measured against them: the view select takes two fluid columns, the
-     mode toggle the third plus both fixed ones, so the two halves of row two come out level. */
-  .calendar-toolbar{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) 44px 44px;grid-template-areas:"today nav nav nav nav" "view view mode mode mode" "filter filter filter print gear";gap:8px;align-items:stretch;margin-bottom:10px}
+  .calendar-toolbar{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) 36px 36px;grid-template-areas:"today nav nav nav nav" "view view mode mode mode" "filter filter filter print gear";gap:8px;align-items:stretch;margin-bottom:8px}
   /* Written as children of the toolbar, because `.calendar-toolbar>div{display:flex}` above is
      more specific than the class alone and would keep the wrappers as flex rows. */
   .calendar-toolbar>.calendar-toolbar-main,.calendar-toolbar>.calendar-toolbar-actions{display:contents}
-  #calendar-today{grid-area:today;min-height:44px}
+  .calendar-toolbar button,.groomer-filter>summary{position:relative;min-height:36px;font-size:13px}
+  .calendar-toolbar button::after,.groomer-filter>summary::after{content:"";position:absolute;inset:-5px 0}
+  #calendar-today{grid-area:today;min-height:36px;padding:4px 8px}
   .calendar-date-nav{grid-area:nav;justify-content:space-between;gap:4px;min-width:0}
   .calendar-date-nav strong{min-width:0;flex:1;font-size:13px;line-height:1.2;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .calendar-date-nav button{min-width:44px;min-height:44px}
+  .calendar-date-nav button{min-width:36px;padding:4px 8px}
+  .calendar-date-nav button::after{inset:-5px}
   .calendar-view-select{grid-area:view;width:auto}
-  .calendar-view-select select{width:100%;min-height:44px}
-  .calendar-display-toggle{grid-area:mode;display:flex}
-  .calendar-display-toggle button{flex:1;min-height:44px;padding:7px 6px;font-size:13px;white-space:nowrap}
+  #calendar-view-select{width:calc(100% + 8px);min-height:44px;margin:-4px;padding:4px 30px 4px 10px;border:4px solid transparent;border-radius:8px;background-clip:padding-box;box-shadow:inset 0 0 0 1px var(--line);font-size:13px}
+  #calendar-view-select:focus{border-color:transparent;box-shadow:inset 0 0 0 1px var(--brand),0 0 0 3px rgba(0,0,0,.14)}
+  /* `overflow:visible`, or the hit areas would be clipped at the toggle's rounded edge; the two
+     buttons round their own outer corners instead, one pixel inside the frame's radius. */
+  .calendar-display-toggle{grid-area:mode;display:flex;overflow:visible}
+  .calendar-display-toggle button{flex:1;padding:4px 6px;white-space:nowrap}
+  .calendar-display-toggle button:first-child{border-radius:8px 0 0 8px}
+  .calendar-display-toggle button:last-child{border-radius:0 8px 8px 0}
   .groomer-filter{grid-area:filter;flex:none;min-width:0}
-  .groomer-filter>summary{width:100%;min-height:44px}
+  .groomer-filter>summary{width:100%;padding:4px 10px}
   [data-testid="print-agenda"]{grid-area:print}
   [data-testid="calendar-settings"]{grid-area:gear}
-  .calendar-tool-button{width:44px;height:44px}
+  .calendar-tool-button{width:36px;height:36px;min-height:36px}
+  .calendar-toolbar .calendar-tool-button::after{inset:-5px}
+}
+
+/* == Menus on a phone ==
+   The + New menu, the account menu and the groomer filter share one density problem: every row
+   is a 44px box, every separator carries its own margins, and the menu's own padding is added on
+   top, so a seven-item menu ran to 390px and the groomer popover put 163px around one checkbox.
+   The rows KEEP 44px on a coarse pointer - they touch each other, so a pseudo-element hit area
+   would only overlap the neighbour - and everything around them gives way: 6px of row padding so a
+   wrapped label is still one 44px row, separators with 2px margins, 4px of menu padding, and a
+   tighter line-height so "Coming soon" sits beside its label rather than under it. Focus and
+   selected states are untouched: they are backgrounds, and a background does not need air. */
+@media(max-width:580px){
+  .new-action-menu{padding:4px;border-radius:8px}
+  .new-action-menu button{min-height:44px;padding:6px 10px;gap:8px;line-height:1.25}
+  .new-action-menu button small{font-size:10px;line-height:1.2}
+  .new-action-menu hr{margin:2px 6px}
+  /* Anchored to its trigger again rather than fixed at a constant that matched one shell height:
+     the trigger sits at the right edge, so a right-anchored 220px menu always fits the screen. */
+  .header-actions .account-menu,.account-menu{position:absolute;top:calc(100% + 4px);right:0;left:auto;padding:4px;width:220px;border-radius:8px}
+  .account-menu button{min-height:44px;padding:6px 10px;line-height:1.25}
+  .account-menu hr{margin:2px 4px}
+  .groomer-filter-popover{padding:6px 8px 8px}
+  .groomer-filter-bulk button{min-height:36px;padding:4px 6px}
+  .groomer-filter fieldset{gap:0;margin:2px 0 6px;padding:2px 0}
+  .groomer-filter label{min-height:44px;padding:2px 6px}
+  .groomer-filter-apply{min-height:36px}
 }

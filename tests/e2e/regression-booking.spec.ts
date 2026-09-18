@@ -81,14 +81,28 @@ test("@regression-booking carries the last groomer but no services when the pet 
   await expect(page.getByTestId("booking-defaults-note")).toContainText("no paid visit yet");
 });
 
-test("@regression-booking presents normal conflicts and preserves recovery choices", async ({ page, request, tenant }) => {
+/**
+ * OVERLAPS ARE A PERMISSION, NOT A PROMPT. A caller holding `appointments.override_conflict` -
+ * the owner, manager and receptionist presets - books over an existing appointment on the first
+ * request and the server records the overlap; there is no "Book anyway" round trip any more. A
+ * caller without the key is refused 409 with the overlap named, in a sentence, with nothing to
+ * press: the workspace stays open so the time can be corrected.
+ */
+test("@regression-booking presents a conflict to a role that cannot overlap, and preserves recovery", async ({ page, request, tenant }) => {
   await createAppointment(request, tenant, { startAt: zonedIso(tenant.anchor, 9) });
-  await login(page, tenant.ownerEmail);
+  const member = await createMember(
+    request,
+    `scheduler-recovery+${tenant.runId}@pawsh-test.example`,
+    ["calendar.view","appointments.view","appointments.create","customers.view","pets.view","services.manage"]
+  );
+  await login(page, member.email);
   await page.getByTestId("nav-calendar").click();
   await openBooking(page, tenant, 9);
   await page.getByTestId("booking-submit").click();
-  await expect(page.locator("#booking-error")).toContainText("overlapping appointment");
-  await expect(page.getByTestId("confirm-conflict-override")).toBeVisible();
+  await expect(page.locator("#booking-error")).toContainText("already has an overlapping appointment");
+  await expect(page.locator("#booking-error")).toContainText("cannot book over another appointment");
+  await expect(page.locator("#booking-error").getByRole("button")).toHaveCount(0);
+  await expect(page.getByTestId("confirm-conflict-override")).toHaveCount(0);
   await expect(page.locator('#booking-dialog [name="startAt"]')).toHaveValue(`${tenant.anchor}T09:00`);
   await page.locator('#booking-dialog [name="startAt"]').fill(`${tenant.anchor}T11:00`);
   await page.getByTestId("booking-submit").click();
@@ -118,17 +132,24 @@ test("@regression-booking disables duplicate UI submission and sends one mutatio
   await expect(page.getByTestId("calendar-list").locator(".appointment-pet", { hasText: "Charlie" })).toHaveCount(1);
 });
 
-test("@regression-booking explicitly overrides a detected conflict and renders both appointments", async ({ page, request, tenant }) => {
+test("@regression-booking books over an existing appointment directly with the key, and renders both", async ({ page, request, tenant }) => {
   await createAppointment(request, tenant, { startAt: zonedIso(tenant.anchor, 9) });
   await login(page, tenant.ownerEmail);
   await page.getByTestId("nav-calendar").click();
   await openBooking(page, tenant, 9);
+  const created = page.waitForResponse((response) =>
+    response.url().endsWith("/api/appointments") && response.request().method() === "POST");
   await page.getByTestId("booking-submit").click();
-  await expect(page.getByTestId("confirm-conflict-override")).toHaveText("Book anyway");
-  await page.getByTestId("confirm-conflict-override").click();
+  // One request, saved on the first ask; the server says the overlap was recorded.
+  const body = await (await created).json() as { conflictOverridden?: boolean; scheduling?: { overrideApplied?: boolean } };
+  expect(body.conflictOverridden).toBe(true);
+  expect(body.scheduling?.overrideApplied).toBe(true);
   await expect(page.getByTestId("booking-dialog")).toBeHidden();
+  await expect(page.getByTestId("confirm-conflict-override")).toHaveCount(0);
   await expect(page.getByTestId("calendar-list").locator(".appointment-pet", { hasText: "Charlie" })).toHaveCount(2);
-  await expect(page.getByTestId("conflict-override")).toHaveCount(1);
+  // No badge, no "intentional overlap" copy: an overlap is an ordinary appointment on the card.
+  await expect(page.getByTestId("conflict-override")).toHaveCount(0);
+  await expect(page.getByTestId("calendar-list")).not.toContainText(/intentional overlap/iu);
   await page.reload();
   await page.getByTestId("nav-calendar").click();
   await expect(page.getByTestId("calendar-list").locator(".appointment-pet", { hasText: "Charlie" })).toHaveCount(2);
@@ -170,7 +191,7 @@ test("@regression-booking hides override UX and denies direct intent without per
   expect(status).toBe(403);
 });
 
-test("@regression-booking reconciles stale override permission without committing overlap", async ({ page, request, tenant }) => {
+test("@regression-booking a revoked override key is decided by the server on the next request", async ({ page, request, tenant }) => {
   await createAppointment(request, tenant, { startAt: zonedIso(tenant.anchor, 9) });
   const retainedPermissions = [
     "calendar.view","appointments.view","appointments.create",
@@ -183,16 +204,23 @@ test("@regression-booking reconciles stale override permission without committin
   );
   await login(page, member.email);
   await page.getByTestId("nav-calendar").click();
+  // Holding the key: the overlap is saved on the first request, with nothing to confirm.
   await openBooking(page, tenant, 9);
   await page.getByTestId("booking-submit").click();
-  await expect(page.getByTestId("confirm-conflict-override")).toBeVisible();
+  await expect(page.getByTestId("booking-dialog")).toBeHidden();
+  await expect(page.getByTestId("calendar-list").locator(".appointment-pet", { hasText: "Charlie" })).toHaveCount(2);
 
-  // A member's access is their role now, so revoking mid-flight edits the role they hold. The
-  // per-member permission column this used to write was retired with migration 0042.
+  // A member's access is their role now, so revoking mid-session edits the role they hold. The
+  // per-member permission column this used to write was retired with migration 0042. The client
+  // still believes it holds the key; the server, reading the role under the transaction, does not.
   await setMemberPermissions(request, member.roleId, retainedPermissions);
-  await page.getByTestId("confirm-conflict-override").click();
-  await expect(page.locator("#booking-error")).toContainText("Missing permission: appointments.override_conflict");
+  await openBooking(page, tenant, 9);
+  await page.getByTestId("booking-submit").click();
+  await expect(page.locator("#booking-error")).toContainText("already has an overlapping appointment");
+  await expect(page.locator("#booking-error")).not.toContainText("override_conflict");
+  await expect(page.locator("#booking-error").getByRole("button")).toHaveCount(0);
   await expect(page.getByTestId("confirm-conflict-override")).toHaveCount(0);
+  await expect(page.getByTestId("calendar-list").locator(".appointment-pet", { hasText: "Charlie" })).toHaveCount(2);
   const me = await page.evaluate(async () => {
     const response = await fetch("/api/me", { credentials: "include" });
     return response.json();
@@ -215,7 +243,7 @@ test("@regression-booking reschedules atomically and persists the new time", asy
   await expect(page.locator(`[data-appointment-id="${appointment.id}"] time`)).toContainText("11:00");
 });
 
-test("@regression-booking explicitly overrides a conflicting reschedule", async ({ page, request, tenant }) => {
+test("@regression-booking reschedules onto an existing appointment directly with the key", async ({ page, request, tenant }) => {
   await createAppointment(request, tenant, { startAt: zonedIso(tenant.anchor, 9) });
   const movable = await createAppointment(request, tenant, { startAt: zonedIso(tenant.anchor, 12) });
   await login(page, tenant.ownerEmail);
@@ -224,10 +252,10 @@ test("@regression-booking explicitly overrides a conflicting reschedule", async 
   await page.locator('select[name="employeeId"]').selectOption(tenant.employeeId);
   await page.getByTestId("field-startAt").fill(`${tenant.anchor}T09:30`);
   await page.getByTestId("modal-submit").click();
-  await expect(page.getByTestId("confirm-conflict-override")).toHaveText("Move anyway");
-  await page.getByTestId("confirm-conflict-override").click();
   await expect(page.getByTestId("modal")).toBeHidden();
-  await expect(page.getByTestId("conflict-override")).toHaveCount(1);
+  await expect(page.getByTestId("confirm-conflict-override")).toHaveCount(0);
+  await expect(page.getByTestId("conflict-override")).toHaveCount(0);
+  await expect(page.locator(`[data-appointment-id="${movable.id}"] time`)).toContainText("9:30");
 });
 
 test("@regression-booking cancels persistently and releases employee capacity", async ({ page, request, tenant }) => {

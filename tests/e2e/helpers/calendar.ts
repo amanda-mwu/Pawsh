@@ -49,10 +49,14 @@ export function prefLocalDate(localDate: string, format: "MM/DD/YYYY" | "DD/MM/Y
  * moves the card too - measuring in the other order aims the press at where the card used to be.
  * The grip is `.appointment-pet`: the overflow menu and the notes button are excluded from dragging
  * on purpose, so pressing at the card's centre is not a reliable way to start one.
+ *
+ * WHERE IN THE ROW THE POINTER LETS GO IS THE MINUTE. A 30-minute row is snapped to five-minute
+ * marks by the pointer's fraction of its height, so `at` says how far down the row to release:
+ * the default is just inside the top, which lands on the row's own time; two thirds lands :20 in.
  */
 export async function dragAppointmentToSlot(
   page: Page,
-  { appointmentId, slot, groomerId }: { appointmentId: string; slot: string; groomerId: string }
+  { appointmentId, slot, groomerId, at = 0.05 }: { appointmentId: string; slot: string; groomerId: string; at?: number }
 ): Promise<void> {
   const target = page.locator(`[data-slot="${slot}"][data-slot-groomer="${groomerId}"]`).first();
   await target.scrollIntoViewIfNeeded();
@@ -67,7 +71,7 @@ export async function dragAppointmentToSlot(
   await page.mouse.down();
   // One step past the threshold, so the drag is genuinely begun before the travel to the target.
   await page.mouse.move(startX, startY + 24);
-  await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, { steps: 8 });
+  await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height * at, { steps: 8 });
   await page.mouse.up();
 }
 

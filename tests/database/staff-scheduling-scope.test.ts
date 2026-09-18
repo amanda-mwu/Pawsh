@@ -473,6 +473,34 @@ describeDatabase("staff scheduling scope", () => {
       expect(unmoved!.employeeId).toBe(employeeA);
     });
 
+    it("lets the Receptionist create, edit, move and delete a block on another employee's calendar", async () => {
+      // The front desk is assigned nothing, so every block it writes is somebody else's calendar:
+      // `calendar.blocks_create` and `calendar.blocks_edit` ride `appointments.edit_all_staff`,
+      // which the preset holds. The groomer case above is the same four routes refused.
+      const day = nextDay();
+      const created = await createBlock(employeeA, receptionist, day);
+      expect(created.statusCode, created.body).toBe(201);
+      const block = created.json() as { id: string; version: number; employeeId: string };
+      expect(block.employeeId).toBe(employeeA);
+
+      const edited = await request("PATCH", `/api/blocked-times/${block.id}`, receptionist,
+        { version: block.version, reason: "Front desk relabel" });
+      expect(edited.statusCode, edited.body).toBe(200);
+      expect(edited.json().reason).toBe("Front desk relabel");
+
+      const moved = await request("PATCH", `/api/blocked-times/${block.id}`, receptionist, {
+        version: edited.json().version, employeeId: employeeA,
+        localStart: `${day}T14:00`, localEnd: `${day}T14:30`, expectedLocationVersion: 1
+      });
+      expect(moved.statusCode, moved.body).toBe(200);
+      expect(moved.json().scheduledLocalStart).toBe(`${day}T14:00`);
+
+      const removed = await request("DELETE", `/api/blocked-times/${block.id}?version=${moved.json().version}`, receptionist);
+      expect(removed.statusCode, removed.body).toBe(204);
+      const [gone] = await db<{ count: number }[]>`select count(*)::int as count from blocked_times where id=${block.id}`;
+      expect(gone!.count).toBe(0);
+    });
+
     it("lets the Receptionist move any block onto any calendar", async () => {
       const day = nextDay();
       const block = (await createBlock(employeeA, ownerCookie, day)).json() as { id: string; version: number };

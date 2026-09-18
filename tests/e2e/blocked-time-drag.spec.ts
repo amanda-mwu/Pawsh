@@ -46,7 +46,9 @@ async function dragBlockToSlot(page: Page, { blockId, slot, groomerId }: { block
   await page.mouse.move(startX, startY);
   await page.mouse.down();
   await page.mouse.move(startX, startY + 24);
-  await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, { steps: 8 });
+  // Just inside the row's top: where the pointer lets go inside a 30-minute row is snapped to the
+  // nearest five minutes, and the row's own time is the one these tests are about.
+  await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height * 0.05, { steps: 8 });
   await page.mouse.up();
 }
 

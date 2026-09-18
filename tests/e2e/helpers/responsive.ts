@@ -91,6 +91,54 @@ export async function expectCriticalTarget(locator: Locator): Promise<void> {
 }
 
 /**
+ * THE EFFECTIVE TARGET: what a finger can press, measured by asking the page rather than the box.
+ *
+ * `expectCriticalTarget` reads `boundingBox()`, which is the PAINTED box. A phone control drawn at
+ * 36px that carries an invisible `::after` reaching 4px past each edge (the calendar toolbar, see
+ * "The calendar toolbar on a phone" in styles.css) is a 44px target the bounding box cannot see,
+ * and a control whose neighbour paints over its edge is a smaller target than its box claims. So
+ * this walks outward from the control's centre one pixel at a time, asking `elementFromPoint`
+ * whether the control - or something inside it - is still what would receive the press, and
+ * reports the extent it found. A pseudo-element hit-tests as its originating element, which is
+ * exactly the fact the toolbar relies on.
+ */
+export async function expectEffectiveTarget(locator: Locator, minimum = 44): Promise<void> {
+  await expect(locator).toBeVisible();
+  const measured = { name: "", width: 0, height: 0 };
+  // Polled, and the scroll inside the poll: the calendar redraws when a load settles, which
+  // detaches the element mid-measurement, and the locator re-resolves on the next attempt.
+  await expect.poll(async () => {
+    await locator.scrollIntoViewIfNeeded().catch(() => undefined);
+    const extent = await locator.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      if (!box.width || !box.height) return null;
+      const centreX = box.left + box.width / 2, centreY = box.top + box.height / 2;
+      const hits = (x: number, y: number): boolean => {
+        if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return false;
+        const target = document.elementFromPoint(x, y);
+        return target !== null && (target === element || element.contains(target));
+      };
+      if (!hits(centreX, centreY)) return { name: element.tagName.toLowerCase(), width: 0, height: 0 };
+      const reach = (stepX: number, stepY: number): number => {
+        let distance = 0;
+        while (distance < 60 && hits(centreX + (distance + 1) * stepX, centreY + (distance + 1) * stepY)) distance += 1;
+        return distance;
+      };
+      const name = [element.tagName.toLowerCase(), element.id ? `#${element.id}` : "",
+        element.getAttribute("data-testid") ? `[${element.getAttribute("data-testid")}]` : ""].join("");
+      return { name, width: reach(-1, 0) + reach(1, 0) + 1, height: reach(0, -1) + reach(0, 1) + 1 };
+    }).catch(() => null);
+    if (!extent) return null;
+    measured.name = extent.name;
+    measured.width = extent.width;
+    measured.height = extent.height;
+    return Math.min(extent.width, extent.height);
+  }, { message: "Effective target must be measurable" }).not.toBeNull();
+  expect(measured.width, `Effective target width of ${measured.name}`).toBeGreaterThanOrEqual(minimum);
+  expect(measured.height, `Effective target height of ${measured.name}`).toBeGreaterThanOrEqual(minimum);
+}
+
+/**
  * The Create Appointment workspace is its own dialog with its own header and action bar, so
  * the same reachability guarantee has to be checked against those controls rather than the
  * shared dialog's.

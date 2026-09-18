@@ -63,6 +63,14 @@ describeDatabase("D2 appointment lifecycle regression", () => {
   } | null = null;
   let ownerCookie: string;
   let memberCookie: string;
+  /**
+   * A BOOKING-ONLY DESK, for every probe below that asks "is this slot occupied?". The owner
+   * holds `appointments.override_conflict`, and a holder is let straight through an overlap -
+   * the booking lands, recorded as an override - so an owner's second booking no longer says
+   * anything about occupancy. A caller without the key is refused with 409, which is the answer
+   * these cases read.
+   */
+  let bookerCookie: string;
   let businessId: string;
   let locationId: string;
   let customerId: string;
@@ -210,6 +218,23 @@ describeDatabase("D2 appointment lifecycle regression", () => {
       payload: { email, password: "correct horse lifecycle member" }
     });
     memberCookie = sessionCookie(login);
+
+    const bookerEmail = `lifecycle-booker-${suffix}@example.test`;
+    const [booker] = await db<{ id: string }[]>`
+      insert into users(email,normalized_email,password_hash)
+      values (${bookerEmail},${bookerEmail},${await hashPassword("correct horse lifecycle booker")})
+      returning id
+    `;
+    await db`
+      insert into business_memberships(business_id,user_id,role_id)
+      values (${businessId},${booker!.id},${await roleFor(db, businessId, ["calendar.view", "appointments.view", "appointments.create"])})
+    `;
+    const bookerLogin = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: bookerEmail, password: "correct horse lifecycle booker" }
+    });
+    bookerCookie = sessionCookie(bookerLogin);
   });
 
   afterAll(async () => {
@@ -274,24 +299,25 @@ describeDatabase("D2 appointment lifecycle regression", () => {
     const startAt = "2033-02-01T17:00:00.000Z";
     const created = await createAppointment(startAt);
     let appointment = created.json<{ id: string; version: number }>();
-    expect((await createAppointment(startAt)).statusCode).toBe(409);
+    const probe = async () => (await createAppointment(startAt, bookerCookie)).statusCode;
+    expect(await probe()).toBe(409);
     for (const status of ["checked_in", "in_service"] as const) {
       const response = await transition(appointment.id, status, appointment.version);
       appointment = response.json();
-      expect((await createAppointment(startAt)).statusCode).toBe(409);
+      expect(await probe()).toBe(409);
     }
     const completed = await transition(appointment.id, "completed", appointment.version);
     expect(completed.statusCode).toBe(200);
-    expect((await createAppointment(startAt)).statusCode).toBe(201);
+    expect(await probe()).toBe(201);
 
     for (const [date, terminal] of [
       ["2033-02-02T17:00:00.000Z", "cancelled"],
       ["2033-02-03T17:00:00.000Z", "no_show"]
     ] as const) {
       const scheduled = await createAppointment(date);
-      expect((await createAppointment(date)).statusCode).toBe(409);
+      expect((await createAppointment(date, bookerCookie)).statusCode).toBe(409);
       expect((await transition(scheduled.json().id, terminal, scheduled.json().version)).statusCode).toBe(200);
-      expect((await createAppointment(date)).statusCode).toBe(201);
+      expect((await createAppointment(date, bookerCookie)).statusCode).toBe(201);
     }
   });
 
@@ -319,7 +345,7 @@ describeDatabase("D2 appointment lifecycle regression", () => {
     lifecycleGate = gate(bookingFirst.id);
     const completionAfter = transition(bookingFirst.id, "completed", bookingFirst.version);
     await lifecycleGate.arrived;
-    const rejectedBooking = await createAppointment("2033-03-02T17:00:00.000Z");
+    const rejectedBooking = await createAppointment("2033-03-02T17:00:00.000Z", bookerCookie);
     expect(rejectedBooking.statusCode).toBe(409);
     lifecycleGate.release();
     expect((await completionAfter).statusCode).toBe(200);
@@ -333,7 +359,7 @@ describeDatabase("D2 appointment lifecycle regression", () => {
       released: new Promise<void>((resolve) => { release = resolve; }),
       release
     };
-    const bookingAfter = createAppointment("2033-03-03T17:00:00.000Z");
+    const bookingAfter = createAppointment("2033-03-03T17:00:00.000Z", bookerCookie);
     await bookingGate.arrived;
     expect((await transition(lifecycleFirst.id, "completed", lifecycleFirst.version)).statusCode).toBe(200);
     bookingGate.release();

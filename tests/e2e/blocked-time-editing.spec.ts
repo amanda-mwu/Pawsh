@@ -509,11 +509,12 @@ test("shows a groomer another staff member's block read-only, naming the scope k
     await openBlock(page);
 
     await expect(page.getByTestId("blocked-time-update")).toBeDisabled();
-    await expect(page.getByTestId("blocked-time-update")).toHaveAttribute("title", /appointments\.edit_all_staff/u);
+    await expect(page.getByTestId("blocked-time-update")).toHaveAttribute("title", "This appointment is assigned to another groomer");
     await expect(page.getByTestId("blocked-time-delete")).toBeDisabled();
-    await expect(page.getByTestId("blocked-time-delete")).toHaveAttribute("title", /appointments\.edit_all_staff/u);
+    await expect(page.getByTestId("blocked-time-delete")).toHaveAttribute("title", "This appointment is assigned to another groomer");
     await expect(page.getByTestId("blocked-time-date")).toBeDisabled();
-    await expect(page.getByTestId("blocked-time-locked")).toContainText("assigned to another groomer (appointments.edit_all_staff)");
+    await expect(page.getByTestId("blocked-time-locked")).toContainText("This appointment is assigned to another groomer. Everything here is read-only.");
+    await expect(page.getByTestId("blocked-time-locked")).not.toContainText("edit_all_staff");
     // And the band itself is not draggable for this session.
     await expect(page.getByTestId("calendar-block").first()).not.toHaveAttribute("data-draggable", "true");
 

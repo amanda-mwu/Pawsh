@@ -109,12 +109,40 @@ async function api(path, options = {}) {
   if (!response.ok) {
     if (response.status === 401) settleUnauthenticated();
     if (response.status === 403) await reconcilePermissions();
-    const error = new Error(result.error || "Something went wrong");
+    // `error.data` keeps the body verbatim for callers that branch on it; the MESSAGE is what
+    // reaches a toast or an inline error, and a permission refusal is reworded before it does.
+    const error = new Error(userFacingErrorMessage(result.error));
     error.status = response.status;
     error.data = result;
     throw error;
   }
   return result;
+}
+
+/**
+ * PERMISSION COPY, WRITTEN ONCE.
+ *
+ * A permission key - `appointments.edit`, `customers.view` - is the name of a switch in Settings
+ * -> Roles & permissions. It is not a sentence, and human QA read every refusal that carried one
+ * as a leak of the product's internals: "You do not have permission to change the groomer or the
+ * time (appointments.edit)" told an operator they were stuck and then said something in code.
+ *
+ * Every refusal the interface draws now passes through these three, and none of them accepts a
+ * key. `permissionRefusalSentence` phrases what the operator cannot do; `refusalAttributes` turns
+ * any refusal sentence into the disabled-with-reason attributes the blocked-time drawer
+ * established; `userFacingErrorMessage` rewords the server's own `Missing permission: <key>` body
+ * on its way into a toast or an inline error. The Roles editor is the one screen that shows keys,
+ * on purpose, in its technical sheet - it does not go through here.
+ *
+ * `tests/ui/permission-copy.test.ts` runs every refusal builder and holds the line that no
+ * dotted key ever reaches a title.
+ */
+const SERVER_PERMISSION_REFUSAL=/^Missing permission: [a-z_]+(?:\.[a-z_]+)+$/u;
+function permissionRefusalSentence(action){return `You do not have permission to ${action}`;}
+function refusalAttributes(sentence){return ` disabled aria-disabled="true" title="${escapeAttr(sentence)}"`;}
+function userFacingErrorMessage(message){
+  if(!message)return "Something went wrong";
+  return SERVER_PERMISSION_REFUSAL.test(String(message))?`${permissionRefusalSentence("do this")}.`:String(message);
 }
 
 function settleUnauthenticated() {
@@ -817,8 +845,7 @@ function petContextMarkup(item){
 function appointmentHtml(item) {
   const time = schedulingTime(item);
   const customer = `${clientName(item)}`;
-  const conflictOverride=item.conflictOverridden?`<small class="conflict-override" data-testid="conflict-override">Intentional overlap</small>`:"";
-  return `<article class="appointment" data-testid="appointment" data-appointment-id="${item.id}"><time>${time}</time><div><span class="pet">${escape(petName({petName:item.petName}))}</span><small>${escape(customer)} · ${escape(item.employeeName)}</small>${conflictOverride}${safetyContext(item)}</div><div class="appointment-actions"><span class="badge ${item.status}">${item.status.replace("_"," ")}</span>${calendarAction(item)}</div></article>`;
+  return `<article class="appointment" data-testid="appointment" data-appointment-id="${item.id}"><time>${time}</time><div><span class="pet">${escape(petName({petName:item.petName}))}</span><small>${escape(customer)} · ${escape(item.employeeName)}</small>${safetyContext(item)}</div><div class="appointment-actions"><span class="badge ${item.status}">${item.status.replace("_"," ")}</span>${calendarAction(item)}</div></article>`;
 }
 function renderAppointments() {
   renderCalendar();
@@ -891,7 +918,7 @@ function appointmentNoteEntries(item){
 }
 function appointmentPresentation(item){
   const start=new Date(item.startAt),end=new Date(item.endAt),zone=item.schedulingTimezone||schedulingZone(),formatTime=value=>formatPrefTime(value,zone),serviceSnapshots=item.services||[],services=serviceSnapshots.map(service=>service.name),groomers=(item.groomers||[]).map(groomer=>groomer.displayName),prices=serviceSnapshots.map(service=>service.priceMinor).filter(value=>value!==null&&value!==undefined);
-  return {id:item.id,date:appointmentLocalValue(item).slice(0,10),dateLabel:formatPrefWeekdayLongMonthDay(start,zone),timeRange:`${formatTime(start)}–${formatTime(end)}`,timeRangeCompact:compactTimeRange(start,end,zone),petName:item.petName,breed:item.breed||"",customerName:`${clientName(item)}`,services,serviceSnapshots,groomer:groomers[0]||item.employeeName,status:item.status.replace("_"," "),conflictOverridden:Boolean(item.conflictOverridden),rabiesNeeded:["not_provided","expires_before_appointment"].includes(item.rabiesAppointmentStatus),warning:item.safetyAlerts||item.behaviorNotes||item.medicalNotes||item.groomingPreferences||item.coatNotes||"",durationMinutes:Math.max(1,Math.round((end-start)/60000)),totalPriceMinor:prices.length===serviceSnapshots.length?prices.reduce((sum,value)=>sum+Number(value),0):null};
+  return {id:item.id,date:appointmentLocalValue(item).slice(0,10),dateLabel:formatPrefWeekdayLongMonthDay(start,zone),timeRange:`${formatTime(start)}–${formatTime(end)}`,timeRangeCompact:compactTimeRange(start,end,zone),petName:item.petName,breed:item.breed||"",customerName:`${clientName(item)}`,services,serviceSnapshots,groomer:groomers[0]||item.employeeName,status:item.status.replace("_"," "),rabiesNeeded:["not_provided","expires_before_appointment"].includes(item.rabiesAppointmentStatus),warning:item.safetyAlerts||item.behaviorNotes||item.medicalNotes||item.groomingPreferences||item.coatNotes||"",durationMinutes:Math.max(1,Math.round((end-start)/60000)),totalPriceMinor:prices.length===serviceSnapshots.length?prices.reduce((sum,value)=>sum+Number(value),0):null};
 }
 function appointmentAccessibleName(model){return `${model.timeRange}, ${model.petName}${model.breed?`, ${model.breed}`:""}, ${model.customerName}, ${model.services.join(", ")}, ${model.status}`;}
 function appointmentHoverDetails(model){return `<div><span>Status</span><strong>${escape(model.status)}</strong></div><p><strong>${escape(model.dateLabel)}</strong><br>${escape(model.timeRange)}</p><dl><div><dt>Client</dt><dd>${escape(model.customerName)}</dd></div><div><dt>Pet</dt><dd>${escape(petName({petName:model.petName}))}${model.breed?` · ${escape(model.breed)}`:""}</dd></div><div><dt>Services</dt><dd>${model.services.map(escape).join("<br>")}</dd></div><div><dt>Groomer</dt><dd>${escape(model.groomer)}</dd></div></dl><p class="hover-summary"><strong>${model.durationMinutes} min${model.totalPriceMinor!==null?` · ${money(model.totalPriceMinor)}`:""}</strong></p>`;}
@@ -939,7 +966,7 @@ function groomerColorSlot(employeeId){
 // Card anatomy: a white header strip (compact time, notes button, status badge, safety flags)
 // above the groomer-tinted body (pet + breed, base service, greyed add-ons, client). The strip is
 // kept shallow on purpose so a 30-minute card still shows the pet name underneath it.
-function appointmentCard(item,{day=false,style="",groomerId="",overlap=false}={}){
+function appointmentCard(item,{day=false,style="",groomerId="",lane=0,lanes=1}={}){
   const model=appointmentPresentation(item),density=model.durationMinutes<=30?"short":model.durationMinutes<90?"medium":"long";
   // Only a scheduled appointment can be rescheduled, and only with appointments.edit, which is the
   // same gate the Move action carries - AND only where the scope allows it: a groomer without
@@ -955,8 +982,12 @@ function appointmentCard(item,{day=false,style="",groomerId="",overlap=false}={}
   const badges=`<span class="appointment-badges"><small class="appointment-status" aria-hidden="true">${escape(model.status)}</small>${badge?`<span class="appointment-badge badge-${escape(badge.variant)}" role="img" aria-label="${escape(badge.label)}">${badge.code}</span>`:""}${model.rabiesNeeded?`<small class="card-warning" aria-label="Rabies needed">!</small>`:""}</span>`;
   const head=`<div class="appointment-head"><time class="appointment-time">${escape(model.timeRangeCompact)}</time>${notesButton}${badges}</div>`;
   const services=`<span class="appointment-services">${split.primary?`<span class="service-primary">${escape(split.primary)}</span>`:""}${addOns.map(name=>`<span class="service-addon">${escape(name)}</span>`).join("")}${extra>0?`<small>+${extra} more</small>`:""}</span>`;
-  const body=`<button type="button" class="calendar-open" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><span class="appointment-identity"><strong class="appointment-pet">${escape(petName({petName:model.petName}))}</strong>${model.breed?`<span class="appointment-breed">${escape(model.breed)}</span>`:""}</span>${services}${model.conflictOverridden?`<small class="conflict-override" data-testid="conflict-override">Intentional overlap</small>`:""}<span class="appointment-client">${escape(model.customerName)}</span></button>`;
-  return `<article class="${day?"day-appointment ":""}week-appointment appointment-block density-${density} status-${escape(item.status)} ${overlap?"overlap":""}" data-appointment-id="${item.id}" ${draggable?'data-draggable="true" ':""}${groomerId?`data-groomer-id="${groomerId}" data-groomer-slot="${groomerColorSlot(groomerId)}"`:""} style="${style}">${head}${body}<div class="sr-only appointment-accessible-safety">${safetyContext(item)}</div><div class="appointment-quick-actions">${calendarAction(item)}</div></article>`;
+  const body=`<button type="button" class="calendar-open" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><span class="appointment-identity"><strong class="appointment-pet">${escape(petName({petName:model.petName}))}</strong>${model.breed?`<span class="appointment-breed">${escape(model.breed)}</span>`:""}</span>${services}<span class="appointment-client">${escape(model.customerName)}</span></button>`;
+  // TWO APPOINTMENTS AT THE SAME TIME ARE TWO CARDS SIDE BY SIDE, the way two blocks are two
+  // bands: overlapping is permitted, so a second card must never cover the first. Each card is
+  // told its lane and the lane count of its cluster and the stylesheet divides the column.
+  const stacked=lanes>1;
+  return `<article class="${day?"day-appointment ":""}week-appointment appointment-block density-${density} status-${escape(item.status)}" data-appointment-id="${item.id}" ${draggable?'data-draggable="true" ':""}${groomerId?`data-groomer-id="${groomerId}" data-groomer-slot="${groomerColorSlot(groomerId)}"`:""}${stacked?` data-card-lane="${lane}" data-card-lanes="${lanes}"`:""} style="${style}${stacked?`;--card-lane:${lane};--card-lanes:${lanes}`:""}">${head}${body}<div class="sr-only appointment-accessible-safety">${safetyContext(item)}</div><div class="appointment-quick-actions">${calendarAction(item)}</div></article>`;
 }
 // == Blocked time on the grid ==
 //
@@ -1025,12 +1056,12 @@ function blockedTimePlacement(block,day,start,end){
  * unchanged grid as the create having failed - which is the worst shape a defect can take, because
  * the operator's next move is to create it again.
  *
- * THIS IS THE APPOINTMENT LANE SCAN, GENERALISED FROM A FLAG TO AN INDEX. The week grid already
- * carries a `placed[]` scan that hands `appointmentCard` an `overlap` boolean, and `.overlap`
- * spends it as one fixed inset - which is exactly enough for two cards and silently not enough for
- * three. A block stack has no such ceiling, so the same scan is kept and the answer widened: each
- * band is told its LANE and how many lanes its cluster needs, and the stylesheet divides the column
- * by that count. Two bands are two halves; three are three thirds; none of them is unreachable.
+ * THIS IS A LANE SCAN, NOT A FLAG. The week grid used to hand `appointmentCard` an `overlap`
+ * boolean that `.overlap` spent as one fixed inset - exactly enough for two cards and silently not
+ * enough for three. A stack has no such ceiling, so each band is told its LANE and how many lanes
+ * its cluster needs, and the stylesheet divides the column by that count. Two bands are two halves;
+ * three are three thirds; none of them is unreachable. `columnLanes` is that scan, and the
+ * appointment cards go through it too now (`appointmentColumnLayout`).
  *
  * THE INTERVALS COMPARED ARE THE PAINTED ONES, NOT THE STORED ONES. A band is snapped to whole
  * half-hour rows, so 12:00-12:15 and 12:20-12:30 do not overlap on the clock and DO overlap on the
@@ -1040,29 +1071,64 @@ function blockedTimePlacement(block,day,start,end){
  * A CLUSTER IS TRANSITIVE. Lanes are counted per run of touching bands rather than per grid, so a
  * 9:00 pair does not halve the width of an unrelated 4:00 block further down the same column.
  */
-function blockedTimeColumnLayout(blocks,day,start,end){
-  // Sorted by row so the greedy scan below can retire a lane the moment a band clears it. The id
-  // is the final tiebreak, so two identical blocks land in a stable order rather than in whatever
-  // order the last read happened to return them in.
-  const entries=blocks.map(block=>({block,place:blockedTimePlacement(block,day,start,end)}))
-    .filter(entry=>entry.place)
-    .sort((a,b)=>a.place.offset-b.place.offset||b.place.span-a.place.span
-      ||String(a.block.id).localeCompare(String(b.block.id)));
+/**
+ * LANES FOR ONE COLUMN. `entries` are sorted by `from`; each gets the lowest lane that is free by
+ * the time it starts, and every entry in a cluster of mutually overlapping entries is told how many
+ * lanes the cluster needed, so the column can be divided evenly among them. Shared by the blocked-
+ * time bands and the appointment cards, because two things at the same time on one groomer's
+ * column are the same problem whatever they are.
+ */
+function columnLanes(entries){
   const laid=[];let cluster=[],laneEnds=[],clusterEnd=0;
   const flush=()=>{
     for(const entry of cluster)laid.push({...entry,lanes:laneEnds.length});
     cluster=[];laneEnds=[];clusterEnd=0;
   };
   for(const entry of entries){
-    const from=entry.place.offset,to=from+entry.place.span;
+    const {from,to}=entry;
     if(cluster.length&&from>=clusterEnd)flush();
     let lane=laneEnds.findIndex(value=>value<=from);
     if(lane<0){lane=laneEnds.length;laneEnds.push(to);}else laneEnds[lane]=to;
-    cluster.push({block:entry.block,place:entry.place,lane});
+    cluster.push({...entry,lane});
     clusterEnd=Math.max(clusterEnd,to);
   }
   flush();
   return laid;
+}
+function blockedTimeColumnLayout(blocks,day,start,end){
+  // Sorted by row so the greedy scan can retire a lane the moment a band clears it. The id is the
+  // final tiebreak, so two identical blocks land in a stable order rather than in whatever order
+  // the last read happened to return them in.
+  const entries=blocks.map(block=>({block,place:blockedTimePlacement(block,day,start,end)}))
+    .filter(entry=>entry.place)
+    .sort((a,b)=>a.place.offset-b.place.offset||b.place.span-a.place.span
+      ||String(a.block.id).localeCompare(String(b.block.id)))
+    .map(entry=>({...entry,from:entry.place.offset,to:entry.place.offset+entry.place.span}));
+  return columnLanes(entries).map(({block,place,lane,lanes})=>({block,place,lane,lanes}));
+}
+/**
+ * THE APPOINTMENTS OF ONE GROOMER'S COLUMN ON ONE DAY, each with its row, its span and its lane.
+ *
+ * Overlapping appointments are permitted, and a card that covers another card hides a dog that is
+ * on the day's schedule - human QA found the second booking sitting on top of Charlie, and which
+ * of the two was on top changed with the order the server happened to return them in. So the
+ * column is assembled first and laid out as lanes, exactly as blocks are: two overlapping visits
+ * share the column side by side, each fully reachable, in an order that does not depend on the
+ * read - start time, then the longer visit, then the id.
+ */
+function appointmentColumnLayout(items,day,start,slots,firstRow){
+  const entries=[];
+  for(const item of items){
+    const local=appointmentLocalValue(item);
+    if(local.slice(0,10)!==day)continue;
+    const minutes=Number(local.slice(11,13))*60+Number(local.slice(14,16));
+    const duration=Math.max(30,Math.round((new Date(item.endAt)-new Date(item.startAt))/60000));
+    const row=Math.floor((minutes-start)/30)+firstRow;
+    if(row<firstRow||row>slots+firstRow-1)continue;
+    entries.push({item,row,span:Math.max(1,Math.ceil(duration/30)),from:minutes,to:minutes+duration});
+  }
+  entries.sort((a,b)=>a.from-b.from||(b.to-b.from)-(a.to-a.from)||String(a.item.id).localeCompare(String(b.item.id)));
+  return columnLanes(entries);
 }
 /**
  * The band itself. ANATOMY RATHER THAN HUE, still. Colour on this grid means WHICH GROOMER, so a
@@ -1180,8 +1246,14 @@ function renderWeekCalendar(){
         `grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${place.offset+3}/span ${place.span}`,
         {lane,lanes}))
   )).join("");
-  const visible=filteredAppointments();const placed=[];
-  const appointments=visible.flatMap(item=>{const local=appointmentLocalValue(item),day=local.slice(0,10),dayIndex=days.indexOf(day);if(dayIndex<0)return [];const minutes=Number(local.slice(11,13))*60+Number(local.slice(14,16)),duration=Math.max(30,Math.round((new Date(item.endAt)-new Date(item.startAt))/60000)),row=Math.floor((minutes-start)/30)+3;if(row<3||row>slots+2)return [];return (item.groomers||[]).map(assigned=>{const groomerIndex=groomers.findIndex(groomer=>groomer.id===assigned.id);if(groomerIndex<0)return "";const lane=`${day}:${assigned.id}`,overlap=placed.some(other=>other.lane===lane&&minutes<other.end&&minutes+duration>other.start);placed.push({lane,start:minutes,end:minutes+duration});return appointmentCard(item,{day:true,groomerId:assigned.id,overlap,style:`grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${row}/span ${Math.max(1,Math.ceil(duration/30))}`});});}).join("");
+  // Walked per column - one groomer on one day - because a lane count is a property of the column
+  // and the column has to be assembled before any card in it can be told how wide it is.
+  const visible=filteredAppointments();let appointments="";
+  for(let dayIndex=0;dayIndex<days.length;dayIndex++)for(let groomerIndex=0;groomerIndex<groomers.length;groomerIndex++){
+    const groomer=groomers[groomerIndex],own=visible.filter(item=>(item.groomers||[]).some(assigned=>assigned.id===groomer.id));
+    for(const {item,row,span,lane,lanes} of appointmentColumnLayout(own,days[dayIndex],start,slots,3))
+      appointments+=appointmentCard(item,{day:true,groomerId:groomer.id,lane,lanes,style:`grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${row}/span ${span}`});
+  }
   const now=currentBusinessMinutes(),todayIndex=days.indexOf(businessDate()),nowRow=Math.floor((now-start)/30)+3,currentLine=todayIndex>=0&&now>=start&&now<end?`<div class="calendar-now-line" role="status" aria-label="Current business time" style="grid-column:${todayIndex*groomers.length+2}/span ${groomers.length};grid-row:${nowRow}"></div>`:"";target.innerHTML=header+cells+blocks+appointments+currentLine;
   $("#calendar-range").textContent=`${formatPrefLocalMonthDay(days[0])} – ${formatPrefLocalMonthDayYear(days[6])}`;
   $$('[data-calendar-date]').forEach(button=>button.addEventListener("click",()=>runDetached(()=>selectCalendarDate(button.dataset.calendarDate))));
@@ -1205,7 +1277,11 @@ function renderDayCalendar(){
     for(const {block,place,lane,lanes} of blockedTimeColumnLayout(own,state.calendar.selectedDate,start,end))
       content+=blockedTimeBand(block,`grid-column:${column+2};grid-row:${place.offset+2}/span ${place.span}`,{lane,lanes});
   }
-  for(const item of filteredAppointments().filter(appointment=>appointmentLocalValue(appointment).slice(0,10)===state.calendar.selectedDate)){const local=appointmentLocalValue(item),minutes=Number(local.slice(11,13))*60+Number(local.slice(14,16)),duration=Math.max(30,Math.round((new Date(item.endAt)-new Date(item.startAt))/60000)),row=Math.floor((minutes-start)/30)+2;if(row<2||row>slots+1)continue;for(const assigned of item.groomers||[]){const column=groomers.findIndex(groomer=>groomer.id===assigned.id);if(column<0)continue;content+=appointmentCard(item,{day:true,groomerId:assigned.id,style:`grid-column:${column+2};grid-row:${row}/span ${Math.max(1,Math.ceil(duration/30))}`});}}
+  for(let column=0;column<groomers.length;column++){
+    const groomer=groomers[column],own=filteredAppointments().filter(item=>(item.groomers||[]).some(assigned=>assigned.id===groomer.id));
+    for(const {item,row,span,lane,lanes} of appointmentColumnLayout(own,state.calendar.selectedDate,start,slots,2))
+      content+=appointmentCard(item,{day:true,groomerId:groomer.id,lane,lanes,style:`grid-column:${column+2};grid-row:${row}/span ${span}`});
+  }
   const now=currentBusinessMinutes(),nowRow=Math.floor((now-start)/30)+2;if(state.calendar.selectedDate===businessDate()&&now>=start&&now<end)content+=`<div class="calendar-now-line" role="status" aria-label="Current business time" style="grid-column:2/-1;grid-row:${nowRow}"></div>`;target.innerHTML=content;$("#calendar-range").textContent=formatPrefLocalWeekdayDate(state.calendar.selectedDate);bindCalendarInteractions();
 }
 // The slot menu shares the popover styling but is anchored to the pointer rather than parked
@@ -1306,19 +1382,15 @@ function calendarSlotAttributes(open,preset,groomerId){
   };
 }
 /**
- * WHY, in a sentence an operator can act on - the missing key included.
- *
- * "You do not have permission" alone tells somebody to go and ask for something they cannot name.
- * The keys are the same strings Settings -> Roles & permissions is built from, so naming them is
- * what lets the person asked find the switch. Null when nothing is missing, so one predicate
- * decides both whether a control is refused and what the refusal says.
+ * WHY, in a sentence an operator can read. Null when nothing is missing, so one predicate decides
+ * both whether a control is refused and what the refusal says. The sentence names what cannot be
+ * done and never the key behind it - see `permissionRefusalSentence`.
  */
 function bookingRefusalReason(){
-  const missing=["appointments.create","customers.view","pets.view"].filter(permission=>!allowed(permission));
-  return missing.length?`You do not have permission to book appointments (${missing.join(", ")})`:null;
+  return calendarBookingAvailable()?null:permissionRefusalSentence("book appointments");
 }
 function blockingRefusalReason(){
-  return calendarBlockingAvailable()?null:"You do not have permission to block time (calendar.blocks_create)";
+  return calendarBlockingAvailable()?null:permissionRefusalSentence("block time");
 }
 // Drag is a fine-pointer affordance on top of that. On touch the same move is one tap away through
 // the card menu's Move action, and an accidental drag across a working schedule is expensive to
@@ -1437,6 +1509,63 @@ function beginCalendarDrag(){
   document.body.classList.add("calendar-dragging");
   drag.frame=globalThis.requestAnimationFrame(calendarDragFrame);
 }
+/**
+ * FIVE-MINUTE SCHEDULING.
+ *
+ * The server refuses any appointment or block whose wall-clock minute is not on :00, :05 ... :55
+ * ("Times must be on a five-minute mark"). The calendar keeps drawing 30-minute rows - that is
+ * the grid a salon reads - but everything that PRODUCES a time lands on a five-minute mark before
+ * it is sent, so the refusal is one an operator never meets:
+ *
+ *   TYPED. Every `datetime-local` that books or moves carries `step="300"`, and a delegated change
+ *       listener snaps whatever was typed or picked to the nearest mark, so the field is never
+ *       left holding a value the form's own validation would then refuse with a browser's bubble.
+ *   DRAGGED. A drop lands where the pointer is INSIDE the 30-minute row, not at the row's top:
+ *       the offset is read as a fraction of the row's height and rounded to the nearest five
+ *       minutes, so a card let go two-thirds of the way down the 11:00 row lands at 11:20.
+ *   CLICKED. An empty slot keeps its own time - :00 or :30 - which is already a mark.
+ *
+ * `tests/ui/five-minute-scheduling.test.ts` holds the arithmetic; the drag lands are exercised in
+ * the browser.
+ */
+const SCHEDULING_MINUTE_STEP=5;
+const FIVE_MINUTE_STEP_ATTR=`step="${SCHEDULING_MINUTE_STEP*60}"`;
+function snapMinutes(minutes,step=SCHEDULING_MINUTE_STEP){return Math.round(minutes/step)*step;}
+/** A `datetime-local` value with its minute on the nearest five-minute mark; anything else untouched. */
+function snapLocalDateTime(value){
+  const match=/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/u.exec(String(value||""));
+  if(!match)return value;
+  let total=snapMinutes(Number(match[2])*60+Number(match[3]));
+  let date=match[1];
+  if(total>=24*60){total-=24*60;date=dateShift(date,1);}
+  return `${date}T${String(Math.floor(total/60)).padStart(2,"0")}:${String(total%60).padStart(2,"0")}`;
+}
+/** A `time` value (`HH:MM`) on the nearest mark, wrapping at midnight the way the clock does. */
+function snapLocalTime(value){
+  const match=/^(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/u.exec(String(value||""));
+  if(!match)return value;
+  const total=snapMinutes(Number(match[1])*60+Number(match[2]))%(24*60);
+  return `${String(Math.floor(total/60)).padStart(2,"0")}:${String(total%60).padStart(2,"0")}`;
+}
+/** Minutes into a 30-minute row for a pointer `fraction` (0..1) of the way down it: 0, 5 ... 25. */
+function slotOffsetMinutes(fraction){
+  const clamped=Math.min(1,Math.max(0,Number.isFinite(fraction)?fraction:0));
+  return Math.min(30-SCHEDULING_MINUTE_STEP,snapMinutes(clamped*30));
+}
+/** The local start a drop at `y` inside `slot` means: the row's own time plus the snapped offset. */
+function dropLocalStart(slot,y){
+  const base=slot.dataset.slot;
+  const rect=slot.getBoundingClientRect();
+  const offset=rect.height>0?slotOffsetMinutes((y-rect.top)/rect.height):0;
+  const minutes=Number(base.slice(11,13))*60+Number(base.slice(14,16))+offset;
+  return `${base.slice(0,10)}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`;
+}
+document.addEventListener("change",event=>{
+  const input=event.target;
+  if(!input||input.tagName!=="INPUT"||input.step!==String(SCHEDULING_MINUTE_STEP*60))return;
+  const snapped=input.type==="datetime-local"?snapLocalDateTime(input.value):input.type==="time"?snapLocalTime(input.value):input.value;
+  if(snapped!==input.value)input.value=snapped;
+});
 // The click that follows a completed drag would otherwise reach the open-detail button, so it is
 // swallowed for the one task the browser dispatches it in. A press that never became a drag never
 // reaches here, which is what keeps slot creation and open-detail clicks intact.
@@ -1466,14 +1595,18 @@ function endCalendarDrag(commit){
   // CLOSED, so the request - and, if the server refuses, the Move dialog - runs with the top layer
   // already empty. The card's open button is handed over as the place to put focus back.
   const origin=drag.card.querySelector(".calendar-open,.calendar-block-open");
+  // Where in the row the pointer let go decides the minute: the row is 30 minutes tall and the
+  // drop is snapped to the nearest five inside it. Read before anything awaits, while the row is
+  // still where the pointer saw it.
+  const localStart=dropLocalStart(slot,drag.y);
   runDetached(async()=>{
     if(drag.kind==="block"){
-      if(!await confirmBlockedTimeDrop(slot.dataset.slot,origin))return;
-      await dropBlockedTime(drag.id,slot.dataset.slot,slot.dataset.slotGroomer);
+      if(!await confirmBlockedTimeDrop(localStart,origin))return;
+      await dropBlockedTime(drag.id,localStart,slot.dataset.slotGroomer);
       return;
     }
-    if(!await confirmAppointmentDrop(slot.dataset.slot,origin))return;
-    await dropAppointment(drag.id,slot.dataset.slot,slot.dataset.slotGroomer);
+    if(!await confirmAppointmentDrop(localStart,origin))return;
+    await dropAppointment(drag.id,localStart,slot.dataset.slotGroomer);
   });
 }
 document.addEventListener("pointerdown",event=>{
@@ -1643,15 +1776,14 @@ async function dropAppointment(id,localStart,employeeId){
   });
 }
 // Nothing moved on the way out, so a rejection has nothing to roll back - the card is still in its
-// own slot. The reason is handed to the Move dialog opened on the target the drop aimed at, so an
-// overridable conflict keeps its existing "Move anyway" affordance, an availability refusal is read
-// where the time can be corrected, and the product keeps one conflict path rather than two.
+// own slot. The reason is handed to the Move dialog opened on the target the drop aimed at, so the
+// refusal - an overlap this role may not make, an availability window, a lock - is read where the
+// time can be corrected, and the product keeps one conflict path rather than two.
 async function openMoveRejection(error,id,preset){
-  if(!error.retryConflictOverride)await refresh().catch(failure=>toast(failure.message));
+  await refresh().catch(failure=>toast(failure.message));
   if(!state.appointments.some(item=>item.id===id)){toast(error.message);return;}
   moveAppointment(id,preset);
-  if(error.retryConflictOverride)renderConflictOverride(error);
-  else $("#modal-error").textContent=error.message;
+  $("#modal-error").textContent=error.message;
 }
 // The band is a 30-minute strip, so its label is a summary and the hover is where the block is
 // actually read. Same shape as the appointment hover - a capitalised kind line, the day and range,
@@ -1898,7 +2030,7 @@ function blockedTimeClockField({name,label,value,type,testid,pickerLabel,disable
     +`<span class="time-picker-caption" id="${escapeAttr(id)}-caption">${escape(label)}</span>`
     +`<div class="time-picker-control">`
     +`<input data-testid="${escapeAttr(testid)}" name="${escapeAttr(name)}" type="${escapeAttr(type)}"`
-    +` value="${escapeAttr(value)}" required aria-labelledby="${escapeAttr(id)}-caption"`
+    +` value="${escapeAttr(value)}" required ${FIVE_MINUTE_STEP_ATTR} aria-labelledby="${escapeAttr(id)}-caption"`
     +`${disabled?" disabled":""}>`
     +`<button type="button" class="time-picker-trigger" data-time-picker-open="${escapeAttr(name)}"`
     +` data-testid="${escapeAttr(testid)}-picker" aria-haspopup="dialog" aria-expanded="false"`
@@ -2121,13 +2253,13 @@ function blockedTimeStaffOptions(block){
 }
 function blockedTimeEditorMarkup(block){
   // Two refusals, told apart. Without the key the drawer is read-only and says so; with the key
-  // but on another staff member's block it is read-only and names `appointments.edit_all_staff`,
-  // the same sentence the appointment surface uses for the same rule.
+  // but on another staff member's block it is read-only and says whose block it is - the same
+  // sentence the appointment surface uses for the same rule.
   const permitted=allowed("calendar.blocks_edit"),scoped=blockedTimeScopeAllows(block);
   const editable=permitted&&scoped,span=blockedTimeSpan(block);
-  const refusal=action=>!permitted
-    ?`disabled aria-disabled="true" title="You do not have permission to ${action} blocked time"`
-    :`disabled aria-disabled="true" title="${APPOINTMENT_SCOPE_REFUSAL}"`;
+  const refusal=action=>refusalAttributes(!permitted
+    ?permissionRefusalSentence(`${action} blocked time`)
+    :APPOINTMENT_SCOPE_REFUSAL);
   const scheduleEditable=editable&&span.editable;
   const date=block.scheduledLocalStart.slice(0,10);
   const startTime=block.scheduledLocalStart.slice(11,16),endTime=block.scheduledLocalEnd.slice(11,16);
@@ -2722,25 +2854,23 @@ async function selectCalendarDate(date){const changedMonth=state.calendar.month!
  * has, and the cache lookup stays as the default for the calendar's own call sites.
  */
 /**
- * A WRITE TO THE WORK LIST, WITH THE MOVE FLOW'S OVERLAP PROMPT.
+ * A WRITE TO THE WORK LIST, WITH THE MOVE FLOW'S OVERLAP SENTENCE.
  *
  * Changing the services, or the minutes reserved for one of them, moves `end_at`, and the route
- * runs the same guard sequence a move does: an overlap comes back 409 `SCHEDULING_CONFLICT` with
- * `canOverride` for a role holding `appointments.override_conflict`, and blocked time comes back
- * 409 `TIME_BLOCKED` which nothing overrides. The overlap is handed to `renderConflictOverride`
- * exactly as `schedulingMutation` hands it, so the operator sees the one prompt they already know
- * - who, when, what it overlaps, and a button to take it anyway - rather than a second one. The
- * blocked-time sentence and the stale-version sentence are the server's, shown where they are.
+ * runs the same guard sequence a move does: an overlap is refused 409 `SCHEDULING_CONFLICT` for a
+ * role without `appointments.override_conflict` - a role that holds it is let through, with the
+ * overlap recorded - and blocked time comes back 409 `TIME_BLOCKED` which nothing overrides. The
+ * overlap is worded by `schedulingConflictSentence` exactly as `schedulingMutation` words it, so
+ * the operator reads the one sentence they already know - who, when, what it overlaps - and not
+ * a second one. The blocked-time and stale-version sentences are the server's, shown where they are.
  */
 function serviceListMutation(path,method,payload,appointment,operationLabel){
   return api(path,{method,body:JSON.stringify(payload)}).catch(error=>{
-    if(error.status===409&&error.data?.code==="SCHEDULING_CONFLICT"&&error.data.canOverride){
-      error.operationLabel=operationLabel;
-      error.overrideLabel="Save anyway";
-      error.proposedEmployee=(appointment.groomers||[])[0]?.displayName||appointment.employeeName||"This groomer";
-      error.proposedStart=appointmentLocalValue(appointment).replace("T"," ");
-      error.retryConflictOverride=()=>serviceListMutation(path,method,{...payload,overrideConflict:true},appointment,operationLabel);
-    }
+    schedulingConflictSentence(error,{
+      operationLabel,
+      employee:(appointment.groomers||[])[0]?.displayName||appointment.employeeName||"This groomer",
+      proposedStart:appointmentLocalValue(appointment).replace("T"," ")
+    });
     // A refused window or a row that moved underneath the dialog: the calendar behind it is
     // re-read, as every lifecycle dialog does, so nothing keeps offering what was just refused.
     if([400,409].includes(error.status)&&error.data?.code!=="SCHEDULING_CONFLICT")error.reconcileLifecycle=true;
@@ -2792,7 +2922,7 @@ function editAppointmentServiceLine(id,line,record=null){
     : `<div class="line-edit-readonly" data-testid="service-line-price-readonly">`
       +`<span class="line-edit-readonly-label">Price</span>`
       +`<span class="line-edit-readonly-value" data-testid="service-line-price-value">${money(line.priceMinor||0)}</span>`
-      +`<span class="fine">Price changes need Edit service prices (appointments.service_price_edit).</span></div>`;
+      +`<span class="fine">Price changes need Edit service prices.</span></div>`;
   openModal("Edit service",
     `<p class="wide line-edit-name" data-testid="service-line-name"><strong>${escape(line.name)}</strong></p>`
     +priceField
@@ -2816,7 +2946,7 @@ function moveAppointment(id,preset={},record=null) {
   // corrected where it was attempted instead of making the user find the target again.
   const local=preset.localStart||appointmentLocalValue(appointment);
   const assigned=preset.employeeId?[preset.employeeId]:(appointment.groomers||[]).map(item=>item.id);
-  openModal("Move appointment",groomerCheckboxes(assigned,(appointment.services||[]).map(service=>service.serviceId))+field("startAt","Start time","datetime-local",`required value="${escape(local)}"`)+disambiguationField(appointment.scheduledDisambiguation||""),form=>schedulingMutation(`/api/appointments/${id}/schedule`,{employeeId:form.get("employeeId"),localStart:form.get("startAt"),disambiguation:form.get("disambiguation")||undefined,expectedLocationVersion:state.me.business.locationVersion,version:appointment.version},"Reschedule"));
+  openModal("Move appointment",groomerCheckboxes(assigned,(appointment.services||[]).map(service=>service.serviceId))+field("startAt","Start time","datetime-local",`required ${FIVE_MINUTE_STEP_ATTR} value="${escape(local)}"`)+disambiguationField(appointment.scheduledDisambiguation||""),form=>schedulingMutation(`/api/appointments/${id}/schedule`,{employeeId:form.get("employeeId"),localStart:form.get("startAt"),disambiguation:form.get("disambiguation")||undefined,expectedLocationVersion:state.me.business.locationVersion,version:appointment.version},"Reschedule"));
 }
 async function terminalAppointment(id,status,record=null) {
   if(!confirm(status==="cancelled"?"Cancel this appointment?":"Mark this appointment as a no-show?"))return;
@@ -3051,7 +3181,7 @@ function checkoutDisclosureMarkup(id,label,body,open){
 function checkoutBillMarkup(co){
   const {appointment:item,receipt}=co;
   const model=appointmentPresentation(item);
-  const {checkedIn,finished,minutes,stored}=appointmentLifecycleValues(item,null);
+  const {checkedIn,finished,minutes}=appointmentLifecycleValues(item,null);
   const invoice=receipt?.invoice||null;
   const frozen=Boolean(invoice);
   /**
@@ -3157,7 +3287,6 @@ function checkoutBillMarkup(co){
     +`<span data-testid="lifecycle-in">Checked in: <strong${checkedIn?"":` class="is-unrecorded"`}>${escape(checkedIn?activityStamp(checkedIn):"not recorded")}</strong></span>`
     +`<span data-testid="lifecycle-out">Checked out: <strong${finished?"":` class="is-unrecorded"`}>${escape(finished?activityStamp(finished):"not recorded")}</strong></span>`
     +`<span data-testid="lifecycle-duration">Duration: <strong${minutes===null?` class="is-unrecorded"`:""}>${escape(lifecycleDurationLabel(minutes))}</strong></span>`
-    +(stored?"":`<span class="fine lifecycle-note" data-testid="lifecycle-note">Times are read from the appointment's recorded activity.</span>`)
     +`</div>`;
 
   // The note the groomer left, beside the money it is being charged for. READ-ONLY here: the
@@ -6416,14 +6545,11 @@ function openModal(title, fields, submit, options={}) {
       if(typeof afterClose==="function")runDetached(afterClose);
     }
     catch (error) {
-      if(error.retryConflictOverride) renderConflictOverride(error);
-      else {
-        $("#modal-error").textContent = error.message;
-        // The message is the server's, verbatim. The re-read behind it is what stops the calendar
-        // still offering Move on every other card once this dialog closes.
-        if(appointmentMoveRefused(error))await reconcileAppointmentLock();
-        if(error.reconcileLifecycle||error.reconcileFinancial)await refresh().catch(failure=>toast(failure.message));
-      }
+      $("#modal-error").textContent = error.message;
+      // The message is the server's, verbatim. The re-read behind it is what stops the calendar
+      // still offering Move on every other card once this dialog closes.
+      if(appointmentMoveRefused(error))await reconcileAppointmentLock();
+      if(error.reconcileLifecycle||error.reconcileFinancial)await refresh().catch(failure=>toast(failure.message));
     }
     finally{button.disabled=false;button.textContent=original;form.removeAttribute("aria-busy");}
   };
@@ -6439,45 +6565,35 @@ function schedulingMutation(path,payload,operationLabel){
     return result;
   }).catch(error=>{
     if(error.status)globalThis.sessionStorage.removeItem(identity);
-    if(error.status===409&&error.data?.code==="SCHEDULING_CONFLICT"&&error.data.canOverride){
-      error.operationLabel=operationLabel;
-      error.proposedEmployee=state.employees.find(item=>item.id===payload.employeeId)?.displayName||"Selected employee";
-      error.proposedStart=payload.localStart.replace("T"," ");
-      error.retryConflictOverride=()=>schedulingMutation(path,{...payload,overrideConflict:true},operationLabel);
-    }
+    schedulingConflictSentence(error,{
+      operationLabel,
+      employee:state.employees.find(item=>item.id===payload.employeeId)?.displayName||"Selected employee",
+      proposedStart:payload.localStart.replace("T"," ")
+    });
     throw error;
   });
 }
 
-// The booking workspace and the shared dialog both raise overlap conflicts, so the override
-// prompt is told which error region to draw into and which dialog to close on success.
-function renderConflictOverride(error,{container=$("#modal-error"),dialog=$("#modal"),afterClose=null}={}){
-  container.textContent="";
+/**
+ * AN OVERLAP THIS ROLE MAY NOT MAKE, in one sentence, with nothing to press.
+ *
+ * Overlapping appointments are allowed in Pawsh: a caller holding `appointments.override_conflict`
+ * - the owner, manager and receptionist presets - saves one directly, the server records the
+ * overlap, and no dialog asks "anyway?". There used to be one: every overlap came back 409 with
+ * `canOverride`, this file drew a "Book anyway" / "Move anyway" / "Save anyway" button, and the
+ * operator repeated a request they had already made. The server now lets the key through on the
+ * first request and answers 409 `SCHEDULING_CONFLICT` only to a caller WITHOUT it, with
+ * `canOverride` always false. So the client no longer retries anything: it words the refusal -
+ * who, when, and what it overlaps, from the `conflicts` the server names - and every dialog shows
+ * that sentence inline where it shows any other refusal. A groomer reads why the time was refused;
+ * nothing offers them a button their role cannot press.
+ */
+function schedulingConflictSentence(error,{operationLabel,employee,proposedStart}){
+  if(error.status!==409||error.data?.code!=="SCHEDULING_CONFLICT")return error;
   const conflicts=error.data.conflicts||[];
-  const proposed=error.proposedStart;
-  const locationConflictTimes=conflicts.map(item=>`${formatPrefDateAndTime(new Date(item.startsAt))} to ${formatPrefTime(new Date(item.endsAt))}`).join(", ");
-  const message=document.createElement("span");
-  message.textContent=`${error.proposedEmployee} already has an overlapping appointment. ${error.operationLabel} at ${proposed} will overlap ${locationConflictTimes}.`;
-  const button=document.createElement("button");
-  button.type="button";
-  button.className="secondary";
-  button.dataset.testid="confirm-conflict-override";
-  // A caller may name the button - a duration edit is neither a move nor a booking.
-  button.textContent=error.overrideLabel||(error.operationLabel==="Reschedule"?"Move anyway":"Book anyway");
-  button.addEventListener("click",async()=>{
-    button.disabled=true;
-    try{
-      await error.retryConflictOverride();
-      await refresh();
-      dialog.close();
-      toast(`${error.operationLabel} saved with intentional overlap`);
-      if(afterClose)runDetached(afterClose);
-    }catch(retryError){
-      if(retryError.status===403)await reconcilePermissions();
-      container.textContent=retryError.message;
-    }finally{button.disabled=false;}
-  });
-  container.append(message,button);
+  const times=conflicts.map(item=>`${formatPrefDateAndTime(new Date(item.startsAt))} to ${formatPrefTime(new Date(item.endsAt))}`).join(", ");
+  error.message=`${employee} already has an overlapping appointment. ${operationLabel} at ${proposedStart} would overlap ${times||"it"}, and this role cannot book over another appointment.`;
+  return error;
 }
 
 /* ---------------------------------------------------------------------------
@@ -6726,7 +6842,7 @@ function renderBookingDetailPane() {
     `<div class="booking-field-row">`+
       select("employeeId","Groomer",state.employees.filter((employee)=>employee.active)
         .map((employee)=>[employee.id,employee.displayName]),false,bookingDefaultGroomerId())+
-      field("startAt","Start time","datetime-local",`required value="${escape(state.booking.preset||"")}"`)+
+      field("startAt","Start time","datetime-local",`required ${FIVE_MINUTE_STEP_ATTR} value="${escape(state.booking.preset||"")}"`)+
     `</div>`+
     `<div class="booking-pet" data-testid="booking-pet-row">${bookingPetRow()}</div>`+
     `<input type="hidden" name="petId" value="${escape(state.booking.petId||"")}">`+
@@ -6969,8 +7085,8 @@ function openBookingDialog(options={}) {
       ]);
     }catch(error){
       // A 403 here means this session's permissions moved under it - `api()` has already re-read
-      // `/api/me`, so the affordances redraw on their own - and the sentence says which key it is
-      // rather than repeating the server's generic refusal.
+      // `/api/me`, so the affordances redraw on their own - and the sentence says what cannot be
+      // done rather than repeating the server's generic refusal.
       toast(error.status===403?bookingRefusalReason()||error.message:error.message);
       return;
     }
@@ -7280,13 +7396,9 @@ $("#booking-form").addEventListener("submit",async event=>{
     toast("Appointment booked");
     runDetached(landOnDate);
   }catch(problem){
-    if(problem.retryConflictOverride)
-      renderConflictOverride(problem,{container:error,dialog:bookingScope(),afterClose:landOnDate});
-    else{
-      error.textContent=problem.message;
-      if(problem.reconcileLifecycle||problem.reconcileFinancial)
-        await refresh().catch(failure=>toast(failure.message));
-    }
+    error.textContent=problem.message;
+    if(problem.reconcileLifecycle||problem.reconcileFinancial)
+      await refresh().catch(failure=>toast(failure.message));
   }finally{button.disabled=false;button.textContent=original;form.removeAttribute("aria-busy");}
 });
 // Location switcher. business.locationId, locationVersion and timezone are read by every scheduling
@@ -7388,8 +7500,12 @@ function newActionItems(){return [...newActionMenu.querySelectorAll('[role="menu
  * names the key, and the menu and the grid cannot disagree.
  */
 function syncNewActionAvailability(){if(!newActionMenu)return;const refusals={"new-appointment":bookingRefusalReason(),"quick-existing":bookingRefusalReason(),"blocked-time":blockingRefusalReason()};for(const [action,refusal] of Object.entries(refusals)){const item=newActionMenu.querySelector(`[data-new-action="${action}"]`);if(!item)continue;item.disabled=Boolean(refusal);item.setAttribute("aria-disabled",String(Boolean(refusal)));if(refusal)item.title=refusal;else item.removeAttribute("title");}}
-function closeNewActionMenu({restoreFocus=false}={}){if(!newActionMenu)return;newActionMenu.hidden=true;newActionTrigger.setAttribute("aria-expanded","false");if(restoreFocus)newActionTrigger.focus();}
-function openNewActionMenu({focus="none"}={}){closeAccountMenu();closeLocationMenu();syncNewActionAvailability();newActionMenu.hidden=false;newActionTrigger.setAttribute("aria-expanded","true");const items=newActionItems();if(focus==="first")items[0]?.focus();if(focus==="last")items.at(-1)?.focus();}
+function closeNewActionMenu({restoreFocus=false}={}){if(!newActionMenu)return;newActionMenu.hidden=true;newActionMenu.style.removeProperty("top");newActionTrigger.setAttribute("aria-expanded","false");if(restoreFocus)newActionTrigger.focus();}
+// On a phone the menu is fixed to the viewport and spans it (see `.new-action-menu` at 580px), so
+// it cannot anchor itself to the trigger the way the absolute desktop menu does; it is placed just
+// under the trigger's rendered bottom instead of at a constant that only matched one shell height.
+function placeNewActionMenu(){if(!globalThis.matchMedia("(max-width:580px)").matches)return;const rect=newActionTrigger.getBoundingClientRect();newActionMenu.style.top=`${Math.round(rect.bottom+6)}px`;}
+function openNewActionMenu({focus="none"}={}){closeAccountMenu();closeLocationMenu();syncNewActionAvailability();newActionMenu.hidden=false;placeNewActionMenu();newActionTrigger.setAttribute("aria-expanded","true");const items=newActionItems();if(focus==="first")items[0]?.focus();if(focus==="last")items.at(-1)?.focus();}
 newActionTrigger.addEventListener("click",()=>newActionMenu.hidden?openNewActionMenu():closeNewActionMenu({restoreFocus:true}));
 newActionTrigger.addEventListener("keydown",event=>{if(["ArrowDown","ArrowUp"].includes(event.key)){event.preventDefault();openNewActionMenu({focus:event.key==="ArrowDown"?"first":"last"});}});
 newActionMenu.addEventListener("keydown",event=>{const items=newActionItems(),index=items.indexOf(document.activeElement);if(event.key==="Escape"){event.preventDefault();closeNewActionMenu({restoreFocus:true});}else if(["ArrowDown","ArrowUp","Home","End"].includes(event.key)){event.preventDefault();const next=event.key==="Home"?0:event.key==="End"?items.length-1:(index+(event.key==="ArrowDown"?1:-1)+items.length)%items.length;items[next]?.focus();}});
@@ -15324,7 +15440,7 @@ const APPOINTMENT_ACTIVITY_LABELS={
   "appointment.services.update":"Services changed",
   "appointment.service.duration_edit":"Duration changed",
   "appointment.service.price_edit":"Price changed",
-  "appointment.conflict_override":"Overlap booked deliberately",
+  "appointment.conflict_override":"Saved over another appointment",
   "appointment.checked_in":"Checked in",
   "appointment.in_service":"Service started",
   "appointment.completed":"Ready for pickup",
@@ -15647,10 +15763,12 @@ function lifecycleDurationLabel(minutes){
  * Invoice facts make. The header used to run the audit-only derivation on its own, which left it
  * disagreeing with those two surfaces about the same visit and blind to a `/times` correction.
  *
- * `editable` is false everywhere today: no edit dialog is drawn on this strip yet, so no pencil.
- * The derivation note is emitted only when a shown value is absent and the strip is read-only.
+ * No edit dialog is drawn on this strip yet, so no pencil. The strip states the three values and
+ * nothing else: it used to add "Times are read from the appointment's recorded activity" whenever
+ * one was absent, and human QA read that as noise - the History disclosure underneath IS the
+ * activity, so the sentence explained what is already on the screen.
  */
-function appointmentLifecycleMarkup(activity,item=null,{editable=false}={}){
+function appointmentLifecycleMarkup(activity,item=null){
   // A value that is not there is set back in weight rather than wearing the ink of a recorded
   // one, so the strip reads at a glance as two facts and a gap.
   const cell=(testid,label,value,recorded=true)=>
@@ -15661,15 +15779,9 @@ function appointmentLifecycleMarkup(activity,item=null,{editable=false}={}){
       +cell("lifecycle-duration","Duration","…",false);
   }
   const {checkedIn,finished,minutes}=appointmentLifecycleValues(item,activity);
-  const missing=!checkedIn||!finished||minutes===null;
   return cell("lifecycle-in","Checked in",checkedIn?activityStamp(checkedIn):"not recorded",Boolean(checkedIn))
     +cell("lifecycle-out","Checked out",finished?activityStamp(finished):"not recorded",Boolean(finished))
-    +cell("lifecycle-duration","Duration",lifecycleDurationLabel(minutes),minutes!==null)
-    // Said once, and only when something is actually absent: two blanks beside a filled value
-    // otherwise read as an editable field nobody got round to rather than as derived and absent.
-    +(missing&&!editable
-      ? `<span class="fine lifecycle-note" data-testid="lifecycle-note">Times are read from the appointment's recorded activity.</span>`
-      : "");
+    +cell("lifecycle-duration","Duration",lifecycleDurationLabel(minutes),minutes!==null);
 }
 
 /**
@@ -15849,12 +15961,12 @@ function appointmentNotesBlockMarkup(surface){
  *
  * `disabled aria-disabled="true"` plus a title is the pattern the blocked-time drawer's Update and
  * Delete established and the Invoice button on the appointment footer already follows, so five
- * more controls join it rather than inventing a sixth shape. The permission key travels in the
- * sentence because a member who reads "you do not have permission" and cannot name the permission
- * has been told they are stuck, not what to ask for.
+ * more controls join it rather than inventing a sixth shape. The sentence names the ACTION and
+ * never the key: what lifts the refusal is a conversation with whoever manages roles, and the
+ * Roles editor is where the key is named.
  */
-function appointmentPermissionRefusal(action,permission){
-  return ` disabled aria-disabled="true" title="You do not have permission to ${action} (${permission})"`;
+function appointmentPermissionRefusal(action){
+  return refusalAttributes(permissionRefusalSentence(action));
 }
 
 /**
@@ -15864,7 +15976,7 @@ function appointmentPermissionRefusal(action,permission){
  * means any staff member's. The server enforces the pair on every mutating appointment route and
  * answers a mismatch with 403 `NOT_ASSIGNED_TO_YOU`; this is the UI's mirror of that rule, so a
  * groomer looking at a colleague's visit sees the controls refused BEFORE pressing them, with the
- * key that would lift the refusal named on the control.
+ * reason named on the control.
  *
  * "Mine" is decided by EMPLOYEE ID and never by display name. `GET /api/me` carries `employeeId` -
  * the employee row whose membership is this session's - and an appointment is mine when its
@@ -15873,8 +15985,8 @@ function appointmentPermissionRefusal(action,permission){
  *
  * The owner bypasses through `allowed()`, which answers true for every key when `isOwner` is set.
  */
-const APPOINTMENT_SCOPE_REFUSAL="This appointment is assigned to another groomer (appointments.edit_all_staff)";
-function appointmentScopeRefusal(){return ` disabled aria-disabled="true" title="${APPOINTMENT_SCOPE_REFUSAL}"`;}
+const APPOINTMENT_SCOPE_REFUSAL="This appointment is assigned to another groomer";
+function appointmentScopeRefusal(){return refusalAttributes(APPOINTMENT_SCOPE_REFUSAL);}
 function myEmployeeId(){return state.me?.employeeId||null;}
 function assignedToMe(item){
   const mine=myEmployeeId();
@@ -15904,11 +16016,11 @@ function invoiceReadable(item){
 }
 /**
  * The refusal attributes for one control, or "" when nothing refuses it. THE PERMISSION IS ASKED
- * FIRST: a member without the key at all is told about the key, and only a member who holds it
- * but is looking at somebody else's appointment is told about the scope.
+ * FIRST: a member without the key at all is told what they cannot do, and only a member who holds
+ * it but is looking at somebody else's appointment is told about the scope.
  */
 function appointmentRefusal(item,action,permission){
-  if(!allowed(permission))return appointmentPermissionRefusal(action,permission);
+  if(!allowed(permission))return appointmentPermissionRefusal(action);
   if(!scopeAllows(item))return appointmentScopeRefusal();
   return "";
 }
@@ -15960,7 +16072,7 @@ function clientRailRefusalMarkup(){
   return `<div class="rail-status" data-testid="appointment-client-refused">`
     +`<p class="note-empty">Client records are not part of this role.</p>`
     +`<p class="fine">Seeing this client's history, notes and agreements from the appointment needs `
-      +`<strong>View appointments</strong> (appointments.view).</p></div>`;
+      +`<strong>View appointments</strong>.</p></div>`;
 }
 
 // "(n)" from the server's own count, so a feed capped at 200 rows still says how many there are.
@@ -16167,7 +16279,7 @@ function appointmentSurfaceMarkup(surface){
   // demonstrably exists, with no route to it from the visit that raised it.
   const invoice=can.invoice
     ? `<button type="button" class="${primarySlot==="invoice"?"primary":"secondary"} compact" data-testid="appointment-invoice"${
-      can.invoiceViewable?"":` disabled aria-disabled="true" title="You do not have permission to view invoices"`}>Invoice</button>`
+      can.invoiceViewable?"":appointmentPermissionRefusal("view invoices")}>Invoice</button>`
     : "";
   // Billing the visit, or collecting what is still owed on a bill already raised. ONE CONTROL FOR
   // BOTH, interpolated into both footers, because `readOnly` is a statement about the VISIT no
@@ -16194,7 +16306,7 @@ function appointmentSurfaceMarkup(surface){
    */
   const reschedule=can.rescheduleOffered
     ? `<button type="button" class="${primarySlot==="reschedule"?"primary":"secondary"} compact" data-testid="appointment-reschedule"${
-      can.reschedule?"":appointmentPermissionRefusal("book appointments","appointments.create")}>Reschedule</button>`
+      can.reschedule?"":appointmentPermissionRefusal("book appointments")}>Reschedule</button>`
     : "";
   /**
    * THE FOOTER IS TWO ZONES, NOT ONE ROW OF EQUAL PILLS.
@@ -17444,8 +17556,30 @@ const viewPaths={dashboard:"/",calendar:"/",customers:"/",messages:"/",reminders
 const legacyBreedPaths=new Set(["/salon/breeds","/reports/breeds","/overview/breeds"]);
 function viewForPath(path){if(path==="/account")return "profile-account";if(path==="/intake-submissions")return "intake-submissions";if(path.startsWith("/clients/"))return "client-profile";if(path==="/settings"||path.startsWith("/settings/"))return "admin-settings";return legacyBreedPaths.has(path)?"admin-settings":"dashboard";}
 function closeSetupMenus(){$$(".setup-menu[open]").forEach(menu=>menu.open=false);}
-$$("nav [data-view]").forEach((button) => button.addEventListener("click", () => {$("#primary-navigation").classList.remove("mobile-open");$("#mobile-nav-toggle").setAttribute("aria-expanded","false");$("#mobile-nav-toggle").setAttribute("aria-label","Open navigation");showView(button.dataset.view);}));
-$("#mobile-nav-toggle").addEventListener("click",event=>{const open=$("#primary-navigation").classList.toggle("mobile-open");event.currentTarget.setAttribute("aria-expanded",String(open));event.currentTarget.setAttribute("aria-label",open?"Close navigation":"Open navigation");});
+/**
+ * THE PHONE NAVIGATION IS A SHEET, and the hamburger is its close control.
+ *
+ * On a phone `.mobile-open` draws the nav as a sheet over the page (see "The phone shell" in
+ * styles.css), so the button that opened it is the one thing left standing above it: it swaps to
+ * a cross and says "Close navigation". Choosing a destination closes the sheet as it always did;
+ * Escape and a press on the dimmed backdrop close it too, because a sheet with one way out is a
+ * trap. Focus goes to the first destination on open and back to the button on close, so a
+ * keyboard or a screen reader lands inside the sheet rather than behind it.
+ */
+function mobileNavigationOpen(){return $("#primary-navigation").classList.contains("mobile-open");}
+function setMobileNavigation(open,{focus=true}={}){
+  const nav=$("#primary-navigation"),toggle=$("#mobile-nav-toggle");
+  nav.classList.toggle("mobile-open",open);
+  toggle.setAttribute("aria-expanded",String(open));
+  toggle.setAttribute("aria-label",open?"Close navigation":"Open navigation");
+  toggle.textContent=open?"\u2715":"\u2630";
+  if(!focus)return;
+  if(open)nav.querySelector("button:not([hidden])")?.focus();else toggle.focus();
+}
+$$("nav [data-view]").forEach((button) => button.addEventListener("click", () => {setMobileNavigation(false,{focus:false});showView(button.dataset.view);}));
+$("#mobile-nav-toggle").addEventListener("click",()=>setMobileNavigation(!mobileNavigationOpen()));
+$("#app-view > aside").addEventListener("click",event=>{if(event.target===event.currentTarget&&mobileNavigationOpen())setMobileNavigation(false);});
+document.addEventListener("keydown",event=>{if(event.key==="Escape"&&mobileNavigationOpen()){event.preventDefault();setMobileNavigation(false);}});
 $$("[data-view-target]").forEach((button) => button.addEventListener("click", () => {closeAccountMenu();closeSetupMenus();showView(button.dataset.viewTarget);}));
 $$("[data-view-link]").forEach(link=>link.addEventListener("click",event=>{event.preventDefault();closeSetupMenus();showView(link.dataset.viewLink);}));
 $$(".setup-menu").forEach(menu=>{const summary=menu.querySelector("summary");menu.addEventListener("toggle",()=>summary.setAttribute("aria-expanded",String(menu.open)));menu.addEventListener("keydown",event=>{if(event.key==="Escape"&&menu.open){event.preventDefault();menu.open=false;summary.focus();}});});

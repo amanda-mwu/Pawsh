@@ -58,9 +58,11 @@ const NOTES = slice(
   "\nfunction appointmentPermissionRefusal("
 );
 const SURFACE = slice(
-  "function appointmentPermissionRefusal(action,permission){",
+  "function appointmentPermissionRefusal(action){",
   "\n/**\n * The appointment detail surface: level 1 of the stack."
 );
+/** The three permission-copy helpers every refusal builder goes through. */
+const REFUSAL_COPY = slice("const SERVER_PERMISSION_REFUSAL=", "\nfunction settleUnauthenticated() {");
 const DERIVE = slice("  const derive=()=>{", "\n  /**\n   * The appointment note redraws");
 const OUTSTANDING = slice(
   "const OUTSTANDING_INVOICE_STATUSES=",
@@ -295,7 +297,7 @@ function workList(status = "scheduled", extra: Record<string, unknown> = {}): Wo
     surface.permissions = derive();
     return { grant, derive, appointmentSurfaceMarkup, surface };`;
   const factory = new Function(
-    ...names, [prelude, OUTSTANDING, NOTES, SURFACE, DERIVE, exported].join("\n")
+    ...names, [prelude, REFUSAL_COPY, OUTSTANDING, NOTES, SURFACE, DERIVE, exported].join("\n")
   ) as (...args: unknown[]) => WorkList;
   return factory(...names.map((name) => scope[name]));
 }
@@ -343,21 +345,23 @@ describe("the work list states each service as it stands for this visit", () => 
     expect(row(markup, "l2")).not.toContain("Catalog:");
   });
 
-  it("disables the pencil and Add with the key named for a role without appointments.edit", () => {
+  it("disables the pencil and Add, saying why, for a role without appointments.edit", () => {
     const app = workList();
     const markup = draw(app);
     for (const opening of [control(markup, "appointment-service-edit", "l1"), control(markup, "appointment-adjust-services")]) {
       expect(opening).toContain('disabled aria-disabled="true"');
-      expect(opening).toMatch(/appointments\.edit/u);
+      expect(opening).toContain("You do not have permission to change the services on this appointment");
+      expect(opening).not.toMatch(/appointments\.edit/u);
     }
   });
 
-  it("disables the pencil with the scope key named on a colleague's visit", () => {
+  it("disables the pencil, saying whose visit it is, on a colleague's visit", () => {
     const app = workList("scheduled", { groomers: [{ id: "e9", displayName: "Someone else" }], employeeId: "e9" });
     app.grant("appointments.edit");
     const opening = control(draw(app), "appointment-service-edit", "l1");
     expect(opening).toContain("disabled");
-    expect(opening).toMatch(/appointments\.edit_all_staff/u);
+    expect(opening).toContain("This appointment is assigned to another groomer");
+    expect(opening).not.toMatch(/edit_all_staff/u);
   });
 
   it("withholds the pencil - absent, not disabled - once the route would refuse the write", () => {
@@ -439,11 +443,12 @@ describe("the Edit service dialog", () => {
     expect(modal.fields).not.toContain("service-line-price-readonly");
   });
 
-  it("draws the price as text, with the key named, without the permission - never a disabled input", () => {
+  it("draws the price as text, with the reason named, without the permission - never a disabled input", () => {
     const modal = editors("appointments.edit").edit(line);
     expect(modal.fields).toContain('data-testid="service-line-price-readonly"');
     expect(modal.fields).toContain("$90.00");
-    expect(modal.fields).toContain("Price changes need Edit service prices (appointments.service_price_edit)");
+    expect(modal.fields).toContain("Price changes need Edit service prices.");
+    expect(modal.fields).not.toContain("service_price_edit");
     expect(modal.fields).not.toMatch(/<input[^>]*name="price"/u);
     expect(modal.fields).not.toMatch(/<input[^>]*disabled/u);
     // The duration is still theirs to change.

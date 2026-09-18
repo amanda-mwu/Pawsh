@@ -65,7 +65,8 @@ import {
   cardProcessorTerminalSchema
 } from "./schemas.js";
 import {
-  availabilityOverrideMayBypass, availabilityRefusalCodes, dayPeriodForInstants, refuseWindow,
+  availabilityOverrideMayBypass, availabilityRefusalCodes, blockedTimeIntersectionPermitted,
+  dayPeriodForInstants, instantMinutes, refuseWindow,
   resolveEffectiveAvailability, type AvailabilityReason, type DayPeriod
 } from "../domain/availability.js";
 import { sealSecret } from "../security/secrets.js";
@@ -1438,6 +1439,15 @@ async function findSchedulingConflicts(
  * `excludeAppointmentId` is deliberately not passed. It exists so a reschedule does not conflict
  * with itself; a blocked time is not an appointment and has nothing to exclude.
  *
+ * WITH `BLOCKED_TIME_TOLERANCE_MINUTES` APPLIED, PER APPOINTMENT. `findSchedulingConflicts` answers
+ * the occupancy question - which bookings touch this window at all - and that stays its whole job.
+ * Whether a touch is a CONFLICT is the tolerance's question, and it is asked of each booking on
+ * its own: a block that runs fifteen minutes into one appointment and fifteen into the next is
+ * inside the tolerance against both and is written. The intersection is measured in the instant
+ * frame, which is the frame both rows are stored in. The mirror guard, `refuseStaffAvailability`,
+ * applies the same constant to a booking over the groomer's blocks, so the two directions move
+ * together the way they did at zero tolerance.
+ *
  * NOT SCOPED TO A LOCATION, because neither side of this invariant is. `findSchedulingConflicts`
  * refuses double-booking a groomer across the whole business, and `refuseStaffAvailability`
  * subtracts a groomer's blocks without consulting which shop they were filed at - one person
@@ -1455,10 +1465,13 @@ async function refuseBlockOverAppointments(
   code: "BLOCK_TIME_APPOINTMENT_CONFLICT"; error: string;
   conflicts: SchedulingConflict[]; canOverride: false;
 } | null> {
-  const conflicts = await findSchedulingConflicts(tx, {
+  const block = instantMinutes(input);
+  const conflicts = (await findSchedulingConflicts(tx, {
     businessId: input.businessId, employeeId: input.employeeId,
     startAt: input.startAt, endAt: input.endAt
-  });
+  })).filter((touched) => !blockedTimeIntersectionPermitted(
+    block, instantMinutes({ startAt: touched.startsAt, endAt: touched.endsAt })
+  ));
   if (!conflicts.length) return null;
   // Read only on the refusal path. The happy path stays one query, and a block for a groomer id
   // the foreign key would reject reaches the same 23503 it always did rather than a new 404.
@@ -1472,10 +1485,11 @@ async function refuseBlockOverAppointments(
       employee?.displayName ?? "That groomer", conflicts, input.timeZone
     ),
     conflicts,
-    // A CONSTANT, NOT A PERMISSION LOOKUP, and that is the whole point. `SCHEDULING_CONFLICT`
-    // computes this field because `appointments.override_conflict` really does let a manager
-    // double-book. There is no permission that lets anybody lay a block over a booking, so there
-    // is nothing to look up. It is stated rather than omitted so a client reading the field gets
+    // A CONSTANT, AND NOT A PERMISSION LOOKUP EVEN IN PRINCIPLE. `SCHEDULING_CONFLICT` carries the
+    // same field because `appointments.override_conflict` really does let a manager double-book
+    // (a holder is let through before the refusal is ever built, so it too now reads false).
+    // There is no permission that lets anybody lay a block over a booking, so there is nothing
+    // to look up. It is stated rather than omitted so a client reading the field gets
     // the answer `TIME_BLOCKED` gives it in the mirror case instead of `undefined`, and cannot
     // render a "Block anyway" the server would refuse.
     canOverride: false
@@ -1534,6 +1548,62 @@ async function permitConflictOverride(
       true
     )
   `;
+}
+
+/**
+ * THE OVERLAP RULE, IN ONE PLACE: what happens when a booking's window touches another booking.
+ *
+ * `findSchedulingConflicts` says WHICH appointments the window overlaps. This decides what that
+ * means for the caller, and it is the only function that does, so `POST /api/appointments`,
+ * `PATCH .../schedule` and the two service-line routes (through `settleAppointmentWindow`) cannot
+ * disagree about the same minutes:
+ *
+ *   * No conflicts: nothing to decide, and no override is recorded even if one was asked for.
+ *   * Conflicts, and the caller holds `appointments.override_conflict`: THE WRITE PROCEEDS. The
+ *     key IS the authority to double-book, and a caller who holds it does not have to be refused
+ *     once and then asked to say "yes, really" - the 409 round trip told an owner something they
+ *     already knew and then made them repeat the request. The override is permitted to the
+ *     database triggers for this appointment, `conflict_overridden` is written true by the caller,
+ *     and the caller records `appointment.conflict_override` naming the appointments overlapped -
+ *     the compliance trail is unchanged; only the extra request is gone. `overrideConflict: true`
+ *     in the body is still accepted and, for a caller who holds the key, is now redundant.
+ *   * Conflicts, and the caller does not hold the key: 409 `SCHEDULING_CONFLICT`, naming the
+ *     bookings in the way, with `canOverride: false` - which is now always what the field says,
+ *     because anybody it could say true for was let through the line above. A caller who ASKED
+ *     for an override they do not hold never reaches here: the routes answer that 403 by name
+ *     before the window is even resolved.
+ *
+ * `overrideAuthorized` is the routes' `authorizeConflictOverride` answer - true only when the
+ * override was requested AND held. When it was not requested the key is looked up here, so the
+ * lookup happens once per request on either path. The permission is read from the database under
+ * the transaction rather than from `context.permissions`, following every other conflict-override
+ * decision in this file: a role edited a moment ago must be what decides a double-booking.
+ *
+ * APPOINTMENTS ONLY. A block is not an appointment and has no override: `refuseStaffAvailability`
+ * and `refuseBlockOverAppointments` run after this and are not consulted by it.
+ */
+async function judgeSchedulingConflicts(
+  tx: Transaction,
+  context: { businessId: string; membershipId: string },
+  input: {
+    appointmentId: string; conflicts: readonly SchedulingConflict[];
+    overrideRequested: boolean; overrideAuthorized: boolean;
+  }
+): Promise<{ overrideApplied: boolean; overrideAuthorized: boolean }> {
+  if (!input.conflicts.length) return { overrideApplied: false, overrideAuthorized: input.overrideAuthorized };
+  const mayOverride = input.overrideRequested
+    ? input.overrideAuthorized
+    : await hasCurrentPermission(tx, {
+      businessId: context.businessId, membershipId: context.membershipId,
+      permission: "appointments.override_conflict"
+    });
+  if (!mayOverride) {
+    throw new SchedulingRequestError(409, "SCHEDULING_CONFLICT",
+      "This employee already has an overlapping appointment during the selected time.",
+      { conflicts: input.conflicts, canOverride: false });
+  }
+  await permitConflictOverride(tx, input.appointmentId);
+  return { overrideApplied: true, overrideAuthorized: true };
 }
 
 async function ensureBookingResourcesAvailable(
@@ -1648,6 +1718,18 @@ interface StaffAvailabilityRefusal {
  *     over-subtracts the repeated hour. That refuses a few more bookings on one day a year, in the
  *     safe direction - the alternative is handing out an hour a groomer is not there for.
  *
+ * BLOCKS INSIDE `BLOCKED_TIME_TOLERANCE_MINUTES` OF THE WINDOW ARE NOT SUBTRACTED. A block that
+ * runs at most fifteen minutes into the booked window is not a conflict - the rule
+ * `src/domain/availability.ts` states for both directions of the block/appointment invariant -
+ * so it is dropped here, before the resolver, rather than subtracted and then forgiven. Dropping
+ * it is the only honest way to express a tolerance to a subtractive step 5: subtracting it and
+ * then re-testing the residual would have to decide how much of the window may be missing, which
+ * is a second statement of the same rule. Each block is judged on its own intersection with the
+ * window, in the wall-clock frame `dayPeriodForInstants` has just projected both into - the frame
+ * step 5 subtracts in - and a block past the tolerance is subtracted exactly as it always was and
+ * refuses the window with `TIME_BLOCKED`, `canOverride: false`. The mirror guard,
+ * `refuseBlockOverAppointments`, applies the same constant to a block over the groomer's bookings.
+ *
  * TIMEZONE. Everything is derived from the authoritative instants (`startAt`, `endAt`) and the
  * location's scheduling timezone. `localDateForInstant` and `dayPeriodForInstants` are the only
  * two conversions, both from `src/domain/*`, and neither parses a zone-less string. The weekday
@@ -1717,6 +1799,8 @@ async function refuseStaffAvailability(
         .filter((row) => row.employeeId === employeeId)
         .map((row) => dayPeriodForInstants(row, localDate, input.timeZone))
         .filter((period): period is DayPeriod => period !== null)
+        // The tolerance, per block: see the doc comment above and the constant's own.
+        .filter((period) => !blockedTimeIntersectionPermitted(period, window))
     });
     const reason = refuseWindow(availability, window);
     if (!reason) continue;
@@ -1864,12 +1948,12 @@ async function refuseServiceEditOutsideWindow(
  *
  * `end_at = start_at + Σ duration` over the lines as they now stand, then the guard sequence
  * `PATCH /api/appointments/:id/schedule` runs over the same minutes: the local-midnight rule,
- * `findSchedulingConflicts` - 409 `SCHEDULING_CONFLICT` unless the caller asked to override and
- * holds `appointments.override_conflict`, in which case the override is permitted to the database
- * trigger and recorded as `appointment.conflict_override` - and then `refuseStaffAvailability`,
- * where an `availabilityOverride` bypasses exactly the ordinary-hours refusals and never a block:
- * `TIME_BLOCKED` stands whoever asks. `callerMayOverride` is true for the same reason it is on
- * `/schedule`: every caller here already holds `appointments.edit`.
+ * `findSchedulingConflicts` judged by `judgeSchedulingConflicts` - 409 `SCHEDULING_CONFLICT`
+ * unless the caller holds `appointments.override_conflict`, in which case the override is
+ * permitted to the database trigger and recorded as `appointment.conflict_override` - and then
+ * `refuseStaffAvailability`, where an `availabilityOverride` bypasses exactly the ordinary-hours
+ * refusals and never a block: `TIME_BLOCKED` stands whoever asks. `callerMayOverride` is true for
+ * the same reason it is on `/schedule`: every caller here already holds `appointments.edit`.
  *
  * The closure check a move runs is not repeated: the date does not change here, and the midnight
  * rule is what keeps it from changing. `locationClosed: false` is therefore an input the resolver
@@ -1900,15 +1984,10 @@ async function settleAppointmentWindow(
   const conflicts = (await Promise.all(appointment.employeeIds.map((employeeId) => findSchedulingConflicts(tx, {
     businessId: context.businessId, employeeId, startAt, endAt, excludeAppointmentId: appointment.id
   })))).flat();
-  if (conflicts.length && !input.overrideConflict) {
-    const canOverride = await hasCurrentPermission(tx, {
-      businessId: context.businessId, membershipId: context.membershipId,
-      permission: "appointments.override_conflict"
-    });
-    throw new SchedulingRequestError(409,"SCHEDULING_CONFLICT","This employee already has an overlapping appointment during the selected time.",{conflicts,canOverride});
-  }
-  const overrideApplied = conflicts.length > 0 && input.overrideConflict && input.overrideAuthorized;
-  if (overrideApplied) await permitConflictOverride(tx, appointment.id);
+  const { overrideApplied } = await judgeSchedulingConflicts(tx, context, {
+    appointmentId: appointment.id, conflicts,
+    overrideRequested: input.overrideConflict, overrideAuthorized: input.overrideAuthorized
+  });
   const refusal = await refuseStaffAvailability(tx, {
     businessId: context.businessId, locationId: appointment.locationId,
     timeZone: appointment.schedulingTimezone, employeeIds: appointment.employeeIds,
@@ -10933,16 +11012,11 @@ export function registerRoutes(
       });
       await lockSchedulingResources(tx, context.businessId, employeeIds);
       const conflicts=(await Promise.all(employeeIds.map(employeeId=>findSchedulingConflicts(tx,{businessId:context.businessId,employeeId,startAt,endAt})))).flat();
-      if (conflicts.length && !input.overrideConflict) {
-        const canOverride = await hasCurrentPermission(tx, {
-          businessId: context.businessId,
-          membershipId: context.membershipId,
-          permission: "appointments.override_conflict"
-        });
-        throw new SchedulingRequestError(409,"SCHEDULING_CONFLICT","This employee already has an overlapping appointment during the selected time.",{conflicts,canOverride});
-      }
-      const overrideApplied = conflicts.length > 0 && input.overrideConflict && overrideAuthorized;
-      if (overrideApplied) await permitConflictOverride(tx, appointmentId);
+      // The overlap rule lives in `judgeSchedulingConflicts`: a holder of
+      // `appointments.override_conflict` is let through and recorded, anybody else is refused.
+      const { overrideApplied, overrideAuthorized: conflictOverrideAuthorized } = await judgeSchedulingConflicts(tx, context, {
+        appointmentId, conflicts, overrideRequested: input.overrideConflict, overrideAuthorized
+      });
       // `locationClosed: false` is a FACT here, not an assumption: step 1 is terminal and ran
       // above, throwing `LOCATION_CLOSED` if the shop was shut, so the resolver cannot be reached
       // on a closed date. It is passed rather than omitted because the six-step contract takes it
@@ -11070,7 +11144,7 @@ export function registerRoutes(
         scheduledLocalStart:input.localStart,disambiguation:resolved.disambiguation,
         utcOffsetMinutes:resolved.offsetMinutes,employeeId:primaryEmployeeId,locationId:input.locationId,
         conflictDetected:conflicts.length>0,conflictOverrideRequested:input.overrideConflict,
-        conflictOverrideAuthorized:overrideAuthorized,conflictOverrideApplied:overrideApplied,
+        conflictOverrideAuthorized:conflictOverrideAuthorized,conflictOverrideApplied:overrideApplied,
         availabilityOverrideApplied:input.availabilityOverride
       };
       await completeSchedulingRequest(tx,claim.id,replayResult);
@@ -11141,6 +11215,33 @@ export function registerRoutes(
        */
       const checkedInAt = input.status === "checked_in" ? tx`now()` : tx`checked_in_at`;
       const checkedOutAt = input.status === "completed" ? tx`now()` : tx`checked_out_at`;
+      /**
+       * A LIFECYCLE MOVE CHANGES NO GEOMETRY, SO IT IS NOT A SCHEDULING DECISION - but the two
+       * conflict triggers do not know that. `employee_appointment_conflict_guard` (0002) and
+       * `assigned_employee_schedule_conflict_guard` (0015) both fire on `update of ... status`
+       * and re-run the overlap check whenever the NEW status occupies time, reading neither
+       * `OLD` nor `conflict_overridden`. An appointment that was deliberately double-booked - by
+       * a caller holding `appointments.override_conflict`, recorded in
+       * `appointment.conflict_override` - therefore could not be checked in or started: the
+       * UPDATE that moved `scheduled` to `checked_in` tripped the trigger, surfaced as 23P01,
+       * and the error handler answered 409 `SCHEDULING_CONFLICT` with `canOverride: false` to a
+       * front desk that was not asking to schedule anything. Every intentional overlap was one
+       * that could be booked and never worked.
+       *
+       * So the override GUC is set for this row before the status is written, UNCONDITIONALLY.
+       * It is safe to set unconditionally because nothing here can create an overlap: `start_at`,
+       * `end_at` and the assignment are not in the SET list, so the geometry the triggers would
+       * re-check is exactly the geometry that was judged - and either permitted or refused - when
+       * the row was booked, moved or extended. The row lock and `lockSchedulingResources` above
+       * are held throughout, so the only overlaps the trigger could find are ones already on
+       * record. This is the ROUTE-LEVEL guard for a trigger-level defect: the right fix is for
+       * both trigger functions to return early when the row's geometry is unchanged
+       * (`OLD.start_at = NEW.start_at and OLD.end_at = NEW.end_at and
+       * OLD.employee_id = NEW.employee_id`), which needs a migration, and this line becomes
+       * belt-and-braces the moment that lands. The GUC is transaction-local (`set_config(..., true)`)
+       * and names this appointment only.
+       */
+      await permitConflictOverride(tx, id);
       const [updated] = await tx`
         update appointments set status=${input.status}, version=version+1,
           checked_in_at=${checkedInAt}, checked_out_at=${checkedOutAt},
@@ -11441,16 +11542,10 @@ export function registerRoutes(
         localDate:localDateForInstant(startAt,location.timezone)});
       if (closure) throw salonClosedError(closure);
       const conflicts=(await Promise.all(employeeIds.map(employeeId=>findSchedulingConflicts(tx,{businessId:context.businessId,employeeId,startAt,endAt,excludeAppointmentId:id})))).flat();
-      if (conflicts.length && !input.overrideConflict) {
-        const canOverride = await hasCurrentPermission(tx, {
-          businessId: context.businessId,
-          membershipId: context.membershipId,
-          permission: "appointments.override_conflict"
-        });
-        throw new SchedulingRequestError(409,"SCHEDULING_CONFLICT","This employee already has an overlapping appointment during the selected time.",{conflicts,canOverride});
-      }
-      const overrideApplied = conflicts.length > 0 && input.overrideConflict && overrideAuthorized;
-      if (overrideApplied) await permitConflictOverride(tx, id);
+      // The same overlap rule as creation, from the same function: see `judgeSchedulingConflicts`.
+      const { overrideApplied, overrideAuthorized: conflictOverrideAuthorized } = await judgeSchedulingConflicts(tx, context, {
+        appointmentId: id, conflicts, overrideRequested: input.overrideConflict, overrideAuthorized
+      });
       // Identical to the create path, including which refusals an override may bypass and which it
       // may not. `locationClosed: false` is settled by the terminal closure check above.
       const refusal = await refuseStaffAvailability(tx, {
@@ -11525,7 +11620,7 @@ export function registerRoutes(
         scheduledLocalStart:input.localStart,disambiguation:resolved.disambiguation,
         utcOffsetMinutes:resolved.offsetMinutes,employeeId:primaryEmployeeId,locationId:current.locationId,
         conflictDetected:conflicts.length>0,conflictOverrideRequested:input.overrideConflict,
-        conflictOverrideAuthorized:overrideAuthorized,conflictOverrideApplied:overrideApplied,
+        conflictOverrideAuthorized:conflictOverrideAuthorized,conflictOverrideApplied:overrideApplied,
         availabilityOverrideApplied:input.availabilityOverride
       };
       await completeSchedulingRequest(tx,claim.id,replayResult);

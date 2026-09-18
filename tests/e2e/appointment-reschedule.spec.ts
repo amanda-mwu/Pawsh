@@ -151,7 +151,7 @@ test("Reschedule is there the moment a visit is cancelled, from the surface and 
     const refused = detail(page).getByTestId("appointment-reschedule");
     await expect(refused).toBeVisible();
     await expect(refused).toBeDisabled();
-    await expect(refused).toHaveAttribute("title", /appointments\.create/u);
+    await expect(refused).toHaveAttribute("title", "You do not have permission to book appointments");
     await expect(detail(page).getByTestId("appointment-close")).toHaveClass(/\bprimary\b/u);
   });
 
@@ -209,7 +209,7 @@ test("Reschedule says which services it could not carry, and a role that cannot 
     await openDetail(page, original.id);
     const refused = detail(page).getByTestId("appointment-reschedule");
     await expect(refused).toBeDisabled();
-    await expect(refused).toHaveAttribute("title", /appointments\.create/u);
+    await expect(refused).toHaveAttribute("title", "You do not have permission to book appointments");
     await expect(detail(page).getByTestId("appointment-close")).toHaveClass(/\bprimary\b/u);
   });
 

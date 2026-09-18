@@ -307,15 +307,16 @@ describeDatabase("appointment service lines", () => {
       expect(stale.statusCode).toBe(409);
       expect(stale.json().error).toBe("Appointment changed; refresh before continuing");
 
-      // A block from 10:30 on the booking's day; the groom ends at 10:00, a groom plus a bath at 10:30
-      // touches it and a groom plus two more runs into it.
+      // A block from 10:15 on the booking's day. The groom ends at 10:00; a groom plus a bath ends
+      // at 10:30, fifteen minutes into the block, which the tolerance allows; a groom, a bath and
+      // nails ends at 10:45, thirty minutes in, which it does not.
       const block = await request("POST", "/api/blocked-times", ownerCookie, {
         employeeId: employeeA, locationId, localStart: `${booking.day}T10:15`, localEnd: `${booking.day}T11:00`,
         expectedLocationVersion: 1, reason: "Lunch"
       });
       expect(block.statusCode, block.body).toBe(201);
       const before = await stored(booking.id);
-      const blocked = await putLines(booking.id, ownerCookie, { serviceIds: [groomId, bathId] });
+      const blocked = await putLines(booking.id, ownerCookie, { serviceIds: [groomId, bathId, nailsId] });
       expect(blocked.statusCode, blocked.body).toBe(409);
       expect(blocked.json().code).toBe("TIME_BLOCKED");
       // Nothing written: not a row, not the version, not end_at.
@@ -323,10 +324,15 @@ describeDatabase("appointment service lines", () => {
       expect((await storedLines(booking.id)).map((row) => row.name)).toEqual(["Lines Groom"]);
       // An availability override does not clear a block either.
       const overridden = await putLines(booking.id, ownerCookie, {
-        serviceIds: [groomId, bathId], availabilityOverride: true, overrideReason: "Try anyway"
+        serviceIds: [groomId, bathId, nailsId], availabilityOverride: true, overrideReason: "Try anyway"
       });
       expect(overridden.statusCode).toBe(409);
       expect(overridden.json().code).toBe("TIME_BLOCKED");
+      // Exactly fifteen minutes into the block is inside the tolerance and is written.
+      const tolerated = await putLines(booking.id, ownerCookie, { serviceIds: [groomId, bathId] });
+      expect(tolerated.statusCode, tolerated.body).toBe(200);
+      const after = await stored(booking.id);
+      expect(minutesBetween(after.startAt, after.endAt)).toBe(90);
     });
   });
 
@@ -381,24 +387,28 @@ describeDatabase("appointment service lines", () => {
       expect(await audit(booking.id, "appointment.service.duration_edit")).toEqual([]);
     });
 
-    it("refuses extending onto another appointment unless the override is asked for and held", async () => {
+    it("refuses extending onto another appointment unless the caller holds the override key", async () => {
       const day = nextDay();
       const first = await book(employeeA, [groomId], "09:00", day);
       await book(employeeA, [groomId], "10:30", day);
       const groom = (await detail(first.id)).services[0]!;
 
-      const refused = await patchLine(first.id, groom.id, ownerCookie, { durationMinutes: 120 });
+      // The groomer holds no override key: extending their own visit onto the next one is refused,
+      // and `canOverride` is false because anybody it could be true for is never refused.
+      const refused = await patchLine(first.id, groom.id, groomerA, { durationMinutes: 120 });
       expect(refused.statusCode, refused.body).toBe(409);
       expect(refused.json().code).toBe("SCHEDULING_CONFLICT");
-      expect(refused.json().canOverride).toBe(true);
+      expect(refused.json().canOverride).toBe(false);
       expect((await storedLines(first.id))[0]!.durationMinutes).toBe(60);
 
-      // A groomer holds no override permission: asking for one is refused by name.
+      // Asking for the override they do not hold is refused by name, before the window is judged.
       const asked = await patchLine(first.id, groom.id, groomerA, { durationMinutes: 120, overrideConflict: true });
       expect(asked.statusCode, asked.body).toBe(403);
       expect(asked.json().error).toContain("appointments.override_conflict");
 
-      const overridden = await patchLine(first.id, groom.id, ownerCookie, { durationMinutes: 120, overrideConflict: true });
+      // The owner holds the key and does not have to ask: the extension lands, the row is marked
+      // and the override is recorded against the services operation.
+      const overridden = await patchLine(first.id, groom.id, ownerCookie, { durationMinutes: 120 });
       expect(overridden.statusCode, overridden.body).toBe(200);
       const after = await stored(first.id);
       expect(minutesBetween(after.startAt, after.endAt)).toBe(120);
@@ -444,11 +454,16 @@ describeDatabase("appointment service lines", () => {
   });
 
   describe("editing a line's price", () => {
-    it("has graduated the permission and left the presets alone", () => {
+    it("has graduated the permission, and every preset now holds it", () => {
       expect(unenforcedPermissions.has("appointments.service_price_edit")).toBe(false);
       expect(permissionPresets.manager).toContain("appointments.service_price_edit");
-      expect(permissionPresets.groomer).not.toContain("appointments.service_price_edit");
-      expect(permissionPresets.receptionist).not.toContain("appointments.service_price_edit");
+      // Appointment-INSTANCE pricing authority: a groomer prices their own work, the front desk
+      // prices anybody's. Neither preset holds `services.manage`, so the price book stays theirs
+      // to read and not to write.
+      expect(permissionPresets.groomer).toContain("appointments.service_price_edit");
+      expect(permissionPresets.groomer).not.toContain("services.manage");
+      expect(permissionPresets.receptionist).toContain("appointments.service_price_edit");
+      expect(permissionPresets.receptionist).not.toContain("services.manage");
     });
 
     it("lets a Manager re-price a line for this appointment only, with before and after on record", async () => {
@@ -473,18 +488,51 @@ describeDatabase("appointment service lines", () => {
       expect(minutesBetween(startAt, endAt)).toBe(60);
     });
 
-    it("refuses a groomer and a receptionist by name, even on their own appointment", async () => {
+    it("lets a groomer re-price their own line and not a colleague's, and the receptionist re-price anybody's", async () => {
       const mine = await book(employeeA, [groomId]);
+      const myLine = (await detail(mine.id)).services[0]!;
+      const own = await patchLine(mine.id, myLine.id, groomerA, { priceMinor: 8500 });
+      expect(own.statusCode, own.body).toBe(200);
+      expect((await storedLines(mine.id))[0]).toMatchObject({ priceMinor: 8500, resolutionSource: "manual" });
+      expect((await audit(mine.id, "appointment.service.price_edit")).length).toBe(1);
+
+      // The scope rule, not the price key, is what stops a groomer at a colleague's visit.
+      const theirs = await book(employeeB, [groomId]);
+      const theirLine = (await detail(theirs.id)).services[0]!;
+      const refused = await patchLine(theirs.id, theirLine.id, groomerA, { priceMinor: 100 });
+      expect(refused.statusCode, refused.body).toBe(403);
+      expect(refused.json().code).toBe("NOT_ASSIGNED_TO_YOU");
+      expect((await storedLines(theirs.id))[0]).toMatchObject({ priceMinor: 8000 });
+
+      // The front desk holds the all-staff key beside the price key.
+      const desk = await patchLine(theirs.id, theirLine.id, receptionist, { priceMinor: 9000 });
+      expect(desk.statusCode, desk.body).toBe(200);
+      expect((await storedLines(theirs.id))[0]).toMatchObject({ priceMinor: 9000, resolutionSource: "manual" });
+
+      // The catalog did not move for any of it.
+      const [catalog] = await db<{ basePriceMinor: number }[]>`
+        select base_price_minor from services where business_id=${businessId} and id=${groomId}
+      `;
+      expect(catalog!.basePriceMinor).toBe(8000);
+    });
+
+    it("refuses a role without the key by name, even on the caller's own appointment", async () => {
+      // The Groomer preset minus the price key: the role an owner gets by switching it off.
+      const unpriced = await seat("groomer-unpriced",
+        permissionPresets.groomer!.filter((permission) => permission !== "appointments.service_price_edit"));
+      const employee = await employeeFor("Groomer Unpriced", unpriced.membershipId);
+      const mine = await book(employee, [groomId]);
       const line = (await detail(mine.id)).services[0]!;
-      for (const [label, session] of [["groomer", groomerA], ["receptionist", receptionist]] as const) {
-        const refused = await patchLine(mine.id, line.id, session, { priceMinor: 100 });
-        expect(refused.statusCode, `${label}: ${refused.body}`).toBe(403);
-        expect(refused.json().error, label).toBe("Missing permission: appointments.service_price_edit");
-        // Sending both fields is refused whole: the duration does not slip through.
-        const both = await patchLine(mine.id, line.id, session, { priceMinor: 100, durationMinutes: 70 });
-        expect(both.statusCode, label).toBe(403);
-      }
-      expect((await storedLines(mine.id))[0]).toMatchObject({ priceMinor: 8000, durationMinutes: 60 });
+      const refused = await patchLine(mine.id, line.id, unpriced.cookie, { priceMinor: 100 });
+      expect(refused.statusCode, refused.body).toBe(403);
+      expect(refused.json().error).toBe("Missing permission: appointments.service_price_edit");
+      // Sending both fields is refused whole: the duration does not slip through.
+      const both = await patchLine(mine.id, line.id, unpriced.cookie, { priceMinor: 100, durationMinutes: 70 });
+      expect(both.statusCode).toBe(403);
+      // The duration alone is theirs to change.
+      const duration = await patchLine(mine.id, line.id, unpriced.cookie, { durationMinutes: 70 });
+      expect(duration.statusCode, duration.body).toBe(200);
+      expect((await storedLines(mine.id))[0]).toMatchObject({ priceMinor: 8000, durationMinutes: 70 });
     });
 
     it("edits both fields at once, writing one row of each kind", async () => {

@@ -115,12 +115,12 @@ test("the lifecycle strip reports derived times and says so only while something
 
   await login(page, tenant.ownerEmail);
   await openFromCalendar(page, scheduled.id);
-  // Nothing has been recorded, so all three read as absent — and one line explains why they are
-  // blank, which is what stops two empty values reading as a form nobody filled in.
+  // Nothing has been recorded, so all three read as absent. Nothing explains why: the History
+  // disclosure underneath is the activity, and the strip states the values and nothing else.
   await expect(page.getByTestId("lifecycle-in")).toHaveText("Checked in: not recorded");
   await expect(page.getByTestId("lifecycle-out")).toHaveText("Checked out: not recorded");
   await expect(page.getByTestId("lifecycle-duration")).toHaveText("Duration: not recorded");
-  await expect(page.getByTestId("lifecycle-note")).toBeVisible();
+  await expect(page.getByTestId("lifecycle-note")).toHaveCount(0);
   // The times are derived, so there is nothing an edit could write to and no pencil is offered.
   await expect(page.getByTestId("appointment-lifecycle").getByRole("button")).toHaveCount(0);
   await page.keyboard.press("Escape");
@@ -130,7 +130,6 @@ test("the lifecycle strip reports derived times and says so only while something
   await expect(page.getByTestId("lifecycle-out")).not.toContainText("not recorded");
   // "Actual" was the old label and said nothing; a duration under an hour is the plain count.
   await expect(page.getByTestId("lifecycle-duration")).toHaveText(/^Duration: \d+ min$/);
-  // Both moments are on the record, so the explanation has nothing to explain.
   await expect(page.getByTestId("lifecycle-note")).toHaveCount(0);
   await page.keyboard.press("Escape");
 

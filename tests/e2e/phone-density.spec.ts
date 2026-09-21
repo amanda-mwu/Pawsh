@@ -278,9 +278,17 @@ test("@responsive the bar is one row on every view, and the controls are one sca
     await page.locator(`[data-appointment-id="${appointment.id}"] .calendar-open`).first().click();
     const detail = page.locator("#appointment-detail");
     await expect(detail).toBeVisible();
-    // 77, not 76: three lines of text at fractional line-heights land a fraction over the 76px
-    // measured on the phone the values were set against.
-    expect(await height("#appointment-detail .surface-head"), "the head").toBeLessThanOrEqual(77);
+    // THE HEAD IS ITS TEXT PLUS 8px A SIDE, AND NOTHING ELSE - measured that way rather than as
+    // the 76px it comes to on this phone, because that number belongs to one font. On a runner
+    // whose system font is wider (DejaVu, when neither Ubuntu nor Segoe is installed) the
+    // reference line wraps its two chips onto a second row and the same head measures 95px,
+    // which is the padding doing exactly what it should around one more line. So: no slack
+    // between the text block and the head's edges, and the text block at most three short
+    // lines with one of them allowed to wrap once.
+    const headHeight = await height("#appointment-detail .surface-head");
+    const headTextHeight = await height("#appointment-detail .surface-head-text");
+    expect(headHeight - headTextHeight, "the head's padding").toBeLessThanOrEqual(20);
+    expect(headTextHeight, "the head's text").toBeLessThanOrEqual(80);
     expect(await height("#appointment-detail .surface-close"), "the close is an icon button").toBeLessThanOrEqual(36);
     expect(await height("#appointment-detail .surface-foot-lead > .primary"), "the lead primary").toBeLessThanOrEqual(40);
     const utility = detail.locator(".surface-foot-utility .secondary");

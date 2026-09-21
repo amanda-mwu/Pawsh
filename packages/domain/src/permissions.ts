@@ -182,9 +182,19 @@ export const permissionPresets: Record<string, readonly Permission[]> = {
     // - and nothing in the price book: Settings -> Services stays behind `services.manage`, which
     // this preset does not hold. The route sits under `appointments.edit`, so the same scope rule
     // applies: a groomer re-prices the appointments assigned to them and is refused anybody
-    // else's. Workspaces created before this key joined the preset need a data grant for their
-    // existing built-in Groomer, in the shape 0057 used, which is a migration of its own.
-    "appointments.service_price_edit"
+    // else's.
+    "appointments.service_price_edit",
+    // AND MAY OVERLAP THEIR OWN DAY. `appointments.override_conflict` is the authority to lay one
+    // appointment over another on the same calendar, and a groomer who wants their 10:00 bath
+    // running under their 10:30 groom is making a judgement about their own hour that the desk
+    // was already trusted to make for them. The key says nothing about WHOSE calendar: it rides
+    // `appointments.edit` and the scope rule above, so a groomer overlaps the appointments
+    // assigned to them and is refused a colleague's before the overlap is ever judged. Every
+    // overlap is still recorded, and blocked time is still never overridden - a block refuses a
+    // holder of this key exactly as it refuses everyone else.
+    // `migrations/0058_groomer_overlap_authority.sql` gives this key and the price key above to
+    // every built-in Groomer that already exists, the way 0057 gave it its own day.
+    "appointments.override_conflict"
   ],
   receptionist: [
     "calendar.view", "appointments.view", "appointments.create", "appointments.edit",
@@ -211,8 +221,9 @@ export const permissionPresets: Record<string, readonly Permission[]> = {
     // round trip and the override is recorded as it always was. Blocked time is untouched by it.
     // `appointments.service_price_edit` is the price of one service on one appointment, never the
     // price book. Both ride `appointments.edit_all_staff` above, so the desk exercises them on any
-    // groomer's appointment. Existing built-in Receptionists need the two keys granted by a
-    // migration in 0057's shape; the preset alone reaches only workspaces created after it.
+    // groomer's appointment. `migrations/0058_groomer_overlap_authority.sql` grants the two keys
+    // to every built-in Receptionist that already exists; the preset alone reaches only
+    // workspaces created after it.
     "appointments.override_conflict", "appointments.service_price_edit",
     "customers.view", "customers.edit", "pets.view", "pets.edit",
     "pets.care.view", "operations.check_in", "checkout.perform", "payments.view"
@@ -391,7 +402,7 @@ export const unenforcedPermissions: ReadonlySet<Permission> = new Set<Permission
   // Groomer and Receptionist presets hold it NOW, in `permissionPresets` above: pricing the visit
   // in front of you is appointment-instance authority, not price-book authority, and the route's
   // own scope rule keeps a groomer to their own appointments. Existing built-in Groomer and
-  // Receptionist roles need the same grant by migration, in 0057's shape.
+  // Receptionist roles get the same grant from `migrations/0058_groomer_overlap_authority.sql`.
   // Like `customers.credit_edit` before it, leaving it here once it refuses somebody would tell
   // an owner the switch does nothing while it is in fact refusing their staff.
   "appointments.online_booking_accept",

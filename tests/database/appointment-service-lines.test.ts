@@ -18,11 +18,12 @@ import { roleFor } from "../support/roles.js";
  *
  * Both writes judge the resulting window the way a move is judged: the groomer's blocked time is
  * a hard refusal (`TIME_BLOCKED`), and running onto another appointment is `SCHEDULING_CONFLICT`
- * unless the caller asks to override and holds `appointments.override_conflict`. Neither route
- * ran either guard before.
+ * unless the caller holds `appointments.override_conflict` - which the Groomer preset now does,
+ * so a groomer extends one of their own visits over another of their own and the overlap is
+ * recorded. Neither route ran either guard before.
  *
- * Price needs `appointments.service_price_edit`, which graduates from the unenforced list here:
- * a Manager holds it, the Groomer and Receptionist presets do not.
+ * Price needs `appointments.service_price_edit`, which graduated from the unenforced list here
+ * and which every preset now holds.
  */
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -336,21 +337,27 @@ describeDatabase("appointment service lines", () => {
     });
 
     it("does not re-judge an unchanged window, so a groomer can reorder their own double-booked visit", async () => {
-      // The desk double-books on purpose: a groom-and-bath at 09:00 for Groomer A, then a groom
+      // The desk double-books on purpose: a groom-and-bath at 09:00 for a groomer, then a groom
       // at 10:00 for the same groomer, over the bath. The owner holds the override key, so the
-      // second lands and is recorded. The groomer holds no such key, and every no-geometry edit
-      // to THEIR OWN first visit used to re-judge its unchanged window against the second and
-      // refuse them, 409, for an overlap somebody else had already decided.
+      // second lands and is recorded. The groomer here is one whose owner has switched the
+      // override key OFF - the preset holds it now, and a caller who holds it is never refused an
+      // overlap, so the preset can no longer observe what this case pins - and every no-geometry
+      // edit to THEIR OWN first visit used to re-judge its unchanged window against the second
+      // and refuse them, 409, for an overlap somebody else had already decided.
+      const switchedOff = await seat("groomer-no-overlap",
+        permissionPresets.groomer!.filter((permission) => permission !== "appointments.override_conflict"));
+      const groomer = switchedOff.cookie;
+      const employee = await employeeFor("Groomer No Overlap", switchedOff.membershipId);
       const day = nextDay();
-      const mine = await book(employeeA, [groomId, bathId], "09:00", day);
-      const over = await book(employeeA, [groomId], "10:00", day);
+      const mine = await book(employee, [groomId, bathId], "09:00", day);
+      const over = await book(employee, [groomId], "10:00", day);
       expect((await stored(over.id)).conflictOverridden).toBe(true);
       const before = await stored(mine.id);
       expect(before.conflictOverridden).toBe(false);
       const lines = (await detail(mine.id)).services;
 
       // A pure reorder: same rows, same minutes, the window exactly where it was.
-      const reordered = await putLines(mine.id, groomerA, {
+      const reordered = await putLines(mine.id, groomer, {
         version: before.version,
         lines: [...lines].reverse().map((line) => ({ id: line.id, serviceId: line.serviceId }))
       });
@@ -365,23 +372,23 @@ describeDatabase("appointment service lines", () => {
 
       // A price alone, from the groomer's own key, on the same overlapped visit.
       const groom = (await detail(mine.id)).services.find((line) => line.serviceId === groomId)!;
-      const repriced = await patchLine(mine.id, groom.id, groomerA, { priceMinor: 8500 });
+      const repriced = await patchLine(mine.id, groom.id, groomer, { priceMinor: 8500 });
       expect(repriced.statusCode, repriced.body).toBe(200);
 
       // The same rows re-resolved from the flat body sum to the same minutes: still unchanged,
       // still not judged.
-      const flat = await putLines(mine.id, groomerA, { serviceIds: [groomId, bathId] });
+      const flat = await putLines(mine.id, groomer, { serviceIds: [groomId, bathId] });
       expect(flat.statusCode, flat.body).toBe(200);
       expect((await stored(mine.id)).endAt).toEqual(before.endAt);
 
       // Growing the window IS new geometry and is judged in full: the groomer runs into the
       // 10:00 visit and, holding no override key, is refused.
       const grown = (await detail(mine.id)).services.find((line) => line.serviceId === groomId)!;
-      const extended = await patchLine(mine.id, grown.id, groomerA, { durationMinutes: 90 });
+      const extended = await patchLine(mine.id, grown.id, groomer, { durationMinutes: 90 });
       expect(extended.statusCode, extended.body).toBe(409);
       expect(extended.json().code).toBe("SCHEDULING_CONFLICT");
       expect((await stored(mine.id)).endAt).toEqual(before.endAt);
-      const longer = await putLines(mine.id, groomerA, { serviceIds: [groomId, bathId, nailsId] });
+      const longer = await putLines(mine.id, groomer, { serviceIds: [groomId, bathId, nailsId] });
       expect(longer.statusCode, longer.body).toBe(409);
       expect(longer.json().code).toBe("SCHEDULING_CONFLICT");
     });
@@ -521,34 +528,55 @@ describeDatabase("appointment service lines", () => {
     it("refuses extending onto another appointment unless the caller holds the override key", async () => {
       const day = nextDay();
       const first = await book(employeeA, [groomId], "09:00", day);
-      await book(employeeA, [groomId], "10:30", day);
+      const second = await book(employeeA, [groomId], "10:30", day);
       const groom = (await detail(first.id)).services[0]!;
 
-      // The groomer holds no override key: extending their own visit onto the next one is refused,
-      // and `canOverride` is false because anybody it could be true for is never refused.
-      const refused = await patchLine(first.id, groom.id, groomerA, { durationMinutes: 120 });
+      // A Groomer whose owner switched the override key off: extending their own visit onto the
+      // next one is refused, and `canOverride` is false because anybody it could be true for is
+      // never refused.
+      const switchedOff = await seat("groomer-no-extend",
+        permissionPresets.groomer!.filter((permission) => permission !== "appointments.override_conflict"));
+      const own = await employeeFor("Groomer No Extend", switchedOff.membershipId);
+      const theirs = await book(own, [groomId], "09:00", day);
+      await book(own, [groomId], "10:30", day);
+      const theirGroom = (await detail(theirs.id)).services[0]!;
+      const refused = await patchLine(theirs.id, theirGroom.id, switchedOff.cookie, { durationMinutes: 120 });
       expect(refused.statusCode, refused.body).toBe(409);
       expect(refused.json().code).toBe("SCHEDULING_CONFLICT");
       expect(refused.json().canOverride).toBe(false);
-      expect((await storedLines(first.id))[0]!.durationMinutes).toBe(60);
+      expect((await storedLines(theirs.id))[0]!.durationMinutes).toBe(60);
 
       // Asking for the override they do not hold is refused by name, before the window is judged.
-      const asked = await patchLine(first.id, groom.id, groomerA, { durationMinutes: 120, overrideConflict: true });
+      const asked = await patchLine(theirs.id, theirGroom.id, switchedOff.cookie, { durationMinutes: 120, overrideConflict: true });
       expect(asked.statusCode, asked.body).toBe(403);
       expect(asked.json().error).toContain("appointments.override_conflict");
+      expect(await audit(theirs.id, "appointment.conflict_override")).toEqual([]);
 
-      // The owner holds the key and does not have to ask: the extension lands, the row is marked
-      // and the override is recorded against the services operation.
-      const overridden = await patchLine(first.id, groom.id, ownerCookie, { durationMinutes: 120 });
+      // The Groomer preset holds the key and does not have to ask either: a groomer extends their
+      // own visit over their own next one, the row is marked and the override is recorded against
+      // the services operation, naming the visit it now runs into.
+      expect(permissionPresets.groomer).toContain("appointments.override_conflict");
+      const overridden = await patchLine(first.id, groom.id, groomerA, { durationMinutes: 120 });
       expect(overridden.statusCode, overridden.body).toBe(200);
       const after = await stored(first.id);
       expect(minutesBetween(after.startAt, after.endAt)).toBe(120);
       expect(after.conflictOverridden).toBe(true);
-      const [override] = await db<{ afterData: { operation: string } }[]>`
+      const [override] = await db<{ afterData: { operation: string; conflictingAppointmentIds: string[] } }[]>`
         select after_data from audit_events
         where business_id=${businessId} and resource_id=${first.id} and action='appointment.conflict_override'
       `;
       expect(override!.afterData.operation).toBe("services");
+      expect(override!.afterData.conflictingAppointmentIds).toEqual([second.id]);
+
+      // The key reaches no colleague's line: the same edit on Groomer B's visit is the scope
+      // refusal, before the overlap is judged.
+      const colleague = await book(employeeB, [groomId], "09:00", day);
+      await book(employeeB, [groomId], "10:30", day);
+      const colleagueGroom = (await detail(colleague.id)).services[0]!;
+      const notMine = await patchLine(colleague.id, colleagueGroom.id, groomerA, { durationMinutes: 120 });
+      expect(notMine.statusCode, notMine.body).toBe(403);
+      expect(notMine.json().code).toBe("NOT_ASSIGNED_TO_YOU");
+      expect((await storedLines(colleague.id))[0]!.durationMinutes).toBe(60);
     });
 
     it("lets a groomer edit their own line and refuses a colleague's, with the scope code", async () => {

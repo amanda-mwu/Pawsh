@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { permissionPresets } from "@pawsh/domain";
 import { createApp } from "../../src/app.js";
 import type { Config } from "../../src/config.js";
 import { createDatabase, type Database } from "../../src/db/client.js";
@@ -474,6 +475,85 @@ describeDatabase("D1 scheduling regression", () => {
         and action='appointment.conflict_override' and after_data->>'operation'='reschedule'
     `;
     expect(moveAudit?.count).toBe(1);
+  });
+
+  /**
+   * THE GROOMER PRESET OVERLAPS ITS OWN DAY, AND ONLY ITS OWN.
+   *
+   * The owner's rule: a groomer may lay one of their own visits over another of their own. The
+   * preset holds `appointments.override_conflict`, so the move lands on the first request and is
+   * recorded exactly as the desk's is. The key says nothing about whose calendar: the same move
+   * onto a colleague, or of a colleague's visit, is the scope refusal before the overlap is ever
+   * judged, and leaves no override on record.
+   */
+  it("lets the Groomer preset move one of its own visits over another, and refuses it a colleague's", async () => {
+    const groomerEmail = `schedule-groomer-${suffix}@example.test`;
+    const [groomerUser] = await db<{ id: string }[]>`
+      insert into users(email,normalized_email,password_hash)
+      values (${groomerEmail},${groomerEmail},${await hashPassword("correct horse schedule groomer")})
+      returning id
+    `;
+    const [groomerMembership] = await db<{ id: string }[]>`
+      insert into business_memberships(business_id,user_id,role_id)
+      values (${businessId},${groomerUser!.id},${await roleFor(db, businessId, permissionPresets.groomer!)})
+      returning id
+    `;
+    const linked = await app.inject({
+      method: "POST", url: "/api/employees", headers: { cookie: ownerCookie },
+      payload: { displayName: "D1 Groomer Linked", serviceIds: [serviceId], membershipId: groomerMembership!.id }
+    });
+    expect(linked.statusCode, linked.body).toBe(201);
+    const employeeMine = linked.json().id as string;
+    const groomerCookie = sessionCookie(await app.inject({
+      method: "POST", url: "/api/auth/login",
+      payload: { email: groomerEmail, password: "correct horse schedule groomer" }
+    }));
+
+    const firstStart = "2032-01-14T17:00:00.000Z";
+    const first = await create(ownerCookie, employeeMine, firstStart);
+    const second = await create(ownerCookie, employeeMine, "2032-01-14T20:00:00.000Z");
+    const colleague = await create(ownerCookie, employeeA, "2032-01-14T17:00:00.000Z");
+    expect([first.statusCode, second.statusCode, colleague.statusCode]).toEqual([201, 201, 201]);
+    const reschedule = (id: string, cookie: string, employeeId: string, startAt: string, version: number) =>
+      app.inject({
+        method: "PATCH", url: `/api/appointments/${id}/schedule`,
+        headers: { cookie, "idempotency-key": crypto.randomUUID() },
+        payload: { employeeId, localStart: formatWallTime(startAt, "America/Los_Angeles"), expectedLocationVersion: 1, version }
+      });
+
+    // Their own second visit over their own first: lands, marked, recorded against the reschedule.
+    const moved = await reschedule(second.json().id, groomerCookie, employeeMine, firstStart, second.json().version);
+    expect(moved.statusCode, moved.body).toBe(200);
+    expect(moved.json().scheduling).toEqual({
+      conflictDetected: true, overrideRequested: false, overrideAuthorized: true, overrideApplied: true
+    });
+    const [ownAudit] = await db<{ count: number }[]>`
+      select count(*)::integer as count from audit_events
+      where business_id=${businessId} and resource_id=${second.json().id}
+        and action='appointment.conflict_override' and after_data->>'operation'='reschedule'
+        and after_data->'conflictingAppointmentIds' ? ${first.json().id}
+    `;
+    expect(ownAudit?.count).toBe(1);
+
+    // Onto a colleague's calendar, or of a colleague's visit: refused by scope, nothing recorded.
+    const ontoColleague = await reschedule(first.json().id, groomerCookie, employeeA, firstStart, first.json().version);
+    expect(ontoColleague.statusCode, ontoColleague.body).toBe(403);
+    expect(ontoColleague.json().code).toBe("NOT_ASSIGNED_TO_YOU");
+    const colleagues = await reschedule(colleague.json().id, groomerCookie, employeeMine, firstStart, colleague.json().version);
+    expect(colleagues.statusCode, colleagues.body).toBe(403);
+    expect(colleagues.json().code).toBe("NOT_ASSIGNED_TO_YOU");
+    const [untouched] = await db<{ count: number }[]>`
+      select count(*)::integer as count from audit_events
+      where business_id=${businessId} and action='appointment.conflict_override'
+        and resource_id in (${first.json().id}, ${colleague.json().id})
+    `;
+    expect(untouched?.count).toBe(0);
+    const [rows] = await db<{ mine: string; theirs: string }[]>`
+      select
+        (select employee_id from appointments where id=${first.json().id}) as mine,
+        (select employee_id from appointments where id=${colleague.json().id}) as theirs
+    `;
+    expect(rows).toEqual({ mine: employeeMine, theirs: employeeA });
   });
 
   it("orders cross-employee reschedule locks without deadlock", async () => {

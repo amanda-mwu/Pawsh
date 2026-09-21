@@ -9,8 +9,8 @@ been written and no route has been changed. The owner has asked for the design
 and nothing else, and this record is the design.
 
 The migration number used below is `0057`. **It is not reserved, and it has
-since been taken**: `0057_staff_scheduling_scope.sql` is now the highest file in
-`migrations/`, so the next free number as this is read is `0058`. Migration
+since been taken**: `0058_groomer_overlap_authority.sql` is now the highest file
+in `migrations/`, so the next free number as this is read is `0059`. Migration
 numbers in this repository are allocated when a file is written, in the order
 files are written, and ADR-012 records what happens to a record that assumes
 otherwise. Read `0057` throughout as "the next free number at the time the

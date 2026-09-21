@@ -106,9 +106,10 @@ describe("permission catalog", () => {
     // these names the whole tuple on its own: 0041 seeded roles from the presets as they stood
     // then, 0043 added the reporting taxonomy to the roles that already had `reports.view`, 0045
     // added the Role Permission taxonomy to the roles that already held all 46, 0055 gave the
-    // two block keys to every role that could already block time out, and 0057 gave
+    // two block keys to every role that could already block time out, 0057 gave
     // `appointments.edit_all_staff` to every role holding a staff-scoped key and the three scoped
-    // keys to the built-in Groomer.
+    // keys to the built-in Groomer, and 0058 gave the override and price keys to the built-in
+    // Groomer and Receptionist.
     //
     // TOGETHER THEY MUST COVER IT. A permission named in none of them is one that exists in code,
     // is grantable through the editor, and that NO EXISTING ROLE HAS - so every workspace silently
@@ -118,7 +119,8 @@ describe("permission catalog", () => {
     const named = new Set<string>();
     const chain = [
       "0041_roles.sql", "0043_report_dashboard_taxonomy.sql", "0045_permission_taxonomy.sql",
-      "0055_blocked_time_management.sql", "0057_staff_scheduling_scope.sql"
+      "0055_blocked_time_management.sql", "0057_staff_scheduling_scope.sql",
+      "0058_groomer_overlap_authority.sql"
     ];
     for (const file of chain) {
       const sql = (await readFile(`migrations/${file}`, "utf8")).replaceAll("\r\n", "\n");
@@ -164,23 +166,23 @@ describe("permission catalog", () => {
     //         The Groomer must come out WITHOUT the all-staff key, and this test reproduces the
     //         order and the exclusion rather than the result, so a reversal or a dropped
     //         exclusion is caught.
+    //   0058  grants `appointments.override_conflict` and `appointments.service_price_edit` to
+    //         the built-in Groomer and, in a second nominal step, to the built-in Receptionist -
+    //         the keys both presets had carried ahead of a migration, plus the one the owner
+    //         ruled a Groomer must hold so it can overlap its own day. Both steps are nominal in
+    //         0057's step-2 shape, and neither names the all-staff key.
     //
     // A NEW MIGRATION IN THIS CHAIN MUST BE ADDED HERE. That is not busywork: this test is the
     // only thing pinning the frozen SQL literals to the live definitions, and a link left out
     // would let the two drift silently in exactly the direction 0043 had to repair.
     //
-    // GRANTS THE PRESETS HOLD AHEAD OF THE MIGRATION THAT WILL CARRY THEM. The presets moved
-    // first: the Groomer and the Receptionist gained `appointments.service_price_edit`, and the
-    // Receptionist `appointments.override_conflict`, in `permissionPresets`, and the data
-    // migration granting the same keys to the built-in roles that already exist has not been
-    // written yet. Until it lands, a migrated salon's Groomer and Receptionist genuinely differ
-    // from a new salon's by exactly these keys, and this table is the record of that debt rather
-    // than a way of hiding it. WHEN THE MIGRATION LANDS, ADD IT TO THE CHAIN ABOVE AND EMPTY THIS
-    // TABLE: a key that stays here after its migration has run is a key this test no longer pins.
-    const pendingGrants: Record<string, readonly string[]> = {
-      Groomer: ["appointments.service_price_edit"],
-      Receptionist: ["appointments.override_conflict", "appointments.service_price_edit"]
-    };
+    // GRANTS THE PRESETS HOLD AHEAD OF THE MIGRATION THAT WILL CARRY THEM. Empty as this is
+    // read: 0058 paid the debt this table last recorded. When a preset moves first again, the
+    // key goes here so a migrated salon's role and a new salon's are pinned to differ by exactly
+    // that key rather than drifting unrecorded, and WHEN THE MIGRATION LANDS, ADD IT TO THE
+    // CHAIN ABOVE AND EMPTY THIS TABLE: a key that stays here after its migration has run is a
+    // key this test no longer pins.
+    const pendingGrants: Record<string, readonly string[]> = {};
     const read = async (file: string) =>
       (await readFile(`migrations/${file}`, "utf8")).replaceAll("\r\n", "\n");
     const roles = await read("0041_roles.sql");
@@ -188,6 +190,7 @@ describe("permission catalog", () => {
     const permissionSql = await read("0045_permission_taxonomy.sql");
     const blockSql = await read("0055_blocked_time_management.sql");
     const scopeSql = await read("0057_staff_scheduling_scope.sql");
+    const overlapSql = await read("0058_groomer_overlap_authority.sql");
     const stringsIn = (sql: string) => [...sql.matchAll(/'([^']+)'/g)].map((match) => match[1]!);
     const granted = (sql: string) =>
       stringsIn(/permissions \|\| array\[([\s\S]*?)\]/.exec(sql)![1]!);
@@ -204,19 +207,24 @@ describe("permission catalog", () => {
     // in a comment to say which precedent it is following, and an unanchored match reads the
     // prose instead of the statement.
     const blockPredicate = /^where '([a-z_.]+)' = any\(permissions\)/m.exec(blockSql)![1]!;
-    // 0057's two statements, split at each `update roles` and read IN FILE ORDER, because the
-    // order is the property under test: the Groomer must not be in the all-staff step's match.
-    const scopeSteps = scopeSql.split(/^update roles$/m).slice(1).map((statement) => ({
+    // A file's statements, split at each `update roles` and read IN FILE ORDER, because for
+    // 0057 the order is the property under test: the Groomer must not be in the all-staff
+    // step's match.
+    const stepsOf = (sql: string) => sql.split(/^update roles$/m).slice(1).map((statement) => ({
       granted: granted(statement),
-      // Step 1: `where permissions && array[...]::text[]`. Step 2: `where built_in and
-      // lower(name) = '<name>'`. Each is anchored to the start of a line for 0055's reason.
+      // A relational step: `where permissions && array[...]::text[]`. A nominal one: `where
+      // built_in and lower(name) = '<name>'`. Each is anchored to the start of a line for 0055's
+      // reason.
       overlaps: /^where permissions && array\[([\s\S]*?)\]::text\[\]/m.exec(statement)
         ? stringsIn(/^where permissions && array\[([\s\S]*?)\]::text\[\]/m.exec(statement)![1]!)
         : null,
       builtInNamed: /^where built_in and lower\(name\) = '([a-z]+)'/m.exec(statement)?.[1] ?? null,
-      // Step 1's exclusion: `and not (built_in and lower(name) = '<name>')`, on its own line.
+      // A relational step's exclusion: `and not (built_in and lower(name) = '<name>')`, on its
+      // own line.
       exceptBuiltInNamed: /^ {2}and not \(built_in and lower\(name\) = '([a-z]+)'\)/m.exec(statement)?.[1] ?? null
     }));
+    const scopeSteps = stepsOf(scopeSql);
+    const overlapSteps = stepsOf(overlapSql);
     expect(taxonomy.length).toBeGreaterThan(0);
     expect(permissionTaxonomy.length).toBeGreaterThan(0);
     expect(blockPair).toEqual(["calendar.blocks_create", "calendar.blocks_edit"]);
@@ -231,6 +239,14 @@ describe("permission catalog", () => {
     expect(scopeSteps[0]!.exceptBuiltInNamed).toBe("groomer");
     expect(scopeSteps[1]!.builtInNamed).toBe("groomer");
     expect(scopeSteps[1]!.exceptBuiltInNamed).toBeNull();
+    // 0058: two nominal steps, the same two keys each, the Groomer first, and NO relational step -
+    // a step matching on held keys would be the shape that hands a Groomer the salon.
+    expect(overlapSteps.map((step) => step.granted)).toEqual([
+      ["appointments.override_conflict", "appointments.service_price_edit"],
+      ["appointments.override_conflict", "appointments.service_price_edit"]
+    ]);
+    expect(overlapSteps.map((step) => step.builtInNamed)).toEqual(["groomer", "receptionist"]);
+    expect(overlapSteps.every((step) => step.overlaps === null)).toBe(true);
 
     const seeded = new Map(
       [...roles.matchAll(/\('(\w+)',\s*array\[([^\]]*)\]/g)]
@@ -253,7 +269,8 @@ describe("permission catalog", () => {
       // 0057's, step by step and in order: the all-staff key to every role overlapping the four
       // narrowed keys except the built-in the step names, THEN the three scoped keys to the
       // built-in named in the second step.
-      for (const step of scopeSteps) {
+      // 0058's two nominal steps follow, in the same shape.
+      for (const step of [...scopeSteps, ...overlapSteps]) {
         const matches = step.overlaps
           ? step.overlaps.some((permission) => migrated.has(permission))
             && role.name.toLowerCase() !== step.exceptBuiltInNamed

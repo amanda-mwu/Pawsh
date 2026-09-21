@@ -26,6 +26,9 @@ import { roleFor } from "../support/roles.js";
  *     key that would change the answer;
  *   - moving their own appointment onto a colleague is a reassignment and is refused the same
  *     way, because the scoped key never grants somebody else's calendar;
+ *   - a groomer may OVERLAP their own day: the preset holds `appointments.override_conflict`,
+ *     so moving, re-servicing or extending one of their own visits over another of their own
+ *     lands and is recorded, while the same key reaches no colleague's calendar and no block;
  *   - booking is scoped the same way: `appointments.create` without the all-staff key books
  *     onto the caller's own calendar and no other;
  *   - the same for blocked time, on create, edit, move and delete;
@@ -67,6 +70,13 @@ describeDatabase("staff scheduling scope", () => {
   let secondServiceId = "";
   let customerId = "";
   let petId = "";
+  /**
+   * A second client for the overlap cases, which book several visits each. The appointment-scoped
+   * client read caps `upcoming` at `profileUpcomingLimit`, and the history case below expects its
+   * own booking inside that window; a shared client would have been pushed past it.
+   */
+  let overlapCustomerId = "";
+  let overlapPetId = "";
 
   let employeeA = "";
   let employeeB = "";
@@ -214,6 +224,30 @@ describeDatabase("staff scheduling scope", () => {
     expect(refusal.error, label).toContain("appointments.edit_all_staff");
   };
 
+  /** A booking for the overlap client at the given wall time, by the owner, answered as created. */
+  const bookOverlap = async (employeeId: string, localStart: string) => {
+    const response = await book(employeeId, ownerCookie,
+      { customerId: overlapCustomerId, petId: overlapPetId, localStart });
+    expect(response.statusCode, response.body).toBe(201);
+    return response.json() as { id: string; version: number };
+  };
+
+  /** Every recorded overlap on one appointment: what was being done, and what it was laid over. */
+  const overrides = (id: string) => db<{ operation: string; conflictingAppointmentIds: string[] }[]>`
+    select after_data->>'operation' as operation,
+      array(select jsonb_array_elements_text(after_data->'conflictingAppointmentIds')) as conflicting_appointment_ids
+    from audit_events
+    where business_id=${businessId} and resource_id=${id} and action='appointment.conflict_override'
+    order by created_at, id
+  `;
+
+  const conflictOverridden = async (id: string) => {
+    const [row] = await db<{ conflictOverridden: boolean }[]>`
+      select conflict_overridden from appointments where business_id=${businessId} and id=${id}
+    `;
+    return row!.conflictOverridden;
+  };
+
   const blockPayload = (employeeId: string, day: string, extra: Record<string, unknown> = {}) => ({
     employeeId, locationId, localStart: `${day}T12:00`, localEnd: `${day}T12:30`,
     expectedLocationVersion: 1, reason: "Lunch", ...extra
@@ -261,6 +295,18 @@ describeDatabase("staff scheduling scope", () => {
     });
     expect(pet.statusCode, pet.body).toBe(201);
     petId = pet.json().id;
+    const overlapCustomer = await app.inject({
+      method: "POST", url: "/api/customers", headers: { cookie: ownerCookie },
+      payload: { firstName: "Overlap", lastName: "Client", phone: "555-0182" }
+    });
+    expect(overlapCustomer.statusCode, overlapCustomer.body).toBe(201);
+    overlapCustomerId = overlapCustomer.json().id;
+    const overlapPet = await app.inject({
+      method: "POST", url: "/api/pets", headers: { cookie: ownerCookie },
+      payload: { customerId: overlapCustomerId, name: "Overlap Pet", species: "dog", breed: "Poodle" }
+    });
+    expect(overlapPet.statusCode, overlapPet.body).toBe(201);
+    overlapPetId = overlapPet.json().id;
 
     // Two groomers, each a member on the Groomer preset AND an employee linked to that membership.
     const groomerSeatA = await seat("groomer-a", permissionPresets.groomer!);
@@ -434,6 +480,96 @@ describeDatabase("staff scheduling scope", () => {
       const taken = await move(theirs.id, groomerA, employeeA, `${theirDay}T09:00`, theirs.version);
       expectScopeRefusal(taken, "move B's onto A");
       expect((await stored(theirs.id)).employeeId).toBe(employeeB);
+    });
+
+    it("overlaps their own two appointments on move, re-service and line edit, and each overlap is recorded", async () => {
+      // THE OWNER'S RULE: a groomer may overlap their own day. The preset holds the override key,
+      // which decides whether two appointments may share an hour and nothing about whose hour it
+      // is; the scope rule still answers that first, and the block rule still answers last.
+      expect(permissionPresets.groomer).toContain("appointments.override_conflict");
+      expect(permissionPresets.groomer).not.toContain("appointments.edit_all_staff");
+
+      // A move: the 11:00 visit onto the 09:00 one.
+      const moveDay = nextDay();
+      const first = await bookOverlap(employeeA, `${moveDay}T09:00`);
+      const second = await bookOverlap(employeeA, `${moveDay}T11:00`);
+      const moved = await move(second.id, groomerA, employeeA, `${moveDay}T09:30`, second.version);
+      expect(moved.statusCode, moved.body).toBe(200);
+      expect(moved.json().scheduling).toEqual({
+        conflictDetected: true, overrideRequested: false, overrideAuthorized: true, overrideApplied: true
+      });
+      expect(await overrides(second.id)).toEqual([
+        { operation: "reschedule", conflictingAppointmentIds: [first.id] }
+      ]);
+      expect((await conflictOverridden(second.id))).toBe(true);
+
+      // A re-service: a second hour on the 12:00 visit runs it into the 13:00 one.
+      const serviceDay = nextDay();
+      const grown = await bookOverlap(employeeA, `${serviceDay}T12:00`);
+      const next = await bookOverlap(employeeA, `${serviceDay}T13:00`);
+      const reserviced = await request("PUT", `/api/appointments/${grown.id}/services`, groomerA,
+        { serviceIds: [serviceId, secondServiceId] });
+      expect(reserviced.statusCode, reserviced.body).toBe(200);
+      expect(await overrides(grown.id)).toEqual([
+        { operation: "services", conflictingAppointmentIds: [next.id] }
+      ]);
+      expect(await conflictOverridden(grown.id)).toBe(true);
+
+      // A line edit: ninety minutes reserved for the 14:00 groom runs it into the 15:00 one.
+      const lineDay = nextDay();
+      const longer = await bookOverlap(employeeA, `${lineDay}T14:00`);
+      const after = await bookOverlap(employeeA, `${lineDay}T15:00`);
+      const detail = await request("GET", `/api/appointments/${longer.id}`, groomerA);
+      expect(detail.statusCode, detail.body).toBe(200);
+      const line = (detail.json().services as { id: string }[])[0]!;
+      const extended = await request("PATCH", `/api/appointments/${longer.id}/services/${line.id}`, groomerA,
+        { durationMinutes: 90 });
+      expect(extended.statusCode, extended.body).toBe(200);
+      expect(await overrides(longer.id)).toEqual([
+        { operation: "services", conflictingAppointmentIds: [after.id] }
+      ]);
+      expect(await conflictOverridden(longer.id)).toBe(true);
+    });
+
+    it("is refused an overlap that touches a colleague's calendar, before the overlap is judged", async () => {
+      // The override key grants nothing about WHOSE calendar. Laying their own visit over a
+      // colleague's is a reassignment, and laying a colleague's over their own is an edit to the
+      // colleague's row: both are the scope refusal, with no override recorded for either.
+      const day = nextDay();
+      const theirs = await bookOverlap(employeeB, `${day}T09:00`);
+      const mine = await bookOverlap(employeeA, `${day}T11:00`);
+
+      expectScopeRefusal(await move(mine.id, groomerA, employeeB, `${day}T09:00`, mine.version),
+        "own onto colleague's");
+      expectScopeRefusal(await move(theirs.id, groomerA, employeeA, `${day}T11:00`, theirs.version),
+        "colleague's onto own");
+      expect((await stored(mine.id)).employeeId).toBe(employeeA);
+      expect((await stored(mine.id)).version).toBe(mine.version);
+      expect((await stored(theirs.id)).employeeId).toBe(employeeB);
+      expect((await stored(theirs.id)).version).toBe(theirs.version);
+      expect(await overrides(mine.id)).toEqual([]);
+      expect(await overrides(theirs.id)).toEqual([]);
+    });
+
+    it("is still refused their own blocked time, whatever key they hold", async () => {
+      // A block is not an appointment and has no override. The groomer blocks their own lunch
+      // and cannot then move their own visit into it, nor grow it to cover it.
+      const day = nextDay();
+      expect((await createBlock(employeeA, groomerA, day)).statusCode).toBe(201);
+      const mine = await bookOverlap(employeeA, `${day}T09:00`);
+      const intoLunch = await move(mine.id, groomerA, employeeA, `${day}T12:00`, mine.version);
+      expect(intoLunch.statusCode, intoLunch.body).toBe(409);
+      expect(intoLunch.json().code).toBe("TIME_BLOCKED");
+      const before = await stored(mine.id);
+      const beforeLunch = await move(mine.id, groomerA, employeeA, `${day}T11:00`, before.version);
+      expect(beforeLunch.statusCode, beforeLunch.body).toBe(200);
+      const detail = await request("GET", `/api/appointments/${mine.id}`, groomerA);
+      const line = (detail.json().services as { id: string }[])[0]!;
+      const grown = await request("PATCH", `/api/appointments/${mine.id}/services/${line.id}`, groomerA,
+        { durationMinutes: 120 });
+      expect(grown.statusCode, grown.body).toBe(409);
+      expect(grown.json().code).toBe("TIME_BLOCKED");
+      expect(await overrides(mine.id)).toEqual([]);
     });
 
     it("recognises an assignment through appointment_employees as well as employee_id", async () => {

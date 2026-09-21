@@ -966,8 +966,13 @@ function groomerColorSlot(employeeId){
 // Card anatomy: a white header strip (compact time, notes button, status badge, safety flags)
 // above the groomer-tinted body (pet + breed, base service, greyed add-ons, client). The strip is
 // kept shallow on purpose so a 30-minute card still shows the pet name underneath it.
+//
+// BRIEF IS ONE LINE. A card is painted as tall as its visit is long, and 25 minutes or less is not
+// tall enough for the strip AND a line beneath it at any density the grid offers - so a brief card
+// lays its time and its pet name side by side on the one line it has, and the pet name is never
+// the part that is clipped away.
 function appointmentCard(item,{day=false,style="",groomerId="",lane=0,lanes=1}={}){
-  const model=appointmentPresentation(item),density=model.durationMinutes<=30?"short":model.durationMinutes<90?"medium":"long";
+  const model=appointmentPresentation(item),density=model.durationMinutes<=25?"brief":model.durationMinutes<=30?"short":model.durationMinutes<90?"medium":"long";
   // Only a scheduled appointment can be rescheduled, and only with appointments.edit, which is the
   // same gate the Move action carries - AND only where the scope allows it: a groomer without
   // `appointments.edit_all_staff` drags their own cards and nobody else's, which is what the
@@ -1044,8 +1049,7 @@ function blockedTimePlacement(block,day,start,end){
   const to=endDay>day?24*60:blockedTimeMinutes(block.scheduledLocalEnd);
   const visibleFrom=Math.max(from,start),visibleTo=Math.min(to,end);
   if(visibleTo<=visibleFrom)return null;
-  const first=Math.floor((visibleFrom-start)/30),last=Math.ceil((visibleTo-start)/30);
-  return {offset:first,span:Math.max(1,last-first)};
+  return minutePlacement(visibleFrom,visibleTo,start);
 }
 /**
  * ONE COLUMN'S BANDS, SIDE BY SIDE INSTEAD OF ON TOP OF EACH OTHER.
@@ -1063,10 +1067,11 @@ function blockedTimePlacement(block,day,start,end){
  * three are three thirds; none of them is unreachable. `columnLanes` is that scan, and the
  * appointment cards go through it too now (`appointmentColumnLayout`).
  *
- * THE INTERVALS COMPARED ARE THE PAINTED ONES, NOT THE STORED ONES. A band is snapped to whole
- * half-hour rows, so 12:00-12:15 and 12:20-12:30 do not overlap on the clock and DO overlap on the
- * grid - both fill the single 12:00 row. Comparing minutes would leave that pair stacked, which is
- * the very defect this exists to close, so the comparison is `[offset, offset+span)`.
+ * THE INTERVALS COMPARED ARE MINUTES, BECAUSE MINUTES ARE WHAT IS PAINTED NOW. While a band was
+ * snapped to whole half-hour rows, 12:00-12:15 and 12:20-12:30 shared the single 12:00 row and had
+ * to be compared as rows to come out side by side. A band is drawn at its true minutes now, so
+ * that pair paints one above the other with daylight between, and comparing rows would narrow both
+ * of them for an overlap the eye cannot find. The comparison is `[from, to)` on the clock.
  *
  * A CLUSTER IS TRANSITIVE. Lanes are counted per run of touching bands rather than per grid, so a
  * 9:00 pair does not halve the width of an unrelated 4:00 block further down the same column.
@@ -1101,11 +1106,30 @@ function blockedTimeColumnLayout(blocks,day,start,end){
   // the last read happened to return them in.
   const entries=blocks.map(block=>({block,place:blockedTimePlacement(block,day,start,end)}))
     .filter(entry=>entry.place)
-    .sort((a,b)=>a.place.offset-b.place.offset||b.place.span-a.place.span
+    .sort((a,b)=>a.place.from-b.place.from||b.place.to-a.place.to
       ||String(a.block.id).localeCompare(String(b.block.id)))
-    .map(entry=>({...entry,from:entry.place.offset,to:entry.place.offset+entry.place.span}));
+    .map(entry=>({...entry,from:entry.place.from,to:entry.place.to}));
   return columnLanes(entries).map(({block,place,lane,lanes})=>({block,place,lane,lanes}));
 }
+/**
+ * WHERE ON THE GRID A RUN OF MINUTES IS PAINTED. The grid is 30-minute rows, and a card or a band is
+ * placed on it twice: as a GRID ITEM, from the row holding its first minute through the row holding
+ * its last (`offset`, `span`), and then WITHIN that span by its actual minutes (`minuteOffset`, the
+ * minutes into the first row it begins, and `minutes`, how many it covers). The stylesheet turns the
+ * second pair into a margin and a height in terms of `--slot-height`, so every density keeps the
+ * geometry right without the script knowing the pixel height of a row.
+ *
+ * THE PAINT USED TO BE SNAPPED TO WHOLE ROWS, and it lied: a 10:45-11:50 visit was drawn from the
+ * 10:30 line to the 12:00 line while its own strip said 10:45-11:50, and a card dropped at 4:15 was
+ * drawn as if it had landed at 4:00. Human QA read that as the calendar rounding the time. The data
+ * was on the five-minute mark all along; only the pixels were not.
+ */
+function minutePlacement(from,to,start){
+  const first=Math.floor((from-start)/30),last=Math.ceil((to-start)/30);
+  return {offset:first,span:Math.max(1,last-first),from,to,minuteOffset:from-start-first*30,minutes:to-from};
+}
+/** The two custom properties the stylesheet paints the placement by. */
+function minutePaintStyle(place){return `--minute-offset:${place.minuteOffset};--minute-span:${place.minutes}`;}
 /**
  * THE APPOINTMENTS OF ONE GROOMER'S COLUMN ON ONE DAY, each with its row, its span and its lane.
  *
@@ -1117,15 +1141,20 @@ function blockedTimeColumnLayout(blocks,day,start,end){
  * read - start time, then the longer visit, then the id.
  */
 function appointmentColumnLayout(items,day,start,slots,firstRow){
-  const entries=[];
+  const entries=[],end=start+slots*30;
   for(const item of items){
     const local=appointmentLocalValue(item);
     if(local.slice(0,10)!==day)continue;
     const minutes=Number(local.slice(11,13))*60+Number(local.slice(14,16));
-    const duration=Math.max(30,Math.round((new Date(item.endAt)-new Date(item.startAt))/60000));
-    const row=Math.floor((minutes-start)/30)+firstRow;
-    if(row<firstRow||row>slots+firstRow-1)continue;
-    entries.push({item,row,span:Math.max(1,Math.ceil(duration/30)),from:minutes,to:minutes+duration});
+    // The visit's own length, to the five-minute mark the server keeps it on: a 20-minute nail trim
+    // is painted 20 minutes tall. The grid used to floor this at a half hour, which is the other
+    // half of the same lie as snapping the start to the row.
+    const duration=Math.max(5,Math.round((new Date(item.endAt)-new Date(item.startAt))/60000));
+    // Painted no further than the last drawn row, the way a band is; the lanes still compare the
+    // visit's true end so a card that runs past closing keeps its width from a visit beside it.
+    const place=minutePlacement(minutes,Math.min(minutes+duration,end),start);
+    if(place.offset<0||place.offset>=slots)continue;
+    entries.push({item,row:place.offset+firstRow,span:place.span,place,from:minutes,to:minutes+duration});
   }
   entries.sort((a,b)=>a.from-b.from||(b.to-b.from)-(a.to-a.from)||String(a.item.id).localeCompare(String(b.item.id)));
   return columnLanes(entries);
@@ -1243,7 +1272,7 @@ function renderWeekCalendar(){
   const blocks=days.flatMap((day,dayIndex)=>groomers.flatMap((groomer,groomerIndex)=>
     blockedTimeColumnLayout(calendarBlockedTimes().filter(block=>block.employeeId===groomer.id),day,start,end)
       .map(({block,place,lane,lanes})=>blockedTimeBand(block,
-        `grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${place.offset+3}/span ${place.span}`,
+        `grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${place.offset+3}/span ${place.span};${minutePaintStyle(place)}`,
         {lane,lanes}))
   )).join("");
   // Walked per column - one groomer on one day - because a lane count is a property of the column
@@ -1251,8 +1280,8 @@ function renderWeekCalendar(){
   const visible=filteredAppointments();let appointments="";
   for(let dayIndex=0;dayIndex<days.length;dayIndex++)for(let groomerIndex=0;groomerIndex<groomers.length;groomerIndex++){
     const groomer=groomers[groomerIndex],own=visible.filter(item=>(item.groomers||[]).some(assigned=>assigned.id===groomer.id));
-    for(const {item,row,span,lane,lanes} of appointmentColumnLayout(own,days[dayIndex],start,slots,3))
-      appointments+=appointmentCard(item,{day:true,groomerId:groomer.id,lane,lanes,style:`grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${row}/span ${span}`});
+    for(const {item,row,span,place,lane,lanes} of appointmentColumnLayout(own,days[dayIndex],start,slots,3))
+      appointments+=appointmentCard(item,{day:true,groomerId:groomer.id,lane,lanes,style:`grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${row}/span ${span};${minutePaintStyle(place)}`});
   }
   const now=currentBusinessMinutes(),todayIndex=days.indexOf(businessDate()),nowRow=Math.floor((now-start)/30)+3,currentLine=todayIndex>=0&&now>=start&&now<end?`<div class="calendar-now-line" role="status" aria-label="Current business time" style="grid-column:${todayIndex*groomers.length+2}/span ${groomers.length};grid-row:${nowRow}"></div>`:"";target.innerHTML=header+cells+blocks+appointments+currentLine;
   $("#calendar-range").textContent=`${formatPrefLocalMonthDay(days[0])} – ${formatPrefLocalMonthDayYear(days[6])}`;
@@ -1275,12 +1304,12 @@ function renderDayCalendar(){
   for(let column=0;column<groomers.length;column++){
     const own=calendarBlockedTimes().filter(block=>block.employeeId===groomers[column].id);
     for(const {block,place,lane,lanes} of blockedTimeColumnLayout(own,state.calendar.selectedDate,start,end))
-      content+=blockedTimeBand(block,`grid-column:${column+2};grid-row:${place.offset+2}/span ${place.span}`,{lane,lanes});
+      content+=blockedTimeBand(block,`grid-column:${column+2};grid-row:${place.offset+2}/span ${place.span};${minutePaintStyle(place)}`,{lane,lanes});
   }
   for(let column=0;column<groomers.length;column++){
     const groomer=groomers[column],own=filteredAppointments().filter(item=>(item.groomers||[]).some(assigned=>assigned.id===groomer.id));
-    for(const {item,row,span,lane,lanes} of appointmentColumnLayout(own,state.calendar.selectedDate,start,slots,2))
-      content+=appointmentCard(item,{day:true,groomerId:groomer.id,lane,lanes,style:`grid-column:${column+2};grid-row:${row}/span ${span}`});
+    for(const {item,row,span,place,lane,lanes} of appointmentColumnLayout(own,state.calendar.selectedDate,start,slots,2))
+      content+=appointmentCard(item,{day:true,groomerId:groomer.id,lane,lanes,style:`grid-column:${column+2};grid-row:${row}/span ${span};${minutePaintStyle(place)}`});
   }
   const now=currentBusinessMinutes(),nowRow=Math.floor((now-start)/30)+2;if(state.calendar.selectedDate===businessDate()&&now>=start&&now<end)content+=`<div class="calendar-now-line" role="status" aria-label="Current business time" style="grid-column:2/-1;grid-row:${nowRow}"></div>`;target.innerHTML=content;$("#calendar-range").textContent=formatPrefLocalWeekdayDate(state.calendar.selectedDate);bindCalendarInteractions();
 }
@@ -1473,11 +1502,39 @@ function calendarDropSlot(x,y){
   for(const element of document.elementsFromPoint(x,y)){const slot=element.closest?.("[data-slot]");if(slot)return slot;}
   return null;
 }
+/**
+ * THE PREVIEW SAYS WHERE THE CARD WILL LAND, TO THE MINUTE.
+ *
+ * The drop lands on a five-minute mark inside the row under the pointer, but the preview used to
+ * tint the whole 30-minute row - so a card carried to 4:15 lit up the 4:00 row, and the operator
+ * watched a box that said 4:00 or 4:30 while the card was about to land at 4:15. That mismatch is
+ * the "weird box" human QA reported. What is drawn now is a ghost of the card's own height, at the
+ * exact minute the drop would take, with that minute written on it - and it is placed from the SAME
+ * reading the drop takes (`dropPreviewPlacement` and `dropLocalStart` both go through
+ * `dropOffsetMinutes`), so the two can never disagree.
+ *
+ * It is redrawn on every pointer move, not only when the row changes, because the minute changes
+ * within a row. The ghost takes no pointer hits, so the slot beneath it stays the drop target the
+ * drop is resolved against; it is one element per drag, moved rather than recreated.
+ */
 function highlightDropSlot(slot){
-  if(!calendarDrag||calendarDrag.slot===slot)return;
-  calendarDrag.slot?.classList.remove("drag-over");
-  calendarDrag.slot=slot;
-  slot?.classList.add("drag-over");
+  const drag=calendarDrag;if(!drag)return;
+  drag.slot=slot;
+  if(!slot){drag.preview?.remove();drag.preview=null;return;}
+  const grid=slot.parentElement,times=grid.querySelectorAll(".week-time,.day-time");
+  const lastRow=Number(times[times.length-1]?.style.gridRowStart)||Number(slot.style.gridRowStart);
+  const place=dropPreviewPlacement(slot,drag.y,drag.minutes,lastRow);
+  if(!drag.preview){
+    drag.preview=document.createElement("div");
+    drag.preview.className="calendar-drop-preview";
+    drag.preview.setAttribute("aria-hidden","true");
+    drag.preview.dataset.testid="calendar-drop-preview";
+    drag.preview.innerHTML='<span class="calendar-drop-time"></span>';
+  }
+  if(drag.preview.parentElement!==grid)grid.append(drag.preview);
+  drag.preview.style.cssText=`grid-column:${slot.style.gridColumnStart};grid-row:${place.row}/span ${place.span};${minutePaintStyle(place)}`;
+  drag.preview.dataset.dropStart=place.localStart;
+  drag.preview.firstChild.textContent=timeLabel(place.start);
 }
 // The card lives inside the scrolling grid, so the offset that keeps it under the cursor is the
 // pointer travel plus however far the grid has scrolled underneath it since the drag began.
@@ -1524,7 +1581,9 @@ function beginCalendarDrag(){
  *       left holding a value the form's own validation would then refuse with a browser's bubble.
  *   DRAGGED. A drop lands where the pointer is INSIDE the 30-minute row, not at the row's top:
  *       the offset is read as a fraction of the row's height and rounded to the nearest five
- *       minutes, so a card let go two-thirds of the way down the 11:00 row lands at 11:20.
+ *       minutes, so a card let go two-thirds of the way down the 11:00 row lands at 11:20. The
+ *       preview drawn while the card is carried is placed by the same reading, so what the
+ *       operator sees before letting go is the minute the drop will take.
  *   CLICKED. An empty slot keeps its own time - :00 or :30 - which is already a mark.
  *
  * `tests/ui/five-minute-scheduling.test.ts` holds the arithmetic; the drag lands are exercised in
@@ -1554,13 +1613,29 @@ function slotOffsetMinutes(fraction){
   const clamped=Math.min(1,Math.max(0,Number.isFinite(fraction)?fraction:0));
   return Math.min(30-SCHEDULING_MINUTE_STEP,snapMinutes(clamped*30));
 }
+/** Minutes into `slot`'s row that a pointer at `y` means. The ONE reading the preview and the drop share. */
+function dropOffsetMinutes(slot,y){
+  const rect=slot.getBoundingClientRect();
+  return rect.height>0?slotOffsetMinutes((y-rect.top)/rect.height):0;
+}
+function slotMinutes(slot){const base=slot.dataset.slot;return Number(base.slice(11,13))*60+Number(base.slice(14,16));}
+function localDateTime(day,minutes){return `${day}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`;}
 /** The local start a drop at `y` inside `slot` means: the row's own time plus the snapped offset. */
 function dropLocalStart(slot,y){
-  const base=slot.dataset.slot;
-  const rect=slot.getBoundingClientRect();
-  const offset=rect.height>0?slotOffsetMinutes((y-rect.top)/rect.height):0;
-  const minutes=Number(base.slice(11,13))*60+Number(base.slice(14,16))+offset;
-  return `${base.slice(0,10)}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`;
+  return localDateTime(slot.dataset.slot.slice(0,10),slotMinutes(slot)+dropOffsetMinutes(slot,y));
+}
+/**
+ * WHERE THE DROP PREVIEW IS DRAWN for a pointer at `y` over `slot`, carrying something `duration`
+ * minutes long: the slot's own grid row, the rows the ghost spans, and the minute pair the
+ * stylesheet paints it by. `lastRow` is the grid's final row, so a card carried towards closing is
+ * previewed as far as the grid goes and never grows a row beneath it. The ghost is never shorter
+ * than one five-minute mark, so there is always something to see.
+ */
+function dropPreviewPlacement(slot,y,duration,lastRow){
+  const offset=dropOffsetMinutes(slot,y),row=Number(slot.style?.gridRowStart)||0;
+  const minutes=Math.max(SCHEDULING_MINUTE_STEP,Math.min(duration,(lastRow-row+1)*30-offset));
+  const start=slotMinutes(slot)+offset;
+  return {row,span:Math.ceil((offset+minutes)/30),minuteOffset:offset,minutes,start,localStart:localDateTime(slot.dataset.slot.slice(0,10),start)};
 }
 document.addEventListener("change",event=>{
   const input=event.target;
@@ -1585,7 +1660,7 @@ function endCalendarDrag(commit){
   drag.card.classList.remove("dragging");
   drag.card.style.removeProperty("transform");
   document.body.classList.remove("calendar-dragging");
-  drag.slot?.classList.remove("drag-over");
+  drag.preview?.remove();
   swallowNextClick();
   const slot=commit?drag.slot:null;
   if(!slot||slot.dataset.slot===drag.fromSlot&&slot.dataset.slotGroomer===drag.fromGroomer)return;
@@ -1615,15 +1690,18 @@ document.addEventListener("pointerdown",event=>{
   if(calendarDrag)endCalendarDrag(false);
   if(event.pointerType!=="mouse"||event.button!==0||!event.isPrimary)return;
   const card=calendarDragCard(event.target);if(!card)return;
-  const common={card,pointerId:event.pointerId,fromX:event.clientX,fromY:event.clientY,x:event.clientX,y:event.clientY,active:false,slot:null,container:null,frame:0};
+  // `minutes` is how long the thing being dragged is, so the drop preview is drawn its height.
+  const common={card,pointerId:event.pointerId,fromX:event.clientX,fromY:event.clientY,x:event.clientX,y:event.clientY,active:false,slot:null,preview:null,minutes:30,container:null,frame:0};
   if(card.dataset.blockedTimeId){
     const block=blockedTimeById(card.dataset.blockedTimeId);if(!block||!blockedTimeDragAvailable(block))return;
-    calendarDrag={...common,kind:"block",id:block.id,fromSlot:block.scheduledLocalStart.slice(0,16),fromGroomer:block.employeeId||""};
+    calendarDrag={...common,kind:"block",id:block.id,fromSlot:block.scheduledLocalStart.slice(0,16),fromGroomer:block.employeeId||"",
+      minutes:blockedTimeMinutes(block.scheduledLocalEnd)-blockedTimeMinutes(block.scheduledLocalStart)};
     return;
   }
   if(!calendarDragAvailable())return;
   const item=calendarAppointmentById(card.dataset.appointmentId);if(!item||item.status!=="scheduled"||!scopeAllows(item))return;
-  calendarDrag={...common,kind:"appointment",id:item.id,fromSlot:appointmentLocalValue(item),fromGroomer:card.dataset.groomerId||""};
+  calendarDrag={...common,kind:"appointment",id:item.id,fromSlot:appointmentLocalValue(item),fromGroomer:card.dataset.groomerId||"",
+    minutes:Math.max(5,Math.round((new Date(item.endAt)-new Date(item.startAt))/60000))};
 });
 document.addEventListener("pointermove",event=>{
   const drag=calendarDrag;if(!drag||event.pointerId!==drag.pointerId)return;
@@ -6579,15 +6657,15 @@ function schedulingMutation(path,payload,operationLabel){
  * AN OVERLAP THIS ROLE MAY NOT MAKE, in one sentence, with nothing to press.
  *
  * Overlapping appointments are allowed in Pawsh: a caller holding `appointments.override_conflict`
- * - the owner, manager and receptionist presets - saves one directly, the server records the
- * overlap, and no dialog asks "anyway?". There used to be one: every overlap came back 409 with
- * `canOverride`, this file drew a "Book anyway" / "Move anyway" / "Save anyway" button, and the
- * operator repeated a request they had already made. The server now lets the key through on the
- * first request and answers 409 `SCHEDULING_CONFLICT` only to a caller WITHOUT it, with
+ * - the owner and every shipped preset, the Groomer included - saves one directly, the server
+ * records the overlap, and no dialog asks "anyway?". There used to be one: every overlap came back
+ * 409 with `canOverride`, this file drew a "Book anyway" / "Move anyway" / "Save anyway" button,
+ * and the operator repeated a request they had already made. The server now lets the key through
+ * on the first request and answers 409 `SCHEDULING_CONFLICT` only to a caller WITHOUT it, with
  * `canOverride` always false. So the client no longer retries anything: it words the refusal -
  * who, when, and what it overlaps, from the `conflicts` the server names - and every dialog shows
- * that sentence inline where it shows any other refusal. A groomer reads why the time was refused;
- * nothing offers them a button their role cannot press.
+ * that sentence inline where it shows any other refusal. A groomer whose owner has switched the
+ * key off reads why the time was refused; nothing offers them a button their role cannot press.
  */
 function schedulingConflictSentence(error,{operationLabel,employee,proposedStart}){
   if(error.status!==409||error.data?.code!=="SCHEDULING_CONFLICT")return error;

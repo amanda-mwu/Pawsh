@@ -139,6 +139,19 @@ export async function expectEffectiveTarget(locator: Locator, minimum = 44): Pro
 }
 
 /**
+ * THE TARGET A CONTROL OWES ITS POINTER. Every control class in the product paints at the same
+ * height on a mouse and on a phone - 36px, or 32px compact - and on a coarse pointer reaches 44px
+ * through the shared hit area ("One control scale" in styles.css). So a finger is owed a 44px
+ * EFFECTIVE target and that is what is measured; a mouse is owed WCAG 2.5.8's 24px, and the
+ * painted box is deliberately the compact one. `expectCriticalTarget` stays for the controls that
+ * keep a painted 44 on every pointer: menu and navigation rows, and the calendar's view select.
+ */
+export async function expectTouchTarget(locator: Locator): Promise<void> {
+  const coarse = await locator.page().evaluate(() => matchMedia("(pointer: coarse)").matches);
+  await expectEffectiveTarget(locator, coarse ? 44 : 24);
+}
+
+/**
  * The Create Appointment workspace is its own dialog with its own header and action bar, so
  * the same reachability guarantee has to be checked against those controls rather than the
  * shared dialog's.
@@ -150,9 +163,9 @@ export async function expectBookingControlsReachable(page: Page): Promise<void> 
   const close=dialog.getByRole("button",{name:"Close"});
   const submit=dialog.getByTestId("booking-submit");
   await close.scrollIntoViewIfNeeded();
-  await expectCriticalTarget(close);
+  await expectTouchTarget(close);
   await submit.scrollIntoViewIfNeeded();
-  await expectCriticalTarget(submit);
+  await expectTouchTarget(submit);
 }
 
 export async function expectDialogControlsReachable(page: Page): Promise<void> {
@@ -162,7 +175,7 @@ export async function expectDialogControlsReachable(page: Page): Promise<void> {
   const close=dialog.getByRole("button",{name:"Close"});
   const submit=dialog.getByTestId("modal-submit");
   await close.scrollIntoViewIfNeeded();
-  await expectCriticalTarget(close);
+  await expectTouchTarget(close);
   await submit.scrollIntoViewIfNeeded();
-  await expectCriticalTarget(submit);
+  await expectTouchTarget(submit);
 }

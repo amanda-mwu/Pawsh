@@ -11,11 +11,17 @@ import { describe, expect, it } from "vitest";
  * here rather than restated: the drag test in `tests/e2e/five-minute-scheduling.spec.ts` lands one
  * card, this holds every edge of the rounding.
  *
+ * AND THE PREVIEW IS THE DROP, SEEN EARLY. `dropPreviewPlacement` places the ghost drawn under a
+ * carried card by the same `dropOffsetMinutes` reading `dropLocalStart` will take at release, so
+ * the minute written on the ghost is the minute the confirmation will ask about.
+ *
  * ─── WHAT A MUTATION HAS TO BREAK ───────────────────────────────────────────────────────────────
  *
  *   `Math.round` → `Math.floor` in `snapMinutes`      "snaps to the NEAREST mark" fails on :08.
  *   dropping the `30-SCHEDULING_MINUTE_STEP` ceiling   "never lands in the next row" fails.
  *   the change listener ignoring `time` inputs          "the block editor's clock is snapped" fails.
+ *   the preview rounding to 15 on its own                "agrees with the drop, minute for minute" fails.
+ *   dropping the `lastRow` clamp                         "stops at the grid's last row" fails.
  */
 const source = readFileSync("public/app.js", "utf8");
 
@@ -30,13 +36,16 @@ function slice(from: string, to: string): string {
 const SNAPPING = slice("const SCHEDULING_MINUTE_STEP=", "\n// The click that follows a completed drag");
 
 interface FakeInput { type: string; step: string; value: string }
-interface FakeSlot { dataset: { slot: string }; getBoundingClientRect(): { top: number; height: number } }
+interface FakeSlot { dataset: { slot: string }; style?: { gridRowStart: string }; getBoundingClientRect(): { top: number; height: number } }
+interface Preview { row: number; span: number; minuteOffset: number; minutes: number; start: number; localStart: string }
 interface Module {
   snapMinutes(minutes: number): number;
   snapLocalDateTime(value: string): string;
   snapLocalTime(value: string): string;
   slotOffsetMinutes(fraction: number): number;
+  dropOffsetMinutes(slot: FakeSlot, y: number): number;
   dropLocalStart(slot: FakeSlot, y: number): string;
+  dropPreviewPlacement(slot: FakeSlot, y: number, duration: number, lastRow: number): Preview;
   change(input: FakeInput): void;
   stepAttr: string;
 }
@@ -57,8 +66,8 @@ function load(): Module {
       return date.toISOString().slice(0,10);
     };
   `;
-  const exported = `return { snapMinutes, snapLocalDateTime, snapLocalTime, slotOffsetMinutes, dropLocalStart,
-    stepAttr: FIVE_MINUTE_STEP_ATTR };`;
+  const exported = `return { snapMinutes, snapLocalDateTime, snapLocalTime, slotOffsetMinutes, dropOffsetMinutes,
+    dropLocalStart, dropPreviewPlacement, stepAttr: FIVE_MINUTE_STEP_ATTR };`;
   const factory = new Function("document", prelude + SNAPPING + exported) as
     (document: unknown) => Omit<Module, "change">;
   const module = factory(document);
@@ -154,5 +163,51 @@ describe("a dragged card lands on the mark nearest the pointer inside its 30-min
     expect(app.dropLocalStart(slot("11:00"), 135)).toBe("2026-09-21T11:25");
     // A row with no height - never in practice - lands at the row's own time.
     expect(app.dropLocalStart(slot("09:30", 100, 0), 130)).toBe("2026-09-21T09:30");
+  });
+});
+
+describe("the drop preview is drawn where the drop will land", () => {
+  // The slot as the grid draws it: its own time, and the grid row it sits on.
+  const slot = (time: string, row: number, top = 100, height = 36): FakeSlot => ({
+    dataset: { slot: `2026-09-21T${time}` },
+    style: { gridRowStart: String(row) },
+    getBoundingClientRect: () => ({ top, height })
+  });
+
+  it("places the ghost at the minute the pointer means, the card's own length tall", () => {
+    // A 90-minute card carried to the middle of the 11:00 row: the ghost begins 15 minutes into
+    // that row, runs 90 minutes, and so touches four rows (11:00, 11:30, 12:00 and 12:30).
+    const app = load();
+    const ghost = app.dropPreviewPlacement(slot("11:00", 8), 118, 90, 40);
+    expect(ghost).toEqual({ row: 8, span: 4, minuteOffset: 15, minutes: 90, start: 11 * 60 + 15, localStart: "2026-09-21T11:15" });
+  });
+
+  it("agrees with the drop, minute for minute, at every point down the row", () => {
+    // Both go through `dropOffsetMinutes`; this is the property the preview exists for.
+    const app = load();
+    const target = slot("14:30", 15);
+    for (let y = 100; y <= 136; y += 1) {
+      expect(app.dropPreviewPlacement(target, y, 30, 40).localStart).toBe(app.dropLocalStart(target, y));
+    }
+  });
+
+  it("only ever names a five-minute mark - never a quarter or a half hour it was not on", () => {
+    const app = load();
+    const seen = new Set<number>();
+    for (let y = 100; y <= 136; y += 0.5) seen.add(app.dropPreviewPlacement(slot("16:00", 18), y, 30, 40).start - 16 * 60);
+    expect([...seen].sort((a, b) => a - b)).toEqual([0, 5, 10, 15, 20, 25]);
+  });
+
+  it("stops at the grid's last row rather than growing a row beneath it", () => {
+    // A 90-minute card previewed 15 minutes into the second-to-last row: only 45 minutes of grid
+    // remain, so the ghost is 45 tall and spans the two rows that exist.
+    const app = load();
+    const ghost = app.dropPreviewPlacement(slot("17:00", 20), 118, 90, 21);
+    expect(ghost).toMatchObject({ row: 20, span: 2, minuteOffset: 15, minutes: 45 });
+  });
+
+  it("is never shorter than one mark, so there is always something to see", () => {
+    const app = load();
+    expect(app.dropPreviewPlacement(slot("17:30", 21), 135, 90, 21)).toMatchObject({ minuteOffset: 25, minutes: 5, span: 1 });
   });
 });

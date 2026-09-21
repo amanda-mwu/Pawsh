@@ -1,7 +1,7 @@
 import { test, expect, login, createAppointment, createMember, password } from "./fixtures/tenant.js";
 import type { Page } from "@playwright/test";
 import { permissionPresets } from "@pawsh/domain";
-import { expectCriticalTarget, expectEffectiveTarget, expectNoDocumentOverflow } from "./helpers/responsive.js";
+import { expectEffectiveTarget, expectNoDocumentOverflow, expectTouchTarget } from "./helpers/responsive.js";
 
 /**
  * THE CALENDAR ON A PHONE.
@@ -60,7 +60,7 @@ test("@responsive the calendar toolbar fits a phone: no overflow, 44px targets, 
 
     // ONE CANONICAL NEW APPOINTMENT. The header's + New is the door and the critical target; the
     // toolbar draws neither a booking button nor a Block time button at any width.
-    await expectCriticalTarget(page.getByTestId("new-action-trigger"));
+    await expectTouchTarget(page.getByTestId("new-action-trigger"));
     await expect(page.getByTestId("calendar-add-appointment")).toHaveCount(0);
     await expect(page.locator('.calendar-toolbar [data-action="blocked-time"]')).toHaveCount(0);
     await expect(page.locator('.calendar-toolbar [data-action="new-appointment"]')).toHaveCount(0);

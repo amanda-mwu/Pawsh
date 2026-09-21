@@ -2,7 +2,7 @@ import { test, expect, login, createAppointment, createMember, ownerPermissions,
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 import { permissionPresets } from "@pawsh/domain";
 import { revealAppointmentOnCalendar } from "./helpers/calendar.js";
-import { expectCriticalTarget } from "./helpers/responsive.js";
+import { expectCriticalTarget, expectTouchTarget } from "./helpers/responsive.js";
 
 /**
  * THE WORK LIST IS EDITED LINE BY LINE, AND THE HISTORY SAYS WHAT CHANGED.
@@ -363,7 +363,7 @@ test("@responsive the line editor is a real dialog on a phone, with 44px control
     await openDetail(page, appointment.id);
 
     const pencil = row(page, line!.id).getByTestId("appointment-service-edit");
-    await expectCriticalTarget(pencil);
+    await expectTouchTarget(pencil);
     await pencil.click();
     await expect(modal(page)).toBeVisible();
     const viewport = page.viewportSize()!;
@@ -373,8 +373,8 @@ test("@responsive the line editor is a real dialog on a phone, with 44px control
     expect(box.x + box.width, "and never past its edge").toBeLessThanOrEqual(viewport.width + 1);
     await expectCriticalTarget(modal(page).getByTestId("field-durationMinutes"));
     await expectCriticalTarget(modal(page).getByTestId("field-price"));
-    await expectCriticalTarget(page.getByTestId("modal-submit"));
-    await expectCriticalTarget(page.locator("#modal .modal-actions .close"));
+    await expectTouchTarget(page.getByTestId("modal-submit"));
+    await expectTouchTarget(page.locator("#modal .modal-actions .close"));
 
     await modal(page).getByTestId("field-durationMinutes").fill("100");
     await page.getByTestId("modal-submit").click();

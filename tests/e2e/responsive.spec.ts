@@ -6,6 +6,7 @@ import {
   expectCriticalTarget,
   expectDialogControlsReachable,
   expectNoDocumentOverflow,
+  expectTouchTarget,
   expectUnauthenticatedSurface,
 } from "./helpers/responsive.js";
 import { bookAppointment, chooseBookingClient, openBooking } from "./helpers/booking.js";
@@ -25,7 +26,7 @@ test("@responsive auth navigation reload and logout remain coherent",async({page
   await page.reload();
   await expectAuthenticatedSurface(page);
   expect(await page.evaluate(async()=>(await fetch("/api/me",{credentials:"include"})).status)).toBe(200);
-  await expectCriticalTarget(page.getByTestId("account-trigger"));
+  await expectTouchTarget(page.getByTestId("account-trigger"));
   await page.getByTestId("account-trigger").click();
   await expectCriticalTarget(page.getByTestId("logout"));
   await page.getByTestId("logout").click();
@@ -42,7 +43,7 @@ test("@responsive customer and pet creation remains customer scoped",async({page
   await page.getByTestId("nav-customers").click();
   await expectNoDocumentOverflow(page,testInfo);
 
-  await expectCriticalTarget(page.getByTestId("new-customer"));
+  await expectTouchTarget(page.getByTestId("new-customer"));
   await page.getByTestId("new-customer").click();
   await page.getByTestId("field-firstName").fill("Responsive");
   await page.getByTestId("field-lastName").fill(suffix);
@@ -76,7 +77,7 @@ test("@responsive calendar booking remains usable and persistent",async({page,te
   await page.getByTestId("nav-calendar").click();
   await expectNoDocumentOverflow(page,testInfo);
   // The one door into booking is the header's + New, so it is the critical target.
-  await expectCriticalTarget(page.getByTestId("new-action-trigger"));
+  await expectTouchTarget(page.getByTestId("new-action-trigger"));
   await bookAppointment(page,{
     customerId:tenant.customerId,petId:tenant.petId,employeeId:tenant.employeeId,
     startAt:`${tenant.anchor}T09:00`

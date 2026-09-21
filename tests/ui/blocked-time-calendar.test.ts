@@ -44,15 +44,16 @@ interface Block {
   scheduledLocalStart: string;
   scheduledLocalEnd: string;
 }
+interface Place { offset: number; span: number; from: number; to: number; minuteOffset: number; minutes: number }
 interface Placed {
   block: Block;
-  place: { offset: number; span: number };
+  place: Place;
   lane: number;
   lanes: number;
 }
 interface Selection { hour: number; minute: number; meridiem: string | null }
 interface BlockModule {
-  blockedTimePlacement(block: Block, day: string, start: number, end: number): { offset: number; span: number } | null;
+  blockedTimePlacement(block: Block, day: string, start: number, end: number): Place | null;
   blockedTimeColumnLayout(blocks: Block[], day: string, start: number, end: number): Placed[];
   blockedTimeBand(block: Block, style: string, lanes?: { lane: number; lanes: number }): string;
   blockedTimeAccessibleName(block: Block, lanes?: { lane: number; lanes: number }): string;
@@ -149,6 +150,22 @@ describe("the client slices a real block out of itself", () => {
   });
 });
 
+describe("a band is placed at its true minutes", () => {
+  it("spans the rows its minutes touch and says where inside them it begins and ends", () => {
+    // 12:15-12:50 touches the 12:00 row and the 12:30 row; it begins 15 minutes into the first
+    // and is 35 minutes tall. The pair is what the stylesheet paints by, against `--slot-height`.
+    expect(blocks.blockedTimePlacement(block("12:15", "12:50"), ...WINDOW))
+      .toEqual({ offset: 8, span: 2, from: 12 * 60 + 15, to: 12 * 60 + 50, minuteOffset: 15, minutes: 35 });
+  });
+
+  it("clips the minutes to the window along with the rows", () => {
+    // A block running past 19:00 is painted to the last drawn row and no further, so `minutes`
+    // is the visible length rather than the block's own.
+    expect(blocks.blockedTimePlacement(block("18:40", "19:30"), ...WINDOW))
+      .toEqual({ offset: 21, span: 1, from: 18 * 60 + 40, to: 19 * 60, minuteOffset: 10, minutes: 20 });
+  });
+});
+
 describe("blocks at the same time are laid out side by side", () => {
   /** [id, lane, lanes] for every band the column draws, which is the whole answer in one line. */
   function laid(items: Block[]): Array<[string, number, number]> {
@@ -191,12 +208,20 @@ describe("blocks at the same time are laid out side by side", () => {
       .toEqual([["10:00-10:30", 0, 1], ["10:30-11:00", 0, 1]]);
   });
 
-  it("separates two blocks that share a painted row but not a minute", () => {
-    // 12:00-12:15 and 12:20-12:30 do not overlap on the clock, and DO overlap on the grid: a band
-    // is snapped to whole half-hour rows, so both of these fill the single 12:00 row. Comparing
-    // minutes here would leave exactly the pair this seam exists to unstack.
+  it("leaves two blocks that share a row but not a minute at the full width", () => {
+    // 12:00-12:15 and 12:20-12:30 do not overlap on the clock. While a band was snapped to whole
+    // half-hour rows they DID overlap on the grid - both filled the single 12:00 row - and had to
+    // be compared as rows to come out side by side. A band is painted at its true minutes now, so
+    // the pair sits one above the other with daylight between, and narrowing either would be a
+    // narrowing for an overlap the eye cannot find.
     expect(laid([block("12:00", "12:15"), block("12:20", "12:30")]))
-      .toEqual([["12:00-12:15", 0, 2], ["12:20-12:30", 1, 2]]);
+      .toEqual([["12:00-12:15", 0, 1], ["12:20-12:30", 0, 1]]);
+  });
+
+  it("still splits two blocks that overlap by five minutes", () => {
+    // The clock is the comparison now, so the smallest overlap the server allows still counts.
+    expect(laid([block("12:00", "12:20"), block("12:15", "12:30")]))
+      .toEqual([["12:00-12:20", 0, 2], ["12:15-12:30", 1, 2]]);
   });
 
   it("counts lanes per cluster rather than per column", () => {

@@ -1,5 +1,6 @@
 import { test, expect, login, createAppointment } from "./fixtures/tenant.js";
 import { expectEffectiveTarget, expectNoDocumentOverflow } from "./helpers/responsive.js";
+import { revealAppointmentOnCalendar } from "./helpers/calendar.js";
 import type { Page } from "@playwright/test";
 
 /**
@@ -18,6 +19,17 @@ import type { Page } from "@playwright/test";
  *       and the backdrop. The calendar is never squeezed beside it.
  *   MENUS ARE DENSE. Every row of the + New and account menus is 44px tall on a phone and no
  *       taller, separators carry 2px, and the menu's own padding is 4px.
+ *
+ * Human QA, third pass, from the owner's phone: the appointment buttons were too large with too
+ * much white space, the header was so tall the cross sat over the open navigation, and buttons
+ * everywhere - Agenda|Calendar named - were to be consistently tight. The last test holds that:
+ *
+ *   THE BAR IS ONE ROW ON EVERY VIEW. It stretched to 90-270px on any page shorter than the
+ *       screen (Settings, Reminders, Sales, Product, Salon), which the calendar-only check above
+ *       could never see, and that is where the cross overlapped the sheet.
+ *   ONE CONTROL SCALE. Agenda|Calendar paints at 36px; the appointment head is 76px; its footer is
+ *       a 40px primary over 32px controls; and every one of them is still a 44px target on a
+ *       coarse pointer, through the hit area rather than a taller box.
  */
 
 const WIDTHS = [320, 360, 375, 390, 430];
@@ -170,7 +182,9 @@ test("@responsive the navigation opens as a sheet over the calendar and closes t
       expect(sheet.x).toBe(0);
       expect(sheet.width).toBeGreaterThanOrEqual(Math.min(300, width * 0.86) - 1);
       expect(sheet.width).toBeLessThan(width);
-      expect(sheet.height).toBe(480);
+      // From the bar's bottom edge to the screen's: the sheet starts under the 48px bar rather
+      // than at the top of the page, so the cross that closes it never sits over its first row.
+      expect(sheet.height).toBe(480 - 48);
       // It scrolls normally inside: the list is taller than the short screen.
       expect(sheet.overflowY).toBe("auto");
       expect(sheet.scrollHeight).toBeGreaterThan(sheet.clientHeight);
@@ -209,4 +223,75 @@ test("@responsive the navigation opens as a sheet over the calendar and closes t
       await expect(nav).toBeHidden();
       await expect(page.getByTestId("customers-view")).toBeVisible();
     }
+  });
+
+const SHORT_VIEWS = ["nav-settings", "nav-reminders", "nav-sales", "nav-product", "nav-setup"];
+
+async function openView(page: Page, testid: string): Promise<void> {
+  if (await page.locator("#mobile-nav-toggle").isVisible() && await page.getByTestId(testid).isHidden()) {
+    await page.locator("#mobile-nav-toggle").click();
+  }
+  await page.getByTestId(testid).click();
+  await page.waitForLoadState("networkidle");
+}
+
+test("@responsive the bar is one row on every view, and the controls are one scale on the phone",
+  async ({ page, request, tenant }, testInfo) => {
+    test.setTimeout(120_000);
+    const appointment = await createAppointment(request, tenant, { localStart: `${tenant.anchor}T09:00` });
+    await login(page, tenant.ownerEmail);
+    await page.setViewportSize({ width: 390, height: 844 });
+    const coarse = await page.evaluate(() => matchMedia("(pointer: coarse)").matches);
+    const height = async (selector: string): Promise<number> => (await page.locator(selector).first().boundingBox())!.height;
+
+    // THE BAR, on the views whose page is shorter than the screen. The toggle never reaches into
+    // the sheet, which starts where the bar ends.
+    for (const testid of SHORT_VIEWS) {
+      await openView(page, testid);
+      expect(await height("#app-view > aside"), `${testid}: the top bar is one row`).toBeLessThanOrEqual(56);
+      await expectNoDocumentOverflow(page, testInfo);
+    }
+    await page.locator("#mobile-nav-toggle").click();
+    await expect(page.locator("#primary-navigation")).toBeVisible();
+    const toggle = (await page.locator("#mobile-nav-toggle").boundingBox())!;
+    const firstRow = (await page.getByTestId("nav-dashboard").boundingBox())!;
+    expect(toggle.y + toggle.height, "the cross sits above the sheet's first row").toBeLessThanOrEqual(firstRow.y);
+    if (coarse) await expectEffectiveTarget(page.locator("#mobile-nav-toggle"));
+    await page.keyboard.press("Escape");
+
+    // ONE SCALE. Agenda|Calendar is a 36px control like the rest of the toolbar.
+    await openView(page, "nav-calendar");
+    expect(await height("#calendar-agenda-mode"), "Agenda|Calendar paints at 36px").toBeLessThanOrEqual(36);
+    expect(await height("[data-testid=header-services]"), "Services is a compact control").toBeLessThanOrEqual(32);
+    expect(await height("[data-testid=new-action-trigger]"), "+ New is a compact control").toBeLessThanOrEqual(32);
+    if (coarse) {
+      for (const selector of ["#calendar-agenda-mode", "[data-testid=header-services]", "[data-testid=new-action-trigger]",
+        "[data-testid=intake-submissions]", "[data-testid=account-trigger]"]) {
+        await expectEffectiveTarget(page.locator(selector));
+      }
+    }
+    // The avatar is drawn: the account button used to be an empty circle on every phone.
+    await expect(page.locator("#account-avatar")).toBeVisible();
+
+    // THE APPOINTMENT SURFACE: a 76px head, a 40px primary, 32px controls under it.
+    await revealAppointmentOnCalendar(page, appointment.id);
+    await page.locator(`[data-appointment-id="${appointment.id}"] .calendar-open`).first().click();
+    const detail = page.locator("#appointment-detail");
+    await expect(detail).toBeVisible();
+    // 77, not 76: three lines of text at fractional line-heights land a fraction over the 76px
+    // measured on the phone the values were set against.
+    expect(await height("#appointment-detail .surface-head"), "the head").toBeLessThanOrEqual(77);
+    expect(await height("#appointment-detail .surface-close"), "the close is an icon button").toBeLessThanOrEqual(36);
+    expect(await height("#appointment-detail .surface-foot-lead > .primary"), "the lead primary").toBeLessThanOrEqual(40);
+    const utility = detail.locator(".surface-foot-utility .secondary");
+    expect(await utility.count()).toBeGreaterThan(0);
+    for (let index = 0; index < await utility.count(); index += 1) {
+      expect((await utility.nth(index).boundingBox())!.height, `utility control ${index}`).toBeLessThanOrEqual(32);
+    }
+    if (coarse) {
+      await expectEffectiveTarget(detail.locator(".surface-close"));
+      await expectEffectiveTarget(detail.locator(".surface-foot-lead > .primary"));
+      for (let index = 0; index < await utility.count(); index += 1) await expectEffectiveTarget(utility.nth(index));
+    }
+    await expectNoDocumentOverflow(page, testInfo);
   });

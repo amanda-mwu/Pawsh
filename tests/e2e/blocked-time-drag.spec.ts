@@ -117,3 +117,56 @@ test("a block that runs across days is not draggable, because a drop names one d
     await expect(band).toBeVisible();
     await expect(band).not.toHaveAttribute("data-draggable", "true");
   });
+
+test.describe("a band is painted at its minutes", () => {
+  // The whole working day on screen, so the grid's own edge-autoscroll cannot move the row under
+  // a pointer this test holds still; see the same arrangement in five-minute-scheduling.spec.ts.
+  test.use({ viewport: { width: 1280, height: 1100 } });
+
+  test("a 12:15-12:50 block begins halfway down the 12:00 row, and its ghost is its own 35 minutes tall",
+    async ({ page, request, tenant }, testInfo) => {
+      test.skip(testInfo.project.name !== "chromium", "drag is a fine-pointer affordance");
+      await createAppointment(request, tenant, { localStart: `${tenant.anchor}T09:00` });
+      const errand = await createBlock(request, tenant, {
+        localStart: `${tenant.anchor}T12:15`, localEnd: `${tenant.anchor}T12:50`, reason: "Errand"
+      });
+      await login(page, tenant.ownerEmail);
+      await openCalendar(page);
+      const band = page.locator(`[data-blocked-time-id="${errand.id}"]`).first();
+      await expect(band).toBeVisible();
+      await expect(band).toHaveAttribute("style", /--minute-offset:15;--minute-span:35/u);
+      const rowAt = (time: string) => page.locator(`[data-slot="${tenant.anchor}T${time}"][data-slot-groomer="${tenant.employeeId}"]`).first();
+      await rowAt("14:00").scrollIntoViewIfNeeded();
+      // Measured without scrolling in between, so every rectangle is in the same frame.
+      const noon = (await rowAt("12:00").boundingBox())!, target = (await rowAt("14:00").boundingBox())!;
+      const painted = (await band.boundingBox())!;
+      expect(Math.abs(painted.y - (noon.y + noon.height / 2 + 2))).toBeLessThanOrEqual(1.5);
+      expect(Math.abs(painted.height - (noon.height * 35 / 30 - 4))).toBeLessThanOrEqual(1.5);
+
+      // Carried to the middle of the 14:00 row: the ghost says 2:15 and is 35 minutes tall, and
+      // Escape puts everything back with nothing on the wire and no ghost left on the grid.
+      const patches: unknown[] = [];
+      await page.route(`**/api/blocked-times/${errand.id}`, async (route) => {
+        if (route.request().method() === "PATCH") patches.push(route.request().postDataJSON());
+        await route.continue();
+      });
+      const grip = (await band.locator(".calendar-block-label").boundingBox())!;
+      await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2 + 24);
+      await page.mouse.move(target.x + target.width / 2, target.y + target.height * 0.5, { steps: 8 });
+      const preview = page.getByTestId("calendar-drop-preview");
+      await expect(preview).toBeVisible();
+      await expect(preview.locator(".calendar-drop-time")).toHaveText(/^(2:15 PM|14:15)$/u);
+      await expect(preview).toHaveAttribute("style", /--minute-offset: ?15; ?--minute-span: ?35/u);
+      const ghost = (await preview.boundingBox())!;
+      expect(Math.abs(ghost.y - (target.y + target.height / 2 + 2))).toBeLessThanOrEqual(1.5);
+      expect(Math.abs(ghost.height - (target.height * 35 / 30 - 4))).toBeLessThanOrEqual(1.5);
+      await page.keyboard.press("Escape");
+      await page.mouse.up();
+      await expect(preview).toHaveCount(0);
+      await expect(page.getByTestId("stacked-dialog")).toBeHidden();
+      expect(patches).toEqual([]);
+      await expect(band).toContainText("12:15 PM–12:50 PM");
+    });
+});

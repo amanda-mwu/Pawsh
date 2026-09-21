@@ -3,7 +3,7 @@ import { observePrinting, clearPrintRoots, printFromPreview } from "./helpers/pr
 import {
   closeInvoice, invoiceStatement, invoiceSurface, invoiceTitle, openInvoiceFromHistory
 } from "./helpers/invoice.js";
-import { expectCriticalTarget, expectNoDocumentOverflow } from "./helpers/responsive.js";
+import { expectNoDocumentOverflow, expectTouchTarget } from "./helpers/responsive.js";
 import type { APIRequestContext, Page } from "@playwright/test";
 
 /**
@@ -289,8 +289,12 @@ test("a narrow viewport collapses the workspace to one column and overflows nowh
     expect(overflow).toBeLessThanOrEqual(1);
 
     // THE HEAD WRAPS RATHER THAN OVERFLOWING. The number and the state share one line on a desk;
-    // at 360px they do not fit beside each other, so the chip DROPS BELOW the number whole —
+    // at 320px they do not fit beside each other, so the chip DROPS BELOW the number whole —
     // `flex-wrap:wrap`, not a squeezed line and not a chip hanging over the edge of the head.
+    // 320 rather than the 360 above: once the close control took the shared 36px icon size, the
+    // number, the chip and the cross all fit on one 360px line, which is the right outcome there
+    // and leaves nothing to wrap. The narrowest phone still has to wrap it.
+    await page.setViewportSize({ width: 320, height: 740 });
     const titleBox = (await document_.getByTestId("invoice-document-title").boundingBox())!;
     const chipBox = (await document_.getByTestId("invoice-status").boundingBox())!;
     const headBox = (await document_.locator(".invoice-head").boundingBox())!;
@@ -320,10 +324,10 @@ test("a narrow viewport collapses the workspace to one column and overflows nowh
     for (const action of ["invoice-print-invoice", "invoice-print-receipt"]) {
       const control = document_.getByTestId(action);
       await control.scrollIntoViewIfNeeded();
-      await expectCriticalTarget(control);
+      await expectTouchTarget(control);
     }
     // Including the close, which is how the operator gets out.
-    await expectCriticalTarget(document_.locator("[data-surface-close]"));
+    await expectTouchTarget(document_.locator("[data-surface-close]"));
     await closeInvoice(page);
     await expect(page.getByTestId("modal")).toContainText("Transactions");
   });
@@ -351,6 +355,6 @@ test("@responsive the Invoice workspace is usable on a real handset and tablet",
 
     // Every control the operator needs, at a real touch target on a real device.
     await document_.getByTestId("invoice-print-invoice").scrollIntoViewIfNeeded();
-    await expectCriticalTarget(document_.getByTestId("invoice-print-invoice"));
-    await expectCriticalTarget(document_.locator("[data-surface-close]"));
+    await expectTouchTarget(document_.getByTestId("invoice-print-invoice"));
+    await expectTouchTarget(document_.locator("[data-surface-close]"));
   });

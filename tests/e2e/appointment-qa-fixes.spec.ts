@@ -1,7 +1,7 @@
 import { test, expect, login, createAppointment, createMember, prepareReceipt, password } from "./fixtures/tenant.js";
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 import { contrastRatio } from "./helpers/contrast.js";
-import { expectCriticalTarget, expectEffectiveTarget } from "./helpers/responsive.js";
+import { expectEffectiveTarget, expectTouchTarget } from "./helpers/responsive.js";
 import { revealAppointmentOnCalendar } from "./helpers/calendar.js";
 import { permissionPresets } from "@pawsh/domain";
 
@@ -19,8 +19,8 @@ import { permissionPresets } from "@pawsh/domain";
  *       glyph's legibility is a property of the paint, not of the source.
  *   THE PET CONTEXT IN A DIALOG, where the defect was a grid stretching a pill to its neighbour's
  *       height - a layout fact only a layout engine can produce.
- *   `.compact` ACTUALLY COMPACT on a fine pointer, and still 44px on a coarse one - a media query
- *       only a device profile can exercise.
+ *   `.compact` ACTUALLY COMPACT on both pointers, and still a 44px TARGET on a coarse one through
+ *       the shared hit area - a media query only a device profile can exercise.
  *
  * The `@responsive` test at the end runs under the iPhone and Pixel projects as well as desktop
  * Chromium, which is what makes the coarse-pointer floor an assertion rather than a hope.
@@ -222,8 +222,8 @@ test("compact controls are compact on a fine pointer", async ({ page, request, t
     const box = await page.locator(selector).boundingBox();
     expect(box!.height, selector).toBeLessThanOrEqual(32);
   }
-  // The one booking door the 44px contract names stays 44 even though it is `.compact`.
-  await expectCriticalTarget(page.getByTestId("new-action-trigger"));
+  // The one booking door is `.compact` too, and still a full target for the pointer in use.
+  await expectTouchTarget(page.getByTestId("new-action-trigger"));
 
   await page.locator(`[data-appointment-id="${appointment.id}"] .calendar-open`).first().click();
   await expect(detail(page)).toBeVisible();
@@ -241,23 +241,18 @@ test("@responsive compact controls keep the 44px floor on a coarse pointer, foot
     await openNavigation(page);
     await page.getByTestId("nav-calendar").click();
     await page.waitForLoadState("networkidle");
-    // The toolbar on a phone paints its controls at 36px and reaches 44 through a hit area, so
-    // it is measured as what a finger can press (`expectEffectiveTarget`); the footer below is
-    // the painted box, as it always was.
+    // Every control paints at 36px (32 compact) and reaches 44 through the shared hit area, on a
+    // phone and on a tablet alike, so it is measured as what a finger can press.
     await expectEffectiveTarget(page.locator("#calendar-today"));
     await revealAppointmentOnCalendar(page, appointment.id);
-    const phone = (testInfo.project.use.viewport?.width ?? 1280) <= 580;
     for (const selector of ["#calendar-prev-week", "#calendar-next-week"]) {
-      // A tablet keeps the desktop toolbar, whose period arrows are as wide as an arrow and always
-      // were; the floor that rule owns is the height, and 44 is what it must still be.
-      if (phone) await expectEffectiveTarget(page.locator(selector));
-      else expect((await page.locator(selector).boundingBox())!.height, selector).toBeGreaterThanOrEqual(44);
+      await expectEffectiveTarget(page.locator(selector));
     }
     await page.locator(`[data-appointment-id="${appointment.id}"] .calendar-open`).first().click();
     await expect(detail(page)).toBeVisible();
-    // The footer's actions on a phone: the primary is lifted to a full-width 48px row and the
-    // rest keep the floor. Nothing here got shorter with the shared rule.
+    // The footer's actions on a phone: a 40px primary on its own row and 32px controls under it,
+    // every one still a full target. Nothing here lost a finger's reach with the shared rule.
     for (const testid of ["appointment-check-in", "appointment-ticket", "appointment-cancel", "appointment-no-show"]) {
-      await expectCriticalTarget(detail(page).getByTestId(testid));
+      await expectEffectiveTarget(detail(page).getByTestId(testid));
     }
   });

@@ -135,3 +135,104 @@ test("a card dropped two thirds of the way down the 11:00 row lands at 11:20",
     await expect(page.getByTestId("field-startAt")).toHaveValue(`${tenant.anchor}T11:20`);
     await page.keyboard.press("Escape");
   });
+
+/** The empty row for `time` in the fixture groomer's column, whichever grid is on screen. */
+function row(page: Page, tenant: { anchor: string; employeeId: string }, time: string): Locator {
+  return page.locator(`[data-slot="${tenant.anchor}T${time}"][data-slot-groomer="${tenant.employeeId}"]`).first();
+}
+/**
+ * Measured WITHOUT scrolling, deliberately: every rectangle in one of these tests is compared with
+ * another, and a scroll between two measurements would move the second against the first. The one
+ * scroll each test makes is made once, up front, before anything is measured.
+ */
+async function box(locator: Locator): Promise<{ x: number; y: number; width: number; height: number }> {
+  const rect = await locator.boundingBox();
+  expect(rect, "the element being measured has to be drawn").not.toBeNull();
+  return rect!;
+}
+
+test("a visit booked at 10:45 is painted from the middle of the 10:30 row, as tall as it is long",
+  async ({ page, request, tenant }) => {
+    // THE PAINT USED TO LIE. A 10:45 visit was drawn from the 10:30 line, and a 90-minute one was
+    // drawn four whole rows tall, while the strip on the card said 10:45-12:15. Human QA read that
+    // as the calendar rounding the time. The card is measured here against the row lines it sits
+    // between, in pixels, so a return to whole-row painting cannot pass.
+    const appointment = await createAppointment(request, tenant, { localStart: `${tenant.anchor}T10:45` });
+    await login(page, tenant.ownerEmail);
+    await openCalendar(page);
+    const card = page.locator(`[data-appointment-id="${appointment.id}"]`).first();
+    await expect(card).toBeVisible();
+    await expect(card).toHaveAttribute("style", /--minute-offset:15;--minute-span:90/u);
+    await card.scrollIntoViewIfNeeded();
+    const halfPast = await box(row(page, tenant, "10:30"));
+    const eleven = await box(row(page, tenant, "11:00"));
+    const twelve = await box(row(page, tenant, "12:00"));
+    const painted = await box(card);
+    // Begins 15 of the row's 30 minutes down the 10:30 row - halfway - plus the 2px gutter every
+    // card keeps, and well short of the 11:00 line.
+    expect(Math.abs(painted.y - (halfPast.y + halfPast.height / 2 + 2))).toBeLessThanOrEqual(1.5);
+    expect(painted.y).toBeLessThan(eleven.y);
+    // Ends at 12:15, halfway down the 12:00 row: three rows tall for 90 minutes, not four for the
+    // rows it touches.
+    expect(Math.abs(painted.y + painted.height - (twelve.y + twelve.height / 2 - 2))).toBeLessThanOrEqual(1.5);
+    expect(Math.abs(painted.height - (halfPast.height * 3 - 4))).toBeLessThanOrEqual(1.5);
+  });
+
+test.describe("the drop preview", () => {
+  // Tall enough that the whole working day is on screen without the grid scrolling. The grid
+  // scrolls itself while a carried card is held within 48px of its edge, which would move the row
+  // under a pointer this test holds still; with nothing to scroll, the row under the pointer is
+  // the row the test aimed at.
+  test.use({ viewport: { width: 1280, height: 1100 } });
+
+  test("the ghost under a carried card names the quarter hour it will land on, and the drop agrees",
+  async ({ page, request, tenant }) => {
+    const appointment = await createAppointment(request, tenant, { localStart: `${tenant.anchor}T09:00` });
+    await login(page, tenant.ownerEmail);
+    await openCalendar(page);
+    const target = row(page, tenant, "14:00");
+    await target.scrollIntoViewIfNeeded();
+    const to = await box(target);
+    const grip = page.locator(`[data-appointment-id="${appointment.id}"] .appointment-pet`).first();
+    const from = await box(grip);
+    const preview = page.getByTestId("calendar-drop-preview");
+    await expect(preview).toHaveCount(0);
+
+    // Pick the card up and carry it a tenth of the way into the 14:00 row: the ghost says 2:05,
+    // not 2:00 and not 2:15 - the preview is drawn on five-minute marks, never rounded further.
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2 + 24);
+    await page.mouse.move(to.x + to.width / 2, to.y + to.height * 0.1, { steps: 8 });
+    await expect(preview).toBeVisible();
+    await expect(preview.locator(".calendar-drop-time")).toHaveText(/^(2:05 PM|14:05)$/u);
+    await expect(preview).toHaveAttribute("data-drop-start", `${tenant.anchor}T14:05`);
+
+    // Carried on to the middle of the SAME row: the ghost moves within the row to 2:15, sits
+    // halfway down it, and is the card's own 90 minutes tall.
+    await page.mouse.move(to.x + to.width / 2, to.y + to.height * 0.5, { steps: 4 });
+    await expect(preview.locator(".calendar-drop-time")).toHaveText(/^(2:15 PM|14:15)$/u);
+    await expect(preview).toHaveAttribute("data-drop-start", `${tenant.anchor}T14:15`);
+    await expect(preview).toHaveAttribute("style", /--minute-offset: ?15; ?--minute-span: ?90/u);
+    const ghost = await box(preview);
+    expect(Math.abs(ghost.y - (to.y + to.height / 2 + 2))).toBeLessThanOrEqual(1.5);
+    expect(Math.abs(ghost.height - (to.height * 3 - 4))).toBeLessThanOrEqual(1.5);
+
+    // Let go: the ghost is gone, the question names the minute the ghost named, and the server
+    // stores exactly that minute.
+    await page.mouse.up();
+    await expect(preview).toHaveCount(0);
+    const confirm = page.getByTestId("stacked-dialog");
+    await expect(confirm).toBeVisible();
+    await expect(page.getByTestId("reschedule-confirm-question")).toContainText(/2:15 PM|14:15/u);
+    await confirm.getByTestId("stacked-dialog-confirm").click();
+    await expect(confirm).toBeHidden();
+    await expect.poll(() => startClock(request, appointment.id)).toBe("14:15");
+    // And the moved card is painted at 2:15, halfway down the 2:00 row, not snapped to the row.
+    const moved = page.locator(`[data-appointment-id="${appointment.id}"]`).first();
+    await expect(moved).toHaveAttribute("style", /--minute-offset:15;--minute-span:90/u);
+    const landed = await box(moved);
+    const twoOclock = await box(row(page, tenant, "14:00"));
+    expect(Math.abs(landed.y - (twoOclock.y + twoOclock.height / 2 + 2))).toBeLessThanOrEqual(1.5);
+  });
+});

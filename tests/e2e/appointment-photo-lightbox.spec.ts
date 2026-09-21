@@ -2,6 +2,7 @@ import { test, expect, login, createAppointment } from "./fixtures/tenant.js";
 import type { Locator, Page } from "@playwright/test";
 import { decodablePng } from "../support/images.js";
 import { revealAppointmentOnCalendar } from "./helpers/calendar.js";
+import { expectTouchTarget } from "./helpers/responsive.js";
 
 /**
  * PRESS THE PHOTO, SEE THE PHOTO, PRESS X TO COME BACK.
@@ -44,7 +45,7 @@ async function openWithPhoto(page: Page, request: Parameters<typeof createAppoin
 }
 
 test("@responsive a photo tile opens a full-size preview, and X returns focus to the tile",
-  async ({ page, request, tenant }, testInfo) => {
+  async ({ page, request, tenant }) => {
     const tile = await openWithPhoto(page, request, tenant);
     const open = tile.locator(".photo-open");
     await expect(open).toHaveAttribute("aria-label", "View Before photo of Charlie full size");
@@ -68,12 +69,9 @@ test("@responsive a photo tile opens a full-size preview, and X returns focus to
     const close = lightbox(page).getByTestId("photo-lightbox-close");
     await expect(close).toBeFocused();
     await expect(close).toHaveAttribute("aria-label", "Close photo");
-    if (testInfo.project.name !== "chromium") {
-      // A coarse pointer's only way out is the X, so it takes the 44px floor.
-      const box = await close.boundingBox();
-      expect(box!.width).toBeGreaterThanOrEqual(44);
-      expect(box!.height).toBeGreaterThanOrEqual(44);
-    }
+    // A coarse pointer's only way out is the X: a 36px icon button that a finger can still press
+    // across 44 through the shared hit area.
+    await expectTouchTarget(close);
 
     await close.click();
     await expect(lightbox(page)).toBeHidden();

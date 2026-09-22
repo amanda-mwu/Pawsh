@@ -332,7 +332,7 @@ test("the work sheet: one row per pet-service pair, and the three notes", async 
   await expect(column(services, 2)).toHaveText(["Golden Retriever", "Golden Retriever"]);
   await expect(column(services, 3)).toHaveText(["Grace Groomer", "Grace Groomer"]);
   await expect(column(services, 4)).toHaveText(["Full Groom", "Nail Trim"]);
-  await expect(column(services, 5)).toHaveText(["1 h 30 m", "30 m"]);
+  await expect(column(services, 5)).toHaveText(["90 min", "30 min"]);
 
   // Three rows, in the reference's order, and the newest entry in each thread.
   const notes = ticket(page).getByTestId("ticket-notes");
@@ -502,7 +502,7 @@ test("a future scheduled appointment gets a Ticket, and a note nobody has writte
     await expect(ticket(page)).toBeVisible();
 
     await expect(ticket(page).getByTestId("ticket-service-row")).toHaveCount(1);
-    await expect(column(ticket(page).getByTestId("ticket-services"), 5)).toHaveText(["1 h 30 m"]);
+    await expect(column(ticket(page).getByTestId("ticket-services"), 5)).toHaveText(["90 min"]);
 
     // Three rows, all empty, and an empty one is a dash rather than a dropped row: "nobody has
     // written a note about this pet" is a fact the groomer needs, and a table that silently omits

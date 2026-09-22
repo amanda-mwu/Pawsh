@@ -614,7 +614,7 @@ test("choosing DD/MM/YYYY and 24 Hours changes what the operator reads",async({p
   // format. Cancel, because this test is about what the dialog says and not about moving anything.
   await dragAppointmentToSlot(page,{appointmentId:appointment.id,slot:`${tenant.anchor}T11:00`,groomerId:tenant.employeeId});
   await expect(page.getByTestId("reschedule-confirm-question"))
-    .toHaveText(`Reschedule appointment to ${prefLocalDate(tenant.anchor,"DD/MM/YYYY")} 11:00?`);
+    .toHaveText(new RegExp(`^Move .+ from \\d{2}:\\d{2} to 11:00 on ${prefLocalDate(tenant.anchor,"DD/MM/YYYY").replaceAll("/","\\/")}\\?$`));
   await page.getByTestId("stacked-dialog-dismiss").click();
   await expect(page.getByTestId("stacked-dialog")).toBeHidden();
 

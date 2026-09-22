@@ -70,6 +70,7 @@ interface Client {
   loadCalendarWeek(start?: string): Promise<void>;
   state: {
     appointments: Appointment[];
+    todayAppointments: Appointment[];
     blockedTimes: unknown[];
     calendar: {
       view: string; weekStart: string | null; selectedDate: string | null; month: string | null;
@@ -93,9 +94,12 @@ interface Client {
  * makes "the operator navigated while this was in the air" expressible at all. Everything else
  * `refresh()` asks for answers immediately and is not what any of this is about.
  */
-function client(today = "2026-09-10"): Client {
+function client(today = "2026-09-10", { holdToday = false, view = "calendar" } = {}): Client {
   const urls: string[] = [];
   const pending: Call[] = [];
+  // The dashboard's own one-day read of today (see `refresh`). It is not a calendar period and it
+  // is not what these races are about, so it answers at once unless a test asks to hold it.
+  const todayRead = `/api/appointments?localDate=${today}&days=1`;
 
   const api = (url: string): Promise<unknown> => {
     urls.push(url);
@@ -103,13 +107,14 @@ function client(today = "2026-09-10"): Client {
       return Promise.resolve(url === "/api/customers?paged=true&page=1&pageSize=20"
         ? { items: [], total: 0, page: 1, pageSize: 20 } : []);
     }
+    if (url === todayRead && !holdToday) return Promise.resolve([]);
     return new Promise((resolve) => { pending.push({ url, settle: resolve }); });
   };
 
   const state = {
     me: { isOwner: true, permissions: [], business: { timezone: "UTC" } },
     pets: [], dogBreeds: [], petTypes: [], businessHours: [{ weekday: 1 }],
-    appointments: [] as Appointment[], blockedTimes: [] as unknown[],
+    appointments: [] as Appointment[], todayAppointments: [] as Appointment[], blockedTimes: [] as unknown[],
     calendar: {
       view: "week", weekStart: null as string | null, selectedDate: null as string | null,
       month: null as string | null, monthAppointments: [] as Appointment[],
@@ -136,7 +141,9 @@ function client(today = "2026-09-10"): Client {
     renderServices: () => {}, renderReports: () => {},
     schedulingZone: () => "UTC",
     formatPrefWeekdayMonthDay: () => "",
-    $: () => ({ textContent: "" })
+    $: () => ({ textContent: "" }),
+    // Which view is on screen, as `loadCalendarWeek` reads it off `<body data-view>`.
+    document: { body: { dataset: { view } } }
   };
 
   const names = Object.keys(scope);
@@ -187,7 +194,64 @@ describe("a refresh reads the period the calendar is showing", () => {
 
     expect(app.urls).toContain("/api/appointments?localDate=2026-10-04&days=7");
     expect(app.urls).toContain("/api/blocked-times?localDate=2026-10-04&days=7");
-    expect(app.urls.some((url) => url.includes("localDate=2026-09-10"))).toBe(false);
+    // No today-anchored WINDOW. The one read that does name today is the dashboard's own single
+    // day, below, and it is never mistaken for the period.
+    expect(app.urls.some((url) => url.includes("localDate=2026-09-10&days=8"))).toBe(false);
+    expect(app.urls.filter((url) => url.startsWith("/api/appointments"))).toEqual([
+      "/api/appointments?localDate=2026-10-04&days=7",
+      "/api/appointments?localDate=2026-09-10&days=1"
+    ]);
+  });
+
+  it("reads today for the dashboard's list as its own day, whatever period the calendar shows", async () => {
+    // The defect: after paging the calendar to another day, "Salon schedule" read "No appointments
+    // today" under a tile counting six, because the list was sieved out of the calendar's range.
+    const app = client("2026-09-10", { holdToday: true });
+    showing(app, { view: "day", weekStart: "2026-09-06", selectedDate: "2026-09-11", month: "2026-09" });
+
+    const done = app.refresh();
+    app.settle("localDate=2026-09-11&days=1", cards("tomorrow"));
+    app.settle("/api/blocked-times", []);
+    app.settle("localDate=2026-09-10&days=1", cards("today-1", "today-2"));
+    await done;
+
+    expect(app.state.appointments.map((item) => item.id)).toEqual(["tomorrow"]);
+    expect(app.state.todayAppointments.map((item) => item.id)).toEqual(["today-1", "today-2"]);
+  });
+
+  it("takes today's list from a period that covers today, and keeps it through one that does not", async () => {
+    const app = client("2026-09-10", { holdToday: true });
+    showing(app, { view: "week", weekStart: "2026-09-06", selectedDate: "2026-09-10", month: "2026-09" });
+
+    const done = app.refresh();
+    app.settle("localDate=2026-09-06&days=7", cards("in-week"));
+    app.settle("/api/blocked-times", []);
+    app.settle("localDate=2026-09-10&days=1", cards("stale-today"));
+    await done;
+    // The period is the fresher read of today, so the list is drawn from it.
+    expect(app.state.todayAppointments.map((item) => item.id)).toEqual(["in-week"]);
+
+    // Paging to a week that does not hold today leaves the list as it was rather than emptying it.
+    const navigated = app.loadCalendarWeek("2026-10-04");
+    app.settle("localDate=2026-10-04&days=7", cards("october"));
+    app.settle("/api/blocked-times?localDate=2026-10-04", []);
+    await navigated;
+    expect(app.state.appointments.map((item) => item.id)).toEqual(["october"]);
+    expect(app.state.todayAppointments.map((item) => item.id)).toEqual(["in-week"]);
+  });
+
+  it("reads today alongside a period that misses it only while the dashboard is the view on screen", async () => {
+    const app = client("2026-09-10", { holdToday: true, view: "dashboard" });
+    showing(app, { view: "week", weekStart: "2026-10-04", selectedDate: "2026-10-07", month: "2026-10" });
+
+    const navigated = app.loadCalendarWeek("2026-10-04");
+    app.settle("localDate=2026-10-04&days=7", cards("october"));
+    app.settle("/api/blocked-times?localDate=2026-10-04", []);
+    app.settle("localDate=2026-09-10&days=1", cards("today"));
+    await navigated;
+
+    expect(app.state.todayAppointments.map((item) => item.id)).toEqual(["today"]);
+    expect(app.state.appointments.map((item) => item.id)).toEqual(["october"]);
   });
 
   it("leaves the cards of that week on the grid, which is the whole defect", async () => {
@@ -226,7 +290,8 @@ describe("a refresh reads the period the calendar is showing", () => {
     app.settle("localDate=2026-12-02&days=11", cards("b"));
     await done;
 
-    expect(app.urls.filter((url) => url.startsWith("/api/appointments"))).toEqual([
+    // The dashboard's one-day read of today is not a period read and is left out here.
+    expect(app.urls.filter((url) => url.startsWith("/api/appointments") && !url.endsWith("&days=1"))).toEqual([
       "/api/appointments?localDate=2026-11-01&days=31",
       "/api/appointments?localDate=2026-12-02&days=11"
     ]);

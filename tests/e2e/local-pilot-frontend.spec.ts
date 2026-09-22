@@ -40,7 +40,7 @@ test("local pilot + New menu is compact, honest, keyboard accessible, and canoni
   await expect(page.getByTestId("booking-dialog")).toBeHidden();
   await trigger.click();
   await menu.getByRole("menuitem", { name: "New Block Time" }).click();
-  await expect(page.getByTestId("modal")).toContainText("Block team time");
+  await expect(page.getByTestId("modal")).toContainText("Block Time");
   await page.locator("#modal .modal-actions .close").click();
 
   await trigger.click();

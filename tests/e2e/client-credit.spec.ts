@@ -295,8 +295,10 @@ test("credit and a second method settle one invoice in one press, and the bill d
       .toContainText("Remaining amount due$52.01");
     // The amount below is what the METHOD has to cover, not the whole bill.
     await expect(page.getByTestId("field-pay")).toHaveValue("52.01");
+    // The footer names the bill, what credit covers and what is left to collect - the rail's own
+    // "Remaining amount due" - so the two never read as a disagreement about one figure.
     await expect(page.getByTestId("checkout-balance"))
-      .toHaveText("Balance $92.01 · $0.00 credit will remain");
+      .toHaveText("Bill $92.01 · $40.00 from credit · $52.01 due · $0.00 credit will remain");
 
     await chooseMethod(page, "Cash");
     await page.getByTestId("checkout-submit").click();
@@ -346,7 +348,7 @@ test("credit larger than the bill settles it alone, and only what was owed is sp
     await expect(page.getByTestId("field-pay")).toBeHidden();
     await expect(page.getByTestId("field-method")).toBeHidden();
     await expect(page.getByTestId("checkout-balance"))
-      .toHaveText("Balance $92.01 · $57.99 credit will remain");
+      .toHaveText("Bill $92.01 · covered by credit · $57.99 credit will remain");
 
     await page.getByTestId("checkout-submit").click();
     await expect(page.getByTestId("checkout-balance")).toHaveText("Balance $0.00");

@@ -46,7 +46,7 @@
       <nav id="primary-navigation" class="primary-nav" aria-label="Main navigation">
         <button type="button" data-testid="nav-dashboard" data-view="dashboard" data-permission="dashboard.view" class="active" aria-label="Dashboard"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 15a8 8 0 1 1 16 0M12 15l4-5M7 19h10"/></svg></span><span>Dashboard</span></button>
         <button type="button" data-testid="nav-calendar" data-view="calendar" data-permission="calendar.view" aria-label="Calendar"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 10h18M7 14h2M11 14h2M15 14h2"/></svg></span><span>Calendar</span></button>
-        <button type="button" data-testid="nav-customers" data-view="customers" data-any-permission="customers.view,pets.view" aria-label="Clients"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></span><span>Clients</span></button>
+        <button type="button" data-testid="nav-customers" data-view="customers" data-permission="customers.view" aria-label="Clients"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></span><span>Clients</span></button>
         <button type="button" data-testid="nav-messages" data-view="messages" aria-label="Messages"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h12a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3H9l-5 4V5Z"/><path d="M8 9h7M8 12h5"/></svg></span><span>Messages</span></button>
         <button type="button" data-testid="nav-reminders" data-view="reminders" aria-label="Reminders"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 9a6 6 0 0 1 12 0v5l2 3H4l2-3V9ZM10 21h4"/></svg></span><span>Reminders</span></button>
         <button type="button" data-testid="nav-sales" data-view="sales-expense" data-permission="payments.view" aria-label="Sales and Expense"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 8.5c-.8-.5-1.7-.7-2.8-.7-1.5 0-2.7.8-2.7 2s1 1.8 2.7 2.2 2.8 1 2.8 2.3-1.2 2.1-2.9 2.1c-1.2 0-2.3-.3-3.1-.9M12 5.5v13"/></svg></span><span>Sales &amp; Expense</span></button>
@@ -355,13 +355,13 @@
   </dialog>
   <dialog id="modal" data-testid="modal">
     <form id="modal-form">
-      <div class="modal-head"><div><p class="eyebrow">Pawsh workflow</p><h3 id="modal-title">Dialog</h3></div><button type="button" class="close" aria-label="Close">×</button></div>
+      <div class="modal-head"><div><h3 id="modal-title">Dialog</h3></div><button type="button" class="close" aria-label="Close">×</button></div>
       <div id="modal-fields" class="form-grid"></div>
       <p id="modal-error" class="error" role="alert"></p>
       <div class="modal-actions"><button type="button" class="secondary close">Cancel</button><button data-testid="modal-submit" class="primary" type="submit">Save</button></div>
     </form>
   </dialog>
-  <div id="toast" role="status"></div>
+  <div id="toast" role="status" popover="manual"></div>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

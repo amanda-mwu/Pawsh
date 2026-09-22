@@ -185,9 +185,10 @@ test("@regression-calendar-time confirms a dragged move and leaves the card alon
 
   await dragAppointmentToSlot(page,{appointmentId:appointment.id,slot:`${tenant.anchor}T11:00`,groomerId:tenant.employeeId});
   await expect(confirm).toBeVisible();
-  await expect(confirm.getByRole("heading",{name:"Re-schedule appointment"})).toBeVisible();
+  await expect(confirm.getByRole("heading",{name:"Reschedule appointment"})).toBeVisible();
+  // The pet, the slot it is leaving and the slot it is aimed at, on the workspace's own clock.
   await expect(page.getByTestId("reschedule-confirm-question"))
-    .toHaveText(`Reschedule appointment to ${prefLocalDate(tenant.anchor)} 11:00 AM?`);
+    .toHaveText(new RegExp(`^Move .+ from 9:00 AM to 11:00 AM on ${prefLocalDate(tenant.anchor).replaceAll("/","\\/")}\\?$`));
   // Nothing has been asked of the server. The question is the whole of what the drop did.
   expect(scheduleCalls).toEqual([]);
 
@@ -206,7 +207,7 @@ test("@regression-calendar-time confirms a dragged move and leaves the card alon
   // to be the dialog that hears it.
   await dragAppointmentToSlot(page,{appointmentId:appointment.id,slot:`${tenant.anchor}T11:00`,groomerId:tenant.employeeId});
   await expect(confirm).toBeVisible();
-  await expect(confirm).toContainText("Reschedule appointment to");
+  await expect(page.getByTestId("reschedule-confirm-question")).toContainText(/^Move .+ from 9:00 AM/u);
   await page.keyboard.press("Escape");
   await expect(confirm).toBeHidden();
   expect(scheduleCalls).toEqual([]);

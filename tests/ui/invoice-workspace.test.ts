@@ -574,7 +574,7 @@ describe("the visit facts are drawn from what the surface can actually see", () 
     expect(value(markup, "invoice-fact-checked-in")).toContain(PREFERRED_STAMP);
     expect(value(markup, "invoice-fact-checked-out")).toContain(PREFERRED_STAMP);
     // 16:16 to 17:23 is an hour and seven minutes, said the way an operator says it.
-    expect(value(markup, "invoice-fact-duration")).toBe("1 h 7 m");
+    expect(value(markup, "invoice-fact-duration")).toBe("67 min");
   });
 
   it("says not recorded, set back, for a visit that genuinely has no times", () => {

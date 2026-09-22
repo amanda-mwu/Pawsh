@@ -88,7 +88,15 @@ async function openTransactionHistory(page: Page): Promise<void> {
   }
   await page.getByTestId("nav-customers").click();
   const customer = page.getByTestId("customer-card").filter({ hasText: "Emma Johnson" });
-  await customer.getByTestId("client-row-actions").click();
+  // The row menu is a <details>; a repaint of the list between the press and the read (the live
+  // refresh lands on its own clock) closes it again, so the press is repeated until the item is
+  // actually on screen rather than assumed from the first click.
+  await expect.poll(async () => {
+    const item = customer.getByTestId("client-appointment-history");
+    if (await item.isVisible()) return true;
+    await customer.getByTestId("client-row-actions").click();
+    return item.isVisible();
+  }, { message: "the row menu opens" }).toBe(true);
   await customer.getByTestId("client-appointment-history").click();
   await expect(page.getByTestId("modal")).toContainText("Transactions");
 }

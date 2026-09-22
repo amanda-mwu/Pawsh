@@ -375,12 +375,19 @@ describe("DEFECT 2 — the footer carries its controls in every mode", () => {
       ]);
   });
 
-  it("draws the footer as a footer in every mode, with the balance beside its actions", () => {
+  it("draws the footer as a footer in every mode, with the balance beside its two zones", () => {
+    // The documents in `.surface-foot-utility`, the one primary in `.surface-foot-lead` - the two
+    // zones the appointment surface names, so a phone can seat the balance beside the primary and
+    // the documents on one compact row beneath (see `#appointment-checkout .checkout-foot`).
     for (const mode of ["build", "collect", "settled"] as const) {
       const markup = client.checkoutSurfaceMarkup(checkout(mode));
-      expect(markup, mode).toContain('<footer class="surface-foot">');
+      expect(markup, mode).toContain('<footer class="surface-foot checkout-foot">');
       expect(markup, mode).toContain('data-testid="checkout-balance"');
-      expect(markup, mode).toContain('<div class="surface-foot-actions">');
+      expect(markup, mode).toContain('<div class="surface-foot-actions surface-foot-utility">');
+      expect(markup, mode).toContain('<div class="surface-foot-actions surface-foot-lead">');
+      const lead = markup.match(/<div class="surface-foot-actions surface-foot-lead">(.*?)<\/div>/su)![1]!;
+      expect([...lead.matchAll(/data-testid="([a-z-]+)"/gu)].map((match) => match[1]))
+        .toEqual([mode === "settled" ? "checkout-done" : "checkout-submit"]);
     }
   });
 });

@@ -288,7 +288,10 @@ test("@responsive the bar is one row on every view, and the controls are one sca
     const headHeight = await height("#appointment-detail .surface-head");
     const headTextHeight = await height("#appointment-detail .surface-head-text");
     expect(headHeight - headTextHeight, "the head's padding").toBeLessThanOrEqual(20);
-    expect(headTextHeight, "the head's text").toBeLessThanOrEqual(80);
+    // 88: three lines - a 20px badge row, a 20px title, a 19px subhead - plus one more badge row
+    // when the wide runner font wraps the chips. The badge is a pill now, taller than the muted
+    // text it replaced, so the wrapped case measures 83 rather than the 78 it did before.
+    expect(headTextHeight, "the head's text").toBeLessThanOrEqual(88);
     expect(await height("#appointment-detail .surface-close"), "the close is an icon button").toBeLessThanOrEqual(36);
     expect(await height("#appointment-detail .surface-foot-lead > .primary"), "the lead primary").toBeLessThanOrEqual(40);
     const utility = detail.locator(".surface-foot-utility .secondary");

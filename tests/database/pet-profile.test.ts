@@ -281,6 +281,14 @@ describeDatabase("pet profile", () => {
     expect(cleared.json().deceasedAt).toBeNull();
   });
 
+  it("answers a malformed customer filter on the listing with 400, and a well-formed one with the pet", async () => {
+    expect((await get("/api/pets?customerId=not-a-uuid")).statusCode).toBe(400);
+    const listed = await get(`/api/pets?customerId=${customerId}`);
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().map((pet: { id: string }) => pet.id)).toContain(petId);
+    expect((await get(`/api/pets?customerId=${crypto.randomUUID()}`)).json()).toEqual([]);
+  });
+
   it("keeps pet profile data inside its own tenant", async () => {
     const foreign = await app.inject({ method: "POST", url: "/api/auth/signup", payload: {
       email: `foreign-profile-${crypto.randomUUID()}@example.test`,

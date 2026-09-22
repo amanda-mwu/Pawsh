@@ -8500,7 +8500,9 @@ export function registerRoutes(
     preHandler: [authenticate, requirePermission("pets.view")]
   }, async (request) => {
     const context = auth(request);
-    const query = request.query as { q?: string; customerId?: string };
+    // Validated like the checkout payment-options query above: a malformed id is the caller's
+    // mistake and answers 400, rather than reaching the driver as an unknown failure.
+    const query = z.object({ q: z.string().optional(), customerId: z.string().uuid().optional() }).parse(request.query);
     const rows = await db`
       select p.*, concat_ws(' ', c.first_name, c.last_name) as customer_name,
         (select upcoming.scheduled_local_start from appointments upcoming

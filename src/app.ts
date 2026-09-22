@@ -92,6 +92,11 @@ export const uniqueViolations: Record<string, { code: string; error: string }> =
   }
 };
 
+/**
+ * The whole of what a caller learns when the fault is on this side. The request log has the rest.
+ */
+const internalFailure = { code: "INTERNAL_ERROR", error: "Something went wrong on our side. Try again in a moment." } as const;
+
 export async function createApp(
   config: Config,
   db: Database,
@@ -106,6 +111,11 @@ export async function createApp(
     startupDiagnostics?: StartupDiagnostics;
     /** Injected by tests so the Square routes and worker never reach the network. */
     squareClient?: SquareClient;
+    /**
+     * How many requests one address may make per minute before the limiter refuses. Tests lower
+     * it to reach the refusal in a handful of requests; the product's own ceiling is fixed below.
+     */
+    requestsPerMinute?: number;
   } = {}
 ): Promise<FastifyInstance> {
   const startup = options.startupDiagnostics;
@@ -129,8 +139,21 @@ export async function createApp(
     app.register(cors, { origin: config.APP_ORIGIN, credentials: true }));
   await runStartupOperation(startup, "authentication cookie", "Plugin registration", () =>
     app.register(cookie, { secret: config.SESSION_SECRET }));
+  // A refusal from the limiter is a "come back in a moment", and it has to reach the client as
+  // one: 429 with a Retry-After, and a body a toast can read. The plugin's own error carries the
+  // status; the code and the retry interval are pinned on it here so the error handler below can
+  // answer without knowing anything about the plugin. Left to the generic fallback, the refusal
+  // used to come out as a 400, which the client reads on `/api/me` as "no longer signed in" and
+  // answers by putting the operator back on the sign-in screen mid-shift.
   await runStartupOperation(startup, "rate limiting", "Plugin registration", () =>
-    app.register(rateLimit, { max: config.NODE_ENV === "test" ? 10_000 : 120, timeWindow: "1 minute" }));
+    app.register(rateLimit, {
+      max: options.requestsPerMinute ?? (config.NODE_ENV === "test" ? 10_000 : 120),
+      timeWindow: "1 minute",
+      errorResponseBuilder: (_request, context) => Object.assign(
+        new Error(`Too many requests. Try again in ${context.after}.`),
+        { statusCode: context.statusCode, code: "RATE_LIMITED", retryAfterSeconds: Math.max(1, Math.ceil(context.ttl / 1000)) }
+      )
+    }));
   await runStartupOperation(startup, "multipart uploads", "Plugin registration", () =>
     app.register(multipart, { limits: { files: 1, fields: 12, parts: 13, fileSize: 10 * 1024 * 1024 } }));
   if (options.serveStatic !== false) {
@@ -276,7 +299,29 @@ export async function createApp(
       return reply.code(scheduling.status).send({ code: scheduling.code, error: scheduling.message,
         ...(scheduling.details && typeof scheduling.details === "object" ? scheduling.details : {}) });
     }
-    return reply.code(400).send({ error: error.message });
+    // An error that arrives with its own HTTP status - the rate limiter's refusal, the body parser
+    // finding a payload too large or of the wrong type - keeps it. Those messages are written to be
+    // shown, and a 429 has to stay a 429 so the client can tell "wait a moment" from "not signed
+    // in". Anything that says it failed on the server's side is not described further than that.
+    const { statusCode, retryAfterSeconds } = error as { statusCode?: unknown; retryAfterSeconds?: unknown };
+    if (typeof statusCode === "number" && statusCode >= 400 && statusCode < 600) {
+      if (statusCode >= 500) return reply.code(statusCode).send(internalFailure);
+      if (statusCode === 429) {
+        if (typeof retryAfterSeconds === "number" && !reply.hasHeader("retry-after")) {
+          reply.header("retry-after", retryAfterSeconds);
+        }
+        return reply.code(429).send({ code: "RATE_LIMITED", error: error.message });
+      }
+      return reply.code(statusCode).send({ error: error.message });
+    }
+    // A bare `Error` is how the routes refuse a request in a sentence - "Transfer ownership before
+    // removing an Owner" - and it is answered as the 400 it always was. An error of any other
+    // make reaching this line was not thrown at the caller: a driver failure, a bug, a dependency
+    // giving up. Its message is for the log, which already has it, and the caller is told only
+    // that the fault is not theirs, so nothing they do downgrades the request into a retry loop
+    // or the sign-in screen.
+    if (error?.constructor === Error) return reply.code(400).send({ error: error.message });
+    return reply.code(500).send(internalFailure);
   });
 
   app.addHook("onClose", async () => {

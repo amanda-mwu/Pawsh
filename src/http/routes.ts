@@ -65,8 +65,8 @@ import {
   cardProcessorTerminalSchema
 } from "./schemas.js";
 import {
-  availabilityOverrideMayBypass, availabilityRefusalCodes, blockedTimeIntersectionPermitted,
-  dayPeriodForInstants, instantMinutes, refuseWindow,
+  availabilityOverrideMayBypass, availabilityRefusalCodes, BLOCKED_TIME_TOLERANCE_MINUTES,
+  blockedTimeIntersectionPermitted, dayPeriodForInstants, instantMinutes, intersectionMinutes, refuseWindow,
   resolveEffectiveAvailability, type AvailabilityReason, type DayPeriod
 } from "../domain/availability.js";
 import { sealSecret } from "../security/secrets.js";
@@ -1482,7 +1482,7 @@ async function refuseBlockOverAppointments(
   return {
     code: "BLOCK_TIME_APPOINTMENT_CONFLICT",
     error: blockedTimeConflictMessage(
-      employee?.displayName ?? "That groomer", conflicts, input.timeZone
+      employee?.displayName ?? "That groomer", conflicts, input.timeZone, block
     ),
     conflicts,
     // A CONSTANT, AND NOT A PERMISSION LOOKUP EVEN IN PRINCIPLE. `SCHEDULING_CONFLICT` carries the
@@ -1507,9 +1507,15 @@ async function refuseBlockOverAppointments(
 function blockedTimeConflictMessage(
   employeeName: string,
   conflicts: readonly SchedulingConflict[],
-  timeZone: string
+  timeZone: string,
+  block: DayPeriod
 ): string {
   const first = conflicts[0]!;
+  // How far the block runs into the first booking, in the instant frame the tolerance was judged
+  // in, so the sentence states the same number the rule refused on.
+  const overlap = Math.round(intersectionMinutes(
+    block, instantMinutes({ startAt: first.startsAt, endAt: first.endsAt })
+  ));
   const start = formatWallTime(first.startsAt, timeZone);
   const end = formatWallTime(first.endsAt, timeZone);
   const window = start.slice(0, 10) === end.slice(0, 10)
@@ -1520,7 +1526,7 @@ function blockedTimeConflictMessage(
     : others === 1 ? " and one more inside that window"
     : ` and ${others} more inside that window`;
   return `${employeeName} has an appointment booked ${window}${rest}.`
-    + " Blocked time cannot cover a booked appointment."
+    + ` This blocked time overlaps it by ${overlap} min; up to ${BLOCKED_TIME_TOLERANCE_MINUTES} min is allowed.`
     + " Move or cancel the appointment first, or block a different stretch of time.";
 }
 
@@ -1692,6 +1698,12 @@ interface StaffAvailabilityRefusal {
   /** The calendar date at the LOCATION, which is the frame every rule below is stated in. */
   localDate: string;
   reason: AvailabilityReason;
+  /**
+   * For `fully_blocked` only: the block that refused the window (the one running furthest into
+   * it), as wall-clock minutes of `localDate`, and how many minutes of the booking it covers - so
+   * the sentence can state the overlap against the tolerance it exceeded.
+   */
+  block?: { startMinute: number; endMinute: number; overlapMinutes: number };
 }
 
 /**
@@ -1789,23 +1801,32 @@ async function refuseStaffAvailability(
         ${input.endAt}::timestamptz + interval '2 days','[)')
   `;
   for (const employeeId of input.employeeIds) {
+    const blocking = blocked
+      .filter((row) => row.employeeId === employeeId)
+      .map((row) => dayPeriodForInstants(row, localDate, input.timeZone))
+      .filter((period): period is DayPeriod => period !== null)
+      // The tolerance, per block: see the doc comment above and the constant's own.
+      .filter((period) => !blockedTimeIntersectionPermitted(period, window));
     const availability = resolveEffectiveAvailability({
       weekday,
       locationClosed: input.locationClosed,
       dateOverride: dateRows.find((row) => row.employeeId === employeeId) ?? null,
       staffWeekdayHours: staffHours.filter((row) => row.employeeId === employeeId),
       locationBusinessHours,
-      blocked: blocked
-        .filter((row) => row.employeeId === employeeId)
-        .map((row) => dayPeriodForInstants(row, localDate, input.timeZone))
-        .filter((period): period is DayPeriod => period !== null)
-        // The tolerance, per block: see the doc comment above and the constant's own.
-        .filter((period) => !blockedTimeIntersectionPermitted(period, window))
+      blocked: blocking
     });
     const reason = refuseWindow(availability, window);
     if (!reason) continue;
+    // Read only for the sentence: the verdict above is the resolver's, and this names the block
+    // that runs furthest into the window so the operator is told the overlap, not just the fact.
+    const worst = reason === "fully_blocked"
+      ? blocking
+        .map((period) => ({ ...period, overlapMinutes: intersectionMinutes(period, window) }))
+        .sort((left, right) => right.overlapMinutes - left.overlapMinutes)[0]
+      : undefined;
     return {
       employeeId, localDate, reason,
+      ...(worst && worst.overlapMinutes > 0 ? { block: worst } : {}),
       employeeName: employees.find((row) => row.id === employeeId)?.displayName ?? "That groomer"
     };
   }
@@ -1830,7 +1851,18 @@ const staffAvailabilityMessages: Record<AvailabilityReason, (refusal: StaffAvail
     `The salon is not open at that time on ${refusal.localDate}.`,
   fully_blocked: (refusal) =>
     `${refusal.employeeName} has time blocked out during that time on ${refusal.localDate}.`
+    + (refusal.block
+      ? ` This booking overlaps the blocked time from ${wallClockMinute(refusal.block.startMinute)}`
+        + ` to ${wallClockMinute(refusal.block.endMinute)} by ${Math.round(refusal.block.overlapMinutes)} min;`
+        + ` up to ${BLOCKED_TIME_TOLERANCE_MINUTES} min is allowed.`
+      : "")
 };
+
+/** A wall-clock minute of the local day as HH:MM, the 24-hour form every refusal sentence uses. */
+function wallClockMinute(minute: number): string {
+  const clamped = Math.max(0, Math.min(24 * 60, Math.round(minute)));
+  return `${String(Math.floor(clamped / 60)).padStart(2, "0")}:${String(clamped % 60).padStart(2, "0")}`;
+}
 
 /**
  * 409 for all five, with the reason's own code.
@@ -2647,11 +2679,45 @@ function editsAllStaff(context: { isOwner: boolean; permissions: readonly string
  * they do not hold at all. The two are different answers to a client: a missing permission means
  * the control should not be offered, a scope refusal means it should be offered DISABLED with the
  * reason, because the same person holding the same role may use it on the next appointment over.
- * The sentence always names `appointments.edit_all_staff`, which is the switch an owner flips to
- * make the refusal go away.
+ * The `code` is the machine-readable half; the sentence is for the person at the desk, so it
+ * names whose appointment or calendar it is and never a raw permission key.
  */
 function notAssignedToYou(message: string): SchedulingRequestError {
   return new SchedulingRequestError(403, "NOT_ASSIGNED_TO_YOU", message);
+}
+
+/**
+ * The display name of a staff member, for a refusal sentence only. Read on the refusal path, so
+ * the allowed path stays the queries it was; null when there is no such row in the tenant.
+ */
+async function staffDisplayName(
+  tx: SqlExecutor,
+  businessId: string,
+  employeeId: string | null | undefined
+): Promise<string | null> {
+  if (!employeeId) return null;
+  const [row] = await tx<{ displayName: string }[]>`
+    select display_name from employees where business_id=${businessId} and id=${employeeId}
+  `;
+  return row?.displayName ?? null;
+}
+
+/** "This appointment is assigned to Grace Groomer." - the name of the appointment's groomer. */
+async function appointmentAssignedToMessage(
+  tx: SqlExecutor,
+  businessId: string,
+  appointmentId: string
+): Promise<string> {
+  const [row] = await tx<{ displayName: string | null }[]>`
+    select staff.display_name
+    from appointments appointment
+    left join employees staff
+      on staff.business_id=appointment.business_id and staff.id=appointment.employee_id
+    where appointment.business_id=${businessId} and appointment.id=${appointmentId}
+  `;
+  return row?.displayName
+    ? `This appointment is assigned to ${row.displayName}.`
+    : "This appointment is assigned to another groomer.";
 }
 
 /**
@@ -2687,15 +2753,28 @@ async function assertAppointmentMutable(
   if (editsAllStaff(context)) return;
   const me = await callerAssignment(tx, context, input.appointmentId);
   if (!me?.assigned) {
-    throw notAssignedToYou(
-      "This appointment is assigned to another groomer. Changing other staff members' appointments needs appointments.edit_all_staff."
-    );
+    throw notAssignedToYou(await appointmentAssignedToMessage(tx, context.businessId, input.appointmentId));
   }
   if (input.nextEmployeeIds?.some((employeeId) => employeeId !== me.employeeId)) {
     throw notAssignedToYou(
-      "Reassigning an appointment to another groomer needs appointments.edit_all_staff."
+      "You do not have permission to move this appointment onto another groomer's calendar."
     );
   }
+}
+
+/**
+ * The capability-flag mirror of `assertAppointmentMutable`'s first question, for a read that tells
+ * the interface whether to offer a write: the same all-staff bypass and the same `callerAssignment`
+ * answer, so a groomer is not offered "+ Add" on a colleague's visit only to be refused on save.
+ * The permission key itself is the caller's own check; this answers only whose appointment it is.
+ */
+async function appointmentInCallerScope(
+  tx: SqlExecutor,
+  context: { businessId: string; membershipId: string; isOwner: boolean; permissions: readonly string[] },
+  appointmentId: string
+): Promise<boolean> {
+  if (editsAllStaff(context)) return true;
+  return Boolean((await callerAssignment(tx, context, appointmentId))?.assigned);
 }
 
 /**
@@ -2718,7 +2797,7 @@ async function assertBookingOnOwnCalendar(
   const me = await callerEmployeeId(tx, context);
   if (me === null || employeeIds.some((employeeId) => employeeId !== me)) {
     throw notAssignedToYou(
-      "Booking onto another groomer's calendar needs appointments.edit_all_staff."
+      "You do not have permission to book onto another groomer's calendar."
     );
   }
 }
@@ -2744,13 +2823,14 @@ async function assertBlockedTimeMutable(
   if (editsAllStaff(context)) return;
   const me = await callerEmployeeId(tx, context);
   if (me === null || input.employeeId !== me) {
-    throw notAssignedToYou(
-      "This blocked time is on another groomer's calendar. Managing other staff members' blocked time needs appointments.edit_all_staff."
-    );
+    const name = await staffDisplayName(tx, context.businessId, input.employeeId);
+    throw notAssignedToYou(name
+      ? `This blocked time is on ${name}'s calendar.`
+      : "This blocked time is on another groomer's calendar.");
   }
   if (input.nextEmployeeId !== undefined && input.nextEmployeeId !== me) {
     throw notAssignedToYou(
-      "Moving blocked time onto another groomer's calendar needs appointments.edit_all_staff."
+      "You do not have permission to move blocked time onto another groomer's calendar."
     );
   }
 }
@@ -10136,7 +10216,10 @@ export function registerRoutes(
       }],
       total: photos.length,
       maxPerPhase: maxPhotosPerPhase,
-      canEdit: context.isOwner || context.permissions.includes("operations.perform_service")
+      // The upload and delete routes refuse another groomer's visit (`assertAppointmentMutable`),
+      // so the flag answers the same question rather than the permission alone.
+      canEdit: (context.isOwner || context.permissions.includes("operations.perform_service"))
+        && await appointmentInCallerScope(db, context, id)
     };
   });
 
@@ -10463,7 +10546,9 @@ export function registerRoutes(
       // The interface offers "+ Add" only while a pet on this appointment has no card yet, so it
       // needs to know which pets are still available rather than inferring it from the list.
       availablePetIds: cards.length ? [] : [appointment.petId],
-      canEdit: context.isOwner || context.permissions.includes("operations.perform_service"),
+      // Create, edit and delete all pass `assertAppointmentMutable`; the flag mirrors it.
+      canEdit: (context.isOwner || context.permissions.includes("operations.perform_service"))
+        && await appointmentInCallerScope(db, context, id),
       canSend: context.isOwner || context.permissions.includes("customers.edit")
     };
   });

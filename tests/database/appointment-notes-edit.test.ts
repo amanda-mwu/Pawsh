@@ -322,7 +322,7 @@ describeDatabase("editing the appointment note", () => {
       const refused = await editNote(created.id, { notes: "Rewritten" }, groomerCookie);
       expect(refused.statusCode, refused.body).toBe(403);
       expect(refused.json().code).toBe("NOT_ASSIGNED_TO_YOU");
-      expect(refused.json().error).toContain("appointments.edit_all_staff");
+      expect(refused.json().error).not.toContain("edit_all_staff");
       expect((await storedNote(created.id)).notes).toBe("Groomer must not rewrite this");
     });
 

@@ -221,7 +221,8 @@ describeDatabase("staff scheduling scope", () => {
     expect(response.statusCode, `${label}: ${response.body}`).toBe(403);
     const refusal = response.json() as ScopeRefusal;
     expect(refusal.code, label).toBe("NOT_ASSIGNED_TO_YOU");
-    expect(refusal.error, label).toContain("appointments.edit_all_staff");
+    // The code is for the client; the sentence is for a person, and never names a raw key.
+    expect(refusal.error, label).not.toMatch(/edit_all_staff|\b(appointments|calendar|operations)\.[a-z_]+/);
   };
 
   /** A booking for the overlap client at the given wall time, by the owner, answered as created. */
@@ -417,6 +418,8 @@ describeDatabase("staff scheduling scope", () => {
       const before = await stored(theirs.id);
       const outcomes = await everyMutation(theirs.id, groomerA);
       for (const [label, response] of Object.entries(outcomes)) expectScopeRefusal(response, label);
+      // The sentence names whose appointment it is.
+      expect((outcomes.notes.json() as ScopeRefusal).error).toBe("This appointment is assigned to Groomer B.");
       // Nothing was written: not a note, not a version, not a status, not a photo, not a card.
       expect(await stored(theirs.id)).toEqual(before);
       const [attached] = await db<{ photos: number; cards: number }[]>`
@@ -425,6 +428,23 @@ describeDatabase("staff scheduling scope", () => {
           (select count(*)::int from appointment_report_cards where business_id=${businessId} and appointment_id=${theirs.id}) as cards
       `;
       expect(attached).toEqual({ photos: 0, cards: 0 });
+    });
+
+    it("is offered photo and report-card edits on their own visit only", async () => {
+      // The capability flags answer the same assignment question the write routes enforce, so a
+      // groomer is not offered "+ Add" on a colleague's visit and refused only on save.
+      const mine = await booked(employeeA);
+      const theirs = await booked(employeeB);
+      const flags = async (id: string, sessionCookie: string) => ({
+        photos: (await request("GET", `/api/appointments/${id}/photos`, sessionCookie)).json().canEdit,
+        cards: (await request("GET", `/api/appointments/${id}/report-cards`, sessionCookie)).json().canEdit
+      });
+      expect(await flags(mine.id, groomerA)).toEqual({ photos: true, cards: true });
+      expect(await flags(theirs.id, groomerA)).toEqual({ photos: false, cards: false });
+      // The owner bypasses scope; the receptionist holds the all-staff key but not the
+      // perform-service key, so the permission still answers false for them.
+      expect(await flags(theirs.id, ownerCookie)).toEqual({ photos: true, cards: true });
+      expect(await flags(theirs.id, receptionist)).toEqual({ photos: false, cards: false });
     });
 
     it("photographs their own appointment and writes its report card, and is refused a colleague's", async () => {
@@ -723,6 +743,8 @@ describeDatabase("staff scheduling scope", () => {
         select reason,version from blocked_times where id=${theirs.id}
       `;
       expect(still).toEqual({ reason: "Lunch", version: theirs.version });
+      expect((await request("DELETE", `/api/blocked-times/${theirs.id}?version=${theirs.version}`, groomerA)).json().error)
+        .toBe("This blocked time is on Groomer B's calendar.");
 
       // Their own block, pushed onto a colleague's calendar.
       const ownDay = nextDay();

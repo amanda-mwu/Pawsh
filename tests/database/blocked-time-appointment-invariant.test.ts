@@ -1114,6 +1114,20 @@ describeDatabase("a blocked time may not cover a booked appointment", () => {
       expect(payload.error).toContain("10:00");
       expect(payload.error).toContain("11:00");
       expect(payload.error).not.toContain("Z");
+      // And it states the overlap against the rule it broke, not just that it broke one.
+      expect(payload.error).toContain("This blocked time overlaps it by 60 min; up to 15 min is allowed.");
+    });
+
+    it("states the overlap when a booking runs into a block", async () => {
+      const day = nextDay();
+      await created({ localStart: `${day}T09:00`, localEnd: `${day}T11:00` });
+      const response = await book(`${day}T10:40`);
+      expect(response.statusCode, response.body).toBe(409);
+      expect(response.json().code).toBe("TIME_BLOCKED");
+      expect(response.json().error).toContain("has time blocked out during that time");
+      expect(response.json().error).toContain(
+        "This booking overlaps the blocked time from 09:00 to 11:00 by 20 min; up to 15 min is allowed."
+      );
     });
 
     it("counts every appointment the block would cover", async () => {

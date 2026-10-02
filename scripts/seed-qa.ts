@@ -99,10 +99,10 @@ function nextWorkingDay(from: string, rota: readonly number[]): string {
  */
 const builtInRoleNames = new Set(builtInRoles.map((role) => role.name));
 const memberDefinitions = [
-  ["manager@pawsh-test.example", "Manager"],
-  ["reception@pawsh-test.example", "Receptionist"],
-  ["grace@pawsh-test.example", "Groomer"],
-  ["gabriel@pawsh-test.example", "Groomer"]
+  ["manager@pawsh-test.example", "Manager", "Marcus Manager"],
+  ["reception@pawsh-test.example", "Receptionist", "Riley Reception"],
+  ["grace@pawsh-test.example", "Groomer", "Grace Groomer"],
+  ["gabriel@pawsh-test.example", "Groomer", "Gabriel Groomer"]
 ] as const;
 for (const [, roleName] of memberDefinitions) {
   // A name Pawsh no longer ships would seed a member with no role at all, which
@@ -118,16 +118,19 @@ for (const [, roleName] of memberDefinitions) {
 const summary: string[] = [];
 
 await sql.begin(async (tx) => {
-  async function ensureUser(email: string): Promise<string> {
+  // The person's name, as the header and every activity row's actor column print it. Left to the
+  // column default every seeded account read "Pawsh user", and History could not say who did what.
+  async function ensureUser(email: string, displayName: string): Promise<string> {
     const [user] = await tx<{ id: string }[]>`
-      insert into users(email,normalized_email,password_hash,email_verified_at)
-      values (${email},${email},${passwordHash},now())
-      on conflict (normalized_email) do update set email=excluded.email,password_hash=excluded.password_hash
+      insert into users(email,normalized_email,password_hash,email_verified_at,display_name)
+      values (${email},${email},${passwordHash},now(),${displayName})
+      on conflict (normalized_email) do update
+        set email=excluded.email,password_hash=excluded.password_hash,display_name=excluded.display_name
       returning id
     `;
     return user!.id;
   }
-  const ownerId = await ensureUser("owner@pawsh-test.example");
+  const ownerId = await ensureUser("owner@pawsh-test.example", "Olivia Owner");
   let [business] = await tx<{ id: string }[]>`select id from businesses where name='Pawsh QA Grooming' limit 1`;
   if (!business) {
     [business] = await tx<{ id: string }[]>`
@@ -177,10 +180,10 @@ await sql.begin(async (tx) => {
 
   const memberships = new Map<string,string>();
   memberships.set("owner@pawsh-test.example",ownerMembership!.id);
-  for (const [email,roleName] of memberDefinitions) {
+  for (const [email,roleName,displayName] of memberDefinitions) {
     const roleId = roleIds.get(roleName);
     if (!roleId) throw new Error(`QA seed could not find the built-in role ${roleName}`);
-    const userId = await ensureUser(email);
+    const userId = await ensureUser(email, displayName);
     const [membership] = await tx<{ id: string }[]>`
       insert into business_memberships(business_id,user_id,role_id,status)
       values (${businessId},${userId},${roleId},'active')

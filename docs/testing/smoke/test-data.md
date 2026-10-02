@@ -14,42 +14,61 @@ business time use `America/Los_Angeles`.
 
 ## Manual QA tenant
 
-`npm run seed:qa` provisions the recognizable `Pawsh QA Grooming` tenant for
-local or staging human QA. It seeds location/settings, Olivia Owner, Marcus
-Manager, Riley Reception, Grace and Gabriel Groomer, services, canonical
-customers/pets, safety data, and working hours. It does not seed the automated
-smoke flow, and it seeds no Square connection, device, or terminal state.
+`npm run seed:qa` builds the recognizable `Pawsh QA Grooming` tenant for human
+visual QA: one deterministic day on which every state a reviewer has to look at
+is already on the calendar. It runs once, against an empty, freshly migrated
+database, and refuses (writing nothing) if the tenant already exists — drop and
+recreate the database to reseed. It seeds no Square connection, device, or
+terminal state, and no discounts or coupons.
 
-It also seeds a day a reviewer can walk a visit through. Every date is derived
-from the moment the seed runs, in the location's timezone, and every time falls
-inside the business and groomer hours the same seed writes, so the workspace
-cannot rot into the past. The day is built around today unless the salon is shut
-today, in which case it moves to the next open day; each groomer's appointments
-land on the next date their own rota covers, which is not always the same date
-for both. The seed prints the day it resolved.
+It writes in two layers. Settings an owner would type in — the business,
+accounts, location, opening hours and groomer rotas — are written directly, and
+the business is provisioned by `provisionBusinessCatalog`, the same path a real
+signup runs, so built-in roles, tax rate (8.25%) and payment methods are the
+product's own. Everything with a lifecycle or money — catalog curation, clients,
+pets, credit grants, blocks, bookings, transitions, the service note, checkout
+and payments — goes through the application's real routes, driven in-process as
+the owner. No appointment, invoice, payment or credit row is hand-written.
 
-That day holds eleven visits across the two groomers: `scheduled` bookings to
-walk through, one `checked_in`, one `in_service`, one `completed` and awaiting
-checkout, one `completed` with a paid invoice already on it, two blocked times,
-and a pair of same-groomer appointments an hour apart that raise the scheduling
-conflict when either is dragged onto the other. Two bookings sit a week out so
-the directory's next-appointment column has something in it, and one historical
-inactive-service snapshot sits a week back. Alongside them it seeds the
-Coupon & Discount catalog — amount, percentage, per-pet, and one retired
-discount, plus a live coupon with a date range and redemption caps, an expired
-one, and a new-clients-only one — and sets the business's discount stacking mode
-to `amount_first` so two discounts can compound on one bill.
+Staff: Olivia Owner (owner), Marcus Manager, Riley Reception, Grace Groomer and
+Gabriel Groomer, each holding the built-in role of that name. The salon
+(`America/Los_Angeles`) is open 08:00–18:00 and both groomers work 08:00–17:00
+on all seven days, so the calendar opens on today with both lanes populated.
 
-The seeded invoice is built with the same `applyDiscounts` and
-`calculateInvoice` the checkout route calls, so its receipt is arithmetically
-identical to one produced through the UI.
+Active catalog, exactly six (other provisioned services are deactivated):
+Bath $45/45 min, Full Groom $65/90 min, Nail Trim $15/15 min, De-shedding
+$40/60 min, Teeth Brushing $12/10 min, Ear Cleaning $10/20 min. Grace performs
+Bath, Full Groom, Nail Trim and Teeth Brushing; Gabriel performs all six.
 
-The seed is idempotent: a second run against an unchanged workspace writes
-nothing at all, and a run on a later day repositions what is already there
-rather than adding a second copy. An appointment that has acquired a non-void
-invoice during QA is left exactly where QA left it and a fresh one is booked for
-its slot, so a reseed never destroys work or resets a checked-out visit
-underneath its own receipt.
+Clients and pets (all dogs):
+
+- Sophia Chen — Rocky, Mochi. Phone, email and postal address (for contact
+  permission QA); $150.00 client credit.
+- Avery Thompson — Daisy, Charlie. $60.00 granted; Charlie's visit spends
+  $20.00, leaving $40.00.
+- Emma Johnson — Luna. No credit.
+- Noah Williams — Boba, with a safety alert and staff-verified, current rabies.
+
+The day (today in the salon's timezone, or `QA_ANCHOR_DATE` when set):
+
+| Groomer | Time | Pet | Services | State |
+|---|---|---|---|---|
+| Grace | 09:00 | Rocky | Full Groom | scheduled, no service note |
+| Grace | 10:30 | Mochi | Bath + Nail Trim | checked in, service note written |
+| Grace | 12:00–12:30 | — | Block Time "Lunch" | — |
+| Grace | 13:00 | Daisy | Full Groom + Teeth Brushing | completed, invoice $83.35 open and unpaid |
+| Grace | 15:00 | Charlie | Bath | completed, $48.71 settled: $20.00 client credit + $28.71 cash on one invoice |
+| Gabriel | 09:30 | Luna | Full Groom | in service |
+| Gabriel | 11:00 | Boba | Bath + Nail Trim | scheduled |
+| Gabriel | 12:30–13:15 | — | Block Time "Lunch" | — |
+| Gabriel | 14:00 | Rocky | De-shedding | scheduled |
+| Gabriel | 14:30 | Mochi | Ear Cleaning | scheduled, overlaps 14:00 (booked with the conflict override and a reason) |
+| Gabriel | 15:30 | Luna | Nail Trim | cancelled, with a reason |
+| Grace | tomorrow 10:00 | Rocky | Bath | scheduled, note "Future check-in test" |
+
+Daisy is left for Take Payment, void and repay; Rocky, Boba and Mochi stay
+actionable. The seed prints the resolved day and every visit's id, time,
+groomer and state.
 
 It refuses to run unless all safeguards pass:
 
@@ -65,7 +84,7 @@ normal product workflows.
 
 ## Directory volume
 
-Six clients read well but cannot exercise the directory itself. `npm run
+Four clients read well but cannot exercise the directory itself. `npm run
 db:seed-directory` adds a bounded block of extra clients to the same
 `Pawsh QA Grooming` tenant so paging, the 10/20/50/100 page-size choice, the
 status filter, the visit-based sorts, and popup notes all have something to work

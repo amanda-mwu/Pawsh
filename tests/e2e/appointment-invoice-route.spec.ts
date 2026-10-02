@@ -82,7 +82,7 @@ test("a settled appointment opens its own Invoice from the appointment footer",
     // The chip that tells the operator there is a bill. It was already correct before this fix,
     // and that was the whole problem: the surface stated a settlement it could not show.
     await expect(page.getByTestId("appointment-billing")).toHaveText("Paid");
-    await expect(page.getByTestId("appointment-status")).toHaveText("completed");
+    await expect(page.getByTestId("appointment-status")).toHaveText("Completed");
 
     // ---- The footer -------------------------------------------------------------------------
     // Take Payment is gone, and it should be: the server refuses a second checkout on an invoiced

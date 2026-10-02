@@ -60,7 +60,7 @@
     <main>
       <header>
         <div><p class="eyebrow" id="page-kicker">Daily operations</p><h2 id="page-title">Good morning</h2></div>
-        <button data-testid="header-services" type="button" class="header-services" data-view-target="services">Services</button>
+        <button data-testid="header-services" type="button" class="secondary compact header-services" data-view-target="services">Services</button>
         <div class="header-actions"><div class="location-control" id="location-control" hidden><button data-testid="location-switcher" id="location-switcher" type="button" class="location-switcher" aria-haspopup="menu" aria-expanded="false" aria-controls="location-menu"><span class="location-pin" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 21c4.7-4.3 7-7.7 7-10.5a7 7 0 1 0-14 0C5 13.3 7.3 16.7 12 21Z"/><circle cx="12" cy="10" r="2.5"/></svg></span><span class="location-switcher-text"><span class="location-switcher-kicker">Location</span><span class="location-switcher-name" id="location-current-name" data-testid="location-current-name"></span></span><span class="location-caret" aria-hidden="true">⌄</span></button><div data-testid="location-menu" id="location-menu" class="location-menu" role="menu" aria-label="Switch location" hidden></div></div><span id="today"></span><div class="new-action-control"><button data-testid="new-action-trigger" id="new-action-trigger" type="button" class="primary compact" aria-label="New action" aria-haspopup="menu" aria-expanded="false">+ New <span aria-hidden="true">⌄</span></button><div data-testid="new-action-menu" id="new-action-menu" class="new-action-menu" role="menu" aria-label="Create new" hidden><div class="new-action-group" role="group" aria-label="Appointments"><button type="button" role="menuitem" data-new-action="new-appointment">New Appointment</button><button type="button" role="menuitem" disabled aria-disabled="true" title="Streamlined new-client booking is not available yet">Quick Appointment — new client <small>Coming soon</small></button><button type="button" role="menuitem" data-new-action="quick-existing">Quick Appointment — existing client</button><button type="button" role="menuitem" data-new-action="blocked-time">New Block Time</button></div><hr><div class="new-action-group" role="group" aria-label="Sales"><button type="button" role="menuitem" disabled aria-disabled="true" title="Pawsh sales currently begin from appointment checkout">New Sale <small>Coming soon</small></button></div><hr><div class="new-action-group" role="group" aria-label="Gift cards"><button type="button" role="menuitem" disabled aria-disabled="true" title="Gift cards are not available in Pawsh yet">Sale Gift Card <small>Coming soon</small></button><button type="button" role="menuitem" disabled aria-disabled="true" title="Gift cards are not available in Pawsh yet">Activate Gift Card <small>Coming soon</small></button></div><hr><div class="new-action-group" role="group" aria-label="Expenses"><button type="button" role="menuitem" disabled aria-disabled="true" title="Expense records are not available in Pawsh yet">New Expense Record <small>Coming soon</small></button></div></div></div><button data-testid="intake-submissions" type="button" class="header-icon-button" data-view-target="intake-submissions" aria-label="Intake form submissions" title="Intake form submissions"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h10v4H7zM5 5H3v16h18V5h-2M7 12h10M7 16h7"/></svg></button><div class="account-control"><button id="account-trigger" data-testid="account-trigger" type="button" aria-label="Account menu" aria-haspopup="menu" aria-expanded="false"><span class="avatar" id="account-avatar" aria-hidden="true">P</span><span class="sr-only" id="account-name">Pawsh user</span><span class="sr-only" id="account-role">Workspace member</span></button><div id="account-menu" class="account-menu" role="menu" hidden><button data-testid="profile-account-link" type="button" role="menuitem" data-view-target="profile-account">Profile &amp; account</button><button id="account-change-password" type="button" role="menuitem">Change password</button><button id="account-switch-location" data-testid="account-switch-location" type="button" role="menuitem" disabled aria-disabled="true" title="Pawsh currently supports one active salon location">Switch location <small>Coming later</small></button><button type="button" role="menuitem" disabled aria-disabled="true" title="Referral invitations are not yet supported">Invite a friend <small>Coming later</small></button><hr><button id="logout" data-testid="logout" type="button" role="menuitem">Sign out</button></div></div></div>
       </header>
 
@@ -101,7 +101,7 @@
           <label class="toolbar-field"><span class="visually-hidden">Sort clients</span><select id="customer-sort"><option value="name">Sort: name</option><option value="lastVisit">Sort: last visit</option><option value="nextAppointment">Sort: next appointment</option></select></label>
           <div class="clients-toolbar-actions"><button data-permission="pets.care.view" type="button" class="secondary compact" id="archived-care-records">Archived records</button><button data-permission="pets.edit" type="button" class="secondary compact" data-action="new-pet">+ Pet</button><button data-testid="new-customer" data-permission="customers.edit" type="button" class="primary compact" data-action="new-customer">+ Customer</button></div>
         </div>
-        <div class="directory-table-wrap" data-allow-horizontal-scroll><table class="directory-table clients-table"><thead><tr><th scope="col">Name</th><th scope="col">Pets</th><th scope="col">Groomer</th><th scope="col">Phone</th><th scope="col">Email</th><th scope="col">Last visit</th><th scope="col">Next appt.</th><th scope="col">Status</th><th scope="col"><span class="visually-hidden">Row actions</span></th></tr></thead><tbody id="customer-grid"></tbody></table></div>
+        <div class="directory-table-wrap" data-allow-horizontal-scroll><table class="directory-table clients-table"><thead><tr><th scope="col">Name</th><th scope="col">Pets</th><th scope="col">Groomer</th><th scope="col" data-contact-column>Phone</th><th scope="col" data-contact-column>Email</th><th scope="col">Last visit</th><th scope="col">Next appt.</th><th scope="col">Status</th><th scope="col"><span class="visually-hidden">Row actions</span></th></tr></thead><tbody id="customer-grid"></tbody></table></div>
         <div class="directory-pagination">
           <span id="customer-page-status" role="status"></span>
           <div data-pager-slot="customer" data-pager-label="Client pages"></div>
@@ -214,8 +214,10 @@
     <div class="pet-profile-head"><h3 id="pet-profile-title">Pet</h3><button type="button" class="close" aria-label="Close pet profile">×</button></div>
     <div id="pet-profile-body" class="pet-profile-body"></div>
     <div class="pet-profile-actions">
-      <button type="button" class="secondary compact" data-testid="pet-deceased">Pass away</button>
-      <button type="button" class="text-button destructive" data-testid="pet-archive">Archive</button>
+      <div class="pet-profile-standing" data-testid="pet-profile-standing">
+        <button type="button" class="text-button" data-testid="pet-deceased">Pass away</button>
+        <button type="button" class="text-button destructive" data-testid="pet-archive">Archive</button>
+      </div>
       <button type="button" class="secondary compact close">Close</button>
     </div>
   </dialog>
@@ -223,8 +225,8 @@
     <h4 id="stacked-dialog-title">Details</h4>
     <div id="stacked-dialog-body"></div>
     <div class="stacked-dialog-actions">
-      <button type="button" class="secondary" data-testid="stacked-dialog-dismiss">Cancel</button>
-      <button type="button" class="primary" data-testid="stacked-dialog-confirm">OK</button>
+      <button type="button" class="secondary compact" data-testid="stacked-dialog-dismiss">Cancel</button>
+      <button type="button" class="primary compact" data-testid="stacked-dialog-confirm">OK</button>
     </div>
   </dialog>
   <dialog id="breed-drawer" class="breed-drawer" aria-labelledby="breed-drawer-title" data-testid="breed-drawer">
@@ -358,7 +360,7 @@
       <div class="modal-head"><div><h3 id="modal-title">Dialog</h3></div><button type="button" class="close" aria-label="Close">×</button></div>
       <div id="modal-fields" class="form-grid"></div>
       <p id="modal-error" class="error" role="alert"></p>
-      <div class="modal-actions"><button type="button" class="secondary close">Cancel</button><button data-testid="modal-submit" class="primary" type="submit">Save</button></div>
+      <div class="modal-actions"><button type="button" class="secondary compact close">Cancel</button><button data-testid="modal-submit" class="primary compact" type="submit">Save</button></div>
     </form>
   </dialog>
   <div id="toast" role="status" popover="manual"></div>

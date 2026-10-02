@@ -207,8 +207,8 @@ test("@responsive a cancelled visit is struck and dimmed on the grid, and the su
     await card.locator(".calendar-open").click();
     await expect(detail(page)).toBeVisible();
     const status = detail(page).getByTestId("appointment-status");
-    // The text the suite has always read, in the cards' badge.
-    await expect(status).toHaveText("cancelled");
+    // The one status label, in the cards' badge colour.
+    await expect(status).toHaveText("Cancelled");
     await expect(status).toHaveClass(/appointment-badge badge-cancelled/u);
     expect(await status.evaluate((node) => Number.parseFloat(getComputedStyle(node).fontSize))).toBeGreaterThanOrEqual(11);
     const banner = detail(page).getByTestId("appointment-status-banner");

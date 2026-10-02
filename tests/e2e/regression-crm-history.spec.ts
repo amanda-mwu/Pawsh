@@ -233,9 +233,9 @@ test("@regression-crm-history shows current names and terminal history while per
   await ownerCard.getByTestId("client-row-actions").click();
   await ownerCard.getByTestId("client-appointment-history").click();
   await expect(page.getByTestId("modal")).toContainText("Current Pet");
-  await expect(page.getByTestId("modal")).toContainText("completed");
-  await expect(page.getByTestId("modal")).toContainText("cancelled");
-  await expect(page.getByTestId("modal")).toContainText("no show");
+  await expect(page.getByTestId("modal")).toContainText("Completed");
+  await expect(page.getByTestId("modal")).toContainText("Cancelled");
+  await expect(page.getByTestId("modal")).toContainText("No show");
   await expect(page.getByTestId("modal")).toContainText("Invoice");
 
   const member = await createMember(

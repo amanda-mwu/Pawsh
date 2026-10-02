@@ -1,6 +1,7 @@
 import { test, expect, login, createAppointment, completeAppointment, appointmentAction } from "../fixtures/tenant.js";
 import { openCheckout, openAdjustment, chooseMethod } from "../helpers/checkout.js";
 import { voidRecord } from "../helpers/void-payment.js";
+import { answerEarlyCheckIn } from "../helpers/check-in.js";
 
 test("@smoke operations expose safety context and enforce the state machine",async({page,request,tenant})=>{
   const appointment=await createAppointment(request,tenant,{
@@ -21,6 +22,7 @@ test("@smoke operations expose safety context and enforce the state machine",asy
   const plain=row.locator(".care-note:not(.care-alarm)").first();
   await expect(plain).not.toHaveCSS("color","rgb(179, 38, 30)");
   await (await appointmentAction(row,"appointment-scheduled")).click();
+  await answerEarlyCheckIn(page,tenant.anchor);
   await expect(page.getByTestId("modal")).toContainText("May snap during nail handling.");
   await page.getByTestId("modal-submit").click();
   await (await appointmentAction(page.locator(`[data-appointment-id="${appointment.id}"]`),"appointment-checked_in")).click();

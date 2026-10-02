@@ -81,15 +81,17 @@ test("the surface is its own dialog, and the checkout and ticket levels stand re
   // Pawsh's chip, not a binary Unpaid: an appointment with no invoice is unbilled, which reads
   // very differently from unpaid.
   await expect(page.getByTestId("appointment-billing")).toHaveText("Not invoiced");
-  await expect(page.getByTestId("appointment-status")).toHaveText("scheduled");
+  await expect(page.getByTestId("appointment-status")).toHaveText("Scheduled");
   await expect(page.getByTestId("appointment-groomer")).toHaveText("Grace Groomer");
   await expect(page.getByTestId("appointment-service-row")).toHaveCount(1);
 
-  // A scheduled appointment cannot be checked out and has no service note to write, so neither
-  // control is drawn. Absent, not disabled. (There is no footer Save in any status any more.)
+  // A scheduled appointment cannot be checked out, so Take Payment is absent, not disabled. The
+  // service note IS writable before the pet arrives (decision A), so its Add is offered.
+  // (There is no footer Save in any status any more.)
   await expect(page.getByTestId("appointment-take-payment")).toHaveCount(0);
   await expect(page.getByTestId("appointment-save")).toHaveCount(0);
-  await expect(page.getByTestId("appointment-service-note-edit")).toHaveCount(0);
+  await expect(page.getByTestId("appointment-service-note-edit")).toHaveText("Add");
+  await expect(page.getByTestId("appointment-service-note-edit")).toBeEnabled();
   await expect(page.getByTestId("appointment-cancel")).toBeVisible();
   await expect(page.getByTestId("appointment-no-show")).toBeVisible();
   await expect(page.getByTestId("appointment-book-again")).toBeVisible();
@@ -233,7 +235,7 @@ test("a terminal appointment offers only what still means something", async ({
   await login(page, tenant.ownerEmail);
   await openFromCalendar(page, appointment.id);
 
-  await expect(page.getByTestId("appointment-status")).toHaveText("cancelled");
+  await expect(page.getByTestId("appointment-status")).toHaveText("Cancelled");
   await expect(page.getByTestId("appointment-ticket")).toBeVisible();
   // No footer Close (QA UX-13): the head's x is the way out.
   await expect(page.getByTestId("appointment-close")).toHaveCount(0);

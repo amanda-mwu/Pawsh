@@ -365,7 +365,7 @@ describe("a cancelled or no-show visit reads as one", () => {
 
   it("the surface head wears the cards' badge and, for a visit that will not happen, says so in a banner", () => {
     const head = slice("  const head=`<header class=\"surface-head\">`", "\n  // The rail is clientSummaryMarkup() verbatim");
-    expect(head).toContain('class="appointment-status appointment-badge badge-${escape(item.status)}" data-testid="appointment-status">${escape(model.status)}</span>');
+    expect(head).toContain('class="appointment-status appointment-badge badge-${escape(item.status)}" data-testid="appointment-status">${escape(appointmentStatusLabel(item.status))}</span>');
     expect(head).toContain('data-testid="appointment-status-banner"');
     expect(head).toContain('["cancelled","no_show"].includes(item.status)');
     // Inside the <header>, where the shell's three declared rows are not disturbed by a fourth child.
@@ -912,10 +912,10 @@ describe("guidance and button colour", () => {
     expect(styles).toContain(".secondary:disabled:hover{background:var(--paper)}");
   });
 
-  it("the pending service note is labelled guidance", () => {
-    const pending = slice('data-testid="appointment-service-note-pending"', "</p>`");
-    expect(pending).toContain('<span class="note-kind">Opens at check-in.</span>');
-    expect(slice("      ? `<p class=\"note-empty note-guidance\"", "\n").length).toBeGreaterThan(0);
+  it("the service note no longer waits for check-in, and disabled menu hints stay muted", () => {
+    // The service note is writable on a scheduled visit, so the "Opens at check-in" guidance is gone.
+    expect(source).not.toContain('data-testid="appointment-service-note-pending"');
+    expect(source).not.toContain("Opens at check-in.");
     expect(rule(".new-action-menu button:disabled small,.account-menu button:disabled small")).toContain("color:var(--muted)");
   });
 });
@@ -953,7 +953,7 @@ describe("the responsive rows", () => {
 
   it("the header's controls are drawn tighter below 360px, and the title is not forced onto its own row", () => {
     const narrow = media("max-width:360px").find((block) => block.includes(".header-actions{gap:6px}"))!;
-    expect(narrow).toContain("header>.header-services{padding:2px 7px;font-size:12px}");
+    expect(narrow).toContain("header>.header-services{padding:2px 7px}");
     expect(narrow).not.toContain("header>div:first-child{flex:1 1 100%}");
     expect(styles).not.toContain("header>div:first-child{flex:1 1 100%}");
   });

@@ -7,6 +7,7 @@ import {
   appointmentAction
 } from "./fixtures/tenant.js";
 import { decodablePng } from "../support/images.js";
+import { answerEarlyCheckIn } from "./helpers/check-in.js";
 
 async function advance(
   request: Parameters<typeof createAppointment>[0],
@@ -31,6 +32,7 @@ test("@regression-lifecycle completes the primary lifecycle with persisted UI st
   let row = page.locator(`[data-appointment-id="${appointment.id}"]`);
 
   await (await appointmentAction(row,"appointment-scheduled")).click();
+  await answerEarlyCheckIn(page, tenant.anchor);
   await page.getByTestId("modal-submit").click();
   await expect(row).toContainText("checked in");
 
@@ -107,6 +109,7 @@ test("@regression-lifecycle reconciles a stale visible action to authoritative s
   await page.getByTestId("nav-calendar").click();
   let row = page.locator(`[data-appointment-id="${appointment.id}"]`);
   await (await appointmentAction(row,"appointment-scheduled")).click();
+  await answerEarlyCheckIn(page, tenant.anchor);
   await expect(page.getByTestId("modal")).toBeVisible();
 
   const advanced = await request.post(`/api/appointments/${appointment.id}/transition`, {

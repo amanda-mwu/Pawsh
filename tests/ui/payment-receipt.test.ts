@@ -1385,7 +1385,7 @@ describe("the Check Out surface says when a settlement is unfinished", () => {
     expect(markup).toContain('data-testid="checkout-settlement-progress"');
     expect(markup).toContain("Settlement in progress");
     expect(markup).toContain("$40.00 recorded");
-    expect(markup).toContain("<strong>$52.01 still to settle</strong>");
+    expect(markup).toContain('<strong class="progress-part">$52.01 still to settle</strong>');
     // Announced, because it appears on a redraw rather than under the operator's cursor.
     expect(markup).toContain('role="status"');
   });
@@ -1398,8 +1398,10 @@ describe("the Check Out surface says when a settlement is unfinished", () => {
         { balanceMinor: 3201 }
       ))
     );
-    expect(markup).toContain("$60.00 recorded");
-    expect(markup).toContain("<strong>$32.01 still to settle</strong>");
+    // Credit is named apart from the money taken another way: $40.00 off the client's account,
+    // $20.00 on a card, and the voided cash counts for nothing.
+    expect(markup.replace(/<[^>]+>/gu, "")).toContain("Client credit of $40.00 applied · $20.00 recorded · $32.01 remaining amount due");
+    expect(markup).toContain('<strong class="progress-part">$32.01 remaining amount due</strong>');
   });
 
   it("says nothing on an invoice nobody has paid against — that is owing, not in progress", () => {

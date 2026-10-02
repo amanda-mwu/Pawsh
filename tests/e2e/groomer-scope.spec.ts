@@ -2,6 +2,7 @@ import { test, expect, login, createAppointment, createMember, password } from "
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 import { permissionPresets } from "@pawsh/domain";
 import { dragAppointmentToSlot } from "./helpers/calendar.js";
+import { answerEarlyCheckIn } from "./helpers/check-in.js";
 
 /**
  * A GROOMER'S APPOINTMENTS ARE THEIR OWN, AND THE SCREEN SAYS SO BEFORE THE SERVER HAS TO.
@@ -128,6 +129,7 @@ test("a groomer sees a colleague's visit refused by scope, in a sentence, and th
     }
     await expect(detail(page).getByTestId("appointment-check-in")).toHaveClass(/\bprimary\b/u);
     await detail(page).getByTestId("appointment-check-in").click();
+    await answerEarlyCheckIn(page, tenant.anchor);
     await expect(async () => {
       const row = await (await request.get(`/api/appointments/${graces.id}`)).json() as { status: string };
       expect(row.status).toBe("checked_in");

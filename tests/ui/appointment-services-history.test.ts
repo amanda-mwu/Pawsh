@@ -258,6 +258,7 @@ function workList(status = "scheduled", extra: Record<string, unknown> = {}): Wo
     const appointmentsLocked = () => false;
     const appointmentMoveAllowed = () => allowed("appointments.edit");
     const appointmentBillingChip = () => ({ tone: "neutral", label: "Unbilled" });
+    const appointmentStatusLabel = (status) => String(status || "").replaceAll("_", " ");
     const appointmentLockNoteMarkup = () => "";
     const appointmentActivityMarkup = () => "<!--activity-->";
     const appointmentLifecycleMarkup = () => "<!--lifecycle-->";

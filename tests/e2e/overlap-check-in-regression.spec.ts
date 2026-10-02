@@ -2,6 +2,7 @@ import { test, expect, login, createAppointment, createMember, password } from "
 import { openBooking, chooseBookingClient, chooseBookingPet, fillBooking } from "./helpers/booking.js";
 import { permissionPresets } from "@pawsh/domain";
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
+import { answerEarlyCheckIn } from "./helpers/check-in.js";
 
 /**
  * THE CHARLIE REGRESSION - release-blocking.
@@ -85,6 +86,7 @@ test("a manager books over Charlie, checks Charlie in with one press, and the se
     await openSurface(page, charlie.id);
     await expect(detail(page).getByTestId("appointment-status")).toContainText(/scheduled/iu);
     await detail(page).getByTestId("appointment-check-in").click();
+    await answerEarlyCheckIn(page, tenant.anchor);
 
     // The server says so, the surface stayed open and redrew, and the note is open for writing.
     await expect.poll(() => visit(request, charlie.id).then((each) => each.status)).toBe("checked_in");
@@ -125,6 +127,8 @@ test("a manager books over Charlie, checks Charlie in with one press, and the se
     const card = page.locator(`[data-appointment-id="${b.id}"]`).first();
     await card.getByRole("button", { name: /Appointment actions for/ }).filter({ visible: true }).click();
     await page.getByRole("menuitem", { name: "Check in", exact: true }).filter({ visible: true }).click();
+    // B is on the anchor date, after today, so the early-check-in question comes first.
+    await answerEarlyCheckIn(page, tenant.anchor);
     await expect(page.getByTestId("modal")).toBeVisible();
     await expect(page.locator("#modal-title")).toHaveText("Check in appointment");
     await page.getByTestId("modal-submit").click();

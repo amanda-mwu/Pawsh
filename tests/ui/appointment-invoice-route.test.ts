@@ -208,6 +208,7 @@ function loadClient(): ClientModule {
   const prelude = `
     "use strict";
     const money = (minor) => "$" + (Number(minor || 0) / 100).toFixed(2);
+    const appointmentStatusLabel = (status) => String(status || "").replaceAll("_", " ");
     const clientName = (record) =>
       [record.firstName, record.lastName].filter(Boolean).join(" ").trim() || "Not set";
     const paymentMethodLabel = (method) =>

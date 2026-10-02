@@ -549,6 +549,11 @@ function normalizeBreedFilter(value){return String(value).trim().toLowerCase().r
 function allowed(permission) {
   return Boolean(state.me?.isOwner || state.me?.permissions?.includes(permission));
 }
+// A CLIENT'S PHONE, EMAIL AND ADDRESSES ARE `customers.contact_info`. The server withholds them
+// (null, with `contactWithheld: true`); this decides which rows are drawn at all, so a session
+// without the key sees no phone or email row - not a blank one, a disabled one or an explanation.
+function contactInfoAllowed(){return allowed("customers.contact_info");}
+function contactInfoVisible(record){return contactInfoAllowed()&&record?.contactWithheld!==true;}
 // The Dashboard nav button had no gate at all while the data behind it was gated on reports.view,
 // so a member without that permission opened a dashboard of four zeroes. The gate is `dashboard.view`,
 // which only exists once the roles backend is serving this workspace - and until then no role can
@@ -647,6 +652,9 @@ async function bootstrap() {
     sessionRetries=0;
     $("#auth-view").hidden = true; $("#app-view").hidden = false;
     const initialView=viewForPath(location.pathname);if(initialView==="client-profile"){const customerId=location.pathname.match(/^\/clients\/([^/]+)$/)?.[1];if(customerId)await openClientProfile(customerId);else activateView("customers",{history:"replace"});}else{if(!activateView(initialView,{history:"replace"})){const fallback=firstPermittedView();if(fallback)activateView(fallback,{history:"replace"});}if(initialView==="admin-settings")openSettingsForPath({history:"replace"});}
+    // A CALENDAR LANDING opens on today like a calendar reached from the nav does: its first paint
+    // happened behind the hidden shell, so the reveal runs once the shell has geometry.
+    if(document.body.dataset.view==="calendar"){sizeCalendarScroll();revealCalendarPeriod();}
   } catch (error) {
     // A busy server is asked again, and whatever was on screen stays there meanwhile. Only a
     // refusal that is not going to change - a 401 above all - puts the sign-in page up.
@@ -1008,7 +1016,7 @@ document.addEventListener("click",event=>{
 function appointmentHtml(item) {
   const time = schedulingTime(item);
   const customer = `${clientName(item)}`;
-  return `<article class="appointment" data-testid="appointment" data-appointment-id="${item.id}"><time>${time}</time><div><span class="pet">${escape(petName({petName:item.petName}))}</span><small>${escape(customer)} · ${escape(item.employeeName)}</small>${safetyContext(item)}</div><div class="appointment-actions"><span class="badge ${item.status}">${item.status.replace("_"," ")}</span>${calendarAction(item)}</div></article>`;
+  return `<article class="appointment" data-testid="appointment" data-appointment-id="${item.id}"><time>${time}</time><div><span class="pet">${escape(petName({petName:item.petName}))}</span><small>${escape(customer)} · ${escape(item.employeeName)}</small>${safetyContext(item)}</div><div class="appointment-actions"><span class="badge ${item.status}">${escape(appointmentStatusLabel(item.status))}</span>${calendarAction(item)}</div></article>`;
 }
 function renderAppointments() {
   renderCalendar();
@@ -1061,6 +1069,10 @@ function appointmentServiceSplit(model){
 // badge reports the one state the API can actually back: the appointment lifecycle. An unknown
 // status renders no badge rather than asserting something the data does not support.
 const APPOINTMENT_BADGES={scheduled:["SCH","Scheduled"],checked_in:["CHK","Checked in"],in_service:["SVC","In service"],completed:["CMP","Completed"],cancelled:["CAN","Cancelled"],no_show:["NOS","No show"]};
+// THE ONE STATUS LABEL every visible status reads - dashboard row, agenda, detail head, history
+// chip, hover card - from the table above, which mirrors `appointmentStatusBadges` in
+// packages/domain/src/labels.ts. Sentence case, so no stylesheet has to capitalise it.
+function appointmentStatusLabel(status){return APPOINTMENT_BADGES[status]?.[1]||String(status||"").replaceAll("_"," ");}
 function appointmentBadge(item){
   // Once an appointment has been checked out its payment state is the signal a
   // salon acts on, so it takes the badge. Before that there is no invoice and the
@@ -1102,10 +1114,10 @@ function appointmentNoteEntries(item){
 }
 function appointmentPresentation(item){
   const start=new Date(item.startAt),end=new Date(item.endAt),zone=item.schedulingTimezone||schedulingZone(),formatTime=value=>formatPrefTime(value,zone),serviceSnapshots=item.services||[],services=serviceSnapshots.map(service=>service.name),groomers=(item.groomers||[]).map(groomer=>groomer.displayName),prices=serviceSnapshots.map(service=>service.priceMinor).filter(value=>value!==null&&value!==undefined);
-  return {id:item.id,date:appointmentLocalValue(item).slice(0,10),dateLabel:formatPrefWeekdayLongMonthDay(start,zone),timeRange:`${formatTime(start)}–${formatTime(end)}`,timeRangeCompact:compactTimeRange(start,end,zone),petName:item.petName,breed:item.breed||"",customerName:`${clientName(item)}`,services,serviceSnapshots,groomer:groomers[0]||item.employeeName,status:item.status.replace("_"," "),rabiesNeeded:["not_provided","expires_before_appointment"].includes(item.rabiesAppointmentStatus),warning:item.safetyAlerts||"",careNotes:[["Safety alert",item.safetyAlerts,true],["Behavior",item.behaviorNotes,false],["Medical",item.medicalNotes,false],["Grooming",item.groomingPreferences,false],["Coat",item.coatNotes,false]].filter(([,value])=>typeof value==="string"&&value.trim().length>0).map(([kind,value,alarm])=>({kind,value:value.trim(),alarm})),durationMinutes:Math.max(1,Math.round((end-start)/60000)),totalPriceMinor:prices.length===serviceSnapshots.length?prices.reduce((sum,value)=>sum+Number(value),0):null};
+  return {id:item.id,date:appointmentLocalValue(item).slice(0,10),dateLabel:formatPrefWeekdayLongMonthDay(start,zone),timeRange:`${formatTime(start)}–${formatTime(end)}`,timeRangeCompact:compactTimeRange(start,end,zone),petName:item.petName,breed:item.breed||"",customerName:`${clientName(item)}`,services,serviceSnapshots,groomer:groomers[0]||item.employeeName,status:item.status.replace("_"," "),statusKey:item.status,rabiesNeeded:["not_provided","expires_before_appointment"].includes(item.rabiesAppointmentStatus),warning:item.safetyAlerts||"",careNotes:[["Safety alert",item.safetyAlerts,true],["Behavior",item.behaviorNotes,false],["Medical",item.medicalNotes,false],["Grooming",item.groomingPreferences,false],["Coat",item.coatNotes,false]].filter(([,value])=>typeof value==="string"&&value.trim().length>0).map(([kind,value,alarm])=>({kind,value:value.trim(),alarm})),durationMinutes:Math.max(1,Math.round((end-start)/60000)),totalPriceMinor:prices.length===serviceSnapshots.length?prices.reduce((sum,value)=>sum+Number(value),0):null};
 }
 function appointmentAccessibleName(model){return `${model.timeRange}, ${model.petName}${model.breed?`, ${model.breed}`:""}, ${model.customerName}, ${model.services.join(", ")}, ${model.status}`;}
-function appointmentHoverDetails(model){return `<div><span>Status</span><strong>${escape(model.status)}</strong></div><p><strong>${escape(model.dateLabel)}</strong><br>${escape(model.timeRange)}</p><dl><div><dt>Client</dt><dd>${escape(model.customerName)}</dd></div><div><dt>Pet</dt><dd>${escape(petName({petName:model.petName}))}${model.breed?` · ${escape(model.breed)}`:""}</dd></div><div><dt>Services</dt><dd>${model.services.map(escape).join("<br>")}</dd></div><div><dt>Groomer</dt><dd>${escape(model.groomer)}</dd></div></dl><p class="hover-summary"><strong>${model.durationMinutes} min${model.totalPriceMinor!==null?` · ${money(model.totalPriceMinor)}`:""}</strong></p>`;}
+function appointmentHoverDetails(model){return `<div><span>Status</span><strong>${escape(appointmentStatusLabel(model.statusKey))}</strong></div><p><strong>${escape(model.dateLabel)}</strong><br>${escape(model.timeRange)}</p><dl><div><dt>Client</dt><dd>${escape(model.customerName)}</dd></div><div><dt>Pet</dt><dd>${escape(petName({petName:model.petName}))}${model.breed?` · ${escape(model.breed)}`:""}</dd></div><div><dt>Services</dt><dd>${model.services.map(escape).join("<br>")}</dd></div><div><dt>Groomer</dt><dd>${escape(model.groomer)}</dd></div></dl><p class="hover-summary"><strong>${model.durationMinutes} min${model.totalPriceMinor!==null?` · ${money(model.totalPriceMinor)}`:""}</strong></p>`;}
 /**
  * THE CARD'S OVERFLOW MENU, GATED THE WAY THE DETAIL SURFACE IS.
  *
@@ -1458,6 +1470,10 @@ globalThis.addEventListener("resize",sizeCalendarScroll);
 let calendarRevealKey=null;
 function calendarRevealDue(){
   if(document.body.dataset.view!=="calendar")return false;
+  // NOT LAID OUT YET IS NOT ON SCREEN. A session whose landing view IS the calendar paints it
+  // while the shell is still hidden, and a box with no width has no today to scroll to; the key
+  // is left for the first paint that has geometry.
+  if(!$(".week-scroll")?.clientWidth)return false;
   const key=`${state.calendar.displayMode}|${state.calendar.view}|${state.calendar.selectedDate}|${state.calendar.weekStart}|${state.calendar.month}`;
   if(key===calendarRevealKey)return false;
   calendarRevealKey=key;return true;
@@ -1489,7 +1505,7 @@ function revealCalendarPeriod(){
 }
 function renderAgendaCalendar(){
   const target=$("#calendar-list"),items=filteredAppointments().slice().sort((a,b)=>new Date(a.startAt)-new Date(b.startAt));
-  const groups=items.reduce((map,item)=>{const date=appointmentPresentation(item).date,mapItems=map.get(date)||[];mapItems.push(item);map.set(date,mapItems);return map;},new Map());target.className="calendar-agenda";target.style.removeProperty("min-width");target.style.removeProperty("--groomer-count");target.innerHTML=items.length?[...groups].map(([date,group])=>`<section class="agenda-day"><h3>${escape(formatPrefLocalWeekdayDate(date))}</h3>${group.map(item=>{const model=appointmentPresentation(item);return `<article class="agenda-entry" data-appointment-id="${item.id}"><time datetime="${escape(item.startAt)}">${escape(model.timeRange)}</time><button type="button" class="agenda-appointment" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><strong>${escape(petName({petName:model.petName}))}${model.breed?` <span>(${escape(model.breed)})</span>`:""}</strong><span>${escape(model.customerName)}</span><span>${model.services.map(escape).join(", ")}</span><small>${escape(model.groomer)}</small></button><div class="agenda-indicators"><span class="appointment-status appointment-badge badge-${escape(item.status)}">${escape(model.status)}</span>${model.rabiesNeeded?`<span class="rabies-needed">Rabies needed</span>`:""}${(model.careNotes||[]).map(note=>careNoteMarkup(note,{pill:true})).join("")}</div></article>`;}).join("")}</section>`).join(""):"<p class=\"empty\">No appointments in this period.</p>";
+  const groups=items.reduce((map,item)=>{const date=appointmentPresentation(item).date,mapItems=map.get(date)||[];mapItems.push(item);map.set(date,mapItems);return map;},new Map());target.className="calendar-agenda";target.style.removeProperty("min-width");target.style.removeProperty("--groomer-count");target.innerHTML=items.length?[...groups].map(([date,group])=>`<section class="agenda-day"><h3>${escape(formatPrefLocalWeekdayDate(date))}</h3>${group.map(item=>{const model=appointmentPresentation(item);return `<article class="agenda-entry" data-appointment-id="${item.id}"><time datetime="${escape(item.startAt)}">${escape(model.timeRange)}</time><button type="button" class="agenda-appointment" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><strong>${escape(petName({petName:model.petName}))}${model.breed?` <span>(${escape(model.breed)})</span>`:""}</strong><span>${escape(model.customerName)}</span><span>${model.services.map(escape).join(", ")}</span><small>${escape(model.groomer)}</small></button><div class="agenda-indicators"><span class="appointment-status appointment-badge badge-${escape(item.status)}">${escape(appointmentStatusLabel(item.status))}</span>${model.rabiesNeeded?`<span class="rabies-needed">Rabies needed</span>`:""}${(model.careNotes||[]).map(note=>careNoteMarkup(note,{pill:true})).join("")}</div></article>`;}).join("")}</section>`).join(""):"<p class=\"empty\">No appointments in this period.</p>";
   const days=state.calendar.view==="day"?1:state.calendar.view==="month"?42:7,start=state.calendar.view==="day"?state.calendar.selectedDate:state.calendar.view==="month"?dateShift(`${state.calendar.month}-01`,-dateAt(`${state.calendar.month}-01`).getUTCDay()):state.calendar.weekStart,end=dateShift(start,days-1);$("#calendar-range").textContent=days===1?formatPrefLocalWeekdayDate(start):`${formatPrefLocalMonthDay(start)} – ${formatPrefLocalMonthDayYear(end)}`;bindCalendarInteractions(target);
 }
 // A month cell is as tall as its busiest day in the row, from a floor of a few lines up to
@@ -3463,6 +3479,12 @@ function editAppointmentServiceLine(id,line,record=null){
       return serviceListMutation(`/api/appointments/${id}/services/${line.id}`,"PATCH",payload,appointment,"Edit service");
     });
 }
+// Save with the same start, groomer and occurrence is not a move: nothing is sent.
+function moveUnchanged(form,appointment,current){
+  return String(form.get("startAt")||"")===current
+    &&String(form.get("employeeId")||"")===String(appointment.employeeId||"")
+    &&String(form.get("disambiguation")||"")===String(appointment.scheduledDisambiguation||"");
+}
 function moveAppointment(id,preset={},record=null) {
   const appointment=record||calendarAppointmentById(id);
   if(!appointment)return toast("That appointment could not be loaded. Refresh and try again.");
@@ -3478,7 +3500,7 @@ function moveAppointment(id,preset={},record=null) {
   openModal("Move appointment",lead+groomerCheckboxes(assigned,(appointment.services||[]).map(service=>service.serviceId),
     // Only staff this caller may assign (QA F10): without `appointments.edit_all_staff` that is the
     // caller alone - the server refuses anyone else on Save.
-    {only:allowed("appointments.edit_all_staff")?null:[myEmployeeId(),...assigned].filter(Boolean)})+field("startAt","Start time","datetime-local",`required ${FIVE_MINUTE_STEP_ATTR} value="${escape(local)}"`)+disambiguationField(appointment.scheduledDisambiguation||"",local),form=>schedulingMutation(`/api/appointments/${id}/schedule`,{employeeId:form.get("employeeId"),localStart:form.get("startAt"),disambiguation:form.get("disambiguation")||undefined,expectedLocationVersion:state.me.business.locationVersion,version:appointment.version},"Reschedule").then(()=>()=>revealCalendarAppointment(id,String(form.get("startAt")).slice(0,10))));
+    {only:allowed("appointments.edit_all_staff")?null:[myEmployeeId(),...assigned].filter(Boolean)})+field("startAt","Start time","datetime-local",`required ${FIVE_MINUTE_STEP_ATTR} value="${escape(local)}"`)+disambiguationField(appointment.scheduledDisambiguation||"",local),form=>moveUnchanged(form,appointment,current)?{afterClose:null,message:"No changes"}:schedulingMutation(`/api/appointments/${id}/schedule`,{employeeId:form.get("employeeId"),localStart:form.get("startAt"),disambiguation:form.get("disambiguation")||undefined,expectedLocationVersion:state.me.business.locationVersion,version:appointment.version},"Reschedule").then(()=>()=>revealCalendarAppointment(id,String(form.get("startAt")).slice(0,10))));
 }
 async function terminalAppointment(id,status,record=null) {
   if(!confirm(status==="cancelled"?"Cancel this appointment?":"Mark this appointment as a no-show?"))return;
@@ -3486,6 +3508,28 @@ async function terminalAppointment(id,status,record=null) {
   if(!appointment)return toast("That appointment could not be loaded. Refresh and try again.");
   return runOnce(`transition:${id}`,async()=>{
     try{await api(`/api/appointments/${id}/transition`,{method:"POST",body:JSON.stringify({status,version:appointment.version})});toast(`Appointment ${status.replace("_"," ")}`);await refresh();}catch(error){toast(error.message);if([400,409].includes(error.status))await refresh();}
+  });
+}
+/**
+ * CHECKING IN A VISIT THAT IS NOT TODAY ASKS FIRST. A visit dated after today in the business's
+ * own calendar is almost always the wrong card, so every Check In - the card menu, the dashboard
+ * list and the appointment footer - routes through here. A visit today or earlier resolves true
+ * with nothing shown. Cancel and Escape leave the appointment exactly as it is.
+ */
+function appointmentDatedAfterToday(item){return Boolean(item?.startAt)&&appointmentLocalValue(item).slice(0,10)>businessDate();}
+function confirmFutureCheckIn(item){
+  if(!appointmentDatedAfterToday(item))return Promise.resolve(true);
+  const when=appointmentPresentation(item);
+  return new Promise(resolve=>{
+    let confirmed=false;
+    const dialog=openStackedDialog({
+      title:"Check in early?",
+      body:`<p data-testid="future-check-in-question">This appointment is on <strong>${escape(when.dateLabel)} at ${escape(schedulingTime(item))}</strong>, not today. Check it in now?</p>`,
+      confirmLabel:"Check In",
+      dismissLabel:"Cancel",
+      onConfirm:()=>{confirmed=true;}
+    });
+    dialog.addEventListener("close",()=>resolve(confirmed),{once:true});
   });
 }
 async function advanceAppointment(id, status, actionButton) {
@@ -3499,13 +3543,23 @@ async function advanceAppointment(id, status, actionButton) {
   const appointment=calendarAppointmentById(id);
   if(!appointment)return toast("That appointment could not be loaded. Refresh and try again.");
   const next = {scheduled:"checked_in",checked_in:"in_service",in_service:"completed"}[status];
+  // A CHECK IN closes the card or row menu that offered it before anything else opens, so one
+  // Escape answers the early-check-in question rather than first dismissing a popover still
+  // standing underneath it. The other transitions keep their menu item on screen, disabled and
+  // busy, while their one request is in flight.
+  if (status === "scheduled") closeCalendarMenus();
+  if (status === "scheduled" && !await confirmFutureCheckIn(appointment)) return;
   if (status === "scheduled" || status === "checked_in") {
     return openModal(status === "scheduled" ? "Check in appointment" : "Start service",
-      petContextMarkup(appointment)+(status === "checked_in" ? field("operationalNotes","Service note","text","",true) : ""),
+      // PREFILLED WITH THE NOTE ALREADY HELD, and written only when it changed. A note taken while
+      // the visit was scheduled is the ordinary case now, and an empty box sent back as `null`
+      // erased it.
+      petContextMarkup(appointment)+(status === "checked_in" ? field("operationalNotes","Service note","text",`value="${escapeAttr(appointment.operationalNotes||"")}"`,true) : ""),
       async (form) => {
         try {
-          if (status === "checked_in") {
-            const updated=await api(`/api/appointments/${id}/operations`,{method:"PATCH",body:JSON.stringify({operationalNotes:form.get("operationalNotes")||null,version:appointment.version})});
+          const typed=String(form.get("operationalNotes")??"").trim()||null;
+          if (status === "checked_in" && typed!==(appointment.operationalNotes||null)) {
+            const updated=await api(`/api/appointments/${id}/operations`,{method:"PATCH",body:JSON.stringify({operationalNotes:typed,version:appointment.version})});
             appointment.version=updated.version;
           }
           await api(`/api/appointments/${id}/transition`,{method:"POST",body:JSON.stringify({status:next,version:appointment.version})});
@@ -3929,11 +3983,25 @@ function checkoutSettlementProgressMarkup(co){
   const receipt=co.receipt;
   if(checkoutMode(co)!=="collect"||!receiptHasPayment(receipt))return "";
   const recordedMinor=settledComponentsMinor(receipt);
+  // CREDIT IS NAMED, because it came off the client's account rather than out of their pocket, and
+  // an operator retrying the remainder must not read it as money still to take. The rest of what
+  // was recorded is stated as before.
+  const creditMinor=settledComponents(receipt).filter(payment=>payment.method==="client_credit")
+    .reduce((total,payment)=>total+Number(payment.amountMinor||0),0);
+  const otherMinor=recordedMinor-creditMinor;
   // role="status" so the sentence is announced when the surface redraws after a component lands,
   // which is the moment an operator is deciding whether they are finished.
+  // Each phrase carries its own "·" and never breaks inside, so a wrap falls between phrases and
+  // the separator cannot be left alone at the start of a line.
+  const parts=creditMinor>0
+    ? ["Settlement in progress",`Client credit of ${money(creditMinor)} applied`,...(otherMinor>0?[`${money(otherMinor)} recorded`]:[])]
+    : ["Settlement in progress",`${money(recordedMinor)} recorded`];
+  const owing=creditMinor>0
+    ? `${money(receipt.invoice.balanceMinor)} remaining amount due`
+    : `${money(receipt.invoice.balanceMinor)} still to settle`;
   return `<p class="checkout-settlement-progress" role="status" data-testid="checkout-settlement-progress">`
-    +`Settlement in progress · ${money(recordedMinor)} recorded · `
-    +`<strong>${money(receipt.invoice.balanceMinor)} still to settle</strong></p>`;
+    +parts.map(part=>`<span class="progress-part">${part} ·</span> `).join("")
+    +`<strong class="progress-part">${owing}</strong></p>`;
 }
 
 /**
@@ -4040,13 +4108,13 @@ function checkoutSurfaceMarkup(co){
       // because level 2 holds a dirty guard; that guard fires when the CHECKOUT level is popped,
       // which is after the Ticket above it has already closed, and `confirm()` is a browser-level
       // dialog in any case.
-      +`<button type="button" class="secondary compact" data-testid="checkout-ticket">Ticket</button>`
+      +`<button type="button" class="secondary compact" data-testid="checkout-ticket">Print Ticket</button>`
     +`</div><div class="surface-foot-actions surface-foot-lead">`
       +(mode==="settled"
         // Never "Take payment" on a zero balance. Returning to a screen still offering it is a
         // route to a double charge, whatever the reference does.
         ? `<button type="button" class="primary compact" data-testid="checkout-done">Done</button>`
-        : `<button type="button" class="primary compact" data-testid="checkout-submit">Take payment</button>`)
+        : `<button type="button" class="primary compact" data-testid="checkout-submit">Take Payment</button>`)
     +`</div></footer>`;
   return `<div class="surface-shell" data-testid="checkout">`
     +`<header class="surface-head"><div class="surface-head-text">`
@@ -4388,7 +4456,7 @@ async function checkout(id) {
     // brought along by the same click rather than waiting for the next keystroke.
     dialog.querySelectorAll("[data-taxpay-tip]").forEach(button=>button.addEventListener("click",changed));
     bindCheckoutCapture({
-      host,submit,submitLabel:"Take payment",
+      host,submit,submitLabel:"Take Payment",
       // Where the amount was, not where the tip was: the tip controls live inside a collapsed
       // disclosure on this screen, and a note put in there would never be seen.
       noteAnchor:dialog.querySelector('[data-testid="field-method"]'),
@@ -4500,6 +4568,9 @@ async function checkout(id) {
           // double-press rather than an outcome.
           if(!started){toast("Already sending to the terminal");return;}
         }catch(error){
+          // The invoice exists, so the redraw reads it and collects against it - never back to a
+          // screen that would raise a second one.
+          co.appointment.invoiceId=invoice.id;
           error.message=`Invoice created; the terminal did not start. ${error.message}`;
           throw error;
         }
@@ -4549,12 +4620,16 @@ async function checkout(id) {
           const full=!usesAmount||pay===null||collectable===null||pay>=collectable;
           tenders.push({amountMinor:full?remainingMinor:pay,method:choice.settlementType});
         }
+        // Read by the catch below: what credit actually committed before a later component failed,
+        // and the server's balance after it.
+        let expected=Number(invoice.balanceMinor);
+        let creditPostedMinor=0;
         try{
-          let expected=Number(invoice.balanceMinor);
           for(const tender of tenders){
             const payment=await financialMutation(`/api/invoices/${invoice.id}/payments`,`payment.record`,{
               amountMinor:tender.amountMinor,expectedBalanceMinor:expected,method:tender.method
             });
+            if(tender.method==="client_credit")creditPostedMinor+=tender.amountMinor;
             // What is LEFT on the account, from the payment's own response, so the screen neither
             // guesses nor re-requests the options endpoint. Null on that field means the payment
             // was not credit, and `co` is left alone.
@@ -4583,7 +4658,19 @@ async function checkout(id) {
           // Only when this submit is what raised the invoice. Against one that was already there
           // the sentence would be inventing an event, and the server's own words are the whole
           // story: the balance moved under this screen.
-          if(mode==="build")error.message=`Invoice created; payment remains pending. ${error.message}`;
+          // The invoice exists whatever happened to its tenders, so the redraw below reads it and
+          // lands in `collect` against THIS invoice - never back in `build`, where a retry would try
+          // to raise a second one.
+          co.appointment.invoiceId=invoice.id;
+          // CREDIT LANDED, THE SECOND TENDER DID NOT. The credit payment stands and is not undone;
+          // the operator is told what it covered and exactly what is still owed, and the redraw
+          // below leaves the credit tick off so a retry takes only the remainder, on this invoice.
+          if(creditPostedMinor>0){
+            const owing=typeof error.data?.balanceMinor==="number"?error.data.balanceMinor:expected;
+            error.message=`Client credit of ${money(creditPostedMinor)} was applied. `
+              +`The ${choice?.label||"second"} payment did not go through: ${String(error.message||"").replace(/\.?\s*$/u,".")} `
+              +`${money(owing)} remaining amount due. Take it below to finish.`;
+          }else if(mode==="build")error.message=`Invoice created; payment remains pending. ${error.message}`;
           throw error;
         }
       }
@@ -6031,6 +6118,8 @@ function placeClientRowMenu(menu){
   list.style.top=`${Math.round(box.bottom+6+height>globalThis.innerHeight-8?Math.max(8,box.top-6-height):box.bottom+6)}px`;
 }
 function renderCustomersEnhanced() {
+  const contact=contactInfoAllowed();
+  $$(".clients-table th[data-contact-column]").forEach(header=>{header.hidden=!contact;});
   const directory=state.customerDirectory,
     formatDate=value=>value?formatPrefDate(new Date(value)):"—",
     attr=value=>escape(value).replaceAll('"',"&quot;"),
@@ -6048,13 +6137,12 @@ function renderCustomersEnhanced() {
       +`<td class="clients-name"><button type="button" class="text-button customer-detail" data-id="${customer.id}">${escape(name)}</button>${isNew?`<span class="client-chip">New</span>`:""}</td>`
       +`<td class="clients-pets" title="${attr(petTitle)}">${escape(petText)}${alerted.length?`<span class="pet-alert"><span aria-hidden="true">!</span><span class="visually-hidden">Safety alert on ${escape(alerted.map(pet=>petName(pet)).join(", "))}</span></span>`:""}</td>`
       +cell(customer.preferredEmployeeName,"clients-groomer")
-      +cell(customer.phone,"clients-phone")
-      +cell(customer.email,"clients-email")
+      +(contact?cell(customer.phone,"clients-phone")+cell(customer.email,"clients-email"):"")
       +cell(formatDate(customer.lastVisit),"clients-date")
       +cell(formatDate(customer.nextAppointment),"clients-date")
       +`<td class="clients-status"><span class="status-dot ${customer.archivedAt?"inactive":""}">${customer.archivedAt?"Inactive":"Active"}</span></td>`
       +`<td class="clients-actions"><details class="row-menu"><summary class="row-menu-trigger" aria-expanded="false" data-testid="client-row-actions" aria-label="Actions for ${attr(name)}"><span aria-hidden="true">⋯</span></summary><div class="row-menu-list" role="group" aria-label="Actions for ${attr(name)}"><button type="button" class="row-menu-item customer-detail" data-testid="client-profile-action" data-id="${customer.id}">Client profile</button><button type="button" class="row-menu-item customer-history" data-testid="client-appointment-history" data-id="${customer.id}">Appointment history</button>${petActions}</div></details></td></tr>`;
-  }).join(""):`<tr><td colspan="9" class="empty">No customers match these filters.</td></tr>`;
+  }).join(""):`<tr><td colspan="${contact?9:7}" class="empty">No customers match these filters.</td></tr>`;
   renderCustomerPager();
   $$(".customer-detail").forEach(button=>button.addEventListener("click",()=>openClientProfile(button.dataset.id,{returnView:"customers"})));$$(".customer-history").forEach(button=>button.addEventListener("click",()=>showCustomerHistory(button.dataset.id)));
   $$(".directory-row").forEach(row=>{row.addEventListener("click",event=>{if(!event.target.closest("button,a,input,select,summary,details"))openClientProfile(row.dataset.customerId,{returnView:"customers"});});row.addEventListener("keydown",event=>{if(event.target===row&&(event.key==="Enter"||event.key===" ")){event.preventDefault();openClientProfile(row.dataset.customerId,{returnView:"customers"});}});});
@@ -6495,11 +6583,13 @@ function clientBasicSectionMarkup(customer){
     +`<div class="pet-field-grid">`
       +field("firstName","First name","text",`value="${escape(customer.firstName||"")}"`)
       +field("lastName","Last name","text",`value="${escape(customer.lastName||"")}"`)
-      +field("email","Email","email",`value="${escape(customer.email||"")}"`)
       // The client's own number stays here. Contacts below are the other people who might be
       // rung about this dog, and a partial record created from a phone call has nowhere else
-      // to put the number it was given.
-      +field("phone","Phone","tel",`value="${escape(customer.phone||"")}"`)
+      // to put the number it was given. Absent - and so absent from the PUT - without the key.
+      +(contactInfoVisible(customer)
+        ? field("email","Email","email",`value="${escape(customer.email||"")}"`)
+          +field("phone","Phone","tel",`value="${escape(customer.phone||"")}"`)
+        : "")
       +`<label>Preferred contact<select data-testid="field-preferredContactMethod" name="preferredContactMethod">${contactOptions}</select></label>`
       +`<label class="pet-check"><input data-testid="field-emailAllowed" name="emailAllowed" type="checkbox" ${customer.emailAllowed?"checked":""}> Email allowed</label>`
     +`</div>`
@@ -6554,8 +6644,9 @@ function renderClientEdit(){
   $("#client-edit-title").textContent=`${clientName(customer)} · Edit client`;
   $("#client-edit-body").innerHTML=
     clientBasicSectionMarkup(customer)
-    +clientAddressesSectionMarkup()
-    +clientContactsSectionMarkup();
+    // Addresses and contacts are contact data end to end: every write to them is refused
+    // without the key, so the sections are not drawn at all.
+    +(contactInfoAllowed()?clientAddressesSectionMarkup()+clientContactsSectionMarkup():"");
   bindClientEdit();
 }
 
@@ -6564,8 +6655,8 @@ async function reloadClientEdit({sections=["customer","addresses","contacts"]}={
   const wants=new Set(sections);
   const [history,addresses,contacts]=await Promise.all([
     wants.has("customer")?api(`/api/customers/${id}/history`).catch(()=>null):Promise.resolve(null),
-    wants.has("addresses")?api(`/api/customers/${id}/addresses`).catch(()=>null):Promise.resolve(null),
-    wants.has("contacts")?api(`/api/customers/${id}/contacts`).catch(()=>null):Promise.resolve(null)
+    wants.has("addresses")&&contactInfoAllowed()?api(`/api/customers/${id}/addresses`).catch(()=>null):Promise.resolve(null),
+    wants.has("contacts")&&contactInfoAllowed()?api(`/api/customers/${id}/contacts`).catch(()=>null):Promise.resolve(null)
   ]);
   if(clientEditState.customerId!==id)return;
   if(history)clientEditState.customer=history.customer;
@@ -6720,7 +6811,7 @@ async function showCustomerHistory(id) {
     // This summary reads both, newest first, because it is a single "what has happened" list.
     const combined=[...(historyData.upcoming?.items||[]),...(historyData.history?.items||[])]
       .sort((left,right)=>new Date(right.startAt)-new Date(left.startAt));
-    const appointments=combined.map(item=>`<div><span>${escape(formatPrefDate(new Date(item.startAt),item.schedulingTimezone||schedulingZone()))} / ${escape(petName({petName:item.petName}))}</span><strong>${escape(item.status.replace("_"," "))}</strong></div>`).join("")||"<p>No appointments yet.</p>";
+    const appointments=combined.map(item=>`<div><span>${escape(formatPrefDate(new Date(item.startAt),item.schedulingTimezone||schedulingZone()))} / ${escape(petName({petName:item.petName}))}</span><strong>${escape(appointmentStatusLabel(item.status))}</strong></div>`).join("")||"<p>No appointments yet.</p>";
     const invoices=historyData.invoices.map(item=>`<div><span>Invoice ${escape(item.invoiceNumber)}</span><span><strong>${money(item.totalMinor)} / ${escape(invoiceStatusLabel(item.status))}</strong><button type="button" class="text-button history-invoice" data-testid="history-invoice" data-invoice-id="${item.id}">Invoice</button></span></div>`).join("")||`<p>${allowed("payments.view")?"No invoices yet.":"Financial history requires payment access."}</p>`;
     const petDocuments=allowed("pets.care.view")?historyData.pets.map(pet=>`<div><span>${escape(petName(pet))}${pet.archivedAt?" (archived)":""}</span><button type="button" class="text-button history-pet-documents" data-pet-id="${pet.id}">Documents</button></div>`).join(""):"";
     openModal(`${clientName(historyData.customer)} history`,`<div class="wide history-list">${petDocuments?`<h4>Pet Care documents</h4>${petDocuments}`:""}<h4>Appointments</h4>${appointments}<h4>Transactions</h4>${invoices}</div>`,async()=>{});
@@ -7353,7 +7444,7 @@ function renderBookingClientPane() {
         matches.length
           ? matches.map((customer)=>`<button type="button" data-booking-client="${customer.id}">${
             escape(`${clientName(customer)}`)
-          }<small>${escape(customer.phone||customer.email||"No contact on file")}</small></button>`).join("")
+          }${contactInfoVisible(customer)?`<small>${escape(customer.phone||customer.email||"No contact on file")}</small>`:""}</button>`).join("")
           : `<p class="booking-client-empty">No client matches that search.</p>`
       }</div></div>`;
     const search=pane.querySelector('[data-testid="booking-client-search"]');
@@ -7386,8 +7477,8 @@ function renderBookingClientPane() {
       phoneDetailsToggle()+`</div>`+
     `<div class="booking-client-more">`+
     `<div class="booking-client-contact">`+
-      (client.phone?`<span>${escape(client.phone)}</span>`:"")+
-      (client.email?`<span>${escape(client.email)}</span>`:"")+
+      (client.phone&&contactInfoVisible(client)?`<span>${escape(client.phone)}</span>`:"")+
+      (client.email&&contactInfoVisible(client)?`<span>${escape(client.email)}</span>`:"")+
       `<span>Preferred staff: ${escape(client.preferredEmployeeName||"Not set")}</span>`+
     `</div>`+
     `<div class="booking-client-section"><h5>Notes</h5>${
@@ -7759,8 +7850,8 @@ function openBookingDialog(options={}) {
 
 const actions = {
   "new-customer": () => openModal("New customer",
-    field("firstName","First name","text","")+field("lastName","Last name","text","")+field("email","Email","email")+field("phone","Phone","tel")+field("notes","Notes","text","",true)
-    +`<p class="wide fine">Enough to find them again is enough to save: a name, a phone number, or an email. Take what an enquiry gives you and fill the rest in later.</p>`,
+    field("firstName","First name","text","")+field("lastName","Last name","text","")+(contactInfoAllowed()?field("email","Email","email")+field("phone","Phone","tel"):"")+field("notes","Notes","text","",true)
+    +(contactInfoAllowed()?`<p class="wide fine">Enough to find them again is enough to save: a name, a phone number, or an email. Take what an enquiry gives you and fill the rest in later.</p>`:""),
     (form) => api("/api/customers",{method:"POST",body:JSON.stringify(Object.fromEntries(form))})),
   "new-pet": () => { openModal("New pet",
     select("customerId","Customer",state.customers.map(c=>[c.id,`${clientName(c)}`]),true)+field("name","Pet name","text","")+petTypeField()+breedField()+field("weightPounds",weightFieldLabel(),"number",weightInputAttrs())+field("groomingPreferences","Grooming preferences","text","",true)+(allowed("pets.care.edit")?field("behaviorNotes","Behavior notes","text","",true)+field("safetyAlerts","Safety alert","text","",true)+field("medicalNotes","Medical notes","text","",true):""),
@@ -14747,7 +14838,7 @@ function historyRowMarkup(item,{pets,payments,selectedId}){
     :`<span class="history-chip chip-${paymentStatus==="paid"?"paid":"unpaid"}">${paymentStatus==="paid"?"Paid":`Unpaid ${money(paid.invoiceBalanceMinor||0)}`}</span>`;
   return `<tr class="history-row${item.id===selectedId?" active":""}">`
     +`<td class="history-id"><button type="button" class="text-button" data-profile-appointment="${clientAttr(item.id)}" aria-haspopup="dialog" aria-label="Open appointment #${escape(String(item.id).slice(0,8))}">#${escape(String(item.id).slice(0,8))}</button></td>`
-    +`<td class="history-status"><span class="history-chip chip-${clientAttr(item.status)}">${escape(item.status.replace("_"," "))}</span>${payment}</td>`
+    +`<td class="history-status"><span class="history-chip chip-${clientAttr(item.status)}">${escape(appointmentStatusLabel(item.status))}</span>${payment}</td>`
     +`<td class="history-date">${escape(formatPrefDate(start,zone))}<span>${escape(formatPrefWeekdayTime(start,zone))}</span></td>`
     +`<td class="history-pets"><strong>${escape(item.petName||"—")}</strong>${pet?.breed?`<span>(${escape(pet.breed)})</span>`:""}</td>`
     +`<td class="history-items">${services.length?escape(services.map(service=>service.name).join(", ")):"<span class=\"muted-cell\">No services recorded</span>"}</td>`
@@ -15514,7 +15605,7 @@ function clientContextAppointmentRow(item,{upcoming}){
   // Every upcoming appointment is scheduled, so a "scheduled" chip on every upcoming row is
   // decoration. An upcoming row that has already moved on is the fact worth showing, and history
   // always carries its outcome.
-  const chip=upcoming&&item.status==="scheduled"?"":`<span class="history-chip chip-${clientAttr(item.status)}">${escape(item.status.replace("_"," "))}</span>`;
+  const chip=upcoming&&item.status==="scheduled"?"":`<span class="history-chip chip-${clientAttr(item.status)}">${escape(appointmentStatusLabel(item.status))}</span>`;
   return `<button type="button" class="profile-appointment-row" data-testid="client-appointment-row" data-profile-appointment="${clientAttr(item.id)}" aria-haspopup="dialog" aria-label="Open appointment #${escape(String(item.id).slice(0,8))}">`
     +`<span class="history-when">${escape(when)}</span>`
     +(meta?`<span class="history-meta">${escape(meta)}</span>`:"")
@@ -15600,8 +15691,8 @@ function clientSummaryMarkup(profile,{back=true,tabs=PROFILE_CLIENT_TABS}={}){
     +(customer.archivedAt?`<p class="profile-banner">This client is marked inactive. History is kept and new bookings are blocked.</p>`:"")
     +agreementBannerMarkup(profile.agreements,customer.id)
     +`<div class="client-identity"><span class="client-avatar" aria-hidden="true">${escape(Array.from(clientName(customer,"?"))[0]?.toUpperCase()||"?")}</span><div><p class="eyebrow">Basic Info</p><h2>${escape(clientName(customer))}</h2></div>${allowed("customers.edit")?`<button type="button" class="secondary compact client-edit">Edit</button>`:""}</div>`
-    +`<dl class="profile-facts"><div><dt>Phone</dt><dd>${escape(customer.phone||"Not provided")}</dd></div><div><dt>Email</dt><dd>${escape(customer.email||"Not provided")}</dd></div><div><dt>Preferred groomer</dt><dd><button type="button" class="text-button preferred-groomer"${allowed("customers.edit")?"":" disabled"}>${escape(customer.preferredEmployeeName||"Not set")}</button></dd></div><div><dt>Client since</dt><dd>${escape(formatPrefDate(new Date(customer.createdAt)))}</dd></div></dl>`
-    +`<div class="profile-section-head"><h3>Notes</h3>${allowed("customers.edit")&&!customer.archivedAt?`<button type="button" class="text-button note-add">Add</button>`:""}</div>`
+    +`<dl class="profile-facts">${contactInfoVisible(customer)?`<div><dt>Phone</dt><dd>${escape(customer.phone||"Not provided")}</dd></div><div><dt>Email</dt><dd>${escape(customer.email||"Not provided")}</dd></div>`:""}<div><dt>Preferred groomer</dt><dd><button type="button" class="text-button preferred-groomer"${allowed("customers.edit")?"":" disabled"}>${escape(customer.preferredEmployeeName||"Not set")}</button></dd></div><div><dt>Client since</dt><dd>${escape(formatPrefDate(new Date(customer.createdAt)))}</dd></div></dl>`
+    +`<div class="profile-section-head"><h3>Notes</h3>${allowed("customers.edit")&&!customer.archivedAt?`<button type="button" class="secondary compact note-add">Add</button>`:""}</div>`
     +`<div class="client-notes">${clientNotesMarkup(profile)}</div>`
     +`<div class="profile-tabs" role="tablist" aria-label="Client detail" data-testid="client-tabs">`
     +tabs.map(id=>`<button type="button" role="tab" id="client-tab-${id}" data-testid="client-tab-${id}" aria-controls="client-panel-${id}" aria-selected="${tab===id}" tabindex="${tab===id?0:-1}" data-client-tab="${id}">${escape(CLIENT_TABS[id][0])}</button>`).join("")
@@ -16072,7 +16163,7 @@ function openReportCardSend(card,onSent){
     confirmLabel:"Send",
     onConfirm:async()=>{
       const result=await api(`/api/report-cards/${card.id}/send`,{method:"POST",body:JSON.stringify({channel:"email"})});
-      toast(`Report card queued by email to ${result.destination}`);
+      toast(result.destination?`Report card queued by email to ${result.destination}`:"Report card queued by email");
       runDetached(onSent);
     }
   });
@@ -16617,12 +16708,11 @@ function appointmentRecordNoteMarkup(surface){
  * conflict - the saved text beside the typed text, the operator chooses - rather than merged or
  * retried. The footer Save and its `syncSaveState` are gone, because their only job was this.
  *
- * THE STATUS WINDOW INCLUDES `completed`. `PATCH /api/appointments/:id/operations` accepts
- * `checked_in`, `in_service` and `completed` - what happened during the groom is most often
- * written down after the pet has been handed back - and refuses `scheduled`, `cancelled` and
- * `no_show`, where there is no during. The state half withholds the control there and says why.
+ * THE STATUS WINDOW IS `scheduled` THROUGH `completed`. `PATCH /api/appointments/:id/operations`
+ * accepts all four and refuses `cancelled` and `no_show`; the state half withholds the control
+ * there. Writing it never changes the visit's status.
  *
- * `operations.perform_service` AND SCOPE. The permission is the route's; the scope is the
+ * `operations.perform_service` OR `appointments.edit`, AND SCOPE. Either key is the route's; the scope is the
  * ownership rule every mutating appointment route now enforces, so a groomer opening a colleague's
  * visit sees Edit refused, with the reason on it, rather than a 403 after typing.
  */
@@ -16636,17 +16726,9 @@ function appointmentServiceNoteMarkup(surface){
       : "")
     +`</div>`;
   if(!note.open){
-    // WHY A VISIT THAT HAS NOT ARRIVED CANNOT HAVE A SERVICE NOTE, SAID OUT LOUD. A scheduled
-    // visit used to show "No service note." with no box, no control and no reason, and an
-    // operator looking for somewhere to write concluded the screen was broken. The sentence names
-    // which note this is and when it opens, and points at the note that IS writable now.
-    const pending=item.status==="scheduled"
-      ? `<p class="note-empty note-guidance" data-testid="appointment-service-note-pending">`
-        +`<span class="note-kind">Opens at check-in.</span> `
-        +`This records what happened during the groom, so it opens when the pet is checked in. `
-        +`Anything the client has asked for goes in the appointment note above.</p>`
-      : `<p class="note-empty">No service note.</p>`;
-    return head+(held?`<p data-testid="appointment-service-note">${escape(item.operationalNotes)}</p>`:pending);
+    return head+(held
+      ? `<p data-testid="appointment-service-note">${escape(item.operationalNotes)}</p>`
+      : `<p class="note-empty">No service note.</p>`);
   }
   const draft=note.draft??item.operationalNotes??"";
   const conflict=note.conflict
@@ -16766,6 +16848,8 @@ function invoiceReadable(item){
  * FIRST: a member without the key at all is told what they cannot do, and only a member who holds
  * it but is looking at somebody else's appointment is told about the scope.
  */
+// Who may write the service note: the groomer's key or the desk's, either one.
+function serviceNoteWriter(){return allowed("operations.perform_service")||allowed("appointments.edit");}
 function appointmentRefusal(item,action,permission){
   if(!allowed(permission))return appointmentPermissionRefusal(action);
   if(!scopeAllows(item))return appointmentScopeRefusal();
@@ -16884,7 +16968,7 @@ function appointmentSurfaceMarkup(surface){
         // THE SAME BADGE THE CARDS WEAR, with the room to spell the word out. It read as a 10px
         // muted word beside the billing chip, and a cancelled visit looked like a scheduled one
         // until the footer was read. The text stays the plain status the suite asserts on.
-        +` <span class="appointment-status appointment-badge badge-${escape(item.status)}" data-testid="appointment-status">${escape(model.status)}</span></p>`
+        +` <span class="appointment-status appointment-badge badge-${escape(item.status)}" data-testid="appointment-status">${escape(appointmentStatusLabel(item.status))}</span></p>`
       +`<h2 id="appointment-detail-title">${escape(model.dateLabel)}</h2>`
       +`<p class="surface-subhead">${escape(model.timeRange)} · scheduled ${model.durationMinutes} min</p>`
     +`</div>`
@@ -17437,10 +17521,16 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
       // often as during, and the route accepts it. Split like everything else here: the state
       // half withholds the control where the route would refuse the write, the permission-and-
       // scope half draws it disabled with the reason named.
-      editNoteOffered:["checked_in","in_service","completed"].includes(status),
-      editNote:["checked_in","in_service","completed"].includes(status)
-        &&allowed("operations.perform_service")&&mine,
-      editNoteRefusal:appointmentRefusal(item,"write the service note","operations.perform_service"),
+      // SCHEDULED IS IN THE WINDOW TOO: a note taken at booking or on the phone before the pet
+      // arrives belongs here, and writing it never checks the visit in. Either key opens it -
+      // the groomer's `operations.perform_service` or the desk's `appointments.edit` - under the
+      // same own-scope rule as every other write here.
+      editNoteOffered:["scheduled","checked_in","in_service","completed"].includes(status),
+      editNote:["scheduled","checked_in","in_service","completed"].includes(status)
+        &&serviceNoteWriter()&&mine,
+      editNoteRefusal:serviceNoteWriter()
+        ? (scopeAllows(item)?"":appointmentScopeRefusal())
+        : appointmentPermissionRefusal("write the service note"),
       // The APPOINTMENT note, which is a different field with a different permission and no
       // status window at all. `readOnly` above is about the visit no longer moving; a note that
       // records what the client asked for is corrected long after the visit has settled, and
@@ -17926,6 +18016,8 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
      * confirmations.
      */
     const lifecycle=(testid,status,message)=>on(testid,()=>runDetached(async()=>{
+      // The one exception to "no confirmation": a Check In on a visit dated after today.
+      if(status==="checked_in"&&!await confirmFutureCheckIn(surface.item))return;
       await runOnce(`transition:${id}`,async()=>{
         try{
           await api(`/api/appointments/${id}/transition`,{method:"POST",
@@ -18328,7 +18420,7 @@ async function openTicket(item){
   await load();
 }
 
-function renderMessages(){const query=($("#message-search")?.value||"").trim().toLowerCase(),clients=state.customerDirectory.items.filter(item=>`${clientName(item)} ${item.phone||""} ${item.email||""}`.toLowerCase().includes(query));$("#message-client-list").innerHTML=clients.map(item=>`<button type="button" class="message-client ${item.id===state.messageClientId?"active":""}" data-message-client="${item.id}"><span><strong>${escape(clientName(item))}</strong><small>${escape(item.phone||item.email||"No contact details")}</small></span></button>`).join("")||`<p class="empty">No clients match.</p>`;$$('[data-message-client]').forEach(button=>button.addEventListener("click",()=>selectMessageClient(button.dataset.messageClient)));}
+function renderMessages(){const query=($("#message-search")?.value||"").trim().toLowerCase(),clients=state.customerDirectory.items.filter(item=>`${clientName(item)}${contactInfoVisible(item)?` ${item.phone||""} ${item.email||""}`:""}`.toLowerCase().includes(query));$("#message-client-list").innerHTML=clients.map(item=>`<button type="button" class="message-client ${item.id===state.messageClientId?"active":""}" data-message-client="${item.id}"><span><strong>${escape(clientName(item))}</strong>${contactInfoVisible(item)?`<small>${escape(item.phone||item.email||"No contact details")}</small>`:""}</span></button>`).join("")||`<p class="empty">No clients match.</p>`;$$('[data-message-client]').forEach(button=>button.addEventListener("click",()=>selectMessageClient(button.dataset.messageClient)));}
 async function selectMessageClient(id){
   const [data,notes,agreements]=await Promise.all([
     api(`/api/customers/${id}/history`),loadClientNotes(id),loadClientAgreements(id)]);
@@ -18345,8 +18437,8 @@ async function selectMessageClient(id){
 }
 const reminderTabs=[["appointment_reminder","Appointment Reminder","supported"],["secondary_reminder","Secondary Reminder","deferred"],["same_day_reminder","Same-Day Reminder","deferred"],["rebook_reminder","Rebook Reminder","deferred"],["vaccination_reminder","Vaccination Reminder","supported"],["birthday_reminder","Pet Birthday Reminder","deferred"]];
 async function loadReminders(type=state.reminders.type){state.reminders.type=type;const result=await api(`/api/reminders?type=${encodeURIComponent(type)}`);state.reminders={type,items:result.items,supported:result.supported};renderReminders();}
-function renderReminders(){const {type,items,supported}=state.reminders;$("#reminder-tabs").innerHTML=reminderTabs.map(([id,label])=>`<button type="button" role="tab" data-reminder-tab="${id}" aria-selected="${id===type}">${escape(label)}</button>`).join("");$$('[data-reminder-tab]').forEach(button=>button.addEventListener("click",()=>loadReminders(button.dataset.reminderTab)));if(!supported){$("#reminder-content").innerHTML=`<div class="reminder-empty"><p class="eyebrow">Deferred</p><h3>${escape(reminderTabs.find(([id])=>id===type)?.[1]||"Reminder")}</h3><p>This reminder type has no Pawsh scheduling or delivery backend yet. No records or actions are fabricated.</p></div>`;return;}$("#reminder-content").innerHTML=`<div class="reminder-table-wrap"><table class="reminder-table"><thead><tr><th>Record ID</th><th>Status</th><th>Time</th><th>Client</th><th>Reminder Status</th><th>Action</th><th>Logs</th></tr></thead><tbody>${items.map(item=>`<tr><td><code>${escape(String(item.appointmentId||item.id).slice(0,8))}</code></td><td><span class="status-dot">${escape(item.appointmentStatus||"Scheduled")}</span></td><td>${escape(formatPrefDateAndTime(new Date(item.scheduledOccurrence)))}</td><td>${escape([item.firstName,item.lastName].filter(Boolean).join(" ")||"Staff notification")}</td><td><span class="badge ${escape(item.reminderStatus)}">${escape(item.reminderStatus.replace("_"," "))}</span></td><td>${["pending","failed"].includes(item.reminderStatus)&&allowed("appointments.edit")?`<button type="button" class="secondary compact reminder-send" data-reminder-id="${item.id}">${item.reminderStatus==="failed"?"Retry":"Send"}</button>`:"—"}</td><td><button type="button" class="icon-action reminder-logs" data-reminder-id="${item.id}" aria-label="Show reminder logs" aria-expanded="false">+</button></td></tr><tr class="reminder-log-row" data-reminder-logs="${item.id}" hidden><td colspan="7">${item.logs.length?item.logs.map(log=>`<div class="reminder-log"><time>${escape(formatPrefDateAndTime(new Date(log.createdAt)))}</time><span>${escape(item.channel)} · ${escape(item.destination)}</span><strong>${escape(log.outcome)}</strong>${log.safeFailureReason?`<small>${escape(log.safeFailureReason)}</small>`:""}</div>`).join(""):`<span class="empty">No delivery attempts yet.</span>`}</td></tr>`).join("")||`<tr><td colspan="7" class="empty">No reminders in this workspace.</td></tr>`}</tbody></table></div>`;$$('.reminder-logs').forEach(button=>button.addEventListener("click",()=>{const row=$(`[data-reminder-logs="${button.dataset.reminderId}"]`),open=row.hidden;row.hidden=!open;button.textContent=open?"−":"+";button.setAttribute("aria-expanded",String(open));}));$$('.reminder-send').forEach(button=>button.addEventListener("click",async()=>{button.disabled=true;try{await api(`/api/reminders/${button.dataset.reminderId}/send`,{method:"POST"});toast("Reminder queued for delivery");await loadReminders();}catch(error){toast(error.message);button.disabled=false;}}));}
-async function hydrateReminderLogs(button){try{const detail=await api(`/api/reminders/${button.dataset.reminderId}/logs`),row=$(`[data-reminder-logs="${button.dataset.reminderId}"] td`);if(!row)return;row.innerHTML=detail.logs.length?detail.logs.map(log=>`<div class="reminder-log"><time>${escape(formatPrefDateAndTime(new Date(log.createdAt)))}</time><span>${escape(detail.channel)} · ${escape(detail.destination)}</span><strong>${escape(log.attemptKind)} · ${escape(log.outcome)}</strong>${log.safeFailureReason?`<small>${escape(log.safeFailureReason)}</small>`:""}</div>`).join(""):`<span class="empty">No delivery attempts yet.</span>`;}catch(error){toast(error.message);}}
+function renderReminders(){const {type,items,supported}=state.reminders;$("#reminder-tabs").innerHTML=reminderTabs.map(([id,label])=>`<button type="button" role="tab" data-reminder-tab="${id}" aria-selected="${id===type}">${escape(label)}</button>`).join("");$$('[data-reminder-tab]').forEach(button=>button.addEventListener("click",()=>loadReminders(button.dataset.reminderTab)));if(!supported){$("#reminder-content").innerHTML=`<div class="reminder-empty"><p class="eyebrow">Deferred</p><h3>${escape(reminderTabs.find(([id])=>id===type)?.[1]||"Reminder")}</h3><p>This reminder type has no Pawsh scheduling or delivery backend yet. No records or actions are fabricated.</p></div>`;return;}$("#reminder-content").innerHTML=`<div class="reminder-table-wrap"><table class="reminder-table"><thead><tr><th>Record ID</th><th>Status</th><th>Time</th><th>Client</th><th>Reminder Status</th><th>Action</th><th>Logs</th></tr></thead><tbody>${items.map(item=>`<tr><td><code>${escape(String(item.appointmentId||item.id).slice(0,8))}</code></td><td><span class="status-dot">${escape(item.appointmentStatus||"Scheduled")}</span></td><td>${escape(formatPrefDateAndTime(new Date(item.scheduledOccurrence)))}</td><td>${escape([item.firstName,item.lastName].filter(Boolean).join(" ")||"Staff notification")}</td><td><span class="badge ${escape(item.reminderStatus)}">${escape(item.reminderStatus.charAt(0).toUpperCase()+item.reminderStatus.slice(1).replace("_"," "))}</span></td><td>${["pending","failed"].includes(item.reminderStatus)&&allowed("appointments.edit")?`<button type="button" class="secondary compact reminder-send" data-reminder-id="${item.id}">${item.reminderStatus==="failed"?"Retry":"Send"}</button>`:"—"}</td><td><button type="button" class="icon-action reminder-logs" data-reminder-id="${item.id}" aria-label="Show reminder logs" aria-expanded="false">+</button></td></tr><tr class="reminder-log-row" data-reminder-logs="${item.id}" hidden><td colspan="7">${item.logs.length?item.logs.map(log=>`<div class="reminder-log"><time>${escape(formatPrefDateAndTime(new Date(log.createdAt)))}</time><span>${escape(item.channel)}${item.destination?` · ${escape(item.destination)}`:""}</span><strong>${escape(log.outcome)}</strong>${log.safeFailureReason?`<small>${escape(log.safeFailureReason)}</small>`:""}</div>`).join(""):`<span class="empty">No delivery attempts yet.</span>`}</td></tr>`).join("")||`<tr><td colspan="7" class="empty">No reminders in this workspace.</td></tr>`}</tbody></table></div>`;$$('.reminder-logs').forEach(button=>button.addEventListener("click",()=>{const row=$(`[data-reminder-logs="${button.dataset.reminderId}"]`),open=row.hidden;row.hidden=!open;button.textContent=open?"−":"+";button.setAttribute("aria-expanded",String(open));}));$$('.reminder-send').forEach(button=>button.addEventListener("click",async()=>{button.disabled=true;try{await api(`/api/reminders/${button.dataset.reminderId}/send`,{method:"POST"});toast("Reminder queued for delivery");await loadReminders();}catch(error){toast(error.message);button.disabled=false;}}));}
+async function hydrateReminderLogs(button){try{const detail=await api(`/api/reminders/${button.dataset.reminderId}/logs`),row=$(`[data-reminder-logs="${button.dataset.reminderId}"] td`);if(!row)return;row.innerHTML=detail.logs.length?detail.logs.map(log=>`<div class="reminder-log"><time>${escape(formatPrefDateAndTime(new Date(log.createdAt)))}</time><span>${escape(detail.channel)}${detail.destination?` · ${escape(detail.destination)}`:""}</span><strong>${escape(log.attemptKind)} · ${escape(log.outcome)}</strong>${log.safeFailureReason?`<small>${escape(log.safeFailureReason)}</small>`:""}</div>`).join(""):`<span class="empty">No delivery attempts yet.</span>`;}catch(error){toast(error.message);}}
 document.addEventListener("click",event=>{const button=event.target.closest?.(".reminder-logs");if(button)hydrateReminderLogs(button);},{capture:true});
 document.addEventListener("click",event=>{const button=event.target.closest?.("[data-pet-profile]");if(!button)return;event.stopImmediatePropagation();const petId=button.dataset.petProfile;state.clientProfile.petId=petId;state.clientProfile.appointmentId=null;renderClientProfile();api(`/api/pets/${petId}`).then(pet=>{state.clientProfile.data.pets=state.clientProfile.data.pets.map(item=>item.id===petId?pet:item);openPetProfile(petId);}).catch(error=>toast(error.message));},{capture:true});
 $$('[data-action]').forEach((button) => button.addEventListener("click", () => actions[button.dataset.action]?.()));
@@ -18455,7 +18547,7 @@ $("#customer-search").addEventListener("input", async ()=>{
 [$("#customer-status"),$("#customer-upcoming"),$("#customer-sort"),$("#customer-page-size")].forEach(control=>control.addEventListener("change",()=>loadCustomerDirectory(1)));
 $("#customer-prev").addEventListener("click",()=>loadCustomerDirectory(state.customerDirectory.page-1));$("#customer-next").addEventListener("click",()=>loadCustomerDirectory(state.customerDirectory.page+1));
 function printRangeDefaults(){if(state.calendar.view==="day"||state.calendar.view==="month")return [state.calendar.selectedDate,state.calendar.selectedDate];return [state.calendar.weekStart,dateShift(state.calendar.weekStart,6)];}
-function printableAgenda(items){const sorted=items.slice().sort((a,b)=>new Date(a.startAt)-new Date(b.startAt));return sorted.length?sorted.map(item=>{const model=appointmentPresentation(item);return `<article class="print-appointment"><header><strong>${escape(model.groomer)}</strong><span>${escape(model.dateLabel)} · ${escape(model.timeRange)}</span></header><div><p><b>Pet:</b> ${escape(petName({petName:model.petName}))}${model.breed?` · ${escape(model.breed)}`:""}</p><p><b>Services:</b> ${model.services.map(escape).join(", ")}</p><p><b>Client:</b> ${escape(model.customerName)}${item.customerPhone?` · ${escape(item.customerPhone)}`:""}</p>${item.notes?`<p><b>Appointment note:</b> ${escape(item.notes)}</p>`:""}</div></article>`;}).join(""):`<p>No appointments in this print range.</p>`;}
+function printableAgenda(items){const sorted=items.slice().sort((a,b)=>new Date(a.startAt)-new Date(b.startAt));return sorted.length?sorted.map(item=>{const model=appointmentPresentation(item);return `<article class="print-appointment"><header><strong>${escape(model.groomer)}</strong><span>${escape(model.dateLabel)} · ${escape(model.timeRange)}</span></header><div><p><b>Pet:</b> ${escape(petName({petName:model.petName}))}${model.breed?` · ${escape(model.breed)}`:""}</p><p><b>Services:</b> ${model.services.map(escape).join(", ")}</p><p><b>Client:</b> ${escape(model.customerName)}${item.customerPhone&&contactInfoVisible(item)?` · ${escape(item.customerPhone)}`:""}</p>${item.notes?`<p><b>Appointment note:</b> ${escape(item.notes)}</p>`:""}</div></article>`;}).join(""):`<p>No appointments in this print range.</p>`;}
 async function printAgendaItems(form){const start=String(form.get("printStart")),end=String(form.get("printEnd")),days=Math.round((dateAt(end)-dateAt(start))/86400000)+1;if(!start||!end||days<1||days>31)throw new Error("Choose a print range from 1 to 31 days.");const groomerId=String(form.get("printGroomer")||""),items=filteredAppointments(await loadAppointmentRange(start,days));return groomerId?items.filter(item=>(item.groomers||[]).some(groomer=>groomer.id===groomerId)):items;}
 async function openPrintAgenda(){const [start,end]=printRangeDefaults(),groomers=selectedGroomers();openModal("Print agenda",`<div class="wide print-controls"><label>From<input type="date" name="printStart" value="${start}" required></label><label>To<input type="date" name="printEnd" value="${end}" required></label><label>Groomer<select name="printGroomer"><option value="">All selected groomers</option>${groomers.map(item=>`<option value="${item.id}">${escape(item.displayName)}</option>`).join("")}</select></label><button type="button" class="secondary compact" id="print-preview-update">Update preview</button></div><section id="print-agenda-preview" class="wide print-agenda-preview" aria-live="polite">Loading preview…</section>`,async form=>{const items=await printAgendaItems(form);appendPrintRoot("print-root",`<h1>Pawsh agenda</h1>${printableAgenda(items)}`);},{cancelLabel:"Close",submitLabel:"Print"});const refreshPreview=async()=>{try{$("#print-agenda-preview").innerHTML=printableAgenda(await printAgendaItems(new FormData($("#modal-form"))));}catch(error){$("#modal-error").textContent=error.message;}};$("#print-preview-update").addEventListener("click",refreshPreview);await refreshPreview();}
 function openCalendarSettings(){const preferences=calendarPreferences(),derived=state.businessHours.flatMap(period=>[String(period.startTime).slice(0,5),String(period.endTime).slice(0,5)]).map(value=>Number(value.slice(0,2))*60+Number(value.slice(3,5))),fallback=derived.length?[Math.min(...derived),Math.max(...derived)]:[480,1140],start=preferences.visibleStart??fallback[0],end=preferences.visibleEnd??fallback[1];openModal("Calendar settings",`<p class="wide settings-note">These preferences change only your calendar view. Salon business hours and booking rules remain unchanged.</p><label>Visible from<select name="visibleStart">${Array.from({length:33},(_,i)=>i*30+300).map(value=>`<option value="${value}" ${value===start?"selected":""}>${timeLabel(value)}</option>`).join("")}</select></label><label>Visible until<select name="visibleEnd">${Array.from({length:33},(_,i)=>i*30+480).map(value=>`<option value="${value}" ${value===end?"selected":""}>${timeLabel(value)}</option>`).join("")}</select></label><label>First day of week<select name="firstDay"><option value="sunday" ${preferences.firstDay==="sunday"?"selected":""}>Sunday</option><option value="monday" ${preferences.firstDay==="monday"?"selected":""}>Monday</option></select></label><label>Calendar density<select name="density"><option value="compact" ${preferences.density==="compact"?"selected":""}>Compact</option><option value="comfortable" ${preferences.density==="comfortable"?"selected":""}>Comfortable</option><option value="large" ${preferences.density==="large"?"selected":""}>Large</option></select></label><label class="wide">Appointment detail<select name="detail"><option value="compact" ${preferences.detail==="compact"?"selected":""}>Compact</option><option value="detailed" ${preferences.detail==="detailed"?"selected":""}>Detailed</option></select></label><button type="button" class="text-button wide" id="calendar-settings-reset">Reset to defaults</button>`,form=>{const next={visibleStart:Number(form.get("visibleStart")),visibleEnd:Number(form.get("visibleEnd")),firstDay:String(form.get("firstDay")),density:String(form.get("density")),detail:String(form.get("detail"))};if(next.visibleStart>=next.visibleEnd)throw new Error("Visible start must be before visible end.");state.calendar.preferences=next;globalThis.localStorage.setItem(calendarPreferenceKey(),JSON.stringify(next));state.calendar.weekStart=weekStart(state.calendar.selectedDate);applyCalendarPreferences();return ()=>loadCalendarWeek();},{cancelLabel:"Cancel",submitLabel:"Apply changes"});$("#calendar-settings-reset").addEventListener("click",()=>{globalThis.localStorage.removeItem(calendarPreferenceKey());state.calendar.preferences=null;$("#modal").close();applyCalendarPreferences();state.calendar.weekStart=weekStart(state.calendar.selectedDate);runDetached(loadCalendarWeek);});}

@@ -95,6 +95,7 @@ function client(status: string, invoice: Record<string, unknown> = {}): Module {
     // Every key held includes appointments.edit_all_staff, so scope never refuses here.
     const state = { me: { employeeId: null }, clientProfile: null, pets: [] };
     const appointmentBillingChip = () => ({ tone: "neutral", label: "Unbilled" });
+    const appointmentStatusLabel = (status) => String(status || "").replaceAll("_", " ");
     const appointmentLockNoteMarkup = () => "";
     const appointmentActivityMarkup = () => "<!--activity-->";
     const appointmentLifecycleMarkup = () => "<!--lifecycle-->";

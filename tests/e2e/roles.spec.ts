@@ -434,15 +434,17 @@ test("hiding what Pawsh has not built names the groups that went, and keeps thei
   // Settings -> Coupons & discounts became a real route family; `customers.credit_edit` the day
   // client credit became a real ledger and that key alone started gating the creation of money the
   // salon owes; and `calendar.blocks_create` with `calendar.blocks_edit` together, the day blocking
-  // time out stopped riding `appointments.edit` and took the switch reserved for it in 0045. The
+  // time out stopped riding `appointments.edit` and took the switch reserved for it in 0045; and
+  // `customers.contact_info` the day it began deciding whether a client's phone, email and
+  // addresses leave the server. The figures below count every graduation since. The
   // total of 78 never moves - nothing was added, switches changed sides.
   //
   // These two figures are read from a BUILD of `packages/domain`. If they pass when you expected
   // them to fail, restart the server first - see the note at the top of this file.
-  // 29 built and 49 hidden since `appointments.edit_all_staff` and then
-  // `appointments.service_price_edit` graduated to enforced keys.
-  await expect(page.getByTestId("role-filter-count")).toContainText("29 of 78 permissions");
-  await expect(page.getByTestId("role-filter-count")).toContainText("49 not built yet, hidden");
+  // 30 built and 48 hidden since `appointments.edit_all_staff`, then
+  // `appointments.service_price_edit`, then `customers.contact_info` graduated to enforced keys.
+  await expect(page.getByTestId("role-filter-count")).toContainText("30 of 78 permissions");
+  await expect(page.getByTestId("role-filter-count")).toContainText("48 not built yet, hidden");
   // The wholly unbuilt groups are gone from the sheet - and named underneath it.
   await expect(group(page,"cash-drawer")).toHaveCount(0);
   const note=page.getByTestId("role-hidden-note");

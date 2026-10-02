@@ -120,7 +120,7 @@ test("Reschedule is there the moment a visit is cancelled, from the surface and 
     await openDetail(page, fromSurface.id);
     await expect(detail(page).getByTestId("appointment-reschedule")).toHaveCount(0);
     await detail(page).getByTestId("appointment-cancel").click();
-    await expect(detail(page).getByTestId("appointment-status")).toHaveText("cancelled");
+    await expect(detail(page).getByTestId("appointment-status")).toHaveText("Cancelled");
     const reschedule = detail(page).getByTestId("appointment-reschedule");
     await expect(reschedule).toBeVisible();
     await expect(reschedule).toBeEnabled();
@@ -138,7 +138,7 @@ test("Reschedule is there the moment a visit is cancelled, from the surface and 
     await expect(page.locator(`[data-appointment-id="${fromCard.id}"]`).first()).toHaveClass(/status-cancelled/u);
     await page.locator(`[data-appointment-id="${fromCard.id}"] .calendar-open`).first().click();
     await expect(detail(page)).toBeVisible();
-    await expect(detail(page).getByTestId("appointment-status")).toHaveText("cancelled");
+    await expect(detail(page).getByTestId("appointment-status")).toHaveText("Cancelled");
     await expect(detail(page).getByTestId("appointment-reschedule")).toBeEnabled();
     await expect(detail(page).getByTestId("appointment-reschedule")).toHaveClass(/\bprimary\b/u);
     await detail(page).locator("[data-surface-close]").click();

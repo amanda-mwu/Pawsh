@@ -1,6 +1,7 @@
 import { test, expect, login, createAppointment } from "./fixtures/tenant.js";
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 import { revealAppointmentOnCalendar } from "./helpers/calendar.js";
+import { answerEarlyCheckIn } from "./helpers/check-in.js";
 
 /**
  * OPENING AN APPOINTMENT IS NOT GATED BY CHECKING THE PET IN.
@@ -88,12 +89,14 @@ test("a scheduled visit opens as a work surface, and Check In is one press",
     await expect(at(page, "appointment-groomer-edit")).toBeVisible();
     // The appointment note offers Add by name when there is none to edit.
     await expect(at(page, "appointment-note-edit")).toHaveText("Add");
-    // The service note says why it is not open yet rather than showing a bare "No service note."
-    await expect(at(page, "appointment-service-note-pending"))
-      .toContainText("opens when the pet is checked in");
+    // The service note is writable before the pet arrives, and saying so is the Add on it.
+    await expect(at(page, "appointment-service-note-pending")).toHaveCount(0);
+    await expect(at(page, "appointment-service-note-edit")).toHaveText("Add");
+    await expect(at(page, "appointment-service-note-edit")).toBeEnabled();
 
     // ── ONE PRESS, NO FORM ────────────────────────────────────────────────────────────────────
     await at(page, "appointment-check-in").click();
+    await answerEarlyCheckIn(page, tenant.anchor);
 
     // The surface updated under the operator's hand: it was never closed, and the footer now
     // offers what a checked-in visit offers.

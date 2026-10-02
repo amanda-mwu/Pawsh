@@ -125,6 +125,7 @@ function client(
     const appointmentsLocked = () => false;
     const appointmentMoveAllowed = () => allowed("appointments.edit");
     const appointmentBillingChip = () => ({ tone: "neutral", label: "Unbilled" });
+    const appointmentStatusLabel = (status) => String(status || "").replaceAll("_", " ");
     const appointmentLockNoteMarkup = () => "";
     const appointmentActivityMarkup = () => "<!--activity-->";
     const appointmentLifecycleMarkup = () => "<!--lifecycle-->";
@@ -493,9 +494,11 @@ describe("the service note is an editor of its own", () => {
   });
 
   it("is absent where the route would refuse the write, and refused where the role cannot", () => {
-    for (const status of ["scheduled", "cancelled", "no_show"]) {
+    for (const status of ["cancelled", "no_show"]) {
       expect(button(client(status, EVERYTHING).markup()), status).toBeNull();
     }
+    // A scheduled visit is in the window: the note is taken before the pet arrives.
+    expect(button(client("scheduled", EVERYTHING).markup())?.[0]).not.toContain("disabled");
     // Drawn, disabled, and saying why - the shape every other refusal on this surface takes.
     const refused = button(client("checked_in", ["appointments.view"]).markup());
     expect(refused?.[0]).toContain("disabled");

@@ -4,7 +4,7 @@
 label{display:grid;gap:7px;font-size:13px;font-weight:600;margin-bottom:16px}input,select,textarea{border:1px solid var(--line);border-radius:10px;background:#fff;padding:12px 14px;color:var(--ink);outline:none}input:focus,select:focus,textarea:focus{border-color:#2f6f62;box-shadow:0 0 0 3px rgba(0,0,0,.14)}textarea{min-height:88px;resize:vertical}.primary,.secondary{border:0;border-radius:var(--radius-sm);padding:4px 12px;font-weight:500;font-size:13px;line-height:1.25;min-height:var(--control-h)}.primary{background:var(--brand);color:var(--on-brand);box-shadow:none}.primary:hover{background:var(--brand-strong)}.secondary{background:var(--paper);color:var(--ink)}.compact{padding:10px 15px;font-size:13px}.auth-card .primary{width:100%}.text-button{background:none;border:0;color:var(--link);padding:8px 0;font-weight:700;font-size:13px}.error{color:#b3261e;font-size:13px;min-height:19px;margin-top:10px}
 .app-shell{display:grid;grid-template-columns:230px 1fr;min-height:100vh}aside{background:#e2e6e2;padding:34px 25px;display:flex;flex-direction:column;position:sticky;top:0;height:100vh}nav{display:grid;gap:8px;margin-top:55px}nav button{border:0;background:transparent;color:#68706b;text-align:left;border-radius:9px;padding:12px 14px;font-weight:600;min-height:44px}nav button.active,nav button:hover{background:rgba(255,255,255,.65);color:var(--ink)}.aside-foot{margin-top:auto}.avatar{display:grid;place-items:center;flex:0 0 35px;width:35px;height:35px;border-radius:50%;background:var(--ink);color:white;font-family:var(--font-sans)}.account-control{position:relative;border-top:1px solid rgba(0,0,0,.1);padding-top:12px}.account-control>button{width:100%;min-height:56px;border:0;border-radius:9px;background:transparent;color:var(--ink);display:flex;align-items:center;gap:10px;padding:6px;text-align:left}.account-control>button:hover,.account-control>button:focus-visible,.account-control>button[aria-expanded="true"]{background:rgba(255,255,255,.65)}.account-summary{display:grid;min-width:0;flex:1}.account-summary strong,.account-summary small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.account-summary small{color:var(--muted)}.account-chevron{font-size:18px}.account-menu{position:absolute;z-index:20;left:0;right:0;bottom:64px;padding:5px;border:1px solid var(--line);border-radius:9px;background:#fff;box-shadow:var(--shadow)}.account-menu button{display:block;width:100%;min-height:44px;padding:9px 10px;border:0;background:#fff;color:var(--ink);text-align:left}.account-menu button:hover,.account-menu button:focus-visible{background:var(--mint)}.account-menu hr{border:0;border-top:1px solid var(--line);margin:4px}.profile-layout{display:grid;gap:12px;max-width:850px}.profile-section{display:grid;grid-template-columns:minmax(180px,1fr) minmax(280px,1.6fr);gap:28px;padding:22px 0;border-top:1px solid var(--line)}.profile-section p{color:var(--muted);margin-top:5px}.profile-form{display:grid;gap:13px}.profile-form label{margin:0}.profile-form input[readonly]{background:#f7f8f6;color:var(--muted)}.profile-actions{display:flex;gap:8px;flex-wrap:wrap}.profile-actions .compact{min-height:var(--control-h-compact)}.account-facts{display:grid;gap:14px;margin:0}.account-facts div{display:grid;gap:3px}.account-facts dt{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:700}.account-facts dd{margin:0;font-weight:700}
 main{padding:42px 4.5vw;min-width:0}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:34px}.header-actions{display:flex;align-items:center;gap:18px;color:var(--muted);font-size:13px}.metric-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:18px}.metric{background:var(--paper);border:1px solid rgba(0,0,0,.06);border-radius:15px;padding:22px;box-shadow:0 4px 20px rgba(0,0,0,.04)}.metric strong{font:600 32px var(--font-sans);display:block}.metric span{font-size:12px;color:var(--muted)}.content-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}.panel{background:var(--paper);border-radius:16px;padding:24px;box-shadow:0 5px 24px rgba(0,0,0,.05);border:1px solid rgba(0,0,0,.06)}.span-2{grid-column:span 2}.panel-head,.split-head{display:flex;justify-content:space-between;align-items:center}.split-head{margin-bottom:18px}.split-head button+button{margin-left:8px}.safety-panel{background:#e2e6e2;position:relative;overflow:hidden}.safety-panel>p:not(.eyebrow){color:var(--muted);line-height:1.5}.safety-mark{position:absolute;right:-20px;bottom:-35px;font:600 96px var(--font-sans);color:rgba(32,37,34,.05)}
-.appointment-list{display:grid;margin-top:14px}.appointment{display:grid;grid-template-columns:85px 1fr auto;align-items:center;gap:14px;padding:15px 2px;border-top:1px solid var(--line)}.appointment time{font-weight:700}.appointment .pet{font-weight:700}.appointment small{display:block;color:var(--muted);margin-top:3px}.appointment-actions{display:grid;justify-items:end;gap:2px}.appointment-actions .text-button{font-size:11px}.badge{font-size:11px;font-weight:700;padding:6px 9px;border-radius:20px;background:var(--mint);text-transform:capitalize}.badge.in_service{background:var(--info-tint);color:var(--info)}.badge.completed{background:var(--success-tint);color:var(--success)}.empty{color:var(--muted);padding:24px 0}.card-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:15px}.customer-card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:20px}.customer-card h3{font-size:20px}.customer-card p{font-size:13px;color:var(--muted)}.search{max-width:420px;margin-bottom:20px}.simple-list>div{padding:13px 0;border-top:1px solid var(--line);display:flex;justify-content:space-between}.simple-list small{color:var(--muted)}
+.appointment-list{display:grid;margin-top:14px}.appointment{display:grid;grid-template-columns:85px 1fr auto;align-items:center;gap:14px;padding:15px 2px;border-top:1px solid var(--line)}.appointment time{font-weight:700}.appointment .pet{font-weight:700}.appointment small{display:block;color:var(--muted);margin-top:3px}.appointment-actions{display:grid;justify-items:end;gap:2px}.appointment-actions .text-button{font-size:11px}.badge{font-size:11px;font-weight:700;padding:6px 9px;border-radius:20px;background:var(--mint)}.badge.scheduled{background:var(--status-scheduled-tint);color:var(--status-scheduled-ink)}.badge.checked_in{background:var(--status-checked_in-tint);color:var(--status-checked_in)}.badge.in_service{background:var(--status-in_service-tint);color:var(--status-in_service)}.badge.completed{background:var(--status-completed-tint);color:var(--status-completed)}.badge.cancelled,.badge.no_show{background:var(--status-cancelled-tint);color:var(--status-cancelled)}.empty{color:var(--muted);padding:24px 0}.card-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:15px}.customer-card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:20px}.customer-card h3{font-size:20px}.customer-card p{font-size:13px;color:var(--muted)}.search{max-width:420px;margin-bottom:20px}.simple-list>div{padding:13px 0;border-top:1px solid var(--line);display:flex;justify-content:space-between}.simple-list small{color:var(--muted)}
 dialog{border:0;border-radius:18px;padding:0;width:min(650px,calc(100vw - 30px));max-height:calc(100dvh - 20px);overflow:auto;box-shadow:var(--shadow);background:var(--paper)}dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(3px)}#modal-form{padding:28px}.modal-head,.modal-actions{display:flex;justify-content:space-between;align-items:start}.close{border:0;background:none;color:var(--muted)}.modal-actions{justify-content:flex-end;gap:10px;margin-top:20px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.form-grid .wide,.form-grid .breed-hint,.form-grid .breed-other-field{grid-column:1/-1}#toast{position:fixed;right:24px;bottom:24px;background:var(--tooltip);color:#fff;padding:12px 18px;border-radius:9px;opacity:0;transform:translateY(10px);transition:.2s;pointer-events:none}#toast.show{opacity:1;transform:none}
 .permission-grid{border:1px solid var(--line);border-radius:10px;padding:15px;display:grid;grid-template-columns:1fr 1fr;gap:8px 15px}.permission-grid legend{font-weight:700;padding:0 6px}.permission-grid label{display:flex;align-items:center;gap:7px;margin:0;font-weight:500}.permission-grid input{width:auto}
 .card-actions{display:flex;gap:14px;border-top:1px solid var(--line);margin-top:14px;padding-top:8px}.pet-links{display:flex;flex-wrap:wrap;gap:5px;color:var(--muted)}.payment-receipt>div,.payment-receipt-record>div,.payment-receipt-purchase>div{display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid var(--line)}.receipt-total{font-size:18px}
@@ -97,7 +97,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--coral);outline-offs
 
 @media(max-width:700px){.mobile-only{display:block}}
 .pet-summary>span{display:inline}.pet-row-actions{white-space:nowrap}.pet-row-actions .text-button{min-height:44px;padding:4px}
-.calendar-open{display:block;width:100%;border:0;background:transparent;color:inherit;text-align:left;padding:0;min-height:28px}.week-appointment{align-self:stretch}.week-appointment .safety-context{max-height:32px;overflow:hidden}.appointment-card-footer{display:flex;align-items:center;gap:5px;min-width:0;margin-top:3px}.appointment-card-footer .rabies-needed{flex:0 1 auto;min-width:0}.appointment-status{color:var(--muted);font-size:10px;text-transform:capitalize;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.appointment-card-footer .calendar-actions-menu{margin-left:auto}.week-appointment:has(.calendar-action-popover:not([hidden])){z-index:20;overflow:visible}
+.calendar-open{display:block;width:100%;border:0;background:transparent;color:inherit;text-align:left;padding:0;min-height:28px}.week-appointment{align-self:stretch}.week-appointment .safety-context{max-height:32px;overflow:hidden}.appointment-card-footer{display:flex;align-items:center;gap:5px;min-width:0;margin-top:3px}.appointment-card-footer .rabies-needed{flex:0 1 auto;min-width:0}.appointment-status{color:var(--muted);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.appointment-card-footer .calendar-actions-menu{margin-left:auto}.week-appointment:has(.calendar-action-popover:not([hidden])){z-index:20;overflow:visible}
 .setup-menu{position:relative}.setup-menu summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:var(--paper);cursor:pointer;font-weight:700}.setup-menu summary::-webkit-details-marker{display:none}.setup-menu[open] summary{background:var(--mint)}.setup-menu-items{position:absolute;right:0;z-index:12;min-width:210px;margin-top:5px;padding:5px;border:1px solid var(--line);border-radius:9px;background:#fff;box-shadow:var(--shadow)}.setup-menu-items button,.setup-menu-items a{display:block;width:100%;min-height:44px;padding:10px;border:0;background:#fff;color:var(--ink);text-align:left;text-decoration:none}.setup-menu-items button:hover,.setup-menu-items button:focus-visible,.setup-menu-items a:hover,.setup-menu-items a:focus-visible,.setup-menu-items a[aria-current="page"]{background:var(--mint)}.breadcrumbs{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px;color:var(--muted);font-size:13px}.breadcrumbs a{color:var(--ink)}
 @media(max-width:700px){.setup-menu-items{left:0;right:0}.breadcrumbs{font-size:12px}}
 @media(max-width:900px){aside{min-width:0}aside nav{min-width:0}.aside-foot{flex:0 0 auto}}
@@ -116,7 +116,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--coral);outline-offs
 .groomer-filter{position:relative}.groomer-filter>summary{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:var(--control-h);padding:4px 12px;border:1px solid var(--line);border-radius:9px;background:var(--paper);font-size:13px;font-weight:700;cursor:pointer;list-style:none}.groomer-filter>summary::-webkit-details-marker{display:none}.groomer-filter[open]>summary{background:var(--mint)}.groomer-filter-popover{position:absolute;left:0;top:49px;z-index:30;width:250px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--paper);box-shadow:var(--shadow)}.groomer-filter-bulk{display:flex!important;justify-content:space-between}.groomer-filter-bulk button{min-height:36px;border:0;background:transparent;color:var(--link);font-size:12px;font-weight:700}.groomer-filter fieldset{display:grid;gap:3px;max-height:240px;overflow:auto;margin:5px 0 10px;padding:8px 0;border:0;border-block:1px solid var(--line)}.groomer-filter label{display:flex;align-items:center;gap:8px;min-height:40px;margin:0;padding:5px 7px;border-radius:7px}.groomer-filter label:hover{background:var(--mint)}.groomer-filter input{width:auto}.groomer-filter-apply{width:100%}
 .calendar-month-view{display:grid;grid-template-columns:repeat(7,minmax(120px,1fr));min-width:840px;background:var(--line);gap:1px}.calendar-month-weekday{position:sticky;top:0;z-index:4;padding:10px;background:var(--mint);font-size:12px;font-weight:700;text-align:center}.calendar-month-day{position:relative;min-height:126px;padding:7px;background:var(--paper)}.calendar-month-day.outside{background:#f1f3f1;color:#68706b}.calendar-month-day.closed{background:#f7f8f6}.calendar-month-day.today{box-shadow:inset 0 0 0 2px var(--coral)}.calendar-month-day.selected .calendar-month-date{background:var(--brand);color:var(--on-brand)}.calendar-month-date{display:grid;place-items:center;width:30px;height:30px;border:0;border-radius:50%;background:transparent;color:inherit;font-weight:700}.calendar-month-events{display:grid;gap:3px;margin-top:4px}.calendar-month-event,.calendar-month-more{display:block;width:100%;min-height:25px;padding:4px 5px;border:0;border-radius:5px;background:var(--mint);color:var(--ink);overflow:hidden;text-align:left;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.calendar-month-more{background:transparent;color:var(--link);font-weight:700}.calendar-month-add{position:absolute;right:5px;top:5px;width:30px;height:30px;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--muted)}.calendar-month-add:hover,.calendar-month-add:focus-visible{border-color:#e2e6e2;background:var(--mint)}
 .week-groomer-grid{grid-template-columns:64px repeat(var(--week-lanes),minmax(120px,1fr))}.week-groomer-head{position:sticky;top:52px;z-index:4;min-height:34px;padding:8px 5px;border-left:1px solid var(--line);border-bottom:1px solid var(--line);background:#f7f8f6;text-align:center;font-size:10px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.week-groomer-grid .week-corner{z-index:7}.calendar-empty-groomers{display:grid;place-items:center;min-height:320px;padding:30px;text-align:center;color:var(--muted)}
-.calendar-now-line{z-index:3;align-self:start;height:2px;margin-top:calc(var(--slot-height)*var(--minute-offset,0)/30);background:var(--brand);pointer-events:none}.calendar-now-label{position:sticky;left:0;z-index:4;align-self:start;justify-self:end;margin:calc(var(--slot-height)*var(--minute-offset,0)/30 - 6px) 2px 0 0;padding:0 4px;border-radius:4px;background:var(--brand);color:#fff;font-size:9px;font-weight:700;line-height:14px;pointer-events:none}
+.calendar-now-line{z-index:3;align-self:start;height:2px;margin-top:calc(var(--slot-height)*var(--minute-offset,0)/30);background:var(--brand);pointer-events:none}.calendar-now-label{position:sticky;left:0;z-index:4;align-self:start;justify-self:stretch;margin:calc(var(--slot-height)*var(--minute-offset,0)/30 - 3px) 0 0 0;height:8px;padding:0;color:transparent;font-size:0;line-height:0;pointer-events:none}.calendar-now-label::after{content:"";position:absolute;top:0;right:-4px;width:8px;height:8px;border-radius:50%;background:var(--brand)}
 @media(max-width:1100px) and (min-width:901px){.app-shell{grid-template-columns:76px minmax(0,1fr)}aside{padding:22px 10px}.brand{font-size:20px}.primary-nav button{justify-content:center;padding:8px}.primary-nav button>span:last-child{position:absolute;left:70px;z-index:50;display:none;padding:7px 9px;border-radius:7px;background:var(--ink);color:#fff;white-space:nowrap}.primary-nav button:hover>span:last-child,.primary-nav button:focus-visible>span:last-child{display:block}.account-summary,.account-chevron{display:none}.account-control>button{justify-content:center}}
 @media(max-width:900px){aside{display:grid;grid-template-columns:auto minmax(0,1fr);width:100%;max-width:100vw}.primary-nav{grid-column:1/-1;grid-row:2;width:100%;max-width:100%;min-width:0;margin:4px 0 0}.aside-foot{grid-column:2;grid-row:1;justify-self:end}.primary-nav button{flex:0 0 auto}.nav-divider{display:none}.calendar-workspace{display:block}.month-sidebar{display:none}.calendar-toolbar>div:first-child{width:100%}.calendar-month-view{grid-template-columns:repeat(7,minmax(105px,1fr));min-width:735px}}
 @media(max-width:580px){aside{grid-template-columns:auto 1fr auto}.mobile-nav-toggle{display:block;grid-column:1;grid-row:1}.primary-nav{display:none;grid-column:1/-1}.primary-nav.mobile-open{display:flex}.aside-foot{grid-column:3}.primary-nav button>span:last-child{display:inline}.primary-nav button{padding:7px}.nav-icon{width:30px;height:30px}.calendar-toolbar{display:grid}.calendar-toolbar>div{width:100%}.groomer-filter{flex:1}.groomer-filter>summary{width:100%}.groomer-filter-popover{position:fixed;left:12px;right:12px;top:auto;width:auto}.calendar-month-view{grid-template-columns:repeat(7,minmax(82px,1fr));min-width:574px}.calendar-month-day{min-height:110px}}
@@ -127,15 +127,15 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--coral);outline-offs
 @media(max-width:580px){.header-actions #today,.header-actions>[data-testid=new-appointment]{display:none}.calendar-toolbar-main{display:grid;grid-template-columns:1fr 1fr}.calendar-display-toggle,.calendar-date-nav,.groomer-filter{grid-column:1/-1}.calendar-view-select select{width:100%}.calendar-date-nav{justify-content:space-between}.calendar-date-nav strong{min-width:0}.calendar-toolbar-actions{justify-content:flex-end}.agenda-entry{grid-template-columns:1fr;gap:8px}.agenda-entry>.rabies-needed{grid-column:auto}}
 
 /* Dense shared appointment presentation. */
-.appointment-block{position:relative;padding:0;border-left-width:4px;container-type:size}.appointment-block .calendar-open{display:grid;align-content:start;gap:1px;height:100%;min-height:0;padding:5px 22px 5px 6px;overflow:hidden}.appointment-block time{font-size:10px;font-weight:700;line-height:1.15}.appointment-pet{font-family:var(--font-sans);font-size:13px;line-height:1.05}.appointment-breed{color:var(--muted);font-size:10px}.appointment-services{font-size:10px;line-height:1.2}.appointment-services small{display:block;color:var(--muted)}.appointment-badges{display:flex!important;gap:3px;align-items:center;margin-top:2px}.appointment-status{display:inline-flex!important;width:max-content;padding:2px 5px;border-radius:999px;background:rgba(255,255,255,.7);font-size:9px;font-weight:700;text-transform:capitalize}.card-warning{display:grid!important;place-items:center;width:17px;height:17px;border:1px solid #b3261e;border-radius:50%;background:#fdecea;color:#b3261e;font-size:10px}.multi-groomer{color:var(--muted);font-size:9px}.appointment-quick-actions{position:absolute;top:3px;right:3px;z-index:3}.appointment-quick-actions .calendar-action-trigger{width:24px;height:24px;min-height:24px;border-color:transparent;background:rgba(255,255,255,.75);font-size:16px}.appointment-quick-actions .calendar-action-popover{top:27px}.density-short .appointment-breed,.density-short .appointment-badges,.density-short .multi-groomer{display:none!important}.density-medium .appointment-badges{display:none!important}.week-appointment{min-height:0}.week-appointment>.appointment-card-footer{display:none}.day-appointment .appointment-pet{font-size:15px}
-.appointment-hover{position:fixed;z-index:100;display:none;height:auto;max-width:300px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--paper);box-shadow:0 12px 30px rgba(0,0,0,.22);color:var(--ink);font-size:12px;text-align:left;pointer-events:none}.appointment-block:hover .appointment-hover,.appointment-block:focus-within .appointment-hover,.agenda-entry:hover>.appointment-hover,.agenda-entry:focus-within>.appointment-hover,.month-appointment-wrap:hover>.appointment-hover,.month-appointment-wrap:focus-within>.appointment-hover{display:block}.appointment-hover>div{display:flex;justify-content:space-between;gap:15px;text-transform:capitalize}.appointment-hover>div span,.appointment-hover dt{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.05em}.appointment-hover p{margin:8px 0}.appointment-hover dl{display:grid;gap:6px;margin:8px 0}.appointment-hover dl div{display:grid;grid-template-columns:65px 1fr;gap:8px}.appointment-hover dd{margin:0}.appointment-hover .hover-warning{padding:5px 7px;border-radius:6px;background:#fdecea;color:#b3261e}
+.appointment-block{position:relative;padding:0;border-left-width:4px;container-type:size}.appointment-block .calendar-open{display:grid;align-content:start;gap:1px;height:100%;min-height:0;padding:5px 22px 5px 6px;overflow:hidden}.appointment-block time{font-size:10px;font-weight:700;line-height:1.15}.appointment-pet{font-family:var(--font-sans);font-size:13px;line-height:1.05}.appointment-breed{color:var(--muted);font-size:10px}.appointment-services{font-size:10px;line-height:1.2}.appointment-services small{display:block;color:var(--muted)}.appointment-badges{display:flex!important;gap:3px;align-items:center;margin-top:2px}.appointment-status{display:inline-flex!important;width:max-content;padding:2px 5px;border-radius:999px;background:rgba(255,255,255,.7);font-size:9px;font-weight:700}.card-warning{display:grid!important;place-items:center;width:17px;height:17px;border:1px solid #b3261e;border-radius:50%;background:#fdecea;color:#b3261e;font-size:10px}.multi-groomer{color:var(--muted);font-size:9px}.appointment-quick-actions{position:absolute;top:3px;right:3px;z-index:3}.appointment-quick-actions .calendar-action-trigger{width:24px;height:24px;min-height:24px;border-color:transparent;background:rgba(255,255,255,.75);font-size:16px}.appointment-quick-actions .calendar-action-popover{top:27px}.density-short .appointment-breed,.density-short .appointment-badges,.density-short .multi-groomer{display:none!important}.density-medium .appointment-badges{display:none!important}.week-appointment{min-height:0}.week-appointment>.appointment-card-footer{display:none}.day-appointment .appointment-pet{font-size:15px}
+.appointment-hover{position:fixed;z-index:100;display:none;height:auto;max-width:300px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--paper);box-shadow:0 12px 30px rgba(0,0,0,.22);color:var(--ink);font-size:12px;text-align:left;pointer-events:none}.appointment-block:hover .appointment-hover,.appointment-block:focus-within .appointment-hover,.agenda-entry:hover>.appointment-hover,.agenda-entry:focus-within>.appointment-hover,.month-appointment-wrap:hover>.appointment-hover,.month-appointment-wrap:focus-within>.appointment-hover{display:block}.appointment-hover>div{display:flex;justify-content:space-between;gap:15px}.appointment-hover>div span,.appointment-hover dt{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.05em}.appointment-hover p{margin:8px 0}.appointment-hover dl{display:grid;gap:6px;margin:8px 0}.appointment-hover dl div{display:grid;grid-template-columns:65px 1fr;gap:8px}.appointment-hover dd{margin:0}.appointment-hover .hover-warning{padding:5px 7px;border-radius:6px;background:#fdecea;color:#b3261e}
 .calendar-agenda{background:var(--paper)}.agenda-day>h3{position:sticky;top:0;z-index:4;margin:0;padding:9px 14px;border-bottom:1px solid var(--line);background:var(--mint);font-size:11px;letter-spacing:.07em;text-transform:uppercase}.agenda-entry{position:relative;display:grid;grid-template-columns:140px minmax(240px,1fr) minmax(130px,auto);align-items:center;gap:12px;min-height:0;padding:7px 14px;border-bottom:1px solid #e2e6e2}.agenda-entry>time{font-size:12px;font-weight:700}.agenda-appointment{display:grid;gap:0;min-height:44px;padding:4px 7px}.agenda-appointment strong{font-size:14px}.agenda-appointment strong span{color:var(--muted);font-size:11px;font-weight:500}.agenda-appointment>span,.agenda-appointment>small{font-size:11px;line-height:1.25}.agenda-indicators{display:flex;justify-content:flex-end;align-items:center;gap:5px;flex-wrap:wrap}.agenda-indicators .rabies-needed,.agenda-warning{margin:0!important;padding:2px 6px!important;font-size:10px}.agenda-warning{max-width:180px;overflow:hidden;border-radius:999px;background:#fdecea;color:#b3261e;text-overflow:ellipsis;white-space:nowrap}.month-appointment-wrap{position:relative;display:block}
 @media(hover:none){.appointment-hover{display:none!important}}
 @media(max-width:900px){.agenda-entry{grid-template-columns:120px minmax(220px,1fr)}.agenda-indicators{grid-column:2;justify-content:flex-start}.appointment-hover{display:none!important}}
 @media(max-width:580px){.agenda-entry{grid-template-columns:1fr;padding:8px 10px;gap:3px}.agenda-entry>time{font-size:11px}.agenda-indicators{grid-column:auto}.agenda-appointment{padding:3px 0}.appointment-block .calendar-open{padding-right:6px}.appointment-quick-actions{display:none}}
 
 /* Minimized desktop navigation and calendar-owned utilities. */
-@media(min-width:901px){.app-shell{grid-template-columns:72px minmax(0,1fr)}.app-shell>aside{width:72px;padding:18px 10px;overflow:visible}.app-shell>aside>.brand{display:none}.primary-nav{gap:5px;margin-top:0;overflow:visible}.primary-nav button{position:relative;justify-content:center;width:52px;min-height:48px;padding:6px}.primary-nav button>span:last-child{position:absolute;left:58px;z-index:120;display:block;max-width:none;padding:7px 10px;border-radius:7px;background:var(--ink);box-shadow:0 5px 16px rgba(0,0,0,.2);color:#fff;font-size:12px;line-height:1.2;opacity:0;pointer-events:none;transform:translateX(-4px);transition:opacity .12s ease,transform .12s ease;white-space:nowrap}.primary-nav button:hover>span:last-child,.primary-nav button:focus>span:last-child{opacity:1;transform:none}.primary-nav button.active{background:rgba(255,255,255,.82);box-shadow:inset 0 0 0 1px rgba(0,0,0,.14)}.primary-nav button.active .nav-icon{background:var(--ink);border-color:var(--ink);color:#fff}.nav-divider{margin:5px}.nav-icon{width:30px;height:30px}.app-shell>main{padding-left:3vw;padding-right:3vw}}
+@media(min-width:901px){.app-shell{grid-template-columns:72px minmax(0,1fr)}.app-shell>aside{width:72px;padding:18px 10px;overflow:visible}.app-shell>aside>.brand{display:none}.primary-nav{gap:5px;margin-top:0;overflow:visible}.primary-nav button{position:relative;justify-content:center;width:52px;min-height:48px;padding:6px}.primary-nav button>span:last-child{position:absolute;left:58px;z-index:120;display:block;max-width:none;padding:7px 10px;border-radius:7px;background:var(--ink);box-shadow:0 5px 16px rgba(0,0,0,.2);color:#fff;font-size:12px;line-height:1.2;opacity:0;pointer-events:none;transform:translateX(-4px);transition:opacity .12s ease,transform .12s ease;white-space:nowrap}.primary-nav button:hover>span:last-child,.primary-nav button:focus>span:last-child{opacity:1;transform:none}.primary-nav button.active{background:rgba(255,255,255,.82);box-shadow:inset 0 0 0 1px rgba(0,0,0,.14)}.primary-nav button.active .nav-icon{background:var(--ink);border-color:var(--ink);color:#fff}.nav-divider{margin:5px}.nav-icon{width:30px;height:30px}.app-shell>main{padding:var(--page-pad-y) var(--page-pad-x)}}
 .calendar-tool-button{display:grid;place-items:center;width:42px;height:42px;padding:0;border:1px solid var(--line);border-radius:9px;background:var(--paper);color:var(--ink);font-size:18px}.calendar-tool-button:hover,.calendar-tool-button:focus-visible{border-color:#2f6f62;background:var(--mint)}
 .print-controls{display:grid;grid-template-columns:1fr 1fr 1.3fr auto;align-items:end;gap:8px}.print-controls label{margin:0}.print-agenda-preview{display:grid;gap:8px;max-height:48vh;margin-top:12px;overflow:auto}.print-appointment{break-inside:avoid;padding:10px 0;border-top:1px solid var(--line)}.print-appointment header{display:flex;justify-content:space-between;gap:12px}.print-appointment p{margin:4px 0;font-size:12px}.settings-note{padding:9px 11px;border-radius:8px;background:var(--mint);color:var(--muted);font-size:12px}
 #calendar[data-calendar-density=compact] .week-grid,#calendar[data-calendar-density=compact] .day-grid{--slot-height:30px}#calendar[data-calendar-density=large] .week-grid,#calendar[data-calendar-density=large] .day-grid{--slot-height:56px}#calendar[data-calendar-detail=detailed] .appointment-services{font-size:11px}#calendar[data-calendar-detail=detailed] .appointment-breed{font-size:11px}
@@ -150,7 +150,7 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--coral);outline-offs
 @media(max-width:620px){.settings-workspace{display:block;min-height:0;overflow:visible}.settings-workspace>.settings-secondary{height:auto;min-height:0;padding:14px;border-right:0;border-bottom:1px solid var(--line);overflow:visible}.settings-secondary>div{display:none}.settings-secondary nav{display:flex;gap:4px;margin:0;overflow-x:auto;padding-bottom:4px}.settings-secondary nav button{flex:0 0 auto;width:auto;white-space:nowrap}.settings-content{padding:20px 14px;overflow:visible}.settings-panel{padding:18px}}
 
 /* Services is a global catalog workspace rather than a sidebar destination. */
-header>.header-services{margin-left:auto;min-height:var(--control-h-compact);padding:2px 10px;border:1px solid var(--line);border-radius:9px;background:var(--paper);color:var(--ink);font-size:13px;font-weight:600}header>.header-services:hover,header>.header-services:focus-visible,header>.header-services.active{border-color:var(--brand);background:var(--brand);color:var(--on-brand)}.services-head{align-items:flex-end}.services-head>div:last-child{display:flex;gap:8px}.service-controls{display:grid;grid-template-columns:minmax(240px,1fr) 180px 150px auto;align-items:end;gap:12px;margin-bottom:18px;padding:15px;border:1px solid var(--line);border-radius:12px;background:var(--paper)}.service-controls label{display:grid;gap:5px;font-size:11px;font-weight:700}.service-controls input,.service-controls select{min-height:42px}.service-category{margin-bottom:14px;border:1px solid var(--line);border-radius:12px;background:var(--paper);overflow:hidden}.service-category>details>summary{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;background:#f7f8f6;cursor:pointer;font-weight:800}.service-category>details>summary small{color:var(--muted);font-weight:600}.service-row{display:grid;grid-template-columns:minmax(0,1fr) 180px auto;align-items:center;gap:18px;padding:15px 18px;border-top:1px solid var(--line)}.service-row.archived{opacity:.68;background:#f1f3f1}.service-row-main h4,.service-row-main p{margin:0}.service-row-main p{max-width:680px;margin-top:4px;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.service-state{display:inline-block;margin-top:7px;color:var(--muted);font-size:11px;font-weight:700}.service-row-facts{display:grid;gap:4px;text-align:right}.service-row-facts span{color:var(--muted);font-size:12px}.service-row-actions{display:flex;align-items:center;gap:8px}.service-row>.pricing-scroll{grid-column:1/-1;margin-top:4px}.service-row .pricing-matrix{background:#fff}
+/* Services is an ordinary secondary compact control; the header spaces it like everything else. */header{gap:var(--space-2)}header>.header-services{margin-left:auto}header>.header-services.active{border-color:var(--brand);background:var(--brand);color:var(--on-brand)}.services-head{align-items:flex-end}.services-head>div:last-child{display:flex;gap:8px}.service-controls{display:grid;grid-template-columns:minmax(240px,1fr) 180px 150px auto;align-items:end;gap:12px;margin-bottom:18px;padding:15px;border:1px solid var(--line);border-radius:12px;background:var(--paper)}.service-controls label{display:grid;gap:5px;font-size:11px;font-weight:700}.service-controls input,.service-controls select{min-height:42px}.service-category{margin-bottom:14px;border:1px solid var(--line);border-radius:12px;background:var(--paper);overflow:hidden}.service-category>details>summary{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;background:#f7f8f6;cursor:pointer;font-weight:800}.service-category>details>summary small{color:var(--muted);font-weight:600}.service-row{display:grid;grid-template-columns:minmax(0,1fr) 180px auto;align-items:center;gap:18px;padding:15px 18px;border-top:1px solid var(--line)}.service-row.archived{opacity:.68;background:#f1f3f1}.service-row-main h4,.service-row-main p{margin:0}.service-row-main p{max-width:680px;margin-top:4px;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.service-state{display:inline-block;margin-top:7px;color:var(--muted);font-size:11px;font-weight:700}.service-row-facts{display:grid;gap:4px;text-align:right}.service-row-facts span{color:var(--muted);font-size:12px}.service-row-actions{display:flex;align-items:center;gap:8px}.service-row>.pricing-scroll{grid-column:1/-1;margin-top:4px}.service-row .pricing-matrix{background:#fff}
 @media(max-width:900px){.service-controls{grid-template-columns:1fr 1fr}.service-row{grid-template-columns:minmax(0,1fr) auto}.service-row-actions{grid-column:1/-1;justify-content:flex-end}.service-row>.pricing-scroll{grid-column:1/-1}}
 @media(max-width:580px){header>.header-services{margin-left:auto}.service-controls{grid-template-columns:1fr}.service-row{grid-template-columns:1fr;gap:10px}.service-row-facts{text-align:left}.service-row-actions{grid-column:auto;justify-content:flex-start}.services-head>div:last-child{width:100%;flex-wrap:wrap}}
 
@@ -158,7 +158,7 @@ header>.header-services{margin-left:auto;min-height:var(--control-h-compact);pad
 .header-icon-button{display:grid;place-items:center;width:42px;height:42px;padding:0;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--ink)}.header-icon-button svg{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.header-icon-button:hover,.header-icon-button:focus-visible{border-color:var(--line);background:var(--mint)}
 .empty-workspace{display:grid;place-items:center;align-content:center;min-height:360px;padding:32px;text-align:center}.empty-workspace h3,.empty-workspace p{margin:4px}.empty-workspace p{max-width:560px;color:var(--muted)}.empty-icon{display:grid;place-items:center;width:48px;height:48px;margin-bottom:8px;border-radius:50%;background:var(--mint);font-size:24px}
 .messages-workspace{display:grid;grid-template-columns:270px minmax(320px,1fr) 280px;min-height:calc(100vh - 145px);border:1px solid var(--line);border-radius:14px;background:var(--paper);overflow:hidden}.message-list-pane,.message-context{position:static;width:auto;height:auto;padding:16px;border-right:1px solid var(--line);background:#f1f3f1;overflow:auto}.message-context{border-right:0;border-left:1px solid var(--line);background:var(--paper)}.message-list-pane h3{margin:2px 0 12px}.message-filters{display:flex;gap:4px;overflow:auto;margin:10px 0}.message-filters button,.report-mode button,.profile-tabs button{min-height:var(--control-h-compact);padding:4px 9px;border:1px solid var(--line);background:var(--paper);font-size:11px;font-weight:700}.message-filters button[aria-pressed=true],.report-mode button[aria-pressed=true],.profile-tabs button[aria-selected=true]{background:var(--brand);color:var(--on-brand)}.message-client-list{display:grid}.message-client{display:flex;width:100%;min-height:58px;padding:9px;border:0;border-bottom:1px solid var(--line);background:transparent;text-align:left}.message-client:hover,.message-client:focus-visible,.message-client.active{background:var(--mint)}.message-client span{display:grid;gap:3px}.message-client small{color:var(--muted)}.message-thread{display:grid;grid-template-rows:auto 1fr auto;min-width:0}.message-thread>header,.message-thread>footer{padding:14px 18px;border-bottom:1px solid var(--line)}.message-thread>footer{display:grid;grid-template-columns:1fr auto;gap:8px;border-top:1px solid var(--line);border-bottom:0}.message-thread textarea{min-height:64px}.message-client-link{color:var(--ink);font-size:17px;font-weight:800}.message-disabled-state{display:grid;place-items:center;align-content:center;padding:28px;text-align:center;color:var(--muted)}.context-pet{display:grid;width:100%;min-height:50px;margin:6px 0;padding:8px;border:1px solid var(--line);border-radius:8px;background:#fff;text-align:left}.context-pet span{color:var(--muted);font-size:11px}
-.client-profile-workspace{display:grid;grid-template-columns:minmax(280px,36%) minmax(0,1fr);min-height:calc(100vh - 150px);border:1px solid var(--line);border-radius:14px;background:var(--paper);overflow:hidden}.client-profile-left,.client-profile-right{padding:24px;overflow:auto}.client-profile-left{border-right:1px solid var(--line);background:#f1f3f1}.profile-facts{display:grid;gap:8px}.profile-facts div{display:grid;gap:2px}.profile-facts dt{color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase}.profile-facts dd{margin:0}.profile-tabs{display:flex;margin:20px 0 10px}.profile-pets,.profile-appointment-list{display:grid;gap:6px}.profile-appointment-row{display:grid;width:100%;min-height:58px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;text-align:left}.profile-appointment-row.active{border-color:var(--ink);box-shadow:inset 3px 0 var(--ink)}.profile-appointment-row{grid-template-columns:1fr auto;align-items:center;min-height:44px}.profile-appointment-row strong{text-transform:capitalize}
+.client-profile-workspace{display:grid;grid-template-columns:minmax(280px,36%) minmax(0,1fr);min-height:calc(100vh - 150px);border:1px solid var(--line);border-radius:14px;background:var(--paper);overflow:hidden}.client-profile-left,.client-profile-right{padding:24px;overflow:auto}.client-profile-left{border-right:1px solid var(--line);background:#f1f3f1}.profile-facts{display:grid;gap:8px}.profile-facts div{display:grid;gap:2px}.profile-facts dt{color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase}.profile-facts dd{margin:0}.profile-tabs{display:flex;margin:20px 0 10px}.profile-pets,.profile-appointment-list{display:grid;gap:6px}.profile-appointment-row{display:grid;width:100%;min-height:58px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;text-align:left}.profile-appointment-row.active{border-color:var(--ink);box-shadow:inset 3px 0 var(--ink)}.profile-appointment-row{grid-template-columns:1fr auto;align-items:center;min-height:44px}
 .report-mode{display:flex}.report-mode button:first-child{border-radius:8px 0 0 8px}.report-mode button:last-child{border-radius:0 8px 8px 0}.report-filters{display:flex;align-items:start;gap:10px;margin-bottom:14px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--paper)}.report-filters label{display:grid;gap:4px;margin:0;font-size:11px;font-weight:700}.report-table-wrap{overflow:auto;border:1px solid var(--line);border-radius:10px}
 /* The filter row is top-aligned so the groomer picker, which is taller than a single input, hangs
    below the others instead of pushing From and Range down. Apply is offset onto the control row by
@@ -186,7 +186,7 @@ header>.header-services{margin-left:auto;min-height:var(--control-h-compact);pad
 .history-meta{grid-area:meta;font-size:11px;color:var(--muted);line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .history-services{grid-area:services;font-size:11px;color:var(--muted);line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .history-price{grid-area:price;font-size:12px;font-weight:600;justify-self:end;white-space:nowrap}
-.history-status{grid-area:status;font-size:11px;text-transform:capitalize;justify-self:end;white-space:nowrap;color:var(--muted)}
+.history-status{grid-area:status;font-size:11px;justify-self:end;white-space:nowrap;color:var(--muted)}
 .history-more{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:8px;padding:8px 12px;border:1px dashed var(--line);border-radius:var(--radius-sm);font-size:11px;color:var(--muted)}
 .panel-note{margin:0 0 10px;font-size:11px;line-height:1.4;color:var(--muted)}
 .report-groomer-filter select{min-width:170px;font-size:12px}
@@ -221,6 +221,20 @@ header>.header-services{margin-left:auto;min-height:var(--control-h-compact);pad
      control in the product is small at the same scale, on both pointers. */
   --control-h-compact:32px;
   --page-pad-y:16px;--page-pad-x:16px;--section-gap:16px;--card-pad:16px;
+  /* One readable size for a calendar card's operational text - time, services, breed, client -
+     and the slightly smaller uppercase status code beside it. */
+  --card-text:10.5px;--card-badge-text:9.5px;
+  /* ONE STATUS TONE MAP. Every status surface - the dashboard list, the calendar and detail badges,
+     the client history chips, the billing chip - reads its colour from here: the solid ink for a
+     filled badge, the tint for a soft chip. Unpaid/owing is one tone everywhere. */
+  --status-scheduled:var(--ink);--status-scheduled-tint:var(--surface-2);--status-scheduled-ink:var(--ink);
+  --status-checked_in:var(--info);--status-checked_in-tint:var(--info-tint);
+  --status-in_service:var(--warning);--status-in_service-tint:var(--warning-tint);
+  --status-completed:var(--success);--status-completed-tint:var(--success-tint);
+  --status-cancelled:var(--danger);--status-cancelled-tint:var(--danger-tint);
+  --status-paid:var(--success);--status-paid-tint:var(--success-tint);
+  --status-unpaid:var(--warning);--status-unpaid-tint:var(--warning-tint);
+  --status-refunded:var(--info);--status-refunded-tint:var(--info-tint);
 }
 
 /* Page rhythm: title → toolbar → content, with a modest and repeatable gap. */
@@ -258,7 +272,7 @@ h3{font:600 15px/1.35 var(--font-sans);margin-bottom:6px}
 .primary:active,.secondary:active,.calendar-tool-button:active,.header-icon-button:active{transform:translateY(1px)}
 button:disabled{cursor:not-allowed;opacity:.55}
 .primary:disabled:hover{background:var(--brand)}
-.text-button{padding:4px 2px;border-radius:6px}
+.text-button{padding:4px 2px;border-radius:6px;font-size:12.5px;font-weight:600}
 .text-button:hover{color:var(--ink);text-decoration:underline}
 .header-icon-button,.calendar-tool-button{width:var(--icon-btn);height:var(--icon-btn);border-radius:var(--radius-sm)}
 /* AN ICON BUTTON WITH NO BASE RULE IS A USER-AGENT BUTTON. Every `.icon-action` declaration in
@@ -272,7 +286,7 @@ button:disabled{cursor:not-allowed;opacity:.55}
    ink token reach it, and both match what the UA was already drawing. */
 .icon-action{
   display:grid;place-items:center;
-  width:var(--icon-btn-sm);height:var(--icon-btn-sm);min-height:var(--icon-btn-sm);
+  width:var(--control-h-compact);height:var(--control-h-compact);min-height:var(--control-h-compact);
   padding:0;border:1px solid var(--line);border-radius:var(--radius-sm);
   background:var(--paper);color:var(--ink);font-size:15px;line-height:1;
 }
@@ -367,11 +381,11 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 .pet-profile-facts div{padding:8px 9px;border-radius:6px}
 .pet-profile-facts dd{font-size:13px}
 
-/* Client screens are working surfaces rather than reading views, so on a desktop they take
-   tighter page gutters and give the width back to the record. */
+/* ONE PAGE GUTTER FOR EVERY VIEW. On a desktop the gutter is the token below, on the dashboard,
+   calendar, clients and profile alike, so moving between them never shifts the page edge. */
 @media(min-width:901px){
-  body[data-view="customers"] main,body[data-view="client-profile"] main,body[data-view="messages"] main{padding:24px clamp(16px,1.8vw,28px)}
-  body[data-view="customers"] header,body[data-view="client-profile"] header,body[data-view="messages"] header{margin-bottom:18px}
+  :root{--page-pad-y:20px;--page-pad-x:clamp(16px,2vw,28px)}
+  header{margin-bottom:18px}
 }
 .client-profile-workspace{grid-template-columns:minmax(250px,25%) minmax(0,1fr);min-height:calc(100vh - 132px)}
 .client-profile-left,.client-profile-right{padding:16px 18px}
@@ -810,18 +824,19 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 .appointment-head{position:relative;z-index:1;display:flex;align-items:center;gap:2px;min-width:0;padding:0 15px 0 4px;background:var(--paper);border-bottom:1px solid var(--line)}
 /* The time is the only elastic item, so a crowded strip shortens the range instead of clipping
    the badge or the notes button. */
-.appointment-block .appointment-time{flex:1 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--ink);font-size:9px;font-weight:700;line-height:1.35;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+.appointment-block .appointment-time{flex:1 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--ink);font-size:var(--card-text);font-weight:700;line-height:1.3;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
 .appointment-block .appointment-badges{display:flex!important;flex:0 0 auto;align-items:center;gap:2px;margin:0}
 /* Kept in the DOM as the full-word status for automation and assistive text; the badge beside it
    carries the visible meaning and its own accessible name. */
 .appointment-head .appointment-status{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 /* Three uppercase letters carry the meaning; the fill is a second, redundant signal only. Every
    pairing is white on a dark token, so all six read at AA or better. */
-.appointment-badge{display:inline-block;flex:0 0 auto;padding:1px 2px;border-radius:var(--radius-sm);background:var(--ink);color:var(--paper);font-size:8px;font-weight:700;line-height:1.35;letter-spacing:.04em}
-.appointment-badge.badge-checked_in{background:var(--info)}
-.appointment-badge.badge-in_service{background:var(--warning)}
-.appointment-badge.badge-completed{background:var(--success)}
-.appointment-badge.badge-cancelled,.appointment-badge.badge-no_show{background:var(--danger)}
+.appointment-badge{display:inline-block;flex:0 0 auto;padding:1px 2px;border-radius:var(--radius-sm);background:var(--ink);color:var(--paper);font-size:var(--card-badge-text);font-weight:700;line-height:1.3;letter-spacing:.04em}
+.appointment-badge.badge-scheduled{background:var(--status-scheduled)}
+.appointment-badge.badge-checked_in{background:var(--status-checked_in)}
+.appointment-badge.badge-in_service{background:var(--status-in_service)}
+.appointment-badge.badge-completed{background:var(--status-completed)}
+.appointment-badge.badge-cancelled,.appointment-badge.badge-no_show{background:var(--status-cancelled)}
 .appointment-notes-trigger{position:relative;display:grid;flex:0 0 auto;place-items:center;width:13px;height:13px;min-height:0;padding:0;border:0;border-radius:var(--radius-sm);background:transparent;color:var(--muted)}
 /* The strip is only 14px deep, so both icon buttons stay small but claim a larger hit area than
    they paint. Their neighbours in the strip are not interactive. */
@@ -848,17 +863,17 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 .appointment-block .appointment-pet{flex:0 0 auto;min-width:0;max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:12px;line-height:1.2}
 .appointment-block.density-short .appointment-pet{font-size:11px;line-height:1.1}
 .day-appointment .appointment-pet{font-size:13px}
-.appointment-block .appointment-breed{flex:0 20 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--muted);font-size:10px}
+.appointment-block .appointment-breed{flex:0 20 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--muted);font-size:var(--card-text)}
 .appointment-block.density-short .appointment-breed{display:block!important}
 .appointment-block .appointment-breed::before{content:"("}
 .appointment-block .appointment-breed::after{content:")"}
 /* The one base groom reads in ink; add-ons are greyed back so the card answers "what is this
    booking" before "what was added to it". */
-.appointment-block .appointment-services{display:flex!important;flex-direction:column;min-width:0;font-size:10px;line-height:1.3}
+.appointment-block .appointment-services{display:flex!important;flex-direction:column;min-width:0;font-size:var(--card-text);line-height:1.25}
 .appointment-block .service-primary,.appointment-block .service-addon{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .appointment-block .service-primary{color:var(--ink)}
 .appointment-block .service-addon{color:var(--muted)}
-.appointment-client{margin-top:auto;padding-top:2px;color:var(--ink);font-size:10px;font-weight:600}
+.appointment-client{margin-top:auto;padding-top:2px;color:var(--ink);font-size:var(--card-text);font-weight:600}
 .appointment-block.density-short .appointment-client,.appointment-block.density-medium .appointment-client{display:none}
 /* BRIEF IS ONE LINE. A visit of 25 minutes or less is painted shorter than the strip plus a line
    beneath it at every density, so the strip gives up its own row: it loses its paper background and
@@ -897,11 +912,11 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 
 /* Payment badges. PAI/UNP replace the lifecycle badge once an appointment has an
    invoice; colour is a redundant second signal, the letters carry the meaning. */
-.appointment-badge.badge-paid{background:var(--success)}
-.appointment-badge.badge-unpaid{background:var(--warning)}
+.appointment-badge.badge-paid{background:var(--status-paid)}
+.appointment-badge.badge-unpaid{background:var(--status-unpaid)}
 /* REF/PRF are neither. Money was collected and some of it went back, so the badge borrows neither
    the green that means kept nor the amber that means owed - it reads as information. */
-.appointment-badge.badge-refunded,.appointment-badge.badge-partially-refunded{background:var(--info)}
+.appointment-badge.badge-refunded,.appointment-badge.badge-partially-refunded{background:var(--status-refunded)}
 
 /* == client profile == */
 /* The profile is one scrolling rail plus a history table. Everything below is additive: it
@@ -1031,12 +1046,15 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 /* Eight columns inside the profile's 2/3 column at 1280: 7px of side padding is what lets the
    Groomer column fit without a sideways scroll (QA D22). */
 .client-profile-workspace .history-table th,.client-profile-workspace .history-table td{padding-left:7px;padding-right:7px}
-.history-chip{display:inline-block;padding:2px 8px;border-radius:20px;background:var(--surface-2);color:var(--ink);font-size:10.5px;font-weight:700;text-transform:capitalize;white-space:nowrap}
-.history-chip.chip-scheduled,.history-chip.chip-checked_in{background:var(--info-tint);color:var(--info)}
-.history-chip.chip-in_service,.history-chip.chip-unpaid{background:var(--warning-tint);color:var(--warning)}
-.history-chip.chip-completed,.history-chip.chip-paid{background:var(--success-tint);color:var(--success)}
-.history-chip.chip-cancelled,.history-chip.chip-no_show{background:var(--danger-tint);color:var(--danger)}
-.history-chip.chip-refunded{background:var(--info-tint);color:var(--info)}
+.history-chip{display:inline-block;padding:2px 8px;border-radius:20px;background:var(--surface-2);color:var(--ink);font-size:10.5px;font-weight:700;white-space:nowrap}
+.history-chip.chip-scheduled{background:var(--status-scheduled-tint);color:var(--status-scheduled-ink)}
+.history-chip.chip-checked_in{background:var(--status-checked_in-tint);color:var(--status-checked_in)}
+.history-chip.chip-in_service{background:var(--status-in_service-tint);color:var(--status-in_service)}
+.history-chip.chip-unpaid{background:var(--status-unpaid-tint);color:var(--status-unpaid)}
+.history-chip.chip-completed{background:var(--status-completed-tint);color:var(--status-completed)}
+.history-chip.chip-paid{background:var(--status-paid-tint);color:var(--status-paid)}
+.history-chip.chip-cancelled,.history-chip.chip-no_show{background:var(--status-cancelled-tint);color:var(--status-cancelled)}
+.history-chip.chip-refunded{background:var(--status-refunded-tint);color:var(--status-refunded)}
 
 @media(max-width:700px){
   .pref-row{align-items:flex-start;flex-wrap:wrap}
@@ -1241,7 +1259,9 @@ label:has(> input[type="checkbox"]),label:has(> input[type="radio"]){
    the agenda this way since before the other four documents had a preview at all. */
 .stacked-dialog:has(.print-preview){width:min(760px,calc(100vw - 28px))}
 .print-preview{
-  max-height:60vh;margin-top:var(--space-2);padding:16px;
+  /* As tall as the window allows less the dialog's own title, footer and margins, so a receipt's
+     tenders and Total settled are on screen rather than behind an inner scroll. */
+  max-height:calc(100dvh - 240px);margin-top:var(--space-2);padding:16px;
   border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--paper);overflow:auto;
 }
 .print-preview h1{margin:0 0 12px;font-size:20px}
@@ -1339,11 +1359,11 @@ label:has(> input[type="checkbox"]),label:has(> input[type="radio"]){
    is money owed, and they call for different actions.
    --------------------------------------------------------------------------- */
 .appointment-reference{display:flex;align-items:center;gap:8px;margin:0 0 4px!important;font-size:12px;font-weight:600;color:var(--muted)}
-.appointment-billing{padding:1px 7px;border-radius:999px;font-size:11px;font-weight:700;text-transform:capitalize}
-.appointment-billing.paid{background:var(--success-tint);color:var(--success)}
-.appointment-billing.owing{background:var(--danger-tint);color:var(--danger)}
+.appointment-billing{padding:1px 7px;border-radius:999px;font-size:11px;font-weight:700}
+.appointment-billing.paid{background:var(--status-paid-tint);color:var(--status-paid)}
+.appointment-billing.owing{background:var(--status-unpaid-tint);color:var(--status-unpaid)}
 .appointment-billing.muted{background:var(--surface-2);color:var(--muted)}
-.appointment-billing.refunded{background:var(--info-tint);color:var(--info)}
+.appointment-billing.refunded{background:var(--status-refunded-tint);color:var(--status-refunded)}
 
 
 .surface-main .appointment-activity{grid-column:1/-1;border:1px solid var(--line);border-radius:9px;background:var(--paper);overflow:hidden}
@@ -1484,6 +1504,9 @@ label:has(> input[type="checkbox"]),label:has(> input[type="radio"]){
 .pet-profile-body{max-height:calc(100dvh - 150px);overflow:auto;padding:18px 20px}
 .pet-profile-actions{display:flex;justify-content:flex-end;align-items:center;gap:10px;padding:12px 20px;border-top:1px solid var(--line);background:var(--paper)}
 .pet-profile-actions .destructive{color:var(--danger)}
+/* The pet's standing - passed away, archived - is a quiet group at the far left, away from Close. */
+.pet-profile-standing{display:flex;align-items:center;gap:16px;margin-right:auto}
+.pet-profile-standing .text-button:not(.destructive){color:var(--muted)}
 
 .pet-profile-section{margin-bottom:22px;padding-bottom:20px;border-bottom:1px solid var(--line)}
 .pet-profile-section:last-child{margin-bottom:0;padding-bottom:0;border-bottom:0}
@@ -2444,6 +2467,9 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
    gives the element a child, `:empty` stops matching and the error takes its space back. The body
    is `minmax(0,1fr)` and absorbs it, so the footer does not move when a message arrives. */
 .surface-shell>p.error:empty{display:none}
+/* A message, when there is one, sits on the surface gutter like the footer below it - never flush
+   at the window edge. */
+.surface-shell>p.error{margin:0;padding:var(--space-2) clamp(16px,3vw,40px)}
 
 /* == Status strip ==
    Reuses `.appointment-lifecycle`; only the surface variant and the unrecorded/derived
@@ -2624,22 +2650,9 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
   font:600 12px/1.35 var(--font-sans);color:var(--muted);
 }
 
-/* THE EDITING AFFORDANCES, MADE VISIBLE. The pencil and the two in-card buttons are the only
-   things on this surface that change anything, and they were drawn in the same grey as the
-   dismissive controls in the footer. The brand edge and ink say "this is a control that acts on
-   the card it sits in"; the border and the label are the non-colour channels, so nothing here is
-   carried by hue alone. A refused control keeps `button:disabled`'s opacity and stops inviting. */
-#appointment-detail .work-block-head>.secondary,
-#appointment-detail .work-block-head>.icon-action{border-color:var(--brand);color:var(--brand)}
-#appointment-detail .work-block-head>.secondary:hover,
-#appointment-detail .work-block-head>.secondary:focus-visible,
-#appointment-detail .work-block-head>.icon-action:hover,
-#appointment-detail .work-block-head>.icon-action:focus-visible{
-  border-color:var(--brand-strong);background:var(--brand-tint);color:var(--brand-strong);
-}
-#appointment-detail .work-block-head>.secondary:disabled:hover{
-  border-color:var(--brand);background:var(--paper);color:var(--brand);
-}
+/* ONE IN-CONTENT ADD/EDIT VARIANT. Every add and edit control inside the visit - the client's
+   Edit and + Pet, the notes' Add/Edit, + Add service and the pencils - is the neutral secondary
+   compact control; brand ink is kept for the primary path in the footer. */
 /* The refused pencil takes the shared `.icon-action:disabled` look - muted ink on surface-2 at
    full opacity - and hover leaves it exactly there. */
 #appointment-detail .work-block-head>.icon-action:disabled,
@@ -2666,11 +2679,6 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
    in a small mark beside its name and quotes the catalog beneath the figures, in the muted ink,
    so the hand-set figure is the one the eye lands on. */
 #appointment-detail .appointment-service-row{align-items:center}
-#appointment-detail .appointment-service-row>.icon-action{border-color:var(--brand);color:var(--brand)}
-#appointment-detail .appointment-service-row>.icon-action:hover,
-#appointment-detail .appointment-service-row>.icon-action:focus-visible{
-  border-color:var(--brand-strong);background:var(--brand-tint);color:var(--brand-strong);
-}
 #appointment-detail .appointment-service-row>.icon-action:disabled,
 #appointment-detail .appointment-service-row>.icon-action:disabled:hover{
   border-color:var(--line);background:var(--surface-2);color:var(--muted);
@@ -2800,14 +2808,14 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
 
 /* RANK 4. Documents, record corrections and ways out. `--muted` on `--paper` is 5.2:1, so this is
    quiet by two channels it can afford to lose and NOT by contrast, which it cannot. */
-#appointment-detail .surface-foot-utility .secondary{
+.surface-foot-utility .secondary{
   border-color:transparent;background:transparent;color:var(--muted);
 }
-#appointment-detail .surface-foot-utility .secondary:hover,
-#appointment-detail .surface-foot-utility .secondary:focus-visible{
+.surface-foot-utility .secondary:hover,
+.surface-foot-utility .secondary:focus-visible{
   border-color:var(--line);background:var(--mint);color:var(--ink);
 }
-#appointment-detail .surface-foot-utility .secondary:disabled:hover{
+.surface-foot-utility .secondary:disabled:hover{
   border-color:transparent;background:transparent;color:var(--muted);
 }
 
@@ -2824,6 +2832,10 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
 #appointment-detail .surface-foot .destructive:focus-visible{
   border-color:var(--danger-line);background:var(--danger-tint);color:var(--danger);
 }
+/* "Void record" is a correction, not an add: the footer Cancel's danger ink at ordinary weight,
+   with the danger tint under the pointer - never the brand link "Add" wears. */
+.text-button.void-payment{padding:2px 6px;color:var(--danger);font-weight:500}
+.text-button.void-payment:hover,.text-button.void-payment:focus-visible{background:var(--danger-tint);color:var(--danger)}
 
 @media(max-width:640px){
   /* THE FOOTER WAS A THIRD OF THE PHONE. The shared rule stacks the trailing group into a column,
@@ -2970,12 +2982,13 @@ input.pref-toggle{inline-size:44px;block-size:24px;width:44px;height:24px;min-he
    --warning-tint measures above AA at this weight, and the figure carries the emphasis because
    the figure is what the operator is deciding about. */
 .checkout-settlement-progress{
-  display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin:0;
+  display:block;margin:0;
   padding:8px 10px;border-radius:var(--radius-sm);
   background:var(--warning-tint);color:var(--warning);
   font-size:12.5px;font-weight:600;line-height:1.4;
 }
 .checkout-settlement-progress strong{font-variant-numeric:tabular-nums}
+.checkout-settlement-progress .progress-part{white-space:nowrap}
 /* A chip row, not a select. Six or fewer options; above that checkout renders the shared
    <select> instead and none of this applies. */
 .checkout-methods{display:grid;gap:var(--space-2);margin:0;padding:0;border:0;min-width:0}
@@ -3758,7 +3771,7 @@ body.calendar-dragging .calendar-block[data-draggable="true"],body.calendar-drag
 @media(max-width:360px){
   header{column-gap:6px}
   .header-actions{gap:6px}
-  header>.header-services{padding:2px 7px;font-size:12px}
+  header>.header-services{padding:2px 7px}
   .new-action-control>button{padding-left:8px;padding-right:8px}
   .new-action-control>button>span[aria-hidden]{display:none}
   .header-icon-button{width:36px;height:36px}
@@ -3910,7 +3923,7 @@ body.calendar-dragging .calendar-block[data-draggable="true"],body.calendar-drag
 /* The surface head wears the cards' badge at the head's own scale - the billing chip beside it
    is a 999px pill at 11px, so the status is the same pill. The word is spelt out here because the
    head has the room a card does not. */
-.surface-head .appointment-status.appointment-badge{padding:1px 8px;border-radius:999px;font-size:11px;line-height:1.5;letter-spacing:0;text-transform:capitalize}
+.surface-head .appointment-status.appointment-badge{padding:1px 8px;border-radius:999px;font-size:11px;line-height:1.5;letter-spacing:0}
 /* One line across the head, in the danger tint the badge already uses, so a visit that will not
    happen is said before anything on the surface is read as live. */
 .surface-banner{grid-column:1/-1;margin:0;padding:var(--space-2) var(--space-3);border-radius:var(--radius-md);background:var(--danger-tint);color:var(--danger);font-size:13px;font-weight:600}
@@ -3951,7 +3964,7 @@ body.calendar-dragging .calendar-block[data-draggable="true"],body.calendar-drag
 .detail-care-notes .care-note .note-kind{color:var(--muted);font-weight:600}
 .detail-care-notes .care-alarm,.detail-care-notes .care-alarm .note-kind{color:var(--danger);font-weight:600}
 /* The agenda's status is the same badge the cards and the surface head wear, at the head's scale. */
-.agenda-indicators .appointment-status.appointment-badge{padding:1px 8px;border-radius:999px;font-size:11px;line-height:1.5;letter-spacing:0;text-transform:capitalize}
+.agenda-indicators .appointment-status.appointment-badge{padding:1px 8px;border-radius:999px;font-size:11px;line-height:1.5;letter-spacing:0}
 
 /* RC-04 · THE STRIP NEVER PAINTS OVER ITSELF. The time used to be fixed and `overflow:visible`,
    so in a narrow card it ran on under the notes icon and the badge, and the badge was the part
@@ -4155,8 +4168,6 @@ body.calendar-dragging .calendar-block[data-draggable="true"],body.calendar-drag
    control has one look, hovered or not: the outline button never fills under the pointer when it
    cannot be pressed. `.primary:hover` is the brand's strong step (edited on its own rule above),
    not ink, so a hovered primary is still the same family of button. */
-.note-guidance{line-height:1.45}
-.note-guidance .note-kind{color:var(--ink);font-weight:600}
 #appointment-detail .appointment-discount-row h3{color:var(--muted);font-size:12px;font-weight:600}
 .new-action-menu button:disabled small,.account-menu button:disabled small{color:var(--muted);font-weight:500}
 .secondary:disabled:hover{background:var(--paper)}
@@ -4196,4 +4207,43 @@ body.calendar-dragging .calendar-block[data-draggable="true"],body.calendar-drag
   .profile-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
   /* The clients list's wrapped names stay on the left, like every other cell. */
   .clients-name .text-button{text-align:left}
+}
+
+/* == Client history on a phone: rows, not a scrolled table ==
+   At 580px and below a seven-column table hid Items, Total and Groomer behind its own sideways
+   scroll. Each visit becomes one stacked item instead - when and its status on the first line, the
+   pet and what was done beneath, the total at the right - and the pager's steps and its Load
+   control each stay on one line. */
+.history-pager-steps{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.history-pager .history-view-all{white-space:nowrap}
+/* A phone on its side is the same narrow history column with less height, so it stacks too. */
+@media(max-width:580px),(max-width:900px) and (max-height:500px){
+  .history-pager{flex-wrap:wrap}
+  .client-profile-workspace .history-table-wrap{overflow-x:visible}
+  .client-profile-workspace .history-table{display:block;min-width:0}
+  .client-profile-workspace .history-table thead{display:none}
+  .client-profile-workspace .history-table tbody{display:block}
+  .client-profile-workspace .history-table tr.history-row{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:var(--space-2);row-gap:2px;padding:8px 10px;border-bottom:1px solid var(--line)}
+  .client-profile-workspace .history-table tbody tr:last-child{border-bottom:0}
+  .client-profile-workspace .history-table tr.history-row>td{display:block;min-width:0;padding:0;border:0}
+  .client-profile-workspace .history-table td.history-date{grid-column:1;grid-row:1;font-weight:600}
+  .client-profile-workspace .history-table td.history-date span{display:inline;margin-left:6px;font-weight:400;color:var(--muted)}
+  .client-profile-workspace .history-table td.history-status{grid-column:2;grid-row:1;display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap}
+  .client-profile-workspace .history-table td.history-status .history-chip{display:inline-block;margin:0}
+  .client-profile-workspace .history-table td.history-pets{grid-column:1;grid-row:2}
+  .client-profile-workspace .history-table td.history-pets span{display:inline;margin-left:4px;color:var(--muted)}
+  .client-profile-workspace .history-table td.history-total{grid-column:2;grid-row:2;text-align:right;font-weight:600}
+  .client-profile-workspace .history-table td.history-items{grid-column:1;grid-row:3;color:var(--muted)}
+  .client-profile-workspace .history-table td.history-duration{grid-column:2;grid-row:3;text-align:right;color:var(--muted)}
+  .client-profile-workspace .history-table td.history-groomer{grid-column:1;grid-row:4;color:var(--muted)}
+  .client-profile-workspace .history-table td.history-id{grid-column:2;grid-row:4;text-align:right}
+}
+
+/* == The visit's utility row at 360px and below ==
+   Four quiet actions (Cancel, No-show, Book Again, Print Ticket) wrapped onto a second row at
+   320px and took a quarter of the screen. They stay one row: tighter padding, a smaller label,
+   no wrap, and the row may scroll sideways in the rare case a status offers more. */
+@media(max-width:360px){
+  #appointment-detail .surface-foot-utility{flex-wrap:nowrap;gap:0;overflow-x:auto;scrollbar-width:none}
+  #appointment-detail .surface-foot-utility .secondary{flex:0 0 auto;padding:2px 5px;font-size:12px;white-space:nowrap}
 }

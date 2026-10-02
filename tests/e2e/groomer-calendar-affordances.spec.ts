@@ -1,5 +1,6 @@
 import { test, expect, login, createMember, createAppointment, password } from "./fixtures/tenant.js";
 import type { APIRequestContext, Page } from "@playwright/test";
+import { answerEarlyCheckIn } from "./helpers/check-in.js";
 
 /**
  * WHAT A GROOMER IS OFFERED ON THE CALENDAR, AND WHAT THEY ARE TOLD INSTEAD.
@@ -219,6 +220,7 @@ test("a groomer checks a pet in and hands it back, both from the visit itself", 
   await expect(checkIn).toHaveClass(/primary/u);
   await expect(detail.locator("footer .primary")).toHaveCount(1);
   await checkIn.click();
+  await answerEarlyCheckIn(page, tenant.anchor);
 
   // CHECKED IN: Ready for Pickup appears, enabled, and IS THE PRIMARY. Take Payment does NOT
   // appear - a groomer holds no `checkout.perform` - and with no money action on the footer the

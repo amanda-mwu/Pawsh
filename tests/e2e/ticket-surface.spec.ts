@@ -486,7 +486,7 @@ test("a future scheduled appointment gets a Ticket, and a note nobody has writte
 
     await login(page, tenant.ownerEmail);
     await openDetail(page, appointment.id);
-    await expect(page.getByTestId("appointment-status")).toHaveText("scheduled");
+    await expect(page.getByTestId("appointment-status")).toHaveText("Scheduled");
     // NO COMPLETION GATE, ON EITHER ENTRY POINT. Both are offered on a visit that has not
     // happened yet, and both open the same level — the inconsistency this replaces was the footer
     // button alone being gated on `completed` while the icon beside it was not.

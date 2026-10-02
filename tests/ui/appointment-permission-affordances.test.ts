@@ -124,6 +124,7 @@ function client(status = "scheduled", { railFails = "forbidden" as "forbidden" |
     const appointmentsLocked = () => false;
     const appointmentMoveAllowed = () => allowed("appointments.edit") && !appointmentsLocked();
     const appointmentBillingChip = () => ({ tone: "neutral", label: "Unbilled" });
+    const appointmentStatusLabel = (status) => String(status || "").replaceAll("_", " ");
     const appointmentLockNoteMarkup = () => "";
     const appointmentActivityMarkup = () => "<!--activity-->";
     const appointmentLifecycleMarkup = () => "<!--lifecycle-->";

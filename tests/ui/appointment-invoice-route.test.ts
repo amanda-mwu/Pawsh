@@ -684,15 +684,17 @@ describe("the financial control on a completed appointment", () => {
   it("draws no control at all when the appointment was never invoiced", () => {
     const client = loadClient();
     client.grant("payments.view");
-    // Cancelled: read-only, never billed. Close keeps the primary slot, because there is nothing
-    // on this visit to come for.
+    // Cancelled: read-only, never billed. There is no footer Close any more (QA UX-13) - the
+    // head's x is the way out - and a role that cannot rebook has no enabled lead action, so the
+    // footer draws no primary at all rather than promoting a dismissal or a disabled control.
     const surface = appointmentSurface({ status: "cancelled" });
     const { markup, handlers } = openSurface(client, surface);
 
     expect(control(markup, "appointment-invoice")).toBeNull();
     expect(handlers["appointment-invoice"]).toBeUndefined();
-    expect(control(markup, "appointment-close")).toContain("primary");
-    expect(markup.match(/class="primary compact"/gu)?.length).toBe(1);
+    expect(control(markup, "appointment-close")).toBeNull();
+    expect(control(markup, "appointment-ticket")).not.toBeNull();
+    expect(markup.match(/class="primary compact"/gu)).toBeNull();
   });
 });
 

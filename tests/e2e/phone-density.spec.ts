@@ -61,9 +61,9 @@ test("@responsive the calendar is compact, target-safe and never overflows at fi
         expect(box!.x + box!.width, `${width}: ${testid} is on screen`).toBeLessThanOrEqual(width);
       }
 
-      // The toolbar: three compact rows, every control a full effective target.
+      // The toolbar: two compact rows, every control a full effective target.
       const toolbar = await page.locator(".calendar-toolbar").boundingBox();
-      expect(toolbar!.height, `${width}: three compact rows`).toBeLessThan(130);
+      expect(toolbar!.height, `${width}: two compact rows`).toBeLessThan(95);
       for (const selector of ["#calendar-today", "#calendar-prev-week", "#calendar-next-week", "#calendar-view-select",
         "#groomer-filter-trigger", "[data-testid=print-agenda]", "[data-testid=calendar-settings]",
         "#calendar-agenda-mode", "#calendar-calendar-mode"]) {

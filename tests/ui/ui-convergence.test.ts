@@ -31,7 +31,7 @@ import { describe, expect, it } from "vitest";
  *   `petCareNotes` flagging every kind as an alarm                "only the safety alert is an alarm"
  *   `warning` folding the five notes together again               "the model's warning is the alarm alone"
  *   the badge back to `badge.code` alone                           "a card badge carries the word and the code"
- *   `.appointment-time` elastic again                              "the time never gives way in the strip"
+ *   `.appointment-time` painting past its box again                 "the strip never paints over itself, and the badge is never the part that gives way"
  *   `calendarDragScrollLimit` reading `scrollHeight`               "edge auto-scroll stops at the grid's last row"
  *   `moveQuestion` naming no pet                                   "the move question names the pet and both times"
  *   `revealCalendarAppointment` never scrolling                    "a booked or moved card is scrolled into the box"
@@ -613,8 +613,8 @@ describe("the sticky footers on a phone", () => {
     // The sentence is said once, in the settlement panel, in the body.
     const workspace = slice("function invoiceWorkspaceMarkup(", "\n// Every control on the rendered copy of the workspace");
     const summary = workspace.slice(workspace.indexOf('class="invoice-summary"'), workspace.indexOf("</aside>"));
-    expect(summary).toContain("invoiceUnavailableNoteMarkup()");
-    expect(slice("function invoiceUnavailableNoteMarkup(){", "\n}")).toContain('data-testid="invoice-unavailable-note"');
+    expect(summary).toContain("invoiceUnavailableNoteMarkup(receipt)");
+    expect(slice("function invoiceUnavailableNoteMarkup(receipt){", "\n}")).toContain('data-testid="invoice-unavailable-note"');
   });
 
   it("the invoice footer is a 2x2 of compact actions under the balance at phone width", () => {
@@ -697,12 +697,15 @@ describe("the card head", () => {
     expect(styles).not.toMatch(/@container \(max-width:150px\)\{\.appointment-badge \.badge-word/u);
   });
 
-  it("the time never gives way in the strip", () => {
-    // The convergence rule comes after the strip's own and wins the cascade.
+  it("the strip never paints over itself, and the badge is never the part that gives way", () => {
+    // Superseded by the QA pass (tests/ui/qa-pass-calendar.test.ts): the time no longer paints
+    // past its own box. It clips at its edge, a narrow card drops the END of the range first,
+    // and the badge keeps its whole code. The convergence rule still wins the cascade.
     const elastic = styles.indexOf(".appointment-block .appointment-time{flex:1 1 auto");
-    const fixed = styles.indexOf(".appointment-block .appointment-time{flex:0 0 auto;overflow:visible;text-overflow:clip}");
-    expect(fixed).toBeGreaterThan(elastic);
-    expect(styles).toContain(".appointment-block .appointment-badges{flex:0 1 auto;min-width:0;overflow:hidden}");
+    const bounded = styles.indexOf(".appointment-block .appointment-time{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:clip}");
+    expect(bounded).toBeGreaterThan(elastic);
+    expect(styles).toContain(".appointment-block .appointment-badges{flex:none}");
+    expect(styles).not.toContain(".appointment-block .appointment-time{flex:0 0 auto;overflow:visible");
     expect(rule(".agenda-indicators .appointment-status.appointment-badge")).toContain("border-radius:999px;font-size:11px");
   });
 });

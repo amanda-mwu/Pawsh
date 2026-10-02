@@ -117,7 +117,11 @@ test("@regression-checkout receipt failure preserves committed payment and retri
   page.on("request",(req)=>{
     if(req.method()==="POST"&&/\/api\/invoices\/[^/]+\/payments$/.test(new URL(req.url()).pathname))paymentPosts.push(req.url());
   });
-  await page.route("**/api/invoices/*/receipt",(route)=>route.fulfill({status:429,contentType:"application/json",body:JSON.stringify({error:"temporary"})}));
+  // A 429 whose Retry-After is past the shared helper's retry ceiling: a rate-limited READ is
+  // retried after a short wait (QA D7/UX-07), but one told to come back in a minute is not, so this
+  // receipt read FAILS after the money landed - which is what this spec holds. A 4xx, so the
+  // fixture's server-fault check stays honest.
+  await page.route("**/api/invoices/*/receipt",(route)=>route.fulfill({status:429,headers:{"retry-after":"60"},contentType:"application/json",body:JSON.stringify({code:"RATE_LIMITED",error:"temporary",retryAfterSeconds:60})}));
   await page.getByTestId("checkout-submit").click();
   await expect(page.locator("#checkout-error")).toContainText("Payment recorded successfully. Receipt is temporarily unavailable.");
   await page.unroute("**/api/invoices/*/receipt");

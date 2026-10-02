@@ -289,12 +289,12 @@ test("Ready for Pickup finishes the work, touches no money, and moves Print Tick
     expect(money).toEqual([]);
     expect((await visit(request, appointment.id)).invoiceId).toBeNull();
 
-    // And the button is gone from the visit it has already finished, while the sheet has moved
-    // to the lead zone - still exactly one Print Ticket, beside Take Payment.
+    // And the button is gone from the visit it has already finished. The sheet stays the same
+    // quiet utility it is in every state (QA UX-13) - still exactly one Print Ticket.
     await expect(ready(page)).toHaveCount(0);
     await expect(detail(page).getByTestId("appointment-ticket")).toHaveCount(1);
-    await expect(detail(page).locator(".surface-foot-lead [data-testid='appointment-ticket']")).toHaveCount(1);
-    await expect(detail(page).locator(".surface-foot-utility [data-testid='appointment-ticket']")).toHaveCount(0);
+    await expect(detail(page).locator(".surface-foot-lead [data-testid='appointment-ticket']")).toHaveCount(0);
+    await expect(detail(page).locator(".surface-foot-utility [data-testid='appointment-ticket']")).toHaveCount(1);
     await expect(detail(page).getByTestId("appointment-take-payment")).toHaveClass(/primary/u);
     await expect(detail(page).locator("footer .primary")).toHaveCount(1);
   });

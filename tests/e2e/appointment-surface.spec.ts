@@ -114,14 +114,10 @@ test("the lifecycle strip reports derived times and says so only while something
 
   await login(page, tenant.ownerEmail);
   await openFromCalendar(page, scheduled.id);
-  // Nothing has been recorded, so all three read as absent. Nothing explains why: the History
-  // disclosure underneath is the activity, and the strip states the values and nothing else.
-  await expect(page.getByTestId("lifecycle-in")).toHaveText("Checked in: not recorded");
-  await expect(page.getByTestId("lifecycle-out")).toHaveText("Checked out: not recorded");
-  await expect(page.getByTestId("lifecycle-duration")).toHaveText("Duration: not recorded");
-  await expect(page.getByTestId("lifecycle-note")).toHaveCount(0);
-  // The times are derived, so there is nothing an edit could write to and no pencil is offered.
-  await expect(page.getByTestId("appointment-lifecycle").getByRole("button")).toHaveCount(0);
+  // A visit nobody has checked in has no lifecycle yet, so the strip is not drawn at all (QA
+  // Pomelo P3 #4): three "not recorded" cells on every scheduled visit were noise.
+  await expect(page.getByTestId("appointment-lifecycle")).toBeHidden();
+  await expect(page.getByTestId("lifecycle-in")).toHaveCount(0);
   await page.keyboard.press("Escape");
 
   await openFromCalendar(page, finished.id);
@@ -142,9 +138,10 @@ test("the lifecycle strip reports derived times and says so only while something
   });
   expect(refusal.ok(), await refusal.text()).toBeTruthy();
   await openFromCalendar(page, cancelled.id);
-  await expect(page.getByTestId("lifecycle-in")).toHaveText("Checked in: not recorded");
-  await expect(page.getByTestId("lifecycle-out")).toHaveText("Checked out: not recorded");
-  await expect(page.getByTestId("lifecycle-duration")).toHaveText("Duration: not recorded");
+  // Never checked in, so - like a scheduled visit - the strip is not drawn: no check-out time is
+  // claimed, and no "not recorded" triple either.
+  await expect(page.getByTestId("appointment-lifecycle")).toBeHidden();
+  await expect(page.getByTestId("lifecycle-out")).toHaveCount(0);
 });
 
 test("one history entry per level: Back dismisses the surface and a reload lands with it closed", async ({
@@ -238,11 +235,13 @@ test("a terminal appointment offers only what still means something", async ({
 
   await expect(page.getByTestId("appointment-status")).toHaveText("cancelled");
   await expect(page.getByTestId("appointment-ticket")).toBeVisible();
-  await expect(page.getByTestId("appointment-close")).toBeVisible();
+  // No footer Close (QA UX-13): the head's x is the way out.
+  await expect(page.getByTestId("appointment-close")).toHaveCount(0);
+  // Book Again stays on a visit that did not happen (QA D8).
+  await expect(page.getByTestId("appointment-book-again")).toBeVisible();
   for (const control of [
     "appointment-cancel",
     "appointment-no-show",
-    "appointment-book-again",
     "appointment-take-payment",
     "appointment-save",
     "appointment-groomer-edit",
@@ -253,11 +252,10 @@ test("a terminal appointment offers only what still means something", async ({
   // A cancelled visit still has a work sheet. Nothing on the sheet asserts the visit happened, and
   // an operator reprinting it for a cancellation they are chasing is an ordinary thing to do.
   // What the state decides is the PRIMARY SLOT: the one thing a cancelled visit is still waiting
-  // for is to be booked again, so Reschedule leads for an owner, and Close is the way out.
+  // for is to be booked again, so Reschedule leads for an owner; the head's x is the way out.
   await expect(page.getByTestId("appointment-ticket")).toBeVisible();
   await expect(page.getByTestId("appointment-ticket")).toHaveClass(/secondary/);
   await expect(page.getByTestId("appointment-reschedule")).toHaveClass(/primary/);
-  await expect(page.getByTestId("appointment-close")).toHaveClass(/secondary/);
   // The SERVICE note is closed on a cancelled visit - it is written while a dog is on the table
   // - so it is text rather than a field. The APPOINTMENT note is a different field with no
   // status window: an owner can still correct what the client asked for on a visit that never
@@ -265,7 +263,7 @@ test("a terminal appointment offers only what still means something", async ({
   await expect(page.getByTestId("appointment-note").locator("textarea")).toHaveCount(0);
   await expect(page.getByTestId("appointment-note-edit")).toBeVisible();
 
-  await page.getByTestId("appointment-close").click();
+  await page.locator("#appointment-detail [data-surface-close]").click();
   await expect(detail(page)).toBeHidden();
 });
 
@@ -326,7 +324,10 @@ test("the client rail can fail without taking the main column with it", async ({
   // Times, services and money are what this surface was opened for, and they are unaffected.
   await expect(page.getByTestId("appointment-groomer")).toHaveText("Grace Groomer");
   await expect(page.getByTestId("appointment-service-row")).toHaveCount(1);
-  await expect(page.getByTestId("appointment-lifecycle")).toContainText("Checked in:");
+  // A scheduled visit draws no lifecycle strip (QA Pomelo P3 #4); the work column itself is the
+  // proof the main column survived the rail's failure.
+  await expect(page.getByTestId("appointment-lifecycle")).toBeHidden();
+  await expect(page.getByTestId("appointment-note")).toBeVisible();
 
   await page.unroute("**/api/appointments/*/client");
   await rail.getByTestId("appointment-client-retry").click();

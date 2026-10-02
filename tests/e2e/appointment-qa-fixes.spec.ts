@@ -121,9 +121,10 @@ test("a settled visit never leads with an Invoice the groomer cannot open", asyn
   await expect(invoice).toBeDisabled();
   await expect(invoice).toHaveAttribute("title", "You do not have permission to view invoices");
   await expect(invoice).not.toHaveClass(/\bprimary\b/);
-  // The slot passes to the next enabled action on a completed visit: the sheet.
-  await expect(detail(page).getByTestId("appointment-ticket")).toHaveClass(/\bprimary\b/);
-  await expect(detail(page).locator("footer .primary")).toHaveCount(1);
+  // Nothing disabled is promoted, and the sheet is the same utility secondary in every state
+  // (QA UX-13), so this footer draws no primary at all.
+  await expect(detail(page).getByTestId("appointment-ticket")).toHaveClass(/\bsecondary\b/);
+  await expect(detail(page).locator("footer .primary")).toHaveCount(0);
 });
 
 test("the groomer pencil clears 4.5:1 at rest, on hover, on focus and when refused",
@@ -217,10 +218,13 @@ test("compact controls are compact on a fine pointer", async ({ page, request, t
   await page.waitForLoadState("networkidle");
 
   // Representative calendar controls, not the appointment surface's own patch: the fix is the
-  // shared rule, and the calendar toolbar is where QA saw the bulk.
-  for (const selector of ["#calendar-today", "#calendar-prev-week", "#calendar-next-week"]) {
+  // shared rule, and the calendar toolbar is where QA saw the bulk. The toolbar is ONE height since
+  // the QA pass (UX-05): Today and the arrows draw at `--control-h` (36px) beside the 36px toggle,
+  // filter and select, rather than at the 32px compact height in a row of mixed sizes - still
+  // nowhere near the old 44px boxes.
+  for (const selector of ["#calendar-today", "#calendar-prev-week", "#calendar-next-week", "#calendar-view-select", "#groomer-filter-trigger"]) {
     const box = await page.locator(selector).boundingBox();
-    expect(box!.height, selector).toBeLessThanOrEqual(32);
+    expect(box!.height, selector).toBeLessThanOrEqual(36);
   }
   // The one booking door is `.compact` too, and still a full target for the pointer in use.
   await expectTouchTarget(page.getByTestId("new-action-trigger"));

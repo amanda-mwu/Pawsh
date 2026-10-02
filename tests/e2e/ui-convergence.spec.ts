@@ -403,14 +403,29 @@ test("@responsive the booking workspace's client rail is one column on a phone",
     const rail = page.getByTestId("booking-client");
     await expect(rail.getByTestId("booking-client-name")).toBeVisible();
     const layout = await rail.evaluate((node) => {
-      const lefts = [...node.children].map((child) => Math.round(child.getBoundingClientRect().left));
+      // Only blocks that are drawn: the collapsed "more" details (display:none until Details is
+      // pressed) has no box, and its 0 is not a second column.
+      const lefts = [...node.children]
+        .filter((child) => getComputedStyle(child).display !== "none" && child.getBoundingClientRect().width > 0)
+        .map((child) => Math.round(child.getBoundingClientRect().left));
       return { display: getComputedStyle(node).display, lefts, width: node.getBoundingClientRect().width };
     });
     expect(layout.display).toBe("block");
     // Every block of the rail starts at the same left edge: one column, nothing beside anything.
     expect(new Set(layout.lefts).size).toBe(1);
+    // The name is not squeezed. Since the phone rail collapses to a one-line summary (QA pass
+    // UX-09) it shares its head row with the Details disclosure, so it is as wide as its own text
+    // rather than 60% of the rail: what holds is that the head spans the rail and the name is whole.
     const name = rail.getByTestId("booking-client-name");
-    expect(await name.evaluate((node) => node.getBoundingClientRect().width)).toBeGreaterThan(layout.width * 0.6);
+    // Measured against the rail's CONTENT box: the head is a block child and fills it exactly; the
+    // rail's own padding is not width the head could ever take.
+    const content = await rail.evaluate((node) => {
+      const style = getComputedStyle(node);
+      return node.getBoundingClientRect().width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
+        - parseFloat(style.borderLeftWidth) - parseFloat(style.borderRightWidth);
+    });
+    expect(await rail.locator(".booking-client-head").evaluate((node) => node.getBoundingClientRect().width)).toBeGreaterThanOrEqual(content - 1);
+    expect(await name.evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
   });
 
 // ─── RC-03 · only the safety alert is an alarm ───────────────────────────────────────────────

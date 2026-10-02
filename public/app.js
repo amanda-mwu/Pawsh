@@ -89,7 +89,31 @@ function isAbortedRequest(reason) {
   return /load failed|failed to fetch|networkerror when attempting to fetch/i.test(String(reason.message||reason));
 }
 
+/**
+ * A RATE LIMIT ON A READ IS ASKED AGAIN, NOT REPORTED. The limit is on the address, not the route,
+ * so a burst anywhere in the app made the NEXT read fail: the calendar kept the old grid under a
+ * select that already said "Day", and Check Out quietly fell back to the built-in payment methods.
+ * A GET changes nothing, so it is retried after the server's own `Retry-After` - up to three tries
+ * in all, and only while the wait asked for is short enough to sit through
+ * (`API_READ_RETRY_MAX_WAIT_SECONDS`); past that the 429 reaches the caller as before. A write is
+ * never retried here: its idempotency is the caller's to decide.
+ */
+const API_READ_TRIES=3,API_READ_RETRY_MAX_WAIT_SECONDS=20;
+function rateLimitedRead(error,method){
+  return method==="GET"&&(Number(error?.status)===429||error?.data?.code==="RATE_LIMITED");
+}
 async function api(path, options = {}) {
+  const method=String(options.method||"GET").toUpperCase();
+  for(let attempt=1;;attempt+=1){
+    try{return await apiRequest(path,options);}
+    catch(error){
+      const wait=Number(error?.retryAfterSeconds)||5;
+      if(unloading||attempt>=API_READ_TRIES||wait>API_READ_RETRY_MAX_WAIT_SECONDS||!rateLimitedRead(error,method))throw error;
+      await new Promise(resolve=>globalThis.setTimeout(resolve,wait*1000));
+    }
+  }
+}
+async function apiRequest(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (options.body !== undefined && !(options.body instanceof FormData)) headers["content-type"] = "application/json";
   const response = await fetch(path, {
@@ -874,8 +898,40 @@ function appointmentLocalValue(item){const parts=new Intl.DateTimeFormat("en-CA"
 function schedulingTime(item){
   return formatPrefTime(new Date(item.startAt),item.schedulingTimezone||schedulingZone());
 }
-function disambiguationField(value=""){
-  return `<label class="wide">Repeated-time occurrence<select name="disambiguation"><option value="" ${!value?"selected":""}>Automatic when unique</option><option value="earlier" ${value==="earlier"?"selected":""}>First occurrence</option><option value="later" ${value==="later"?"selected":""}>Second occurrence</option></select></label>`;
+// THE OCCURRENCE QUESTION IS ASKED ONLY WHEN IT EXISTS (QA UX-08). A local start names two
+// instants only inside the hour a fall-back transition repeats; everywhere else the select was a
+// question with one answer. It is in the form, hidden, and the start field reveals it when the
+// chosen wall time is really repeated in the business's zone (or a saved choice exists). The
+// server stays the authority and still refuses an ambiguous start without a choice.
+function zoneOffsetMinutes(instant,zone){
+  const parts=new Intl.DateTimeFormat("en-US",{timeZone:zone,hourCycle:"h23",year:"numeric",month:"2-digit",
+    day:"2-digit",hour:"2-digit",minute:"2-digit"}).formatToParts(instant);
+  const part=type=>Number(parts.find(entry=>entry.type===type).value);
+  const wall=Date.UTC(part("year"),part("month")-1,part("day"),part("hour")%24,part("minute"));
+  return Math.round((wall-Math.floor(instant.getTime()/60000)*60000)/60000);
+}
+function localStartAmbiguous(value,zone=schedulingZone()){
+  const match=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/u.exec(String(value||""));
+  if(!match)return false;
+  const naive=Date.UTC(+match[1],+match[2]-1,+match[3],+match[4],+match[5]);
+  try{
+    const offsets=new Set([-26,-3,3,26].map(hours=>zoneOffsetMinutes(new Date(naive+hours*3600000),zone)));
+    const hits=[...offsets].filter(offset=>zoneOffsetMinutes(new Date(naive-offset*60000),zone)===offset);
+    return hits.length>1;
+  }catch{return false;}
+}
+document.addEventListener("input",event=>{
+  const start=event.target;
+  if(start?.name!=="startAt")return;
+  const label=(start.form||start.closest("dialog"))?.querySelector("[data-disambiguation]");
+  if(!label)return;
+  const ambiguous=localStartAmbiguous(start.value);
+  label.hidden=!ambiguous;
+  if(!ambiguous)label.querySelector("select").value="";
+});
+function disambiguationField(value="",start=""){
+  const shown=Boolean(value)||localStartAmbiguous(start);
+  return `<label class="wide" data-disambiguation${shown?"":" hidden"}>Repeated-time occurrence<select name="disambiguation"><option value="" ${!value?"selected":""}>Automatic when unique</option><option value="earlier" ${value==="earlier"?"selected":""}>First occurrence</option><option value="later" ${value==="later"?"selected":""}>Second occurrence</option></select></label>`;
 }
 
 function renderDashboard(data) {
@@ -921,12 +977,34 @@ function safetyContext(item) {
 function petContextMarkup(item){
   const name=petName({petName:item.petName});
   const meta=[item.breed,clientName(item,"")].filter(Boolean);
+  const context=safetyContext(item);
   return `<div class="modal-pet-context wide" data-testid="modal-pet-context">`
     +`<p class="modal-pet-identity"><span class="modal-pet-label">Pet</span>`
       +`<strong data-testid="modal-pet-name">${escape(name)}</strong>`
       +(meta.length?`<span class="modal-pet-meta">${meta.map(escape).join(" · ")}</span>`:"")
-    +`</p>${safetyContext(item)}</div>`;
+      +(/class="care-note(?! care-alarm)/u.test(context)?phoneDetailsToggle():"")
+    +`</p>${context}</div>`;
 }
+/**
+ * A PHONE'S "DETAILS" DISCLOSURE FOR CONTEXT THAT PUSHES A FORM BELOW THE FOLD (QA UX-09).
+ *
+ * The booking client panel and a dialog's pet context are read once and then sit above the form
+ * the operator came to fill. At ≤580px (styles.css) they collapse to their one-line identity, and
+ * this toggle opens the rest. Safety alerts are never inside what collapses. Above that width the
+ * toggle is not drawn and nothing is hidden, so it is a plain button rather than a <details>.
+ */
+function phoneDetailsToggle(){
+  return `<button type="button" class="text-button phone-details-toggle" data-phone-details aria-expanded="false">Details</button>`;
+}
+document.addEventListener("click",event=>{
+  const toggle=event.target.closest?.("[data-phone-details]");
+  if(!toggle)return;
+  const host=toggle.closest(".booking-client, .modal-pet-context");
+  if(!host)return;
+  const open=host.classList.toggle("is-expanded");
+  toggle.setAttribute("aria-expanded",String(open));
+  toggle.textContent=open?"Hide details":"Details";
+});
 function appointmentHtml(item) {
   const time = schedulingTime(item);
   const customer = `${clientName(item)}`;
@@ -944,6 +1022,7 @@ function renderAppointments() {
   // network before it opens anything. A rejection dropped here would surface as an unhandled
   // rejection with nothing said to the operator.
   $$(".appointment-action").forEach((button) => button.addEventListener("click", () => runDetached(() => advanceAppointment(button.dataset.id, button.dataset.status, button))));
+  $$(".checkout-action").forEach(button=>button.addEventListener("click",()=>runDetached(()=>runOnce(`checkout:${button.dataset.id}`,()=>checkout(button.dataset.id)))));
   $$(".terminal-action").forEach(button=>button.addEventListener("click",()=>terminalAppointment(button.dataset.id,button.dataset.status)));
   $$(".move-action").forEach(button=>button.addEventListener("click",()=>moveAppointment(button.dataset.id)));
   $$(".service-action").forEach(button=>button.addEventListener("click",()=>adjustServices(button.dataset.id)));
@@ -1043,6 +1122,11 @@ function calendarAction(item){
   const scoped=calendarScopeAttrs(item);
   const controls=[`<button type="button" role="menuitem" class="calendar-action view-appointment-action" data-id="${item.id}">View / Edit</button>`];
   if(definition&&allowed(definition[1]))controls.unshift(`<button role="menuitem" data-testid="appointment-${item.status}" class="calendar-action appointment-action" data-id="${item.id}" data-status="${item.status}"${item.status==="completed"?"":scoped}>${definition[0]}</button>`);
+  // CHECKOUT FROM CHECKED IN, AS THE SURFACE OFFERS IT. The server's `canEnterCheckout` admits
+  // `checked_in` and `completed`; the card offered it on `completed` only, so the desk had to open
+  // a checked-in visit to take its payment. Money is not scoped, and a settled bill is not
+  // offered again - the same two conditions the surface footer's Take Payment answers to.
+  if(item.status==="checked_in"&&allowed("checkout.perform")&&(!item.invoiceId||appointmentInvoiceOutstanding(item)))controls.splice(definition&&allowed(definition[1])?1:0,0,`<button type="button" role="menuitem" data-testid="appointment-checkout" class="calendar-action checkout-action" data-id="${item.id}">Checkout</button>`);
   if(item.status==="scheduled"&&appointmentMoveAllowed())controls.push(`<button type="button" role="menuitem" class="calendar-action move-action" data-id="${item.id}"${scoped}>Move</button>`);
   // In the slot Move vacated, and only there. A disabled Move button would say the capability is
   // merely switched off without saying by what or where, which is the half-answer this replaces.
@@ -1076,7 +1160,7 @@ function groomerColorSlot(employeeId){
 // tall enough for the strip AND a line beneath it at any density the grid offers - so a brief card
 // lays its time and its pet name side by side on the one line it has, and the pet name is never
 // the part that is clipped away.
-function appointmentCard(item,{day=false,style="",groomerId="",lane=0,lanes=1}={}){
+function appointmentCard(item,{day=false,style="",groomerId="",lane=0,lanes=1,behind=false}={}){
   const model=appointmentPresentation(item),density=model.durationMinutes<=25?"brief":model.durationMinutes<=30?"short":model.durationMinutes<90?"medium":"long";
   // Only a scheduled appointment can be rescheduled, and only with appointments.edit, which is the
   // same gate the Move action carries - AND only where the scope allows it: a groomer without
@@ -1090,14 +1174,17 @@ function appointmentCard(item,{day=false,style="",groomerId="",lane=0,lanes=1}={
   // .appointment-status stays as the machine-readable full status the calendar suite reads; the
   // visible badge is a separate element so the assertion and the design never fight each other.
   const badges=`<span class="appointment-badges"><small class="appointment-status" aria-hidden="true">${escape(model.status)}</small>${badge?`<span class="appointment-badge badge-${escape(badge.variant)}" role="img" aria-label="${escape(badge.label)}"><span class="badge-word">${escape(badge.label)}</span><span class="badge-code">${badge.code}</span></span>`:""}${model.rabiesNeeded?`<small class="card-warning" aria-label="Rabies needed">!</small>`:""}</span>`;
-  const head=`<div class="appointment-head"><time class="appointment-time">${escape(model.timeRangeCompact)}</time>${notesButton}${badges}</div>`;
+  // The range is two spans so a narrow card can drop the end and keep the start whole; the
+  // element's text is still the whole range, so nothing that reads it changes.
+  const [timeFrom,timeTo]=model.timeRangeCompact.split("–");
+  const head=`<div class="appointment-head"><time class="appointment-time"><span class="time-from">${escape(timeFrom)}</span>${timeTo===undefined?"":`<span class="time-to">–${escape(timeTo)}</span>`}</time>${notesButton}${badges}</div>`;
   const services=`<span class="appointment-services">${split.primary?`<span class="service-primary">${escape(split.primary)}</span>`:""}${addOns.map(name=>`<span class="service-addon">${escape(name)}</span>`).join("")}${extra>0?`<small>+${extra} more</small>`:""}</span>`;
   const body=`<button type="button" class="calendar-open" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><span class="appointment-identity"><strong class="appointment-pet">${escape(petName({petName:model.petName}))}</strong>${model.breed?`<span class="appointment-breed">${escape(model.breed)}</span>`:""}</span>${services}<span class="appointment-client">${escape(model.customerName)}</span></button>`;
   // TWO APPOINTMENTS AT THE SAME TIME ARE TWO CARDS SIDE BY SIDE, the way two blocks are two
   // bands: overlapping is permitted, so a second card must never cover the first. Each card is
   // told its lane and the lane count of its cluster and the stylesheet divides the column.
   const stacked=lanes>1;
-  return `<article class="${day?"day-appointment ":""}week-appointment appointment-block density-${density} status-${escape(item.status)}" data-appointment-id="${item.id}" ${draggable?'data-draggable="true" ':""}${groomerId?`data-groomer-id="${groomerId}" data-groomer-slot="${groomerColorSlot(groomerId)}"`:""}${stacked?` data-card-lane="${lane}" data-card-lanes="${lanes}"`:""} style="${style}${stacked?`;--card-lane:${lane};--card-lanes:${lanes}`:""}">${head}${body}<div class="sr-only appointment-accessible-safety">${safetyContext(item)}</div><div class="appointment-quick-actions">${calendarAction(item)}</div></article>`;
+  return `<article class="${day?"day-appointment ":""}week-appointment appointment-block density-${density} status-${escape(item.status)}" data-appointment-id="${item.id}" ${draggable?'data-draggable="true" ':""}${groomerId?`data-groomer-id="${groomerId}" data-groomer-slot="${groomerColorSlot(groomerId)}"`:""}${stacked?` data-card-lane="${lane}" data-card-lanes="${lanes}"`:""}${behind?" data-card-behind":""} style="${style}${stacked?`;--card-lane:${lane};--card-lanes:${lanes}`:""}">${head}${body}<div class="sr-only appointment-accessible-safety">${safetyContext(item)}</div><div class="appointment-quick-actions">${calendarAction(item)}</div></article>`;
 }
 // == Blocked time on the grid ==
 //
@@ -1262,7 +1349,25 @@ function appointmentColumnLayout(items,day,start,slots,firstRow){
     entries.push({item,row:place.offset+firstRow,span:place.span,place,from:minutes,to:minutes+duration});
   }
   entries.sort((a,b)=>a.from-b.from||(b.to-b.from)-(a.to-a.from)||String(a.item.id).localeCompare(String(b.item.id)));
-  return columnLanes(entries);
+  // A CANCELLED OR NO-SHOW VISIT DOES NOT TAKE A LANE FROM A LIVE ONE. It used to halve the card
+  // beside it - a struck-through Boba made Charlie's card half as wide for a visit that is not
+  // happening. Live visits are packed on their own; the inactive ones are packed among
+  // themselves and, where they cross a live visit, drawn BEHIND it (`behind`), first in the
+  // column so the live card paints over them, with a sliver left showing for the tap.
+  const inactive=entries.filter(entry=>appointmentInactiveStatus(entry.item.status)),live=entries.filter(entry=>!appointmentInactiveStatus(entry.item.status));
+  const behind=entry=>live.some(other=>other.from<entry.to&&entry.from<other.to);
+  return [...columnLanes(inactive).map(entry=>({...entry,behind:behind(entry)})),...columnLanes(live)];
+}
+function appointmentInactiveStatus(status){return status==="cancelled"||status==="no_show";}
+/**
+ * THE NOW LINE, AND ITS LABEL IN THE TIME GUTTER. The "Now" tag used to hang off the line's left
+ * end, which is the first lane's left edge, so it sat on top of whatever card was there at that
+ * minute. It is its own element in the gutter column now (sticky, like the time labels), and both
+ * are placed at the actual minute within the row rather than on the row's top edge.
+ */
+function calendarNowMarkup(columns,row,elapsed){
+  const offset=`--minute-offset:${((elapsed%30)+30)%30}`;
+  return `<div class="calendar-now-line" role="status" aria-label="Current business time" style="grid-column:${columns};grid-row:${row};${offset}"></div><div class="calendar-now-label" aria-hidden="true" style="grid-column:1;grid-row:${row};${offset}">Now</div>`;
 }
 /**
  * The band itself. ANATOMY RATHER THAN HUE, still. Colour on this grid means WHICH GROOMER, so a
@@ -1326,7 +1431,9 @@ function renderGroomerFilter(){
       ? `Filter calendar by groomer. All ${count} groomers shown.`
       : `Filter calendar by groomer. ${count} of ${groomers.length} groomers shown.`);
 }
-function renderCalendar(){if(state.calendar.displayMode==="agenda")renderAgendaCalendar();else if(state.calendar.view==="month")renderMonthCalendar();else if(state.calendar.view==="day")renderDayCalendar();else renderWeekCalendar();updateCalendarViewControls();sizeCalendarScroll();revealCalendarPeriod();}
+// The preview belongs to an element this paint is about to replace; a pointer resting on the old
+// card never sends the pointerout that would have hidden it.
+function renderCalendar(){hideCalendarHover();if(state.calendar.displayMode==="agenda")renderAgendaCalendar();else if(state.calendar.view==="month")renderMonthCalendar();else if(state.calendar.view==="day")renderDayCalendar();else renderWeekCalendar();updateCalendarViewControls();sizeCalendarScroll();revealCalendarPeriod();}
 // --- The calendar's scroll box and where it opens ------------------------
 //
 // THE GRID TAKES THE VIEWPORT, NOT A FRACTION OF IT. `.week-scroll` was a `max-height:70vh` box:
@@ -1421,7 +1528,7 @@ function renderWeekCalendar(){
   target.style.minWidth=`${64+laneCount*WEEK_LANE_WIDTH}px`;const [start,end]=calendarHours();const slots=(end-start)/30;
   const header=`<div class="week-corner" style="grid-column:1;grid-row:1/span 2">Time</div>${days.map((day,index)=>`<button type="button" class="week-day-head ${day===state.calendar.selectedDate?"selected":""}" data-calendar-date="${day}" style="grid-column:${index*groomers.length+2}/span ${groomers.length};grid-row:1"><strong>${formatPrefLocalShortWeekday(day)}</strong> ${formatPrefLocalMonthDay(day)}</button>`).join("")}${days.flatMap((day,dayIndex)=>groomers.map((groomer,groomerIndex)=>`<div class="week-groomer-head ${groomerIndex===0?"week-day-start":""}" data-groomer-slot="${groomerColorSlot(groomer.id)}" style="grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:2" title="${escape(groomer.displayName)}">${escape(groomer.displayName)}</div>`)).join("")}`;
   let cells="";
-  for(let slot=0;slot<slots;slot++){const minutes=start+slot*30,row=slot+3;cells+=`<div class="week-time" style="grid-column:1;grid-row:${row}">${timeLabel(minutes)}</div>`;for(let dayIndex=0;dayIndex<7;dayIndex++){const day=days[dayIndex],periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(day).getUTCDay()),open=!periods.length&&!state.businessHours.length||periods.some(period=>{const from=Number(String(period.startTime).slice(0,2))*60+Number(String(period.startTime).slice(3,5)),to=Number(String(period.endTime).slice(0,2))*60+Number(String(period.endTime).slice(3,5));return minutes>=from&&minutes<to;});for(let groomerIndex=0;groomerIndex<groomers.length;groomerIndex++){const groomer=groomers[groomerIndex],preset=`${day}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`,slotAttributes=calendarSlotAttributes(open,preset,groomer.id);cells+=`<button type="button" aria-label="${day}, ${timeLabel(minutes)}, ${escape(groomer.displayName)}${slotAttributes.label}" class="week-slot ${groomerIndex===0?"week-day-start ":""}${open?"":"closed"}" ${slotAttributes.hooks} style="grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${row}"></button>`;}}}
+  for(let slot=0;slot<slots;slot++){const minutes=start+slot*30,row=slot+3;cells+=`<div class="week-time" style="grid-column:1;grid-row:${row}">${timeLabel(minutes)}</div>`;for(let dayIndex=0;dayIndex<7;dayIndex++){const day=days[dayIndex],periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(day).getUTCDay()),open=!periods.length&&!state.businessHours.length||periods.some(period=>{const from=Number(String(period.startTime).slice(0,2))*60+Number(String(period.startTime).slice(3,5)),to=Number(String(period.endTime).slice(0,2))*60+Number(String(period.endTime).slice(3,5));return minutes>=from&&minutes<to;});for(let groomerIndex=0;groomerIndex<groomers.length;groomerIndex++){const groomer=groomers[groomerIndex],preset=`${day}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`,slotAttributes=calendarSlotAttributes(open,preset,groomer.id);cells+=`<button type="button" aria-label="${day}, ${timeLabel(minutes)}, ${escape(groomer.displayName)}${slotAttributes.label}" class="week-slot ${groomerIndex===0?"week-day-start ":""}${slotAttributes.closed?"closed":""}" ${slotAttributes.hooks} style="grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${row}"></button>`;}}}
   // Drawn before the appointment cards so that, at equal specificity, a booking painted over a
   // block still reads as the booking. A groomer with no column here draws no band: the filter that
   // chose the columns is the filter the API was already asked with.
@@ -1439,10 +1546,10 @@ function renderWeekCalendar(){
   const visible=filteredAppointments();let appointments="";
   for(let dayIndex=0;dayIndex<days.length;dayIndex++)for(let groomerIndex=0;groomerIndex<groomers.length;groomerIndex++){
     const groomer=groomers[groomerIndex],own=visible.filter(item=>(item.groomers||[]).some(assigned=>assigned.id===groomer.id));
-    for(const {item,row,span,place,lane,lanes} of appointmentColumnLayout(own,days[dayIndex],start,slots,3))
-      appointments+=appointmentCard(item,{day:true,groomerId:groomer.id,lane,lanes,style:`grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${row}/span ${span};${minutePaintStyle(place)}`});
+    for(const {item,row,span,place,lane,lanes,behind} of appointmentColumnLayout(own,days[dayIndex],start,slots,3))
+      appointments+=appointmentCard(item,{day:true,groomerId:groomer.id,lane,lanes,behind,style:`grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${row}/span ${span};${minutePaintStyle(place)}`});
   }
-  const now=currentBusinessMinutes(),todayIndex=days.indexOf(businessDate()),nowRow=Math.floor((now-start)/30)+3,currentLine=todayIndex>=0&&now>=start&&now<end?`<div class="calendar-now-line" role="status" aria-label="Current business time" style="grid-column:${todayIndex*groomers.length+2}/span ${groomers.length};grid-row:${nowRow}"></div>`:"";target.innerHTML=header+cells+blocks+appointments+currentLine;
+  const now=currentBusinessMinutes(),todayIndex=days.indexOf(businessDate()),nowRow=Math.floor((now-start)/30)+3,currentLine=todayIndex>=0&&now>=start&&now<end?calendarNowMarkup(`${todayIndex*groomers.length+2}/span ${groomers.length}`,nowRow,now-start):"";target.innerHTML=header+cells+blocks+appointments+currentLine;
   $("#calendar-range").textContent=`${formatPrefLocalMonthDay(days[0])} – ${formatPrefLocalMonthDayYear(days[6])}`;
   $$('[data-calendar-date]').forEach(button=>button.addEventListener("click",()=>runDetached(()=>selectCalendarDate(button.dataset.calendarDate))));
   bindCalendarInteractions();
@@ -1459,7 +1566,7 @@ function renderDayCalendar(){
   let content=`<div class="day-corner" style="grid-column:1;grid-row:1">Time</div>${groomers.map((groomer,index)=>`<div class="day-groomer" data-day-column="${index}" data-groomer-slot="${groomerColorSlot(groomer.id)}" style="grid-column:${index+2};grid-row:1">${escape(groomer.displayName)}</div>`).join("")}`;
   // The first column with a visit or a block on it, for `revealCalendarPeriod` to open a phone on.
   let firstBusyColumn=null;
-  for(let slot=0;slot<slots;slot++){const minutes=start+slot*30,row=slot+2,periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(state.calendar.selectedDate).getUTCDay()),open=!periods.length&&!state.businessHours.length||periods.some(period=>{const from=Number(String(period.startTime).slice(0,2))*60+Number(String(period.startTime).slice(3,5)),to=Number(String(period.endTime).slice(0,2))*60+Number(String(period.endTime).slice(3,5));return minutes>=from&&minutes<to;});content+=`<div class="day-time" style="grid-column:1;grid-row:${row}">${timeLabel(minutes)}</div>`;for(let index=0;index<groomers.length;index++){const groomer=groomers[index],preset=`${state.calendar.selectedDate}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`,slotAttributes=calendarSlotAttributes(open,preset,groomer.id);content+=`<button type="button" class="day-slot ${open?"":"closed"}" ${slotAttributes.hooks} style="grid-column:${index+2};grid-row:${row}" aria-label="${escape(state.calendar.selectedDate)}, ${timeLabel(minutes)}, ${escape(groomer.displayName)}${slotAttributes.label}"></button>`;}}
+  for(let slot=0;slot<slots;slot++){const minutes=start+slot*30,row=slot+2,periods=state.businessHours.filter(item=>Number(item.weekday)===dateAt(state.calendar.selectedDate).getUTCDay()),open=!periods.length&&!state.businessHours.length||periods.some(period=>{const from=Number(String(period.startTime).slice(0,2))*60+Number(String(period.startTime).slice(3,5)),to=Number(String(period.endTime).slice(0,2))*60+Number(String(period.endTime).slice(3,5));return minutes>=from&&minutes<to;});content+=`<div class="day-time" style="grid-column:1;grid-row:${row}">${timeLabel(minutes)}</div>`;for(let index=0;index<groomers.length;index++){const groomer=groomers[index],preset=`${state.calendar.selectedDate}T${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`,slotAttributes=calendarSlotAttributes(open,preset,groomer.id);content+=`<button type="button" class="day-slot ${slotAttributes.closed?"closed":""}" ${slotAttributes.hooks} style="grid-column:${index+2};grid-row:${row}" aria-label="${escape(state.calendar.selectedDate)}, ${timeLabel(minutes)}, ${escape(groomer.displayName)}${slotAttributes.label}"></button>`;}}
   // Same two clamps as the week grid, one column each. A block whose groomer has no column on
   // screen is not drawn, because there is nowhere honest to draw it.
   // Walked per column rather than per block, for the same reason the week grid is: a lane count is
@@ -1474,13 +1581,13 @@ function renderDayCalendar(){
   }
   for(let column=0;column<groomers.length;column++){
     const groomer=groomers[column],own=filteredAppointments().filter(item=>(item.groomers||[]).some(assigned=>assigned.id===groomer.id));
-    for(const {item,row,span,place,lane,lanes} of appointmentColumnLayout(own,state.calendar.selectedDate,start,slots,2)){
+    for(const {item,row,span,place,lane,lanes,behind} of appointmentColumnLayout(own,state.calendar.selectedDate,start,slots,2)){
       if(firstBusyColumn===null||column<firstBusyColumn)firstBusyColumn=column;
-      content+=appointmentCard(item,{day:true,groomerId:groomer.id,lane,lanes,style:`grid-column:${column+2};grid-row:${row}/span ${span};${minutePaintStyle(place)}`});
+      content+=appointmentCard(item,{day:true,groomerId:groomer.id,lane,lanes,behind,style:`grid-column:${column+2};grid-row:${row}/span ${span};${minutePaintStyle(place)}`});
     }
   }
   state.calendar.firstBusyColumn=firstBusyColumn??0;
-  const now=currentBusinessMinutes(),nowRow=Math.floor((now-start)/30)+2;if(state.calendar.selectedDate===businessDate()&&now>=start&&now<end)content+=`<div class="calendar-now-line" role="status" aria-label="Current business time" style="grid-column:2/-1;grid-row:${nowRow}"></div>`;target.innerHTML=content;$("#calendar-range").textContent=formatPrefLocalWeekdayDate(state.calendar.selectedDate);bindCalendarInteractions();
+  const now=currentBusinessMinutes(),nowRow=Math.floor((now-start)/30)+2;if(state.calendar.selectedDate===businessDate()&&now>=start&&now<end)content+=calendarNowMarkup("2/-1",nowRow,now-start);target.innerHTML=content;$("#calendar-range").textContent=formatPrefLocalWeekdayDate(state.calendar.selectedDate);bindCalendarInteractions();
 }
 // The slot menu shares the popover styling but is anchored to the pointer rather than parked
 // beside a trigger, so it has no expanded sibling to reset. Guarding on the attribute keeps this
@@ -1517,7 +1624,7 @@ function followCalendarPopover(){
 }
 document.addEventListener("scroll",followCalendarPopover,{capture:true,passive:true});
 globalThis.addEventListener("resize",followCalendarPopover);
-function bindCalendarInteractions(root=document){bindAppointmentLockNote(root);const find=selector=>[...root.querySelectorAll(selector)];find('[data-slot]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openSlotMenu(button);}));find('[data-calendar-appointment]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();closeCalendarMenus();openCalendarAppointment(button.dataset.calendarAppointment,event.currentTarget);}));find('[data-appointment-notes]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openAppointmentNotes(button.dataset.appointmentNotes,event.currentTarget);}));find('[data-appointment-menu]').forEach(trigger=>trigger.addEventListener("click",event=>{event.stopPropagation();const popover=trigger.nextElementSibling,opening=popover.hidden;closeCalendarMenus();popover.hidden=!opening;trigger.setAttribute("aria-expanded",String(opening));if(opening){liftCalendarPopover(popover,true);popover.querySelector("button")?.focus();}}));find('.calendar-action-popover').forEach(popover=>popover.addEventListener("keydown",event=>{if(!["ArrowDown","ArrowUp","Home","End"].includes(event.key))return;event.preventDefault();const items=[...popover.querySelectorAll('[role="menuitem"]')],index=items.indexOf(document.activeElement),next=event.key==="Home"?0:event.key==="End"?items.length-1:(index+(event.key==="ArrowDown"?1:-1)+items.length)%items.length;items[next]?.focus();}));find('.view-appointment-action').forEach(button=>button.addEventListener("click",event=>{closeCalendarMenus();openCalendarAppointment(button.dataset.id,event.currentTarget);}));find('[data-blocked-time-open]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openBlockedTime(button.dataset.blockedTimeOpen,event.currentTarget);}));}
+function bindCalendarInteractions(root=document){bindAppointmentLockNote(root);const find=selector=>[...root.querySelectorAll(selector)];find('[data-slot]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openSlotMenu(button);}));find('[data-calendar-appointment]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();closeCalendarMenus();openCalendarAppointment(button.dataset.calendarAppointment,event.currentTarget);}));find('[data-appointment-notes]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openAppointmentNotes(button.dataset.appointmentNotes,event.currentTarget);}));find('[data-appointment-menu]').forEach(trigger=>trigger.addEventListener("click",event=>{event.stopPropagation();const popover=trigger.nextElementSibling,opening=popover.hidden;closeCalendarMenus();popover.hidden=!opening;trigger.setAttribute("aria-expanded",String(opening));if(opening){liftCalendarPopover(popover,true);hideCalendarHover();popover.querySelector("button")?.focus();}}));find('.calendar-action-popover').forEach(popover=>popover.addEventListener("keydown",event=>{if(!["ArrowDown","ArrowUp","Home","End"].includes(event.key))return;event.preventDefault();const items=[...popover.querySelectorAll('[role="menuitem"]')],index=items.indexOf(document.activeElement),next=event.key==="Home"?0:event.key==="End"?items.length-1:(index+(event.key==="ArrowDown"?1:-1)+items.length)%items.length;items[next]?.focus();}));find('.view-appointment-action').forEach(button=>button.addEventListener("click",event=>{closeCalendarMenus();openCalendarAppointment(button.dataset.id,event.currentTarget);}));find('[data-blocked-time-open]').forEach(button=>button.addEventListener("click",event=>{event.stopPropagation();openBlockedTime(button.dataset.blockedTimeOpen,event.currentTarget);}));}
 // Small notes dialog. Reuses the shared <dialog>, so Escape closes it and focus returns to the
 // card button through the existing #modal close handler.
 function openAppointmentNotes(id,origin=null){
@@ -1610,11 +1717,39 @@ function calendarSlotActionable(){return calendarBookingAvailable()||calendarBlo
  * menu of two refusals is the same defect as the visible "+", spoken instead of drawn.
  */
 function calendarSlotAttributes(open,preset,groomerId){
-  const actionable=open&&calendarSlotActionable();
+  // Business hours first, then the groomer's own: a slot inside the salon's day but outside this
+  // groomer's shift is closed in THEIR column, which is what the scheduler will say to a drop.
+  const working=!open||staffHoursFit(groomerId,preset.slice(0,10),slotPresetMinutes(preset),slotPresetMinutes(preset)+1);
+  const available=open&&working,actionable=available&&calendarSlotActionable();
   return {
-    label:open?(actionable?", create appointment":""):", closed",
+    closed:!available,
+    label:available?(actionable?", create appointment":""):open?", outside working hours":", closed",
     hooks:actionable?`data-slot="${preset}" data-slot-groomer="${groomerId}"`:"disabled"
   };
+}
+function slotPresetMinutes(preset){return Number(preset.slice(11,13))*60+Number(preset.slice(14,16));}
+/**
+ * THE GROOMER'S OWN HOURS, AS THE GRID SHADES THEM. The grid used to shade the salon's hours only,
+ * so a drop at 16:10 on a groomer whose shift ends at 16:00 previewed as fine and came back 409.
+ * `/api/availability/working-hours` (the Availability screen's read, `calendar.view`) is read once
+ * with the calendar's first period and kept; a failed read shades nothing extra - this is a hint,
+ * and the scheduling route stays the authority. A groomer with no weekly rows is unrestricted
+ * (the server's fail-open rule), and per-date overrides are not modelled here: the server applies
+ * them, and the refusal still names them.
+ */
+async function loadStaffHours(){
+  if(state.staffHours)return state.staffHours;
+  try{const result=await api("/api/availability/working-hours");state.staffHours=Array.isArray(result?.employees)?result.employees:null;}
+  catch{state.staffHours=null;}
+  return state.staffHours;
+}
+function clockMinutesOf(value){return Number(String(value).slice(0,2))*60+Number(String(value).slice(3,5));}
+/** Whether `from`..`to` (minutes of `day`) lies inside one of the groomer's weekly periods. */
+function staffHoursFit(groomerId,day,from,to){
+  const employee=(state.staffHours||[]).find(entry=>entry.id===groomerId);
+  if(!employee||!Array.isArray(employee.days)||!employee.days.length)return true;
+  const weekday=dateAt(day).getUTCDay();
+  return employee.days.some(period=>Number(period.weekday)===weekday&&from>=clockMinutesOf(period.startTime)&&to<=clockMinutesOf(period.endTime));
 }
 /**
  * WHY, in a sentence an operator can read. Null when nothing is missing, so one predicate decides
@@ -1740,7 +1875,11 @@ function highlightDropSlot(slot){
   if(drag.preview.parentElement!==grid)grid.append(drag.preview);
   drag.preview.style.cssText=`grid-column:${slot.style.gridColumnStart};grid-row:${place.row}/span ${place.span};${minutePaintStyle(place)}`;
   drag.preview.dataset.dropStart=place.localStart;
-  drag.preview.firstChild.textContent=timeLabel(place.start);
+  // Outside the groomer's shift is drawn as such before the drop; the drop is still the server's
+  // to refuse, so nothing is blocked here.
+  const outside=drag.kind==="appointment"&&!staffHoursFit(slot.dataset.slotGroomer,place.localStart.slice(0,10),place.start,place.start+drag.minutes);
+  drag.preview.toggleAttribute("data-outside-hours",outside);
+  drag.preview.firstChild.textContent=outside?`${timeLabel(place.start)} · outside hours`:timeLabel(place.start);
 }
 // The card lives inside the scrolling grid, so the offset that keeps it under the cursor is the
 // pointer travel plus however far the grid has scrolled underneath it since the drag began.
@@ -2106,7 +2245,10 @@ function blockedTimeHoverDetails(block){
 // ONE tooltip for the whole grid. `#calendar-hover-preview` is the element the appointment hover
 // already fills and positions; a block only decides what goes inside it, so there is no second
 // tooltip to keep in step and nothing about the placement maths changes.
-function showCalendarHover(host){if(!globalThis.matchMedia("(hover: hover) and (pointer: fine)").matches)return;const blockId=host?.dataset.blockedTimeId,block=blockId?blockedTimeById(blockId):null,item=blockId?null:calendarAppointmentById(host?.dataset.appointmentId);if(!block&&!item)return;const preview=$("#calendar-hover-preview"),rect=host.getBoundingClientRect(),width=Math.min(280,globalThis.innerWidth-24);preview.innerHTML=block?blockedTimeHoverDetails(block):appointmentHoverDetails(appointmentPresentation(item));preview.style.width=`${width}px`;preview.hidden=false;const height=preview.offsetHeight,leftSpace=rect.left-12,rightSpace=globalThis.innerWidth-rect.right-12,left=rightSpace>=width?rect.right+8:leftSpace>=width?rect.left-width-8:Math.max(12,Math.min(rect.left,globalThis.innerWidth-width-12)),top=rect.bottom+height+12<=globalThis.innerHeight?rect.bottom+8:Math.max(12,rect.top-height-8);preview.style.left=`${left}px`;preview.style.top=`${top}px`;if(block){preview.dataset.hoverBlockedTimeId=block.id;preview.removeAttribute("data-hover-appointment-id");}else{preview.dataset.hoverAppointmentId=item.id;preview.removeAttribute("data-hover-blocked-time-id");}}
+// A card's menu (or the slot menu) is what the operator is reading while it is open, and the
+// preview would sit over it - focus moving into the menu is itself a focusin on the card.
+function calendarMenuOpen(){return Boolean(document.querySelector(".calendar-action-popover:not([hidden])"));}
+function showCalendarHover(host){if(!globalThis.matchMedia("(hover: hover) and (pointer: fine)").matches)return;if(calendarMenuOpen()||!host?.isConnected){hideCalendarHover();return;}const blockId=host?.dataset.blockedTimeId,block=blockId?blockedTimeById(blockId):null,item=blockId?null:calendarAppointmentById(host?.dataset.appointmentId);if(!block&&!item)return;const preview=$("#calendar-hover-preview"),rect=host.getBoundingClientRect(),width=Math.min(280,globalThis.innerWidth-24);preview.innerHTML=block?blockedTimeHoverDetails(block):appointmentHoverDetails(appointmentPresentation(item));preview.style.width=`${width}px`;preview.hidden=false;const height=preview.offsetHeight,leftSpace=rect.left-12,rightSpace=globalThis.innerWidth-rect.right-12,left=rightSpace>=width?rect.right+8:leftSpace>=width?rect.left-width-8:Math.max(12,Math.min(rect.left,globalThis.innerWidth-width-12)),top=rect.bottom+height+12<=globalThis.innerHeight?rect.bottom+8:Math.max(12,rect.top-height-8);preview.style.left=`${left}px`;preview.style.top=`${top}px`;if(block){preview.dataset.hoverBlockedTimeId=block.id;preview.removeAttribute("data-hover-appointment-id");}else{preview.dataset.hoverAppointmentId=item.id;preview.removeAttribute("data-hover-blocked-time-id");}}
 function hideCalendarHover(){const preview=$("#calendar-hover-preview");preview.hidden=true;preview.removeAttribute("data-hover-appointment-id");preview.removeAttribute("data-hover-blocked-time-id");}
 document.addEventListener("pointerover",event=>{const host=appointmentHost(event.target);if(host&&!host.contains(event.relatedTarget))showCalendarHover(host);});
 document.addEventListener("pointerout",event=>{const host=appointmentHost(event.target);if(host&&!host.contains(event.relatedTarget))hideCalendarHover();});
@@ -3084,6 +3226,8 @@ function calendarReadCurrent(token){return token===calendarReadSerial;}
 /** The two slices the grid is drawn from, written together. Month keeps its own cache in step. */
 function applyCalendarPeriod({appointments,blockedTimes},range=null){
   state.appointments=appointments;state.blockedTimes=blockedTimes;
+  // What the grid now paints, so a later read of the same period is known to be a re-read.
+  if(range)state.calendar.paintedKey=calendarPeriodKey(range);
   if(state.calendar.view==="month")state.calendar.monthAppointments=appointments;
   // A period that includes today is the freshest read of today there is, so the dashboard's list
   // takes it; a period that does not leaves the list as it was rather than emptying it.
@@ -3093,25 +3237,83 @@ function applyCalendarPeriod({appointments,blockedTimes},range=null){
 function calendarRangeCovers(range,date){return date>=range.start&&date<=dateShift(range.start,range.days-1);}
 async function loadCalendarWeek(start=state.calendar.weekStart){
   state.calendar.weekStart=start;
-  const range=calendarDisplayRange(),token=beginCalendarRead();
+  const range=calendarDisplayRange(),token=beginCalendarRead(),key=calendarPeriodKey(range);
+  // A read of the period already painted (the live tick, a refresh after a save) is a re-read; any
+  // other is a NAVIGATION, and the grid says it is loading until that read lands, because a 429
+  // retry can hold it for seconds under a toolbar that already names the new period.
+  const navigating=key!==state.calendar.paintedKey;
+  if(navigating)setCalendarBusy(true);
   // The dashboard is the one view that paints today's list, so a period read while it is showing
   // that does not cover today reads today alongside; every other view has no list to keep current.
   const readToday=document.body.dataset.view==="dashboard"&&!calendarRangeCovers(range,businessDate());
-  const [period,hours,today]=await Promise.all([readCalendarPeriod(range),state.businessHours.length?state.businessHours:api("/api/business/working-hours"),readToday?loadAppointmentRange(businessDate(),1):null]);
+  let period,hours,today;
+  try{
+    [period,hours,today]=await Promise.all([readCalendarPeriod(range),state.businessHours.length?state.businessHours:api("/api/business/working-hours"),readToday?loadAppointmentRange(businessDate(),1):null,loadStaffHours()]);
+  }catch(error){
+    if(!calendarReadCurrent(token))return;
+    // WHOEVER HOLDS THE CURRENT READ CLEARS THE BUSY STATE, navigating or not: a quick there-and-back
+    // supersedes the navigation that set it with a re-read of the painted period, and only that
+    // re-read is left to clear it. The painted grid is redrawn so the range label stops saying
+    // "Loading…" over a period it still shows.
+    if(setCalendarBusy(false)&&!navigating)renderAppointments();
+    // A FAILED RE-READ KEEPS THE GRID. The painted period is still the truth the operator last
+    // saw; the caller decides what to say (the live tick says nothing, an explicit refresh toasts).
+    if(!navigating)throw error;
+    // A FAILED NAVIGATION DRAWS THE REQUESTED VIEW, SAYING IT DID NOT LOAD. Leaving the previous
+    // period's grid under a toolbar that already names the new one is the misleading state; an
+    // empty grid on its own would read as "nothing booked". So the view is drawn empty and the
+    // banner above it says the read failed, with the one action that fixes it.
+    state.calendar.readError=error;
+    state.calendar.paintedKey=null;
+    applyCalendarPeriod({appointments:[],blockedTimes:[]},null);
+    renderCalendarReadError();
+    renderAppointments();
+    return;
+  }
   // The hours are the same whichever period is showing, so they are kept even by a superseded read.
   state.businessHours=hours;
   if(!calendarReadCurrent(token))return;
+  setCalendarBusy(false);
+  state.calendar.readError=null;
+  state.calendar.paintedKey=key;
+  renderCalendarReadError();
   applyCalendarPeriod(period,range);
   if(today)state.todayAppointments=today;
   if(!state.calendar.monthAppointments.length&&state.calendar.view!=="month")await loadCalendarMonth(state.calendar.month,false);
   renderAppointments();
+}
+/** Which period, view and groomer filter a read is for - the identity of what the grid paints. */
+function calendarPeriodKey(range){return `${state.calendar.view}|${state.calendar.displayMode}|${range.start}|${range.days}|${calendarRangeQueries(range.start,range.days).join(";")}`;}
+/**
+ * The grid's loading state: `aria-busy` for assistive tech; for the eye, a dimmed grid that takes
+ * no presses (a slot pressed on the old period would book into the wrong week) and "Loading…"
+ * drawn after the range label. The label's own TEXT is left alone: it is written by the paint that
+ * draws the cards, and whatever waits for it to change is waiting for exactly that paint.
+ * Answers whether it was busy.
+ */
+function setCalendarBusy(busy){
+  const list=$("#calendar-list"),scroll=$("#calendar .week-scroll"),label=$("#calendar-range");
+  const was=list?.getAttribute?.("aria-busy")==="true";
+  list?.setAttribute?.("aria-busy",String(busy));
+  scroll?.classList?.toggle("calendar-loading",busy);
+  label?.classList?.toggle?.("is-loading",busy);
+  return was;
 }
 async function openCalendarView(){
   // A phone was positioned on today by `refresh()` before anything was painted (see
   // `applyPhoneCalendarDefaults`), so the first open reads that day and skips the desktop's jump
   // to the first upcoming appointment.
   if(!state.calendar.opened&&state.calendar.phoneDefaults){state.calendar.opened=true;return loadCalendarWeek();}
-  await loadCalendarWeek();if(!state.calendar.opened&&!state.appointments.length&&state.calendar.selectedGroomerIds===null){const upcoming=await api(`/api/appointments?localDate=${businessDate()}&days=31`);if(upcoming.length){const date=appointmentLocalValue(upcoming[0]).slice(0,10);state.calendar.opened=true;return selectCalendarDate(date);}}state.calendar.opened=true;}
+  await loadCalendarWeek();if(!state.calendar.opened&&!state.calendar.readError&&!state.appointments.length&&state.calendar.selectedGroomerIds===null){const upcoming=await api(`/api/appointments?localDate=${businessDate()}&days=31`);if(upcoming.length){const date=appointmentLocalValue(upcoming[0]).slice(0,10);state.calendar.opened=true;return selectCalendarDate(date);}}state.calendar.opened=true;}
+function renderCalendarReadError(){
+  const scroll=$("#calendar .week-scroll");if(!scroll)return;
+  let banner=$("#calendar-read-error");
+  const error=state.calendar.readError;
+  if(!error){banner?.remove();return;}
+  if(!banner){banner=document.createElement("div");banner.id="calendar-read-error";banner.className="calendar-read-error";banner.setAttribute("role","alert");scroll.before(banner);}
+  banner.innerHTML=`<span>${escape(Number(error.status)===429?"Pawsh is busy and could not load this period.":"This period could not be loaded.")}</span><button type="button" class="secondary compact" data-testid="calendar-read-retry">Retry</button>`;
+  banner.querySelector("button").addEventListener("click",()=>runDetached(()=>loadCalendarWeek(state.calendar.weekStart)));
+}
 /**
  * WHERE THE CALENDAR OPENS ON A PHONE: TODAY, IN THE DAY VIEW.
  *
@@ -3207,7 +3409,9 @@ function adjustServices(id,record=null) {
   const appointment=record||calendarAppointmentById(id);
   if(!appointment)return toast("That appointment could not be loaded. Refresh and try again.");
   const existing=appointment.services||[];
-  openModal("Adjust appointment services",petContextMarkup(appointment)+bookingServiceCheckboxes(existing.map(service=>service.serviceId)),form=>{
+  const groomerId=appointment.employeeId||(appointment.groomers||[])[0]?.id||null;
+  const groomer=state.employees.find(employee=>employee.id===groomerId)||null;
+  openModal("Adjust appointment services",petContextMarkup(appointment)+bookingServiceCheckboxes(existing.map(service=>service.serviceId),{groomer}),form=>{
     const chosen=form.getAll("serviceIds");
     const kept=existing.filter(service=>chosen.includes(service.serviceId));
     const keptServiceIds=new Set(kept.map(service=>service.serviceId));
@@ -3271,7 +3475,10 @@ function moveAppointment(id,preset={},record=null) {
   // closes with it rather than standing open behind the dialog.
   closeCalendarMenus();
   const lead=`<p class="wide modal-lead" data-testid="move-current-slot">Moving <strong>${escape(petName({petName:appointment.petName}))}</strong> from ${escape(formatPrefLocalShortWeekdayMonthDay(current.slice(0,10)))}, ${escape(timeLabel(Number(current.slice(11,13))*60+Number(current.slice(14,16))))}</p>`;
-  openModal("Move appointment",lead+groomerCheckboxes(assigned,(appointment.services||[]).map(service=>service.serviceId))+field("startAt","Start time","datetime-local",`required ${FIVE_MINUTE_STEP_ATTR} value="${escape(local)}"`)+disambiguationField(appointment.scheduledDisambiguation||""),form=>schedulingMutation(`/api/appointments/${id}/schedule`,{employeeId:form.get("employeeId"),localStart:form.get("startAt"),disambiguation:form.get("disambiguation")||undefined,expectedLocationVersion:state.me.business.locationVersion,version:appointment.version},"Reschedule").then(()=>()=>revealCalendarAppointment(id,String(form.get("startAt")).slice(0,10))));
+  openModal("Move appointment",lead+groomerCheckboxes(assigned,(appointment.services||[]).map(service=>service.serviceId),
+    // Only staff this caller may assign (QA F10): without `appointments.edit_all_staff` that is the
+    // caller alone - the server refuses anyone else on Save.
+    {only:allowed("appointments.edit_all_staff")?null:[myEmployeeId(),...assigned].filter(Boolean)})+field("startAt","Start time","datetime-local",`required ${FIVE_MINUTE_STEP_ATTR} value="${escape(local)}"`)+disambiguationField(appointment.scheduledDisambiguation||"",local),form=>schedulingMutation(`/api/appointments/${id}/schedule`,{employeeId:form.get("employeeId"),localStart:form.get("startAt"),disambiguation:form.get("disambiguation")||undefined,expectedLocationVersion:state.me.business.locationVersion,version:appointment.version},"Reschedule").then(()=>()=>revealCalendarAppointment(id,String(form.get("startAt")).slice(0,10))));
 }
 async function terminalAppointment(id,status,record=null) {
   if(!confirm(status==="cancelled"?"Cancel this appointment?":"Mark this appointment as a no-show?"))return;
@@ -3597,7 +3804,9 @@ function checkoutBillMarkup(co){
     ? `<p class="fine" data-testid="checkout-frozen">Invoice ${escape(invoice.invoiceNumber)} is already raised, so the services, discounts and tip are fixed. Only the payment is still open.</p>`
     : (grants?checkoutDisclosureMarkup("discount","+ Set discount",
         field("discount","Amount ($)","number",'min="0" step=".01" value="0"'),false):"")
-      +checkoutDisclosureMarkup("coupon","+ Apply coupon or discount",
+      // Without `discounts.apply` the server withholds the discounts (`options === null`) and only
+      // a coupon code can be entered here, so the control says only what it offers (QA D17).
+      +checkoutDisclosureMarkup("coupon",options===null?"+ Apply coupon":"+ Apply coupon or discount",
         picker+oneOnly
         +field("couponCode","Coupon code","text",
           'maxlength="40" autocomplete="off" spellcheck="false" autocapitalize="characters" class="coupon-code-input" placeholder="Optional"')
@@ -3645,6 +3854,12 @@ function checkoutTipFieldsMarkup(co){
 
 function checkoutMethodMarkup(co){
   const methodOptions=co.choices.map(choice=>[choice.value,choice.label]);
+  // Said in the method group whenever the built-in methods stand in for the salon's own list, so
+  // the operator knows these are not the configured ones and that the read failed (QA UX-07).
+  const fallbackNotice=co.choices.some(choice=>choice.fallback)
+    ? `<p class="fine checkout-methods-fallback" data-testid="checkout-methods-fallback" role="status">`
+      +`Payment settings could not be loaded, so the built-in methods are shown.</p>`
+    : "";
   // A card terminal is a capture route rather than a settlement type: it is offered beside the
   // salon's methods because that is the one decision the operator is making, and choosing it hands
   // the tip to hardware that asks the customer directly.
@@ -3677,10 +3892,11 @@ function checkoutMethodMarkup(co){
   if(methodOptions.length>chipLimit){
     // `""` selects the placeholder `select()` always renders, so the select opens on "Choose…"
     // for the same reason the radios open on nothing.
-    return select("method","Method",methodOptions,true,"");
+    return select("method","Method",methodOptions,true,"")+fallbackNotice;
   }
   const single=co.terminals.length===1?co.terminals[0]:null;
   return `<fieldset class="checkout-methods" data-testid="field-method"><legend>Method</legend>`
+    +fallbackNotice
     +methodOptions.map(([value,label])=>`<label class="checkout-method">`
       +`<input type="radio" name="method" value="${escapeAttr(value)}" data-testid="checkout-method">`
       +`<span>${escape(label)}`
@@ -4191,7 +4407,7 @@ async function checkout(id) {
     setError("");
     if(co.awaitingReceipt){
       submit.disabled=true;
-      try{await retryReceipt();}finally{if(submit.isConnected)submit.disabled=false;}
+      try{await retryReceipt();}finally{if(submit?.isConnected)submit.disabled=false;}
       return;
     }
     const mode=checkoutMode(co);
@@ -4405,7 +4621,7 @@ async function checkout(id) {
       }
     }finally{
       const live=dialog.querySelector('[data-testid="checkout-submit"]');
-      if(live===submit&&submit.isConnected){submit.disabled=false;submit.textContent=original;}
+      if(submit&&live===submit&&submit.isConnected){submit.disabled=false;submit.textContent=original;}
     }
   };
 
@@ -4786,6 +5002,12 @@ function receiptBodyMarkup(receipt) {
  * carried that column through verbatim and inventing a name here would rewrite what those
  * receipts say.
  */
+// Whether a discount's own name already states its percentage ("Welcome 15%"), so the rate is not
+// written a second time beside it.
+function discountNameCarriesRate(name,basisPoints){
+  const rate=`${taxPayPercent(basisPoints)}%`.replace(".","\\.");
+  return new RegExp(`(^|[^0-9.])${rate}`,"u").test(String(name||"").replace(/\s+%/gu,"%"));
+}
 function receiptDiscountName(row){
   const name=String(row.nameSnapshot||"").trim();
   return name&&name!=="manual"?name:"Discount";
@@ -4823,7 +5045,9 @@ function receiptDiscountLines(receipt,invoice){
   const lines=rows.map(row=>`<div class="receipt-line receipt-discount-step" data-testid="receipt-discount"><span>${escape(receiptDiscountName(row))}`
     // The rate is worth repeating on a percentage line: "-$8.00" alone does not say that it was
     // 10% of what was left, which is the whole reason two lines can produce two different totals.
-    +(row.kindSnapshot==="percentage"?` <small class="receipt-discount-rate">${escape(taxPayPercent(row.rateBasisPointsSnapshot))}%</small>`:"")
+    // Not when the name already says it: "Welcome 15%" read "Welcome 15% 15%" (QA D15).
+    +(row.kindSnapshot==="percentage"&&!discountNameCarriesRate(receiptDiscountName(row),row.rateBasisPointsSnapshot)
+      ?` <small class="receipt-discount-rate">${escape(taxPayPercent(row.rateBasisPointsSnapshot))}%</small>`:"")
     +`</span><strong>-${money(row.appliedMinor)}</strong></div>`).join("");
   // The sum, only when there is more than one thing to add up. `invoice_discounts` sums to
   // `discount_minor` exactly, so this is the same number the tax underneath was taken after.
@@ -5209,7 +5433,24 @@ function bindReceiptActions(root,receipt){
  */
 const INVOICE_UNAVAILABLE_REASON="Not built yet. Sending a receipt and asking for a review are "
   +"planned for a later release, and until they arrive nobody can send from Pawsh, on any "
-  +"invoice. Print the Receipt and hand or send it yourself.";
+  +"invoice.";
+// The Receipt half of the sentence is said only where a Receipt exists - an invoice whose
+// settlement has not completed has no Receipt to print, and telling the operator to print one
+// sends them looking for a control that is correctly absent.
+const INVOICE_RECEIPT_HINT=" Print the Receipt and hand or send it yourself.";
+function invoiceUnavailableReason(receipt){
+  return INVOICE_UNAVAILABLE_REASON+(receiptSettlementComplete(receipt)?INVOICE_RECEIPT_HINT:"");
+}
+// TAKE PAYMENT ON THE INVOICE. A voided payment puts the balance back on the invoice, and the
+// workspace that says so must offer the way to collect it - the same `checkout()` the appointment
+// footer's Take Payment opens, which collects against THIS invoice rather than raising another.
+// Offered on the same gates: a balance, an invoice still open to payment, and `checkout.perform`.
+// The server stays the authority on whether the tender lands.
+function invoiceCanTakePayment(receipt){
+  const invoice=receipt?.invoice;
+  return Boolean(invoice?.appointmentId)&&receiptBalanceOutstanding(receipt)
+    &&["draft","open","partially_paid"].includes(invoice.status)&&allowed("checkout.perform");
+}
 
 /**
  * BOTH DOCUMENTS ARE REACHABLE FROM AN INVOICE OPENED AWAY FROM CHECK OUT.
@@ -5234,22 +5475,29 @@ const INVOICE_UNAVAILABLE_REASON="Not built yet. Sending a receipt and asking fo
 function invoiceDocumentActionsMarkup(receipt){
   const unavailable=(testid,label)=>
     `<button type="button" class="secondary compact" data-testid="${testid}" disabled`
-      +` aria-disabled="true" title="${escapeAttr(INVOICE_UNAVAILABLE_REASON)}">${escape(label)}</button>`;
-  return `<div class="surface-foot-actions" data-testid="invoice-document-actions">`
+      +` aria-disabled="true" title="${escapeAttr(invoiceUnavailableReason(receipt))}">${escape(label)}</button>`;
+  // The documents and the two not-built controls are the UTILITY group; the lead slot belongs to
+  // Take Payment when there is money to take, and is absent otherwise - a disabled control never
+  // holds the dominant slot.
+  return `<div class="surface-foot-actions surface-foot-utility" data-testid="invoice-document-actions">`
     +`<button type="button" class="secondary compact" data-testid="invoice-print-invoice">Print Invoice</button>`
     +(receiptSettlementComplete(receipt)
       ? `<button type="button" class="secondary compact" data-testid="invoice-print-receipt">Print Receipt</button>`
       : "")
     +unavailable("invoice-send-receipt","Send Receipt")
     +unavailable("invoice-ask-review","Ask for Review")
-  +`</div>`;
+  +`</div>`
+  +(invoiceCanTakePayment(receipt)
+    ? `<div class="surface-foot-actions surface-foot-lead">`
+      +`<button type="button" class="primary compact" data-testid="invoice-take-payment">Take Payment</button></div>`
+    : "");
 }
 // The sentence behind the two disabled controls, said once on screen - in the settlement panel
 // rather than the footer, so a phone's sticky footer is the balance and the actions and nothing
 // that has to be read four lines deep every time the document is opened.
-function invoiceUnavailableNoteMarkup(){
+function invoiceUnavailableNoteMarkup(receipt){
   return `<p class="fine invoice-unavailable-note" data-testid="invoice-unavailable-note">`
-    +`${escape(INVOICE_UNAVAILABLE_REASON)}</p>`;
+    +`${escape(invoiceUnavailableReason(receipt))}</p>`;
 }
 
 /**
@@ -5401,7 +5649,7 @@ function invoiceWorkspaceMarkup(receipt,appointment){
       +`</div>`
       +`<aside class="invoice-summary" data-testid="invoice-summary" aria-label="Settlement">`
         +invoiceSettlementPanelMarkup(receipt)
-        +invoiceUnavailableNoteMarkup()
+        +invoiceUnavailableNoteMarkup(receipt)
       +`</aside>`
     +`</div>`
     +`<footer class="surface-foot invoice-foot">`
@@ -5422,6 +5670,9 @@ function bindInvoiceWorkspace(root,receipt){
     ?.addEventListener("click",()=>printInvoiceDocument(receipt));
   root.querySelector('[data-testid="invoice-print-receipt"]')
     ?.addEventListener("click",()=>printPaymentReceipt(receipt));
+  const appointmentId=receipt.invoice?.appointmentId;
+  root.querySelector('[data-testid="invoice-take-payment"]')
+    ?.addEventListener("click",()=>runDetached(()=>runOnce(`checkout:${appointmentId}`,()=>checkout(appointmentId))));
   bindReceiptActions(root,receipt);
 }
 
@@ -5480,9 +5731,22 @@ function showInvoiceDocument(receipt,{restoreFocus=null,onClose=null}={}){
 
   draw();
   pushStackLevel(level);
-  receiptHost=next=>{
+  const host=next=>{
     if(!appointmentStack.levels.includes(level))return false;
     view.receipt=next;draw();return true;
+  };
+  receiptHost=host;
+  // Take Payment opens Check Out ABOVE this level, and Check Out claims `receiptHost` while it is
+  // open. When it pops back here the bill has moved, so the invoice is re-read and the claim taken
+  // back - otherwise the workspace would go on showing the balance the operator just collected.
+  level.reload=async()=>{
+    const invoiceId=view.receipt?.invoice?.id;
+    if(!invoiceId)return;
+    let next=null;
+    try{next=await api(`/api/invoices/${invoiceId}/receipt`);}catch{return;}
+    if(!appointmentStack.levels.includes(level))return;
+    receiptHost=host;
+    view.receipt=next;draw();
   };
 
   /**
@@ -6098,21 +6362,26 @@ function groomerServiceGap(employee,serviceIds) {
   if(!employee.serviceIds?.length)return [];
   return serviceIds.filter(serviceId=>!employee.serviceIds.includes(serviceId));
 }
-function groomerPickerOptions(serviceIds=[]) {
-  return state.employees.filter(employee=>employee.active).map(employee=>{
+function groomerPickerOptions(serviceIds=[],{only=null}={}) {
+  return state.employees.filter(employee=>employee.active&&(!only||only.includes(employee.id))).map(employee=>{
     const gap=groomerServiceGap(employee,serviceIds)
       .map(serviceId=>state.services.find(service=>service.id===serviceId)?.name).filter(Boolean);
     return [employee.id,gap.length?`${employee.displayName} - not set up for ${gap.join(", ")}`:employee.displayName,gap.length>0];
   });
 }
-function groomerCheckboxes(selected=[],serviceIds=[]) {
-  return select("employeeId","Groomer",groomerPickerOptions(serviceIds),true,selected[0]||"");
+function groomerCheckboxes(selected=[],serviceIds=[],options={}) {
+  return select("employeeId","Groomer",groomerPickerOptions(serviceIds,options),true,selected[0]||"");
 }
 // The booking picker uses the catalog's own category order and collapsing, so core grooming
 // leads and the long tail of add-ons and cat services stays folded away. Before this the
 // groups came out in whatever order the rows arrived in, which routinely pushed the services
 // booked most often below a screenful of ones booked rarely.
-function bookingServiceCheckboxes(selected=[]) {
+// `groomer` (optional): the employee the visit is assigned to. A groomer with rows in
+// employee_services is set up only for those, and the server refuses the rest on Save; the picker
+// draws them disabled with the reason instead of letting the operator find out after choosing.
+// A service already on the visit stays pressable so it can still be removed.
+function bookingServiceCheckboxes(selected=[],{groomer=null}={}) {
+  const supported=groomer?.serviceIds?.length?new Set(groomer.serviceIds):null;
   const labels={DOG_BASE:"Core grooming",DOG_ADDON:"Add-ons",A_LA_CARTE:"Care & finishing",CAT:"Cat",GENERAL:"Other"};
   const active=state.services.filter(service=>service.active);
   const groups=[...new Set(active.map(service=>service.category))].sort((left,right)=>{
@@ -6126,7 +6395,11 @@ function bookingServiceCheckboxes(selected=[]) {
     const open=services.some(service=>selected.includes(service.id))
       ||serviceSectionOpen(category,"booking",index===0);
     const chosen=services.filter(service=>selected.includes(service.id)).length;
-    const options=services.map(service=>`<label><input type="checkbox" name="serviceIds" value="${service.id}" ${selected.includes(service.id)?"checked":""}> <span>${escape(service.name)}<small>${money(service.basePriceMinor)} · ${service.baseDurationMinutes} min</small></span></label>`).join("");
+    const options=services.map(service=>{
+      const refused=supported&&!supported.has(service.id)&&!selected.includes(service.id);
+      return `<label${refused?` class="is-unsupported"`:""}><input type="checkbox" name="serviceIds" value="${service.id}" ${selected.includes(service.id)?"checked":""}${refused?" disabled":""}> <span>${escape(service.name)}<small>${money(service.basePriceMinor)} · ${service.baseDurationMinutes} min${
+        refused?` · ${escape(groomer.displayName)} is not set up for this service`:""}</small></span></label>`;
+    }).join("");
     return `<section class="booking-service-category"><details class="service-section" data-category="${escape(category)}" data-rendered-open="${open?"true":"false"}"${open?" open":""}>`
       +`<summary class="service-section-summary" aria-expanded="${open?"true":"false"}">`
       +`<span class="service-section-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></svg></span>`
@@ -6863,7 +7136,14 @@ function markBreedRefusal(error){
 function select(name, label, options, wide = false, selectedValue = "", required = true) {
   return `<label class="${wide ? "wide" : ""}">${label}<select data-testid="field-${name}" name="${name}" ${required?"required":""}><option value="">Choose…</option>${options.map(([v,l,disabled]) => `<option value="${v}" ${disabled?"disabled":""} ${String(v)===String(selectedValue)?"selected":""}>${escape(l)}</option>`).join("")}</select></label>`;
 }
+// ONE <dialog>, MANY DIALOGS (QA F13). `#modal` is reused, so a save still in flight from the
+// dialog that was open before must not close, re-enable or write an error into whichever dialog
+// is open now. Each opening is a session; a completion acts on the dialog only while its session
+// is still the current one, and otherwise reports through a toast.
+let modalSession=0;
 function openModal(title, fields, submit, options={}) {
+  const session=++modalSession;
+  const current=()=>session===modalSession;
   $("#modal-title").textContent = title; $("#modal-fields").innerHTML = fields; $("#modal-error").textContent = "";
   const cancelButton=$("#modal .modal-actions .close"),submitButton=$("[data-testid=\"modal-submit\"]");
   cancelButton.textContent=options.cancelLabel||"Cancel";submitButton.hidden=!submit;submitButton.textContent=options.submitLabel||"Save";
@@ -6883,18 +7163,27 @@ function openModal(title, fields, submit, options={}) {
       const descriptor=outcome&&typeof outcome==="object"&&"afterClose" in outcome?outcome:null;
       const afterClose=typeof outcome==="function"?outcome:descriptor?.afterClose;
       const message=descriptor?.message||`${title} saved`;
-      if(state.me)await refresh(); $("#modal").close(); toast(message);
+      // THE SAVE HAS LANDED BY HERE, so a re-read that fails afterwards must not be reported as the
+      // save failing: the dialog would stay open with Save awake over a stale version. It closes and
+      // says both things - what was saved, and that the screen behind it may be behind.
+      let stale=null;
+      if(state.me)await refresh().catch(failure=>{stale=failure;});
+      if(current())$("#modal").close();
+      toast(stale?`${message}. The screen could not refresh (${stale.message}).`:message);
       if(typeof afterClose==="function")runDetached(afterClose);
     }
     catch (error) {
-      $("#modal-error").textContent = error.message;
+      if(current())$("#modal-error").textContent = error.message;
+      else toast(error.message);
       // The message is the server's, verbatim. The re-read behind it is what stops the calendar
       // still offering Move on every other card once this dialog closes.
       if(appointmentMoveRefused(error))await reconcileAppointmentLock();
       if(error.reconcileLifecycle||error.reconcileFinancial)await refresh().catch(failure=>toast(failure.message));
     }
-    finally{button.disabled=false;button.textContent=original;form.removeAttribute("aria-busy");}
+    finally{if(current()){button.disabled=false;button.textContent=original;form.removeAttribute("aria-busy");}}
   };
+  // A new opening while the previous one is still saving starts with its own Save awake.
+  submitButton.disabled=false;$("#modal-form").removeAttribute("aria-busy");
   $("#modal").showModal();
 }
 
@@ -6967,9 +7256,12 @@ function resetBookingState({preset=null,groomerId=null,customerId=null,petId=nul
  * Read in `openBookingDialog` AFTER its catalog fetch, never before: `state.services` may be
  * stale until then, and "active" is a fact about now.
  */
-function rescheduleCarryOver(item){
+// BOOK AGAIN carries the same services and groomer with `link:false`: a repeat of a visit that
+// happened is not a reschedule of it, so no `rescheduledFromAppointmentId` is sent and the dialog
+// keeps its ordinary title. The time is always the operator's to choose.
+function rescheduleCarryOver(item,{link=true}={}){
   return {
-    appointmentId:item.id,
+    appointmentId:link?item.id:null,
     services:(item.services||[]).map(service=>({serviceId:service.serviceId,name:service.name})),
     employeeId:item.employeeId||(item.groomers||[])[0]?.id||null,
     employeeName:item.employeeName||(item.groomers||[])[0]?.displayName||null
@@ -7090,7 +7382,9 @@ function renderBookingClientPane() {
     (unsigned.length
       ? `<div class="booking-client-banner" data-testid="booking-client-agreement-banner">Client has ${unsigned.length} unsigned required agreement${unsigned.length===1?"":"s"}</div>`
       : "")+
-    `<p class="booking-client-identity" data-testid="booking-client-name">${escape(`${clientName(client)}`)}</p>`+
+    `<div class="booking-client-head"><p class="booking-client-identity" data-testid="booking-client-name">${escape(`${clientName(client)}`)}</p>`+
+      phoneDetailsToggle()+`</div>`+
+    `<div class="booking-client-more">`+
     `<div class="booking-client-contact">`+
       (client.phone?`<span>${escape(client.phone)}</span>`:"")+
       (client.email?`<span>${escape(client.email)}</span>`:"")+
@@ -7105,7 +7399,8 @@ function renderBookingClientPane() {
       bookingClientPets().length
         ? bookingClientPets().map((pet)=>`<p class="booking-client-note">${escape(petName(pet))}<small>${escape(pet.breed||pet.species||"")}</small></p>`).join("")
         : `<p class="booking-client-note booking-client-empty">No active pets on this client.</p>`
-    }</div>`;
+    }</div></div>`;
+  pane.classList.remove("is-expanded");
   pane.querySelector('[data-testid="booking-client-back"]').addEventListener("click",()=>{
     state.booking.client=null;state.booking.agreements=null;state.booking.petId=null;
     state.booking.defaults=null;state.booking.vaccinationPrompted=false;
@@ -7147,9 +7442,10 @@ function bookingDefaultsNote() {
   // is named here so the operator books knowingly rather than discovering the gap at checkout.
   const reschedule=state.booking.reschedule;
   if(reschedule){
+    const visit=reschedule.appointmentId?"the cancelled visit":"the earlier visit";
     const parts=[reschedule.serviceIds.length
-      ? "Services carried over from the cancelled visit."
-      : "None of the cancelled visit's services are still offered, so nothing was pre-selected."];
+      ? `Services carried over from ${visit}.`
+      : `None of ${visit}'s services are still offered, so nothing was pre-selected.`];
     if(reschedule.dropped.length)parts.push(`No longer offered and left out: ${reschedule.dropped.join(", ")}.`);
     if(reschedule.groomerDropped)parts.push(`${reschedule.groomerDropped} is no longer active, so choose a groomer.`);
     return parts.join(" ");
@@ -7190,7 +7486,7 @@ function renderBookingDetailPane() {
     `<input type="hidden" name="petId" value="${escape(state.booking.petId||"")}">`+
     `<p class="booking-defaults-note" data-testid="booking-defaults-note">${escape(bookingDefaultsNote())}</p>`+
     bookingServiceCheckboxes(state.booking.reschedule?state.booking.reschedule.serviceIds:(state.booking.defaults?.services||[]).map((service)=>service.id))+
-    disambiguationField()+
+    disambiguationField("",state.booking.preset||"")+
     `<div class="pricing-preview" role="status" aria-live="polite" data-testid="booking-price-status">Choose a pet and service to calculate pricing.</div>`+
     `<p role="status" aria-live="polite" data-testid="booking-rabies-status">Choose a pet and appointment time to evaluate rabies information.</p>`+
     field("notes","Appointment note","text","",true);
@@ -7227,6 +7523,20 @@ function syncBookingGroomerOptions() {
 }
 
 let bookingPriceSequence=0;
+// The booking dialog asks for the preview from several places as it fills itself in - the open,
+// the pet's defaults, the reschedule preset - and each used to post the same body (QA D19: three
+// identical POSTs on opening Reschedule). An identical request made moments after another shares
+// its answer, in flight or just landed; a different pet or service set always asks afresh.
+let bookingPriceRequest=null;
+function resolveBookingPrices(petId,serviceIds){
+  const key=JSON.stringify({petId,serviceIds});
+  if(bookingPriceRequest?.key===key&&Date.now()-bookingPriceRequest.at<10000)return bookingPriceRequest.promise;
+  const promise=api("/api/pricing/resolve",{method:"POST",body:JSON.stringify({petId,serviceIds})});
+  const entry={key,at:Date.now(),promise};
+  bookingPriceRequest=entry;
+  promise.catch(()=>{if(bookingPriceRequest===entry)bookingPriceRequest=null;});
+  return promise;
+}
 async function updateBookingPricePreview() {
   const status=bq('[data-testid="booking-price-status"]');if(!status)return;
   const sequence=++bookingPriceSequence;
@@ -7236,8 +7546,7 @@ async function updateBookingPricePreview() {
   }
   status.textContent="Calculating authoritative price…";
   try{
-    const prices=await api("/api/pricing/resolve",{method:"POST",
-      body:JSON.stringify({petId:state.booking.petId,serviceIds})});
+    const prices=await resolveBookingPrices(state.booking.petId,serviceIds);
     if(sequence!==bookingPriceSequence)return;
     const resolved=prices.filter((price)=>price.status==="resolved");
     const summary=resolved.length===prices.length
@@ -7439,7 +7748,7 @@ function openBookingDialog(options={}) {
     const reschedule=resolveRescheduleCarryOver(options.reschedule);
     resetBookingState({...options,groomerId:options.groomerId||reschedule?.groomerId||null,reschedule});
     $("#booking-error").textContent="";
-    $("#booking-title").textContent=reschedule?"Reschedule Appointment":"Create Appointment";
+    $("#booking-title").textContent=reschedule?.appointmentId?"Reschedule Appointment":"Create Appointment";
     renderBookingClientPane();renderBookingDetailPane();
     bookingScope().showModal();
     if(options.customerId)await selectBookingClient(options.customerId);
@@ -7736,7 +8045,7 @@ $("#booking-form").addEventListener("submit",async event=>{
       // Lineage, when this booking replaces a cancelled or no-show visit. The server validates
       // the source and writes the link into both rows' activity; the cancelled row itself is
       // never touched, here or there.
-      ...(state.booking.reschedule?{rescheduledFromAppointmentId:state.booking.reschedule.appointmentId}:{})
+      ...(state.booking.reschedule?.appointmentId?{rescheduledFromAppointmentId:state.booking.reschedule.appointmentId}:{})
     },"Booking");
     await refresh();
     bookingScope().close();
@@ -8655,6 +8964,8 @@ async function loadAvailabilityHours(){
       api("/api/availability/override-counts").catch(()=>[])
     ]);
     availabilityState.hours=Array.isArray(hours?.employees)?hours.employees:[];
+    // The calendar shades each groomer's off-hours from the same read; a fresh one replaces it.
+    state.staffHours=availabilityState.hours;
     availabilityState.overrides=new Map((Array.isArray(counts)?counts:[]).map(entry=>[`${entry.employeeId}:${Number(entry.weekday)}`,Number(entry.count)]));
   }catch(error){availabilityState.hoursError=error;}
   finally{availabilityState.hoursLoading=false;}
@@ -10297,16 +10608,21 @@ function setupTerminalCapture(){
  */
 async function ensureCheckoutPaymentOptions(){
   if(checkoutOptions.data||checkoutOptions.unavailable)return;
+  // Only a refusal is remembered. A read that failed for any other reason - offline, a fault, a
+  // rate limit that outlasted the shared retry - is asked again on the next Check Out rather than
+  // pinning the built-in fallback for the rest of the session.
   try{checkoutOptions.data=await api("/api/checkout/payment-options");}
-  catch{checkoutOptions.unavailable=true;}
+  catch(error){if(error?.status===403)checkoutOptions.unavailable=true;}
 }
+
 function checkoutMethodChoices(){
   const methods=checkoutOptions.data?.paymentMethods;
   // The fallback is for a read that genuinely broke - offline, or an account without
   // checkout.perform - not for ordinary staff, who now have their own door to this list. It
   // keeps the four settlement types the select offered before any of it was configurable, so a
   // failure costs the operator the salon's labels rather than the ability to take payment.
-  if(!Array.isArray(methods))return CHECKOUT_FALLBACK_METHODS.map(([value,label])=>({value,label,settlementType:value}));
+  // `fallback` marks the stand-ins, so the method group can say so (QA UX-07).
+  if(!Array.isArray(methods))return CHECKOUT_FALLBACK_METHODS.map(([value,label])=>({value,label,settlementType:value,fallback:true}));
   return methods.map(method=>({value:method.id,label:method.name,settlementType:method.settlementType}));
 }
 /**
@@ -14434,7 +14750,7 @@ function historyRowMarkup(item,{pets,payments,selectedId}){
     +`<td class="history-status"><span class="history-chip chip-${clientAttr(item.status)}">${escape(item.status.replace("_"," "))}</span>${payment}</td>`
     +`<td class="history-date">${escape(formatPrefDate(start,zone))}<span>${escape(formatPrefWeekdayTime(start,zone))}</span></td>`
     +`<td class="history-pets"><strong>${escape(item.petName||"—")}</strong>${pet?.breed?`<span>(${escape(pet.breed)})</span>`:""}</td>`
-    +`<td class="history-items">${services.length?`Services: ${escape(services.map(service=>service.name).join(", "))}`:"<span class=\"muted-cell\">No services recorded</span>"}</td>`
+    +`<td class="history-items">${services.length?escape(services.map(service=>service.name).join(", ")):"<span class=\"muted-cell\">No services recorded</span>"}</td>`
     +`<td class="history-total">${total}</td>`
     +`<td class="history-duration">${escape(appointmentDurationLabel(item))}</td>`
     +`<td class="history-groomer">${escape(groomers.length?groomers.map(groomer=>groomer.displayName).join(", "):item.employeeName||"—")}</td>`
@@ -15434,6 +15750,12 @@ function renderClientProfile(){
   if(clientSummaryHost())return renderClientSummaryPane();
   const profile=state.clientProfile;if(!profile)return;
   const {data}=profile,customer=data.customer;
+  // ON A PHONE THE TITLE NAMES THE CLIENT (QA F12): the identity block is below the fold there,
+  // so "Client Profile" alone left the screen anonymous. Wider screens keep the generic title.
+  if(document.body.dataset.view==="client-profile"){
+    $("#page-title").innerHTML=`<span class="page-title-generic">Client Profile</span>`
+      +`<span class="page-title-subject">${escape(clientName(customer))}</span>`;
+  }
   const pet=data.pets.find(item=>item.id===profile.petId)||data.pets[0];
   // The table carries a Pets column and the counts are client-scoped, so neither list is
   // narrowed to the selected pet: the headings, the tables and the paging all agree.
@@ -16059,6 +16381,57 @@ function syncAppointmentRail(){
 // is not carried over.
 APPOINTMENT_RAIL_QUERY.addEventListener("change",()=>{appointmentRailOpen=null;syncAppointmentRail();});
 
+// TYPING IN A SURFACE ON A PHONE. With the keyboard up a phone has ~250-550px left, and the
+// surface's sticky head and stacked footer took nearly all of it, so an inline editor's own Save
+// sat behind them. While a text field in a surface body has focus at phone sizes the shell is
+// marked `is-typing` - the footer steps aside and the head shrinks (styles.css) - and the editor's
+// action row is scrolled into view, again whenever the visual viewport resizes. Check Out is left
+// out: its money fields commit through the footer. The class is dropped a beat after focus leaves
+// so a tap on the editor's Save is not moved out from under the finger by the footer returning.
+const SURFACE_TYPING_QUERY=globalThis.matchMedia("(max-width:640px), (max-height:500px)");
+const SURFACE_TEXT_ENTRY='textarea, input:not([type=checkbox],[type=radio],[type=button],[type=submit],[type=reset],[type=file],[type=range],[type=color])';
+function surfaceTypingField(element){
+  if(!element?.matches?.(SURFACE_TEXT_ENTRY))return null;
+  const body=element.closest(".surface-shell>.surface-body");
+  return body&&!body.classList.contains("checkout-body")?element:null;
+}
+function revealSurfaceEditor(field){
+  const body=field.closest(".surface-body");
+  if(!body)return;
+  // The editor's action row is the first `*-actions` group after the field inside its nearest
+  // enclosing block - the same shape every inline editor in the surface uses.
+  let actions=null;
+  for(let node=field.parentElement;node&&node!==body&&!actions;node=node.parentElement){
+    actions=[...node.querySelectorAll('[class*="-actions"]')]
+      .find(row=>field.compareDocumentPosition(row)&globalThis.Node.DOCUMENT_POSITION_FOLLOWING)||null;
+  }
+  field.scrollIntoView({block:"nearest"});
+  actions?.scrollIntoView({block:"nearest"});
+}
+let surfaceTypingTimer=0;
+document.addEventListener("focusin",event=>{
+  const field=surfaceTypingField(event.target);
+  if(!field||!SURFACE_TYPING_QUERY.matches)return;
+  globalThis.clearTimeout(surfaceTypingTimer);
+  field.closest(".surface-shell").classList.add("is-typing");
+  globalThis.requestAnimationFrame(()=>{if(document.activeElement===field)revealSurfaceEditor(field);});
+});
+document.addEventListener("focusout",()=>{
+  globalThis.clearTimeout(surfaceTypingTimer);
+  surfaceTypingTimer=globalThis.setTimeout(()=>{
+    const field=surfaceTypingField(document.activeElement);
+    document.querySelectorAll(".surface-shell.is-typing").forEach(shell=>{
+      if(!field||!shell.contains(field))shell.classList.remove("is-typing");
+    });
+  },400);
+});
+const surfaceTypingResize=()=>{
+  const field=surfaceTypingField(document.activeElement);
+  if(field&&field.closest(".surface-shell")?.classList.contains("is-typing"))revealSurfaceEditor(field);
+};
+globalThis.visualViewport?.addEventListener("resize",surfaceTypingResize);
+globalThis.addEventListener("resize",surfaceTypingResize);
+
 // The invoice state is the honest paid badge: an appointment with no invoice is unbilled rather
 // than unpaid, and the two read very differently to whoever is looking at the row.
 function appointmentBillingChip(item){
@@ -16133,6 +16506,16 @@ function appointmentLifecycleMarkup(activity,item=null){
   const cell=(testid,label,value,recorded=true)=>
     `<span data-testid="${testid}">${escape(label)}: `
       +`<strong${recorded?"":` class="is-unrecorded"`}>${escape(value)}</strong></span>`;
+  // A visit nobody has checked in has no lifecycle yet: three "not recorded" cells would be noise.
+  if(item&&!item.checkedInAt&&["scheduled","cancelled","no_show"].includes(item.status))return "";
+  // THE HISTORY READ FAILED: the stored columns still answer, and what only the history could
+  // have supplied is "unavailable" - never a spinner that never stops. "…" is for in flight only.
+  if(activity.failed){
+    const {checkedIn,finished,minutes}=appointmentLifecycleValues(item,null);
+    return cell("lifecycle-in","Checked in",checkedIn?activityStamp(checkedIn):"unavailable",Boolean(checkedIn))
+      +cell("lifecycle-out","Checked out",finished?activityStamp(finished):"unavailable",Boolean(finished))
+      +cell("lifecycle-duration","Duration",minutes!==null?lifecycleDurationLabel(minutes):"unavailable",minutes!==null);
+  }
   if(!activity.items){
     return cell("lifecycle-in","Checked in","…",false)+cell("lifecycle-out","Checked out","…",false)
       +cell("lifecycle-duration","Duration","…",false);
@@ -16613,9 +16996,7 @@ function appointmentSurfaceMarkup(surface){
     ["complete",can.completeOffered,can.complete],
     ["ready",can.readyOffered,can.ready],
     ["invoice",can.invoice,can.invoiceViewable],
-    ["reschedule",can.rescheduleOffered,can.reschedule],
-    ["ticket",can.ticketLeads,true],
-    ["close",can.readOnly,true]
+    ["reschedule",can.rescheduleOffered,can.reschedule]
   ]);
   /*
    * ONE TICKET ACTION, WHERE THERE WERE THREE, AND NAMED FOR WHAT IT PRODUCES.
@@ -16632,14 +17013,12 @@ function appointmentSurfaceMarkup(surface){
    * own Print agenda, which is what `printableAgenda` is actually for, is untouched. With only one
    * left, the control can afford to say which document it is and what pressing it leads to.
    *
-   * WHICH ZONE IT STANDS IN FOLLOWS THE STATE. While the visit is still moving the sheet is a
-   * utility - printed before the groom and clipped to the run - and lives in the quiet group. Once
-   * the visit is COMPLETED, human QA looked for it where the primary lives and did not find it:
-   * the sheet is then one of the few things left to do with the visit, so it joins the lead zone
-   * (`can.ticketLeads`), outranked there by the bill and by money still owed exactly as before.
    * Still one Print Ticket, still the same document, still no receipt semantics.
    */
-  const ticket=`<button type="button" class="${primarySlot==="ticket"?"primary":"secondary"} compact" data-testid="appointment-ticket">Print Ticket</button>`;
+  // ONE LOOK IN EVERY STATE (QA UX-13): the sheet is always the same quiet secondary in the
+  // utility group. It moved between the utility group, the lead zone and the primary slot by
+  // status, so the same control wore three weights on three visits. It is never the primary.
+  const ticket=`<button type="button" class="secondary compact" data-testid="appointment-ticket">Print Ticket</button>`;
   // It OPENS the invoice rather than raising a second one, and it is the same workspace a client's
   // transaction history opens, so there is one Invoice document with one title and one pair of
   // print controls.
@@ -16709,25 +17088,64 @@ function appointmentSurfaceMarkup(surface){
     ? `<button type="button" class="${primarySlot==="ready"?"primary":"secondary is-strong"} compact" data-testid="appointment-ready"${
       can.ready?"":can.readyRefusal}>Ready for Pickup</button>`
     : "";
-  const workflow=(can.checkInOffered
-      ? `<button type="button" class="${primarySlot==="check-in"?"primary":"secondary"} compact" data-testid="appointment-check-in"${
-        can.checkIn?"":can.checkInRefusal}>Check In</button>`
-      : "")
-    +(can.completeOffered
-      ? `<button type="button" class="${primarySlot==="complete"?"primary":"secondary"} compact" data-testid="appointment-complete"${
-        can.complete?"":can.completeRefusal}>Complete</button>`
-      : "");
-  const close=`<button type="button" class="${
-    primarySlot==="close"?"primary":"secondary"} compact" data-testid="appointment-close">Close</button>`;
+  const checkIn=can.checkInOffered
+    ? `<button type="button" class="${primarySlot==="check-in"?"primary":"secondary"} compact" data-testid="appointment-check-in"${
+      can.checkIn?"":can.checkInRefusal}>Check In</button>`
+    : "";
+  const complete=can.completeOffered
+    ? `<button type="button" class="${primarySlot==="complete"?"primary":"secondary"} compact" data-testid="appointment-complete"${
+      can.complete?"":can.completeRefusal}>Complete</button>`
+    : "";
+  const bookAgain=can.bookAgain
+    ? `<button type="button" class="secondary compact" data-testid="appointment-book-again">Book Again</button>`
+    : "";
+  // ANOTHER GROOMER'S VISIT (QA F6). A groomer may open a colleague's visit but not move it on,
+  // and the workflow controls drawn disabled held the lead slot with their reason only in a
+  // `title` a phone cannot show. When the refusal is the assignment, they are left out and the
+  // reason is said once, on screen.
+  const viewOnly=`<p class="surface-foot-note" data-testid="appointment-view-only">Assigned to ${escape(model.groomer)} — view only</p>`;
+  /*
+   * THE LEAD ZONE HOLDS ONLY WHAT CAN BE PRESSED (QA W-1). A refused lead control - Reschedule or
+   * Invoice on a read-only visit, Check In / Ready / Complete for a role that cannot move the
+   * visit on - is parked in the utility group, still drawn and still disabled, and its reason is
+   * said ONCE as a visible line where the lead would be, because a `title` cannot be read on a
+   * phone. On a colleague's visit that line names whose visit it is; otherwise it is the role's
+   * refusal sentence. A control refused by the assignment alone (F6) is left out entirely.
+   */
+  const lead=[],parked=[],reasons=new Set();
+  const place=(html,enabled)=>{
+    if(!html)return;
+    if(enabled){lead.push(html);return;}
+    parked.push(html);
+    const reason=/title="([^"]*)"/u.exec(html)?.[1];
+    if(reason)reasons.add(reason);
+  };
+  if(can.readOnly){
+    place(reschedule,can.reschedule);
+    place(invoice,can.invoiceViewable);
+  }else if(!can.assignedElsewhere){
+    place(readyForPickup,can.ready);
+    place(checkIn,can.checkIn);
+    place(complete,can.complete);
+  }
+  place(takePayment,true);
+  const refusalNote=can.assignedElsewhere||(reasons.size&&can.notMine)
+    ? viewOnly
+    : reasons.size
+      ? `<p class="surface-foot-note" data-testid="appointment-refusal-note">${[...reasons].map(reason=>`${reason}.`).join(" ")}</p>`
+      : "";
+  const leadZone=`<div class="surface-foot-actions surface-foot-lead">${lead.length?lead.join(""):refusalNote}</div>`;
+  // With something pressable in the lead, the reason line stands in the utility group instead.
+  const parkedMarkup=parked.join("")+(lead.length?refusalNote:"");
 
   const foot=can.readOnly
     // Nothing on this appointment can move any more, so the footer offers the things that still
     // mean something rather than a row of controls the server would refuse. On a settled visit the
-    // bill leads and the sheet stands beside it; on a cancelled one Reschedule leads. Close is the
-    // way out and is utility in both.
+    // bill leads; on a cancelled one Reschedule leads. Book Again and the sheet are utility in
+    // both. There is no footer Close - the head's × is the way out (QA UX-13).
     ? `<footer class="surface-foot">`
-      +`<div class="surface-foot-actions surface-foot-utility">${can.ticketLeads?"":ticket}${close}</div>`
-      +`<div class="surface-foot-actions surface-foot-lead">${can.ticketLeads?ticket:""}${reschedule}${invoice}${takePayment}</div>`
+      +`<div class="surface-foot-actions surface-foot-utility">${bookAgain}${ticket}${parkedMarkup}</div>`
+      +leadZone
     +`</footer>`
     : `<footer class="surface-foot">`
       +`<div class="surface-foot-actions surface-foot-utility">`
@@ -16735,8 +17153,9 @@ function appointmentSurfaceMarkup(surface){
           can.cancel?"":can.cancelRefusal}>Cancel</button>`:"")
         +(can.cancelOffered?`<button type="button" class="secondary compact" data-testid="appointment-no-show"${
           can.cancel?"":can.noShowRefusal}>No-show</button>`:"")
-        +(can.bookAgain?`<button type="button" class="secondary compact" data-testid="appointment-book-again">Book Again</button>`:"")
-        +(can.ticketLeads?"":ticket)
+        +bookAgain
+        +ticket
+        +parkedMarkup
         // An invoice reaches this branch only if one exists while the visit is still moving, which
         // no path produces today - `readOnly` is exactly completed-and-invoiced. It is interpolated
         // here anyway so the rule is unconditional: AN INVOICE THAT EXISTS IS REACHABLE FROM ITS
@@ -16745,7 +17164,7 @@ function appointmentSurfaceMarkup(surface){
       +`</div>`
       // A completed-but-unbilled visit is not read-only - its money is still to come - and the
       // sheet leads there too, behind Take Payment, for the same reason it leads once settled.
-      +`<div class="surface-foot-actions surface-foot-lead">${readyForPickup}${workflow}${can.ticketLeads?ticket:""}${takePayment}</div>`
+      +leadZone
     +`</footer>`;
 
   return `<div class="surface-shell" data-testid="appointment-detail">${head}${body}${foot}</div>`;
@@ -16984,12 +17403,14 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
       //
       // No permission gate either. The Ticket carries no money at all and never reads
       // `GET /api/invoices/:id/receipt`, so EXPOSING A TICKET DOES NOT EXPOSE A RECEIPT.
-      //
-      // `ticketLeads` is presentation and nothing else: on a COMPLETED visit the sheet stands in
-      // the footer's lead zone rather than the quiet utility group, and can be its primary when
-      // nothing outranks it there. It decides no availability - the Ticket is drawn in every
-      // status either way.
-      ticketLeads:status==="completed",
+
+      // A visit assigned to somebody else, refused to this actor by SCOPE rather than by role: the
+      // workflow keys are held, the assignment is what refuses them. A role without the keys is
+      // still told which permission it lacks, on the controls themselves.
+      // Somebody else's visit, whatever the role: names the visit's groomer on a refusal line.
+      notMine:!mine&&Boolean(item.employeeId||(item.groomers||[]).length),
+      assignedElsewhere:!mine&&Boolean(item.employeeId||(item.groomers||[]).length)
+        &&["operations.check_in","operations.complete"].some(key=>allowed(key)),
       // READY FOR PICKUP: THE WORK IS DONE AND THE PET CAN GO HOME.
       //
       // It is a LABEL over the existing `completed` status - no new state, no new column - and the
@@ -17454,6 +17875,7 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
       if(await closeAppointmentStack()===false)return;
       state.calendar.bookingCustomerId=surface.item.customerId;
       state.calendar.bookingPetId=surface.item.petId;
+      state.calendar.bookingReschedule=rescheduleCarryOver(surface.item,{link:false});
       actions["new-appointment"]();
     }));
     for(const [testid,status] of [["appointment-cancel","cancelled"],["appointment-no-show","no_show"]]){
@@ -17663,6 +18085,8 @@ function ticketVisitMarkup(item,model){
   const zone=item.schedulingTimezone||schedulingZone();
   return `<div class="ticket-visit">`
     +`<p data-testid="ticket-date"><span>Date:</span> ${escape(formatPrefDate(new Date(item.startAt),zone))}</p>`
+    // The visit's time range, so the sheet clipped to the run says WHEN as well as which day.
+    +(model.timeRange?`<p data-testid="ticket-time"><span>Time:</span> ${escape(model.timeRange)}</p>`:"")
     +`<p data-testid="ticket-client"><span>Client:</span> ${escape(model.customerName)}</p>`
   +`</div>`;
 }
@@ -17828,6 +18252,17 @@ function printTicket(item,notes){
  * trains the operator to dismiss confirms unread. NO refresh and NO reload of the level beneath
  * either, because the Ticket writes nothing at all.
  */
+// THE CLIENT THREAD FOR A ROLE WITHOUT `customers.view` (QA F9). The appointment surface's rail
+// reads the client through `GET /api/appointments/:id/client` under `appointments.view`, and
+// shows the notes from it; the Ticket said "unavailable" for the same notes. It takes them from
+// that payload - already held when the rail loaded it for this visit, read through the same
+// appointment-scoped route otherwise.
+function appointmentClientNotes(item){
+  const held=state.clientProfile;
+  if(held?.appointmentId===item.id&&held.notes&&!held.notes.failed)return Promise.resolve({items:held.notes.items||[]});
+  if(!allowed("appointments.view"))return Promise.reject(new Error(permissionRefusalSentence("view client notes")));
+  return api(`/api/appointments/${item.id}/client`).then(payload=>({items:payload.notes?.items||[]}));
+}
 async function openTicket(item){
   const dialog=$("#appointment-ticket");
   const source=document.activeElement;
@@ -17874,7 +18309,7 @@ async function openTicket(item){
         ? (allowed("pets.view")?api(`/api/pets/${ticket.item.petId}/notes`):refused("view pet notes"))
         : Promise.resolve({items:[]}),
       ticket.item.customerId
-        ? (allowed("customers.view")?api(`/api/customers/${ticket.item.customerId}/notes?page=1&pageSize=${CLIENT_NOTE_PAGE_SIZE}`):refused("view client notes"))
+        ? (allowed("customers.view")?api(`/api/customers/${ticket.item.customerId}/notes?page=1&pageSize=${CLIENT_NOTE_PAGE_SIZE}`):appointmentClientNotes(ticket.item))
         : Promise.resolve({items:[]})
     ]);
     ticket.notes={pet:ticketLatestNote(pet),client:ticketLatestNote(client)};

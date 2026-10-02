@@ -132,6 +132,8 @@ function client(today = "2026-09-10", { holdToday = false, view = "calendar" } =
     loadCalendarMonth: () => Promise.resolve([]),
     appointmentLocalValue: () => `${today}T09:00`,
     renderAppointments: () => { renders.count += 1; },
+    // The per-groomer hours and the read-error banner (QA pass) are not what these races are about.
+    loadStaffHours: () => Promise.resolve(null), renderCalendarReadError: () => {},
     renderAccountIdentity: () => {}, renderLocationSwitcher: () => {},
     reconcileGroomerFilter: () => {}, applyPermissions: () => {},
     // The phone's first positioning (today, day view) is decided by the viewport and exercised in

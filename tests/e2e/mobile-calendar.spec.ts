@@ -83,12 +83,12 @@ test("@responsive the calendar toolbar fits a phone: no overflow, 44px targets, 
         const box = await page.locator(selector).boundingBox();
         expect(box!.height, `${selector} paints compact`).toBeLessThanOrEqual(38);
       }
-      // And substantially fewer of them than the twelve QA counted: nine controls over three rows.
+      // And substantially fewer of them than the twelve QA counted: nine controls over two rows.
       const visible = await page.locator(".calendar-toolbar button, .calendar-toolbar select, .calendar-toolbar summary")
         .filter({ visible: true }).count();
       expect(visible).toBeLessThanOrEqual(9);
       const toolbar = await page.locator(".calendar-toolbar").boundingBox();
-      expect(toolbar!.height, "three compact rows plus gaps").toBeLessThan(130);
+      expect(toolbar!.height, "two compact rows plus a gap").toBeLessThan(95);
     }
     await expectNoDocumentOverflow(page, testInfo);
   });

@@ -121,7 +121,12 @@ test("@responsive groomer day view remains contained and touch accessible",async
   await login(page,tenant.ownerEmail);
   await openNavigation(page);
   await page.getByTestId("nav-calendar").click();
-  await expectCriticalTarget(page.locator("#calendar-view-select"));
+  // The view <select> cannot carry a hit area, so it keeps a PAINTED 44px box wherever a finger is
+  // the pointer or the layout is a phone's. On a desktop with a mouse it is one of the toolbar's
+  // 36px controls (the QA pass's one-toolbar-height rule), which is what this asserts there.
+  const touchLayout = await page.evaluate(() => matchMedia("(pointer:coarse), (max-width:580px)").matches);
+  if (touchLayout) await expectCriticalTarget(page.locator("#calendar-view-select"));
+  else expect((await page.locator("#calendar-view-select").boundingBox())!.height).toBeGreaterThanOrEqual(36);
   await page.locator("#calendar-view-select").selectOption("day");
   await expect(page.locator(".day-groomer",{hasText:"Grace Groomer"})).toBeVisible();
   await expectCriticalTarget(page.locator(".day-slot").first());

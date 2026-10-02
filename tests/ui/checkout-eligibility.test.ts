@@ -328,7 +328,8 @@ describe("every status offers the one thing it is waiting for", () => {
     for (const status of ["cancelled", "no_show"]) {
       const markup = client(status).markup();
       expect(control(markup, "appointment-ticket"), status).not.toBeNull();
-      expect(control(markup, "appointment-close"), status).not.toBeNull();
+      // No footer Close (QA UX-13): the head's x is the way out of every surface.
+      expect(control(markup, "appointment-close"), status).toBeNull();
       expect(control(markup, "appointment-take-payment"), status).toBeNull();
       expect(workflow(markup), status).toEqual([]);
     }
@@ -364,17 +365,16 @@ describe("the footer separates what the visit is waiting for from everything els
         lead: ["appointment-complete"],
         utility: ["appointment-book-again", "appointment-ticket"]
       },
-      // ONCE THE VISIT IS COMPLETED THE SHEET MOVES TO THE LEAD ZONE. Human QA looked for Print
-      // Ticket where the primary lives after Ready for Pickup and did not find it in the quiet
-      // group; it now stands beside the money, still one control and still outranked by it.
+      // THE SHEET IS THE SAME QUIET UTILITY IN EVERY STATE (QA UX-13). It used to move to the
+      // lead zone on a completed visit, so one control wore different weights on different visits.
       completed: {
-        lead: ["appointment-ticket", "appointment-take-payment"],
-        utility: ["appointment-book-again"]
+        lead: ["appointment-take-payment"],
+        utility: ["appointment-book-again", "appointment-ticket"]
       },
       // A CANCELLED VISIT LEADS WITH RESCHEDULE - booking it again is the one thing it is still
-      // waiting for - and keeps the sheet and the way out in the utility group.
-      cancelled: { lead: ["appointment-reschedule"], utility: ["appointment-ticket", "appointment-close"] },
-      no_show: { lead: ["appointment-reschedule"], utility: ["appointment-ticket", "appointment-close"] }
+      // waiting for. Book Again and the sheet are utility (QA D8); there is no footer Close.
+      cancelled: { lead: ["appointment-reschedule"], utility: ["appointment-book-again", "appointment-ticket"] },
+      no_show: { lead: ["appointment-reschedule"], utility: ["appointment-book-again", "appointment-ticket"] }
     };
     for (const status of appointmentStatuses) {
       const markup = client(status).markup();
@@ -407,9 +407,10 @@ describe("the footer separates what the visit is waiting for from everything els
     const markup = client("completed", {
       invoiceId: "inv-1", invoiceStatus: "paid", invoiceBalanceMinor: 0
     }).markup();
-    expect(zone(markup, "lead")).toEqual(["appointment-ticket", "appointment-invoice"]);
+    expect(zone(markup, "lead")).toEqual(["appointment-invoice"]);
     expect(control(markup, "appointment-invoice")).toContain("primary");
     expect(control(markup, "appointment-ticket")).not.toContain("primary");
-    expect(zone(markup, "utility")).toEqual(["appointment-close"]);
+    // Book Again on a settled visit (QA D8), the sheet beside it, and no footer Close (QA UX-13).
+    expect(zone(markup, "utility")).toEqual(["appointment-book-again", "appointment-ticket"]);
   });
 });

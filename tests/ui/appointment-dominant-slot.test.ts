@@ -241,8 +241,9 @@ describe("a disabled control never steals the dominant slot", () => {
     expect(invoice).toContain("disabled");
     expect(invoice).toContain("permission to view invoices");
     expect(invoice).not.toContain('class="primary');
-    // The slot passes to the next enabled action, which on a completed visit is the sheet.
-    expect(primaries(markup)).toEqual(["appointment-ticket"]);
+    // Nothing enabled outranks it, and the sheet is never the primary (QA UX-13), so the footer
+    // draws no primary rather than promoting a disabled control.
+    expect(primaries(markup)).toEqual([]);
   });
 
   it("a groomer's OWN settled visit leads with the Invoice, enabled, with the sheet beside it", () => {
@@ -255,7 +256,8 @@ describe("a disabled control never steals the dominant slot", () => {
       expect(invoice, invoiceStatus).not.toContain("disabled");
       expect(invoice, invoiceStatus).toContain('class="primary compact"');
       expect(primaries(markup), invoiceStatus).toEqual(["appointment-invoice"]);
-      expect(zone(markup, "lead"), invoiceStatus).toEqual(["appointment-ticket", "appointment-invoice"]);
+      expect(zone(markup, "lead"), invoiceStatus).toEqual(["appointment-invoice"]);
+      expect(zone(markup, "utility"), invoiceStatus).toContain("appointment-ticket");
     }
   });
 
@@ -295,11 +297,42 @@ describe("a disabled control never steals the dominant slot", () => {
 
   it("no enabled lead action means no primary, not a blue disabled one", () => {
     // Checked in, seen by a role that may write the note but neither finish nor bill the visit:
-    // Ready for Pickup is drawn refused and nothing is promoted in its place.
+    // Ready for Pickup is drawn refused - in the utility group, never the lead (QA W-1) - its
+    // reason is said on screen, and nothing is promoted in its place.
     const markup = client("checked_in", ["appointments.view", "operations.perform_service"]).markup();
-    expect(zone(markup, "lead")).toEqual(["appointment-ready"]);
+    expect(zone(markup, "lead")).toEqual(["appointment-refusal-note"]);
+    expect(zone(markup, "utility")).toContain("appointment-ready");
     expect(control(markup, "appointment-ready")).toContain("disabled");
+    expect(markup).toContain("You do not have permission to mark work as finished.</p>");
     expect(primaries(markup)).toEqual([]);
+  });
+
+  it("never puts a disabled control in the lead zone, and always says why one was refused (QA W-1)", () => {
+    const leadBlock = (markup: string) =>
+      /<div class="surface-foot-actions surface-foot-lead">(.*?)<\/div>/su.exec(markup)?.[1] ?? "";
+    const roles = { ...permissionPresets, groomerOther: GROOMER };
+    for (const [name, preset] of Object.entries(roles)) {
+      for (const status of ["scheduled", "checked_in", "in_service", "completed", "cancelled", "no_show"]) {
+        for (const extra of [{}, SETTLED, { invoiceId: "inv-1", invoiceStatus: "open", invoiceBalanceMinor: 1000 }]) {
+          const markup = client(status, preset, name === "groomerOther" ? { ...extra, ...COLLEAGUES } : extra).markup();
+          const where = `${name} ${status} ${JSON.stringify(extra)}`;
+          expect(leadBlock(markup), where).not.toMatch(/<button[^>]*\sdisabled/u);
+          const utility = /<div class="surface-foot-actions surface-foot-utility">(.*?)<\/div>/su.exec(markup)?.[1] ?? "";
+          // The Invoice is a lead candidate only on a read-only (completed, invoiced) visit.
+          const candidates = status === "completed" ? "reschedule|invoice|ready|check-in|complete" : "reschedule|ready|check-in|complete";
+          const refusedLead = new RegExp(`data-testid="appointment-(${candidates})"[^>]*\\sdisabled`, "u").test(utility);
+          if (refusedLead) expect(markup, where).toMatch(/data-testid="appointment-(refusal-note|view-only)"/u);
+        }
+      }
+    }
+  });
+
+  it("a colleague's read-only visit says whose it is instead of leading with a refused control", () => {
+    for (const [status, extra] of [["cancelled", {}], ["completed", SETTLED]] as const) {
+      const markup = client(status, GROOMER, { ...extra, ...COLLEAGUES }).markup();
+      expect(zone(markup, "lead"), status).toEqual(["appointment-view-only"]);
+      expect(markup, status).toContain("Assigned to");
+    }
   });
 
   it("draws at most one primary in every status for every preset", () => {
@@ -322,23 +355,26 @@ describe("a disabled control never steals the dominant slot", () => {
     expect(control(markup, "appointment-complete")).not.toContain("disabled");
   });
 
-  it("a completed, unbilled visit leads with the sheet for a groomer, never with a disabled control", () => {
-    // No money, no invoice, no transition is enabled for this role - so the sheet, which stands
-    // in the lead zone once the visit is completed, is the one enabled thing and takes the slot.
-    // Nothing disabled is promoted.
+  it("a completed, unbilled visit draws no primary for a groomer, never a disabled one", () => {
+    // No money, no invoice, no transition is enabled for this role. The sheet stays the quiet
+    // utility it is in every state (QA UX-13), so nothing takes the slot and nothing disabled
+    // is promoted.
     const markup = client("completed", GROOMER).markup();
-    expect(primaries(markup)).toEqual(["appointment-ticket"]);
+    expect(primaries(markup)).toEqual([]);
+    expect(zone(markup, "utility")).toContain("appointment-ticket");
     expect(control(markup, "appointment-take-payment")).toBeNull();
     expect(control(markup, "appointment-invoice")).toBeNull();
   });
 
-  it("a cancelled visit leads with Reschedule for a role that can book, and with Close for one that cannot", () => {
+  it("a cancelled visit leads with Reschedule for a role that can book, and with nothing for one that cannot", () => {
     // The groomer preset holds no appointments.create, so Reschedule is drawn refused with its
-    // reason and the slot passes to Close - the honest footer for a visit nobody here can rebook.
+    // reason. There is no footer Close any more (QA UX-13) - the head's x is the way out - so no
+    // primary is drawn rather than a dismissal standing in for one.
     const groomer = client("cancelled", GROOMER).markup();
     expect(control(groomer, "appointment-reschedule")).toContain("disabled");
     expect(control(groomer, "appointment-reschedule")).toContain("You do not have permission to book appointments");
-    expect(primaries(groomer)).toEqual(["appointment-close"]);
+    expect(primaries(groomer)).toEqual([]);
+    expect(control(groomer, "appointment-close")).toBeNull();
     for (const status of ["cancelled", "no_show"]) {
       const desk = client(status, EVERYTHING).markup();
       expect(control(desk, "appointment-reschedule"), status).not.toContain("disabled");
@@ -351,25 +387,22 @@ describe("a disabled control never steals the dominant slot", () => {
     }
   });
 
-  it("puts Print Ticket in the lead zone once the visit is completed, and only then", () => {
-    // Still exactly one Print Ticket, still the same document; what changes is which zone holds
-    // it. Ready for Pickup on a checked-in visit lands the operator on a completed one, and that
-    // is where human QA looked for the sheet beside the primary and found it in the quiet group.
-    for (const status of ["scheduled", "checked_in", "in_service", "cancelled", "no_show"]) {
-      const markup = client(status, EVERYTHING).markup();
-      expect(zone(markup, "utility"), status).toContain("appointment-ticket");
-      expect(zone(markup, "lead"), status).not.toContain("appointment-ticket");
+  it("draws Print Ticket as the same utility secondary in every status (QA UX-13)", () => {
+    // Still exactly one Print Ticket, still the same document, and now one look: it used to move
+    // into the lead zone - and into the primary - on a completed visit.
+    for (const status of ["scheduled", "checked_in", "in_service", "completed", "cancelled", "no_show"]) {
+      for (const extra of [{}, SETTLED]) {
+        const markup = client(status, EVERYTHING, extra).markup();
+        const where = `${status} ${JSON.stringify(extra)}`;
+        expect(zone(markup, "utility"), where).toContain("appointment-ticket");
+        expect(zone(markup, "lead"), where).not.toContain("appointment-ticket");
+        expect(control(markup, "appointment-ticket"), where).toContain('class="secondary compact"');
+        expect(markup.match(/data-testid="appointment-ticket"/gu), where).toHaveLength(1);
+      }
     }
-    for (const extra of [{}, SETTLED]) {
-      const markup = client("completed", EVERYTHING, extra).markup();
-      expect(zone(markup, "lead"), JSON.stringify(extra)).toContain("appointment-ticket");
-      expect(zone(markup, "utility"), JSON.stringify(extra)).not.toContain("appointment-ticket");
-      expect(markup.match(/data-testid="appointment-ticket"/gu), JSON.stringify(extra)).toHaveLength(1);
-    }
-    // The ranking is unchanged: the bill outranks the sheet, and money owed outranks both.
     expect(primaries(client("completed", EVERYTHING, SETTLED).markup())).toEqual(["appointment-invoice"]);
     expect(primaries(client("completed", EVERYTHING).markup())).toEqual(["appointment-take-payment"]);
-    expect(primaries(client("completed", GROOMER).markup())).toEqual(["appointment-ticket"]);
+    expect(primaries(client("completed", GROOMER).markup())).toEqual([]);
   });
 });
 
@@ -477,16 +510,30 @@ describe("ownership is a refusal of its own", () => {
 
   it("a groomer on another groomer's visit is refused by scope, with the key named", () => {
     const markup = client("checked_in", GROOMER, OTHER).markup();
-    for (const testid of ["appointment-ready", "appointment-service-note-edit"]) {
-      expect(control(markup, testid), testid).toContain("disabled");
-      expect(control(markup, testid), testid).toContain(SCOPE);
-    }
+    expect(control(markup, "appointment-service-note-edit")).toContain("disabled");
+    expect(control(markup, "appointment-service-note-edit")).toContain(SCOPE);
     expect(primaries(markup)).toEqual([]);
     const scheduled = client("scheduled", [...GROOMER, "appointments.edit"], OTHER).markup();
-    for (const testid of ["appointment-check-in", "appointment-groomer-edit", "appointment-adjust-services", "appointment-note-edit"]) {
+    for (const testid of ["appointment-groomer-edit", "appointment-adjust-services", "appointment-note-edit"]) {
       expect(control(scheduled, testid), testid).toContain(SCOPE);
     }
-    expect(control(client("in_service", GROOMER, OTHER).markup(), "appointment-complete")).toContain(SCOPE);
+  });
+
+  it("the footer leaves out workflow the assignment refuses and says so in one visible line (QA F6)", () => {
+    // Disabled Check In / Ready / Complete held the lead slot with their reason only in a title a
+    // phone cannot show. When the refusal is the ASSIGNMENT they are left out of the footer, and
+    // one line says whose visit it is; Print Ticket is still there.
+    for (const status of ["scheduled", "checked_in", "in_service"]) {
+      const markup = client(status, GROOMER, OTHER).markup();
+      for (const testid of ["appointment-check-in", "appointment-ready", "appointment-complete"]) {
+        expect(control(markup, testid), `${status} ${testid}`).toBeNull();
+      }
+      expect(markup, status).toMatch(/data-testid="appointment-view-only">Assigned to [^<]+ — view only<\/p>/u);
+      expect(zone(markup, "utility"), status).toContain("appointment-ticket");
+      expect(primaries(markup), status).toEqual([]);
+    }
+    // The visit's own groomer is not told it is view only.
+    expect(client("checked_in", GROOMER).markup()).not.toContain("appointment-view-only");
   });
 
   it("the permission is asked before the scope: a role without the key is told what it cannot do", () => {
@@ -507,7 +554,9 @@ describe("ownership is a refusal of its own", () => {
 
   it("a session with no employee record owns nothing", () => {
     const markup = client("checked_in", GROOMER, {}, { me: null }).markup();
-    expect(control(markup, "appointment-ready")).toContain(SCOPE);
+    expect(control(markup, "appointment-ready")).toBeNull();
+    expect(markup).toContain('data-testid="appointment-view-only"');
+    expect(control(markup, "appointment-service-note-edit")).toContain(SCOPE);
   });
 
   it("money is not scoped: Take Payment answers to checkout.perform alone", () => {

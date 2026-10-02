@@ -105,7 +105,12 @@ test("a groomer sees a colleague's visit refused by scope, in a sentence, and th
     // GABRIEL'S VISIT. Drawn, disabled, and each control says whose visit it is rather than
     // naming a key Grace already holds.
     await openDetail(page, gabriels.id);
-    for (const testid of ["appointment-groomer-edit", "appointment-adjust-services", "appointment-note-edit", "appointment-check-in", "appointment-cancel", "appointment-no-show"]) {
+    // The footer's workflow is left out and the reason is ONE VISIBLE LINE (QA F6): a disabled
+    // Check In holding the lead slot explained itself only in a title a phone cannot show.
+    await expect(detail(page).getByTestId("appointment-check-in")).toHaveCount(0);
+    await expect(detail(page).getByTestId("appointment-view-only")).toHaveText(/^Assigned to .+ — view only$/u);
+    await expect(detail(page).getByTestId("appointment-ticket")).toBeVisible();
+    for (const testid of ["appointment-groomer-edit", "appointment-adjust-services", "appointment-note-edit", "appointment-cancel", "appointment-no-show"]) {
       const control = detail(page).getByTestId(testid);
       await expect(control, `${testid} vanished instead of explaining itself`).toBeVisible();
       await expect(control).toBeDisabled();
@@ -265,6 +270,7 @@ test("a groomer reads the receipt of their own settled visit, and not a colleagu
     await expect(refused).toBeVisible();
     await expect(refused).toBeDisabled();
     await expect(refused).toHaveAttribute("title", /permission to view invoices/u);
-    // Nothing disabled is promoted: the sheet leads a colleague's settled visit.
-    await expect(detail(page).getByTestId("appointment-ticket")).toHaveClass(/\bprimary\b/u);
+    // Nothing disabled is promoted, and the sheet is never the primary (QA UX-13).
+    await expect(detail(page).getByTestId("appointment-ticket")).toHaveClass(/\bsecondary\b/u);
+    await expect(detail(page).locator("footer .primary")).toHaveCount(0);
   });

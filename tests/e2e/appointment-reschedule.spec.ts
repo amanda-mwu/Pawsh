@@ -128,7 +128,7 @@ test("Reschedule is there the moment a visit is cancelled, from the surface and 
     await expect(detail(page).locator("footer .primary")).toHaveCount(1);
     // The controls of a live visit are gone with it: nothing to cancel twice.
     await expect(detail(page).getByTestId("appointment-cancel")).toHaveCount(0);
-    await detail(page).getByTestId("appointment-close").click();
+    await detail(page).locator("[data-surface-close]").click();
     await expect(detail(page)).toBeHidden();
 
     // THE CARD MENU. The same transition from the grid, then the visit opened.
@@ -141,10 +141,11 @@ test("Reschedule is there the moment a visit is cancelled, from the surface and 
     await expect(detail(page).getByTestId("appointment-status")).toHaveText("cancelled");
     await expect(detail(page).getByTestId("appointment-reschedule")).toBeEnabled();
     await expect(detail(page).getByTestId("appointment-reschedule")).toHaveClass(/\bprimary\b/u);
-    await detail(page).getByTestId("appointment-close").click();
+    await detail(page).locator("[data-surface-close]").click();
 
     // GRACE. A groomer holds no appointments.create, so on the same cancelled visit Reschedule
-    // is DRAWN, DISABLED, and names the key - never absent - and Close takes the slot.
+    // is DRAWN, DISABLED, and names the key - never absent - and nothing takes the slot: there
+    // is no footer Close any more (QA UX-13), and nothing disabled is promoted.
     const grace = await createMember(request, `grace+${tenant.runId}@pawsh-test.example`, [...permissionPresets.groomer!]);
     await login(page, grace.email, password);
     await openDetail(page, fromSurface.id);
@@ -152,7 +153,8 @@ test("Reschedule is there the moment a visit is cancelled, from the surface and 
     await expect(refused).toBeVisible();
     await expect(refused).toBeDisabled();
     await expect(refused).toHaveAttribute("title", "You do not have permission to book appointments");
-    await expect(detail(page).getByTestId("appointment-close")).toHaveClass(/\bprimary\b/u);
+    await expect(detail(page).getByTestId("appointment-close")).toHaveCount(0);
+    await expect(detail(page).locator("footer .primary")).toHaveCount(0);
   });
 
 test("a no-show visit reschedules the same way, and a live one offers no Reschedule at all",
@@ -163,7 +165,7 @@ test("a no-show visit reschedules the same way, and a live one offers no Resched
 
     await openDetail(page, noShow.id);
     await expect(detail(page).getByTestId("appointment-reschedule")).toBeEnabled();
-    await detail(page).getByTestId("appointment-close").click();
+    await detail(page).locator("[data-surface-close]").click();
     await expect(detail(page)).toBeHidden();
 
     // A scheduled visit is MOVED, not rescheduled from scratch: the pencil and the drag do that.
@@ -202,15 +204,16 @@ test("Reschedule says which services it could not carry, and a role that cannot 
     await expect(page.getByTestId("booking-defaults-note")).toContainText("No longer offered and left out: Nail Trim");
     await page.getByTestId("booking-dialog").getByRole("button", { name: "Close" }).click();
 
-    // A member who may look but not book sees Reschedule refused with the key named, and Close
-    // takes the primary slot instead - the footer promotes nothing disabled.
+    // A member who may look but not book sees Reschedule refused with the key named, and no
+    // primary at all - the footer promotes nothing disabled, and has no Close (QA UX-13).
     const viewer = await createMember(request, `viewer+${tenant.runId}@pawsh-test.example`, ["calendar.view", "appointments.view"]);
     await login(page, viewer.email, password);
     await openDetail(page, original.id);
     const refused = detail(page).getByTestId("appointment-reschedule");
     await expect(refused).toBeDisabled();
     await expect(refused).toHaveAttribute("title", "You do not have permission to book appointments");
-    await expect(detail(page).getByTestId("appointment-close")).toHaveClass(/\bprimary\b/u);
+    await expect(detail(page).getByTestId("appointment-close")).toHaveCount(0);
+    await expect(detail(page).locator("footer .primary")).toHaveCount(0);
   });
 
 test("the activity feed on both visits names the reschedule", async ({ page, request, tenant }) => {

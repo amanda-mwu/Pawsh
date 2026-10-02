@@ -226,6 +226,11 @@ export const permissionPresets: Record<string, readonly Permission[]> = {
     // workspaces created after it.
     "appointments.override_conflict", "appointments.service_price_edit",
     "customers.view", "customers.edit", "pets.view", "pets.edit",
+    // THE FRONT DESK CALLS THE CLIENT. `customers.contact_info` withholds phone, email and address
+    // from every projection for a caller without it; the desk books, confirms and chases payment
+    // by those, so the preset holds it. `migrations/0059_receptionist_contact_info.sql` grants it
+    // to every built-in Receptionist that already exists.
+    "customers.contact_info",
     "pets.care.view", "operations.check_in", "checkout.perform", "payments.view"
   ],
   manager: permissions
@@ -364,7 +369,7 @@ export const unenforcedPermissions: ReadonlySet<Permission> = new Set<Permission
   // are.
   //
   // But roughly a dozen COULD be enforced today - `payments.edit` over void and refund,
-  // `customers.contact_info` over the fields the customer projections return, `pets.breeds_edit`
+  // `pets.breeds_edit`
   // over four breed routes, `messages.view` over the message centre, and eight `settings.*`
   // children over route families `settings.manage` holds. They are here anyway, and that is the
   // shape of this change rather than an oversight: the catalog lands as a pure addition that
@@ -427,7 +432,15 @@ export const unenforcedPermissions: ReadonlySet<Permission> = new Set<Permission
   // refusing their staff.
 
   "customers.view_all",
-  "customers.contact_info",
+  // `customers.contact_info` GRADUATED HERE and is deliberately absent. It decides whether a
+  // client's phone, email and postal address leave the server at all: every projection that
+  // carries one - the calendar row, the client record, the pet record, the directory and its
+  // search, addresses, secondary contacts, reminder and send destinations - nulls it and says
+  // `contactWithheld: true` for a caller without it, and every write of one is refused 403.
+  // The Receptionist preset gained it in the same change, and
+  // `migrations/0059_receptionist_contact_info.sql` gives it to every built-in Receptionist that
+  // already exists; the Groomer preset deliberately does not hold it. LIKE EVERY KEY THAT LEFT
+  // THIS LIST, IT MUST NOT COME BACK: it refuses somebody now.
   "customers.archive",
   "customers.merge",
   // `customers.credit_edit` GRADUATED HERE and is deliberately absent, the second of the 55 to do

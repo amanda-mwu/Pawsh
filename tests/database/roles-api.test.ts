@@ -478,7 +478,7 @@ describeDatabase("roles API", () => {
     // EVERY KEY OF THE NEW TAXONOMY IS PUBLISHED AS UNENFORCED. The catalog is what tells an owner
     // whether a switch does anything, so one arriving as `enforced: true` while no route consults
     // it would be the editor claiming a restriction that is not there.
-    for (const key of ["payments.edit", "customers.contact_info", "messages.view",
+    for (const key of ["payments.edit", "messages.view",
       "settings.business", "pets.breeds_edit", "dashboard.all_staff", "gift_cards.sell"]) {
       expect(entries.find((entry) => entry.key === key), key)
         .toMatchObject({ enforced: false });
@@ -486,6 +486,8 @@ describeDatabase("roles API", () => {
     // And the ones that do gate something still say so.
     expect(entries.find((entry) => entry.key === "settings.manage")).toMatchObject({ enforced: true });
     expect(entries.find((entry) => entry.key === "customers.view")).toMatchObject({ enforced: true });
+    // `customers.contact_info` graduated: it withholds client contact details now.
+    expect(entries.find((entry) => entry.key === "customers.contact_info")).toMatchObject({ enforced: true });
 
     // The hint is the sentence the editor renders under the row and searches on. It is optional,
     // and where it is present it must not be blank - an empty string would render an empty line

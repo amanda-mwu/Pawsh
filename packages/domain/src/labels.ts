@@ -240,7 +240,7 @@ export const permissionHints: Partial<Record<Permission, string>> = {
   "calendar.blocks_edit": "Change or remove blocked time already on the calendar.",
 
   "customers.view_all": "See every client, not only the ones you have appointments with.",
-  "customers.contact_info": "See a client's phone number and email address.",
+  "customers.contact_info": "See and change a client's phone numbers, email address and postal addresses.",
   "customers.archive": "Pawsh marks a client inactive rather than erasing them, so their appointments and history are kept.",
   "customers.merge": "Combine two records that describe the same client.",
   "customers.credit_edit": "Adjust the credit balance held on a client's account.",

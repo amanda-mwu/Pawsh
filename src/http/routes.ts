@@ -166,6 +166,36 @@ function mayViewPetCare(context: { isOwner: boolean; permissions: readonly strin
   return context.isOwner || context.permissions.includes("pets.care.view");
 }
 
+/**
+ * WHETHER THE CALLER MAY SEE HOW TO REACH THE CLIENT. `customers.contact_info` (owner bypass, as
+ * everywhere) decides whether a client's phone, email and postal address leave the server - never a
+ * role name. Withholding happens in the projection, so a screen that forgets to hide a field has
+ * nothing to show: the field is present as null and the owning object says `contactWithheld: true`.
+ * Names, pets, notes and services are appointment context and are never withheld by this key.
+ */
+function mayViewContact(context: { isOwner: boolean; permissions: readonly string[] }): boolean {
+  return can(context, "customers.contact_info");
+}
+
+const customerContactKeys = ["phone", "normalizedPhone", "email", "normalizedEmail", "address"] as const;
+
+/** A customer row as `context` may see it: contact keys nulled and flagged when withheld. */
+function customerContactView<T extends Record<string, unknown>>(
+  row: T, context: { isOwner: boolean; permissions: readonly string[] }
+): T & { contactWithheld: boolean } {
+  if (mayViewContact(context)) return { ...row, contactWithheld: false };
+  const view: Record<string, unknown> = { ...row, contactWithheld: true };
+  for (const key of customerContactKeys) if (key in view) view[key] = null;
+  return view as T & { contactWithheld: boolean };
+}
+
+function contactInfoForbidden(reply: FastifyReply) {
+  return reply.code(403).send({
+    code: "CONTACT_INFO_FORBIDDEN",
+    error: "You do not have permission to change a client's contact details."
+  });
+}
+
 const documentUploadMetadataSchema = z.object({
   uploadRequestId: z.string().uuid(),
   expectedCurrentDocumentId: z.string().uuid().nullable(),
@@ -604,7 +634,10 @@ async function roleRows(
  * both callers pass only a `where` fragment and share this projection. The fragment carries the
  * tenant predicate.
  */
-function appointmentCalendarRows(db: Database, scope: SqlFragment) {
+function appointmentCalendarRows(
+  db: Database, scope: SqlFragment, viewer: { isOwner: boolean; permissions: readonly string[] }
+) {
+  const contactVisible = mayViewContact(viewer);
   return db`
     select a.*,
       -- scheduled_local_start OVERRIDES THE ONE a.* JUST SELECTED, and it is a string rather
@@ -627,7 +660,8 @@ function appointmentCalendarRows(db: Database, scope: SqlFragment) {
       -- for the indexed local-date range scans in GET /api/appointments.
       to_char(a.start_at at time zone a.scheduling_timezone,'YYYY-MM-DD"T"HH24:MI')
         as scheduled_local_start,
-      c.first_name, c.last_name, c.phone as customer_phone, p.name as pet_name, p.breed, p.safety_alerts,
+      c.first_name, c.last_name, case when ${contactVisible} then c.phone end as customer_phone,
+      ${!contactVisible} as contact_withheld, p.name as pet_name, p.breed, p.safety_alerts,
       p.behavior_notes, p.medical_notes, p.grooming_preferences, p.coat_notes,
       p.vaccination_expires_on,p.rabies_verification_status,p.rabies_verification_method,
       case
@@ -1080,7 +1114,7 @@ function agreementEmailReason(customer: AgreementRecipient): AgreementEmailReaso
  * model, so the honest answer is a named channel with a reason rather than an option
  * the UI could present as if it might work.
  */
-function agreementDelivery(customer: AgreementRecipient) {
+function agreementDelivery(customer: AgreementRecipient, contactVisible: boolean) {
   const reason = agreementEmailReason(customer);
   return {
     supportedChannels: ["email"],
@@ -1090,7 +1124,7 @@ function agreementDelivery(customer: AgreementRecipient) {
         available: reason === "ok",
         reason,
         detail: agreementEmailDetail[reason],
-        destination: reason === "ok" ? customer.email : null
+        destination: reason === "ok" && contactVisible ? customer.email : null
       },
       {
         channel: "sms",
@@ -1210,7 +1244,10 @@ function agreementSummary(items: readonly CustomerAgreementItem[]) {
  */
 async function customerHistoryProfile(
   db: Database,
-  input: { businessId: string; customerId: string; mayViewCare: boolean; mayViewPayments: boolean }
+  input: {
+    businessId: string; customerId: string; mayViewCare: boolean; mayViewPayments: boolean;
+    viewer: { isOwner: boolean; permissions: readonly string[] };
+  }
 ): Promise<Record<string, unknown> | null> {
   const { businessId, customerId: id } = input;
   const [customer] = await db`select customer.*,employee.display_name preferred_employee_name
@@ -1240,7 +1277,7 @@ async function customerHistoryProfile(
   ]);
   const appointmentTotal = upcoming.total + history.total;
   return {
-    customer,
+    customer: customerContactView(customer, input.viewer),
     pets: input.mayViewCare ? pets : pets.map((pet) => redactPetCare(pet)),
     upcoming: { items: upcoming.items, total: upcoming.total },
     history: { items: history.items, total: history.total },
@@ -1279,7 +1316,7 @@ async function customerNotesPage(
 /** The client's agreements, in the shape `GET /api/customers/:id/agreements` answers. */
 async function customerAgreementsProfile(
   db: Database,
-  input: { businessId: string; customerId: string }
+  input: { businessId: string; customerId: string; contactVisible: boolean }
 ): Promise<Record<string, unknown> | null> {
   const [customer] = await db<(AgreementRecipient & { archivedAt: Date | null })[]>`
     select id,first_name,last_name,email,email_allowed,block_messages,archived_at
@@ -1293,7 +1330,7 @@ async function customerAgreementsProfile(
     customerId: input.customerId,
     items,
     summary: agreementSummary(items),
-    delivery: agreementDelivery(customer),
+    delivery: agreementDelivery(customer, input.contactVisible),
     // An archived client is readable but nothing can be sent to or recorded against it.
     customerArchived: customer.archivedAt !== null
   };
@@ -7096,19 +7133,22 @@ export function registerRoutes(
     const query=body(customerDirectoryQuerySchema,request.query);
     const search=query.q??query.search??"";
     const normalizedSearchPhone=normalizePhone(search)??search;
-    if(!query.paged)return db`
+    // A caller who may not see a client's phone or email may not FIND a client by them either:
+    // a search that matches on a number is an oracle for the number.
+    const contactVisible=mayViewContact(context);
+    if(!query.paged)return (await db<Record<string,unknown>[]>`
       select * from customers
       where business_id=${context.businessId} and archived_at is null
         and (${search}='' or concat_ws(' ',first_name,last_name) ilike ${`%${search}%`}
-          or normalized_phone like ${`%${normalizedSearchPhone}%`}
-          or normalized_email ilike ${`%${search.toLowerCase()}%`})
-      order by last_name,first_name,id limit 100`;
+          or (${contactVisible} and normalized_phone like ${`%${normalizedSearchPhone}%`})
+          or (${contactVisible} and normalized_email ilike ${`%${search.toLowerCase()}%`}))
+      order by last_name,first_name,id limit 100`).map((row)=>customerContactView(row,context));
     const offset=(query.page-1)*query.pageSize;
     const statusCondition=query.status==="all"?db`true`:query.status==="active"?db`customer.archived_at is null`:db`customer.archived_at is not null`;
     const upcomingCondition=query.upcoming==="any"?db`true`:query.upcoming==="yes"?db`summary.next_appointment is not null`:db`summary.next_appointment is null`;
     const searchCondition=db`(${search}='' or concat_ws(' ',customer.first_name,customer.last_name) ilike ${`%${search}%`}
-      or customer.normalized_phone like ${`%${normalizedSearchPhone}%`}
-      or customer.normalized_email ilike ${`%${search.toLowerCase()}%`}
+      or (${contactVisible} and customer.normalized_phone like ${`%${normalizedSearchPhone}%`})
+      or (${contactVisible} and customer.normalized_email ilike ${`%${search.toLowerCase()}%`})
       or exists(select 1 from pets search_pet where search_pet.business_id=customer.business_id
         and search_pet.customer_id=customer.id and search_pet.archived_at is null
         and (search_pet.name ilike ${`%${search}%`} or search_pet.breed ilike ${`%${search}%`})))`;
@@ -7139,7 +7179,7 @@ export function registerRoutes(
         ${base} order by ${order} limit ${query.pageSize} offset ${offset}`,
       db<{count:number}[]>`select count(*)::int count ${base}`
     ]);
-    return {items:rows,total:totalRows[0]?.count??0,page:query.page,pageSize:query.pageSize};
+    return {items:rows.map((row)=>customerContactView(row,context)),total:totalRows[0]?.count??0,page:query.page,pageSize:query.pageSize};
   });
 
   app.post("/api/customers", {
@@ -7147,6 +7187,11 @@ export function registerRoutes(
   }, async (request, reply) => {
     const context = auth(request);
     const input = body(customerSchema, request.body);
+    // A name-only client may be created without the contact key; a phone, email or address may not
+    // be written by somebody who would not be allowed to read it back.
+    if (!mayViewContact(context) && (input.phone || input.email || input.address)) {
+      return contactInfoForbidden(reply);
+    }
     const customer = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
       // A new client starts on the salon's default booking cadence.
@@ -7201,7 +7246,7 @@ export function registerRoutes(
       `;
       return stored ?? created;
     });
-    return reply.code(201).send(customer);
+    return reply.code(201).send(customerContactView(customer, context));
   });
 
   app.get("/api/customers/archived", {
@@ -7225,6 +7270,12 @@ export function registerRoutes(
     const context = auth(request);
     const { id } = idParams.parse(request.params);
     const input = body(customerSchema, request.body);
+    // Refused rather than ignored: a form that sends a contact field it was never shown would
+    // otherwise overwrite (or clear) the value with whatever it guessed.
+    if (!mayViewContact(context)
+      && (input.phone !== undefined || input.email !== undefined || input.address !== undefined)) {
+      return contactInfoForbidden(reply);
+    }
     // Transactional because the legacy `notes` and `address` fields now write through the note
     // thread and the address list: those edits and the customer edit must land (or fail)
     // together, and they run first so the mirror triggers have already refreshed `notes` and
@@ -7272,7 +7323,7 @@ export function registerRoutes(
       return row ?? null;
     });
     if (!updated) return reply.code(404).send({ error: "Active customer not found" });
-    return updated;
+    return customerContactView(updated, context);
   });
 
   app.patch("/api/customers/:id/preferred-groomer", {
@@ -7315,6 +7366,11 @@ export function registerRoutes(
     `;
   }
 
+  /** Every address and secondary-contact write is a write of contact data. */
+  async function requireContactInfo(request: FastifyRequest, reply: FastifyReply) {
+    if (!mayViewContact(auth(request))) return contactInfoForbidden(reply);
+  }
+
   async function activeCustomer(businessId: string, customerId: string) {
     const [customer] = await db<{ id: string }[]>`
       select id from customers
@@ -7346,11 +7402,13 @@ export function registerRoutes(
     if (!await activeCustomer(context.businessId, id)) {
       return reply.code(404).send({ error: "Customer not found" });
     }
-    return { items: await customerAddressRows(db, context.businessId, id) };
+    // The whole list is contact data: an address row has nothing else on it to show.
+    if (!mayViewContact(context)) return { items: [], contactWithheld: true };
+    return { items: await customerAddressRows(db, context.businessId, id), contactWithheld: false };
   });
 
   app.post("/api/customers/:id/addresses", {
-    preHandler: [authenticate, requirePermission("customers.edit")]
+    preHandler: [authenticate, requirePermission("customers.edit"), requireContactInfo]
   }, async (request, reply) => {
     const context = auth(request);
     const { id } = idParams.parse(request.params);
@@ -7381,7 +7439,7 @@ export function registerRoutes(
   });
 
   app.patch("/api/customers/:id/addresses/:childId", {
-    preHandler: [authenticate, requirePermission("customers.edit")]
+    preHandler: [authenticate, requirePermission("customers.edit"), requireContactInfo]
   }, async (request, reply) => {
     const context = auth(request);
     const { id, childId } = customerChildParams.parse(request.params);
@@ -7412,7 +7470,7 @@ export function registerRoutes(
   });
 
   app.delete("/api/customers/:id/addresses/:childId", {
-    preHandler: [authenticate, requirePermission("customers.edit")]
+    preHandler: [authenticate, requirePermission("customers.edit"), requireContactInfo]
   }, async (request, reply) => {
     const context = auth(request);
     const { id, childId } = customerChildParams.parse(request.params);
@@ -7454,8 +7512,12 @@ export function registerRoutes(
     if (!await activeCustomer(context.businessId, id)) {
       return reply.code(404).send({ error: "Customer not found" });
     }
+    const contactVisible = mayViewContact(context);
+    const items = await customerContactRows(db, context.businessId, id);
     return {
-      items: await customerContactRows(db, context.businessId, id),
+      // The person stays on the list; only the number to reach them is withheld.
+      items: contactVisible ? items : items.map((item) => ({ ...item, phone: null })),
+      contactWithheld: !contactVisible,
       // Said in the payload as well as the interface: a caller reading this list must not take
       // the flag to mean anything is being sent.
       automatedMessagesSupported: false
@@ -7463,7 +7525,7 @@ export function registerRoutes(
   });
 
   app.post("/api/customers/:id/contacts", {
-    preHandler: [authenticate, requirePermission("customers.edit")]
+    preHandler: [authenticate, requirePermission("customers.edit"), requireContactInfo]
   }, async (request, reply) => {
     const context = auth(request);
     const { id } = idParams.parse(request.params);
@@ -7496,7 +7558,7 @@ export function registerRoutes(
   });
 
   app.patch("/api/customers/:id/contacts/:childId", {
-    preHandler: [authenticate, requirePermission("customers.edit")]
+    preHandler: [authenticate, requirePermission("customers.edit"), requireContactInfo]
   }, async (request, reply) => {
     const context = auth(request);
     const { id, childId } = customerChildParams.parse(request.params);
@@ -7533,7 +7595,7 @@ export function registerRoutes(
   });
 
   app.delete("/api/customers/:id/contacts/:childId", {
-    preHandler: [authenticate, requirePermission("customers.edit")]
+    preHandler: [authenticate, requirePermission("customers.edit"), requireContactInfo]
   }, async (request, reply) => {
     const context = auth(request);
     const { id, childId } = customerChildParams.parse(request.params);
@@ -7884,7 +7946,9 @@ export function registerRoutes(
   }, async (request, reply) => {
     const context = auth(request);
     const { id } = idParams.parse(request.params);
-    const profile = await customerAgreementsProfile(db, { businessId: context.businessId, customerId: id });
+    const profile = await customerAgreementsProfile(db, {
+      businessId: context.businessId, customerId: id, contactVisible: mayViewContact(context)
+    });
     if (!profile) return reply.code(404).send({ error: "Customer not found" });
     return profile;
   });
@@ -8116,7 +8180,7 @@ export function registerRoutes(
         channel: "email",
         reason: result.undeliverable,
         supportedChannels: ["email"],
-        delivery: agreementDelivery(result.customer)
+        delivery: agreementDelivery(result.customer, mayViewContact(context))
       });
     }
     const items = await customerAgreementRows(db, { businessId: context.businessId, customerId: id });
@@ -8126,7 +8190,7 @@ export function registerRoutes(
       results: result.results,
       items,
       summary: agreementSummary(items),
-      delivery: agreementDelivery(result.customer)
+      delivery: agreementDelivery(result.customer, mayViewContact(context))
     };
   });
 
@@ -8250,7 +8314,7 @@ export function registerRoutes(
       queued: result.queued,
       outcome: result.queued ? "queued" : "already_queued",
       intentId: result.intentId,
-      destination: result.recipient.email
+      destination: mayViewContact(context) ? result.recipient.email : null
     });
   });
 
@@ -8262,7 +8326,8 @@ export function registerRoutes(
     const profile = await customerHistoryProfile(db, {
       businessId: context.businessId, customerId: id,
       mayViewCare: mayViewPetCare(context),
-      mayViewPayments: context.isOwner || context.permissions.includes("payments.view")
+      mayViewPayments: context.isOwner || context.permissions.includes("payments.view"),
+      viewer: context
     });
     if (!profile) return reply.code(404).send({ error: "Customer not found" });
     return profile;
@@ -8522,7 +8587,11 @@ export function registerRoutes(
       where intent.business_id=${context.businessId} and intent.notification_type in ${db(notificationTypes)}
       order by intent.scheduled_occurrence desc,intent.id desc limit 200
     `;
-    return {supported:true,items};
+    // `destination` is the client's email for a client reminder; it is contact data.
+    const contactVisible=mayViewContact(context);
+    return {supported:true,items:items.map((item)=>contactVisible
+      ? {...item,contactWithheld:false}
+      : {...item,destination:null,contactWithheld:true})};
   });
 
   app.post("/api/reminders/:id/send", {
@@ -8559,8 +8628,9 @@ export function registerRoutes(
       where business_id=${context.businessId} and notification_intent_id=${id}
       order by attempt_number desc limit 50
     `;
-    return {id:intent.id,channel:intent.channel,destination:intent.destination,
-      reminderStatus:intent.status,attempts:intent.attempts,logs};
+    const contactVisible=mayViewContact(context);
+    return {id:intent.id,channel:intent.channel,destination:contactVisible?intent.destination:null,
+      contactWithheld:!contactVisible,reminderStatus:intent.status,attempts:intent.attempts,logs};
   });
 
   app.post("/api/customers/:id/archive", {
@@ -8906,7 +8976,11 @@ export function registerRoutes(
       where p.business_id=${context.businessId} and p.id=${id}
     `;
     if (!pet) return reply.code(404).send({ error: "Pet not found" });
-    return mayViewPetCare(context) ? pet : redactPetCare(pet);
+    const contactVisible = mayViewContact(context);
+    const withContact: Record<string, unknown> = contactVisible
+      ? { ...pet, contactWithheld: false }
+      : { ...pet, customerPhone: null, customerEmail: null, contactWithheld: true };
+    return mayViewPetCare(context) ? withContact : redactPetCare(withContact);
   });
 
   app.get("/api/pets/:id/appointments", {
@@ -10074,7 +10148,7 @@ export function registerRoutes(
           ? db`a.start_at < ${to} and a.end_at > ${from}`
           : db`a.start_at >= ${from} - interval '2 days' and a.start_at < ${to} + interval '2 days'
               and a.scheduled_local_start >= ${localDate}::date and a.scheduled_local_start < ${endLocal.toISOString().slice(0,10)}::date`}
-    `);
+    `, context);
     if (mayViewPetCare(context)) return rows;
     return rows.map((appointment) => redactPetCare(appointment));
   });
@@ -10094,7 +10168,7 @@ export function registerRoutes(
     const { id } = idParams.parse(request.params);
     const [appointment] = await appointmentCalendarRows(db, db`
       a.business_id=${context.businessId} and a.id=${id}
-    `);
+    `, context);
     if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
     return mayViewPetCare(context) ? appointment : redactPetCare(appointment);
   });
@@ -10830,7 +10904,7 @@ export function registerRoutes(
       channel: "email",
       queued: true,
       intentId: sent?.id ?? null,
-      destination: card.customerEmail,
+      destination: mayViewContact(context) ? card.customerEmail : null,
       // Named explicitly so a caller cannot read a queued send as "the client got the photos".
       photosIncluded: false,
       card: reportCardRow(refreshed!)
@@ -11051,14 +11125,15 @@ export function registerRoutes(
     const [history, notes, agreements] = await Promise.all([
       customerHistoryProfile(db, {
         businessId: context.businessId, customerId: appointment.customerId,
-        mayViewCare: mayViewPetCare(context), mayViewPayments
+        mayViewCare: mayViewPetCare(context), mayViewPayments, viewer: context
       }),
       customerNotesPage(db, {
         businessId: context.businessId, customerId: appointment.customerId,
         page: notesPage.page, pageSize: notesPage.pageSize
       }),
       customerAgreementsProfile(db, {
-        businessId: context.businessId, customerId: appointment.customerId
+        businessId: context.businessId, customerId: appointment.customerId,
+        contactVisible: mayViewContact(context)
       })
     ]);
     if (!history || !notes || !agreements) return reply.code(404).send({ error: "Appointment not found" });
@@ -11522,7 +11597,7 @@ export function registerRoutes(
     if ("stale" in result) return reply.code(409).send({ error: "Appointment changed; refresh before continuing" });
     const [appointment] = await appointmentCalendarRows(db, db`
       a.business_id=${context.businessId} and a.id=${id}
-    `);
+    `, context);
     if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
     return mayViewPetCare(context) ? appointment : redactPetCare(appointment);
   });
@@ -11616,7 +11691,7 @@ export function registerRoutes(
     }
     const [appointment] = await appointmentCalendarRows(db, db`
       a.business_id=${context.businessId} and a.id=${id}
-    `);
+    `, context);
     if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
     return mayViewPetCare(context) ? appointment : redactPetCare(appointment);
   });
@@ -11653,8 +11728,18 @@ export function registerRoutes(
         status: string;
         locationId: string;
         employeeId: string;
+        version: number;
+        schedulingTimezone: string;
+        storedLocalStart: string;
+        scheduledUtcOffsetMinutes: number;
+        scheduledDisambiguation: "earlier"|"later"|null;
+        availabilityOverridden: boolean;
+        conflictOverridden: boolean;
       }[]>`
-        select start_at,end_at,status,location_id,employee_id from appointments
+        select start_at,end_at,status,location_id,employee_id,version,scheduling_timezone,
+          to_char(start_at at time zone scheduling_timezone,'YYYY-MM-DD"T"HH24:MI') as stored_local_start,
+          scheduled_utc_offset_minutes,scheduled_disambiguation,availability_overridden,conflict_overridden
+        from appointments
         where business_id=${context.businessId} and id=${id} and version=${input.version} for update
       `;
       if (!current) throw new SchedulingRequestError(409,"STALE_APPOINTMENT","Appointment changed or no longer exists");
@@ -11683,6 +11768,30 @@ export function registerRoutes(
         ||assignedNow.size!==employeeIds.length
         ||employeeIds.some(employeeId=>!assignedNow.has(employeeId));
       await ensureAppointmentMovable(tx,context,timeChanged||groomerChanged);
+      /**
+       * A NO-OP MOVE IS NOT A MOVE. Re-posting the start and the groomers the visit already holds -
+       * the Move dialog saved untouched - changes nothing: no row is written, the version does not
+       * move, no `appointment.move` or `appointment.conflict_override` history row is recorded, and
+       * no rabies notice is stood down. Every refusal above still applies (scope, status, stale
+       * version, stale location settings), so a no-op is answered only to somebody who could have
+       * moved it. The answer is the ordinary 200 reschedule shape describing the appointment as
+       * stored, and it is completed against the idempotency claim like any other result, so a
+       * replay of the same key answers identically.
+       */
+      if (!timeChanged && !groomerChanged) {
+        const unchanged:SchedulingReplayResult={
+          resultSchemaVersion:"appointment.reschedule.result:v1",appointmentId:id,
+          appointmentVersion:current.version,startAt:current.startAt,endAt:current.endAt,
+          schedulingTimezone:current.schedulingTimezone,scheduledLocalStart:current.storedLocalStart,
+          disambiguation:current.scheduledDisambiguation,utcOffsetMinutes:current.scheduledUtcOffsetMinutes,
+          employeeId:current.employeeId,locationId:current.locationId,
+          conflictDetected:current.conflictOverridden,conflictOverrideRequested:input.overrideConflict,
+          conflictOverrideAuthorized:overrideAuthorized,conflictOverrideApplied:current.conflictOverridden,
+          availabilityOverrideApplied:current.availabilityOverridden
+        };
+        await completeSchedulingRequest(tx,claim.id,unchanged);
+        return { kind: "unchanged", result: unchanged } as const;
+      }
       await schedulingHooks.afterLocationLock?.({operation:"reschedule",businessId:context.businessId,timezone:location.timezone,version:location.version});
       await schedulingHooks.beforeLock?.({
         operation: "reschedule",
@@ -11761,6 +11870,8 @@ export function registerRoutes(
           and notification_type in ('rabies_expiration_customer','rabies_expiration_staff')
           and status in ('pending','failed','suppressed')
       `;
+      // ONE ROW PER OVERLAP MADE. A save that changes neither the start nor the groomers never
+      // reaches here (see the no-op return above), so every override recorded is a new overlap.
       if (overrideApplied) {
         await record(tx, {
           businessId: context.businessId,
@@ -11802,9 +11913,15 @@ export function registerRoutes(
   });
 
   app.patch("/api/appointments/:id/operations", {
-    preHandler: [authenticate, requirePermission("operations.perform_service")]
+    preHandler: [authenticate]
   }, async (request, reply) => {
     const context = auth(request);
+    // TWO KEYS OPEN THE SERVICE NOTE. The groomer doing the work holds `perform_service`; the desk
+    // that edits the booking holds `appointments.edit` and may leave the groomer a note before
+    // the dog arrives. Either is scoped by the same own-appointment rule below.
+    if (!can(context, "operations.perform_service") && !can(context, "appointments.edit")) {
+      return reply.code(403).send({ error: "Missing permission: operations.perform_service" });
+    }
     const { id } = idParams.parse(request.params);
     const input = body(operationalUpdateSchema, request.body);
     /**
@@ -11814,8 +11931,10 @@ export function registerRoutes(
      * ears, went with a 5 all over, check the left dewclaw next time" - is the moment the dog
      * is handed back, which is after Complete has been pressed. Refusing the note there sent the
      * groomer to find somebody who could reopen the appointment, for a field that changes no
-     * money and no schedule. `scheduled`, `cancelled` and `no_show` stay outside the window: no
-     * service has been performed, so there is nothing to note.
+     * money and no schedule. `scheduled` joins too: a note left before Check In ("owner asked for
+     * a shorter face this time") is read by the groomer when the dog arrives, and writing it never
+     * moves the status. `cancelled` and `no_show` stay outside the window: no service will be
+     * performed, so there is nothing to note.
      *
      * A ROW LOCK AND A SCOPE CHECK BEFORE THE WRITE, in one transaction, which is why this is no
      * longer a single UPDATE. The operations key the caller holds is scoped to their own
@@ -11839,14 +11958,14 @@ export function registerRoutes(
       `;
       if (!current) return null;
       await assertAppointmentMutable(tx, context, { appointmentId: id });
-      if (!["checked_in", "in_service", "completed"].includes(current.status)) return null;
+      if (!["scheduled", "checked_in", "in_service", "completed"].includes(current.status)) return null;
       if (input.version && input.version !== current.version) return { stale: true } as const;
       const operationalNotes = input.operationalNotes ?? null;
       const [updated] = await tx`
         update appointments set operational_notes=${operationalNotes},
           version=version+1, updated_by=${context.userId}, updated_at=now()
         where business_id=${context.businessId} and id=${id} and version=${current.version}
-          and status in ('checked_in','in_service','completed') returning *
+          and status in ('scheduled','checked_in','in_service','completed') returning *
       `;
       if (!updated) return null;
       // THAT the note was edited, and whether there is one - never WHAT it says. The service note
@@ -12005,7 +12124,7 @@ export function registerRoutes(
     if ("stale" in result) return reply.code(409).send({ error: "Appointment changed; refresh before continuing" });
     const [appointment] = await appointmentCalendarRows(db, db`
       a.business_id=${context.businessId} and a.id=${id}
-    `);
+    `, context);
     if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
     return mayViewPetCare(context) ? appointment : redactPetCare(appointment);
   });
@@ -12109,7 +12228,7 @@ export function registerRoutes(
     if ("stale" in result) return reply.code(409).send({ error: "Appointment changed; refresh before continuing" });
     const [appointment] = await appointmentCalendarRows(db, db`
       a.business_id=${context.businessId} and a.id=${id}
-    `);
+    `, context);
     if (!appointment) return reply.code(404).send({ error: "Appointment not found" });
     return mayViewPetCare(context) ? appointment : redactPetCare(appointment);
   });

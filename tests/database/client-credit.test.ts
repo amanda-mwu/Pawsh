@@ -840,4 +840,65 @@ describeDatabase("client credit", () => {
       values (${businessId},'Sneaky credit','client_credit',99)
     `).rejects.toThrow(/settlement_type/);
   });
+  // -------------------------------------------------------------------------------------------
+  // Credit, then a second tender that fails, then the remainder retried.
+  it("keeps applied credit when the second tender fails, and settles the remainder once on retry", async () => {
+    const client = await newClient("Split", "Tender");
+    await grant(2_000, "Goodwill", { customerId: client.customerId });
+    const appointmentId = await completedAppointment(5_000, client);
+    const checkout = () => app.inject({
+      method: "POST", url: `/api/appointments/${appointmentId}/checkout`,
+      headers: { cookie: ownerCookie, "idempotency-key": key() },
+      payload: { discountMinor: 0, tipMinor: 0, appliedDiscountIds: [] }
+    });
+    const opened = await checkout();
+    expect(opened.statusCode, opened.body).toBe(201);
+    const invoiceId = opened.json().id as string;
+
+    // 1. The credit posts first, as the sequential checkout sends it.
+    const creditKey = key();
+    const applied = await pay(invoiceId, 2_000, 5_000, { requestKey: creditKey });
+    expect(applied.statusCode, applied.body).toBe(201);
+    expect(applied.json()).toMatchObject({ balance: 3_000, creditRemainingMinor: 0 });
+
+    // 2. The second tender fails - here it is refused for the balance it was computed against -
+    //    and the credit payment stands: partly paid, nothing settled, so no receipt yet.
+    const failed = await pay(invoiceId, 3_000, 5_000, { method: "cash" });
+    expect(failed.statusCode, failed.body).toBe(409);
+    expect(failed.json()).toMatchObject({ code: "STALE_FINANCIAL_STATE", balanceMinor: 3_000 });
+    const partly = await receipt(invoiceId);
+    expect(partly.invoice).toMatchObject({ status: "partially_paid", balanceMinor: 3_000 });
+    expect(partly.payments).toHaveLength(1);
+
+    // 3. A retry that re-sends the credit step with its original key replays it: no second
+    //    redemption, no second payment.
+    const replayed = await pay(invoiceId, 2_000, 5_000, { requestKey: creditKey });
+    expect(replayed.statusCode, replayed.body).toBe(200);
+    expect(replayed.json().id).toBe(applied.json().id);
+
+    // 4. The remainder, retried against the current balance, settles the same invoice.
+    const remainder = await pay(invoiceId, 3_000, 3_000, { method: "cash" });
+    expect(remainder.statusCode, remainder.body).toBe(201);
+    expect(remainder.json().balance).toBe(0);
+
+    // Checking out again answers the same invoice; there is only ever one for the visit.
+    const again = await checkout();
+    expect(again.json().id).toBe(invoiceId);
+    const [invoices] = await db<{ count: number }[]>`
+      select count(*)::int count from invoices where business_id=${businessId} and appointment_id=${appointmentId}
+    `;
+    expect(invoices!.count).toBe(1);
+
+    // Credit consumed exactly once.
+    const ledger = await credit({ customerId: client.customerId });
+    expect(ledger).toMatchObject({ balanceMinor: 0, usedMinor: 2_000 });
+    expect(ledger.entries.filter((entry) => entry.kind === "redemption")).toHaveLength(1);
+    expect(await ledgerSum(client.customerId)).toBe(0);
+
+    // Settled now, and the receipt says so: one credit line and one cash line.
+    const settled = await receipt(invoiceId);
+    expect(settled.invoice).toMatchObject({ status: "paid", balanceMinor: 0 });
+    expect(settled.payments.map((payment: { method: string }) => payment.method).sort())
+      .toEqual(["cash", "client_credit"]);
+  });
 });

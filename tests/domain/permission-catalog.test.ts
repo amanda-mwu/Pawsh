@@ -108,8 +108,9 @@ describe("permission catalog", () => {
     // added the Role Permission taxonomy to the roles that already held all 46, 0055 gave the
     // two block keys to every role that could already block time out, 0057 gave
     // `appointments.edit_all_staff` to every role holding a staff-scoped key and the three scoped
-    // keys to the built-in Groomer, and 0058 gave the override and price keys to the built-in
-    // Groomer and Receptionist.
+    // keys to the built-in Groomer, 0058 gave the override and price keys to the built-in
+    // Groomer and Receptionist, and 0059 gave `customers.contact_info` to the built-in
+    // Receptionist.
     //
     // TOGETHER THEY MUST COVER IT. A permission named in none of them is one that exists in code,
     // is grantable through the editor, and that NO EXISTING ROLE HAS - so every workspace silently
@@ -120,7 +121,7 @@ describe("permission catalog", () => {
     const chain = [
       "0041_roles.sql", "0043_report_dashboard_taxonomy.sql", "0045_permission_taxonomy.sql",
       "0055_blocked_time_management.sql", "0057_staff_scheduling_scope.sql",
-      "0058_groomer_overlap_authority.sql"
+      "0058_groomer_overlap_authority.sql", "0059_receptionist_contact_info.sql"
     ];
     for (const file of chain) {
       const sql = (await readFile(`migrations/${file}`, "utf8")).replaceAll("\r\n", "\n");
@@ -171,6 +172,8 @@ describe("permission catalog", () => {
     //         the keys both presets had carried ahead of a migration, plus the one the owner
     //         ruled a Groomer must hold so it can overlap its own day. Both steps are nominal in
     //         0057's step-2 shape, and neither names the all-staff key.
+    //   0059  grants `customers.contact_info` to the built-in Receptionist, one nominal step, when
+    //         the key started withholding contact details from every projection.
     //
     // A NEW MIGRATION IN THIS CHAIN MUST BE ADDED HERE. That is not busywork: this test is the
     // only thing pinning the frozen SQL literals to the live definitions, and a link left out
@@ -191,6 +194,7 @@ describe("permission catalog", () => {
     const blockSql = await read("0055_blocked_time_management.sql");
     const scopeSql = await read("0057_staff_scheduling_scope.sql");
     const overlapSql = await read("0058_groomer_overlap_authority.sql");
+    const contactSql = await read("0059_receptionist_contact_info.sql");
     const stringsIn = (sql: string) => [...sql.matchAll(/'([^']+)'/g)].map((match) => match[1]!);
     const granted = (sql: string) =>
       stringsIn(/permissions \|\| array\[([\s\S]*?)\]/.exec(sql)![1]!);
@@ -225,6 +229,7 @@ describe("permission catalog", () => {
     }));
     const scopeSteps = stepsOf(scopeSql);
     const overlapSteps = stepsOf(overlapSql);
+    const contactSteps = stepsOf(contactSql);
     expect(taxonomy.length).toBeGreaterThan(0);
     expect(permissionTaxonomy.length).toBeGreaterThan(0);
     expect(blockPair).toEqual(["calendar.blocks_create", "calendar.blocks_edit"]);
@@ -247,6 +252,10 @@ describe("permission catalog", () => {
     ]);
     expect(overlapSteps.map((step) => step.builtInNamed)).toEqual(["groomer", "receptionist"]);
     expect(overlapSteps.every((step) => step.overlaps === null)).toBe(true);
+    // 0059: one nominal step, the Receptionist only - never the Groomer.
+    expect(contactSteps.map((step) => step.granted)).toEqual([["customers.contact_info"]]);
+    expect(contactSteps.map((step) => step.builtInNamed)).toEqual(["receptionist"]);
+    expect(contactSteps.every((step) => step.overlaps === null)).toBe(true);
 
     const seeded = new Map(
       [...roles.matchAll(/\('(\w+)',\s*array\[([^\]]*)\]/g)]
@@ -270,7 +279,7 @@ describe("permission catalog", () => {
       // narrowed keys except the built-in the step names, THEN the three scoped keys to the
       // built-in named in the second step.
       // 0058's two nominal steps follow, in the same shape.
-      for (const step of [...scopeSteps, ...overlapSteps]) {
+      for (const step of [...scopeSteps, ...overlapSteps, ...contactSteps]) {
         const matches = step.overlaps
           ? step.overlaps.some((permission) => migrated.has(permission))
             && role.name.toLowerCase() !== step.exceptBuiltInNamed

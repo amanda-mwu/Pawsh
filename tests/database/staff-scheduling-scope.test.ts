@@ -100,9 +100,8 @@ describeDatabase("staff scheduling scope", () => {
   let bookingDay = 0;
   const nextDay = () => {
     bookingDay += 1;
-    const month = bookingDay > 28 ? "09" : "08";
-    const day = bookingDay > 28 ? bookingDay - 28 : bookingDay;
-    return `2035-${month}-${String(day).padStart(2, "0")}`;
+    // A fresh day per booking, from 2035-08-01 onward, for as many as the suite needs.
+    return new Date(Date.UTC(2035, 7, bookingDay)).toISOString().slice(0, 10);
   };
 
   /** Seats a member holding exactly `permissions`, and returns its cookie and membership id. */
@@ -813,7 +812,7 @@ describeDatabase("staff scheduling scope", () => {
   });
 
   describe("the service note", () => {
-    it("persists on a completed appointment, and is still refused on scheduled and cancelled ones", async () => {
+    it("persists on a completed appointment and before Check In, and is refused on a cancelled one", async () => {
       const done = await booked(employeeA);
       expect((await transition(done.id, ownerCookie, "checked_in")).statusCode).toBe(200);
       expect((await transition(done.id, ownerCookie, "completed")).statusCode).toBe(200);
@@ -822,17 +821,48 @@ describeDatabase("staff scheduling scope", () => {
       expect(written.statusCode, written.body).toBe(200);
       expect((await stored(done.id)).operationalNotes).toBe("Check the left dewclaw next time");
 
+      // BEFORE CHECK IN. The note is open on a scheduled visit, and writing it moves no status.
       const waiting = await booked(employeeA);
       const early = await request("PATCH", `/api/appointments/${waiting.id}/operations`, groomerA,
-        { operationalNotes: "Too soon" });
-      expect(early.statusCode).toBe(404);
-      expect((await stored(waiting.id)).operationalNotes).toBeNull();
+        { operationalNotes: "Owner asked for a shorter face" });
+      expect(early.statusCode, early.body).toBe(200);
+      expect(await stored(waiting.id)).toMatchObject({
+        operationalNotes: "Owner asked for a shorter face", status: "scheduled"
+      });
 
       expect((await transition(waiting.id, ownerCookie, "cancelled")).statusCode).toBe(200);
       const late = await request("PATCH", `/api/appointments/${waiting.id}/operations`, groomerA,
         { operationalNotes: "Called off" });
       expect(late.statusCode).toBe(404);
-      expect((await stored(waiting.id)).operationalNotes).toBeNull();
+      expect((await stored(waiting.id)).operationalNotes).toBe("Owner asked for a shorter face");
+    });
+
+    it("opens on a scheduled visit to the desk and the owner, and to a groomer only on their own", async () => {
+      // Owner, Manager and Receptionist reach any groomer's visit: the owner by ownership, the
+      // Manager and Receptionist through `appointments.edit` + `appointments.edit_all_staff` (the
+      // Receptionist holds no `operations.perform_service` at all).
+      expect(permissionPresets.receptionist).not.toContain("operations.perform_service");
+      const manager = (await seat("note-manager", permissionPresets.manager!)).cookie;
+      const noKey = (await seat("note-viewer", ["calendar.view", "appointments.view"])).cookie;
+      const visit = await booked(employeeA);
+      for (const [label, sessionCookie] of [
+        ["owner", ownerCookie], ["manager", manager], ["receptionist", receptionist], ["own groomer", groomerA]
+      ] as const) {
+        const written = await request("PATCH", `/api/appointments/${visit.id}/operations`, sessionCookie,
+          { operationalNotes: `From the ${label}` });
+        expect(written.statusCode, `${label}: ${written.body}`).toBe(200);
+        expect(await stored(visit.id), label).toMatchObject({
+          operationalNotes: `From the ${label}`, status: "scheduled"
+        });
+      }
+      // Another groomer's scheduled visit stays closed to a groomer, by the scope rule.
+      expectScopeRefusal(await request("PATCH", `/api/appointments/${visit.id}/operations`, groomerB,
+        { operationalNotes: "Not mine" }), "other groomer");
+      // Neither key: refused before the row is read.
+      const refused = await request("PATCH", `/api/appointments/${visit.id}/operations`, noKey,
+        { operationalNotes: "No key" });
+      expect(refused.statusCode, refused.body).toBe(403);
+      expect((await stored(visit.id)).operationalNotes).toBe("From the own groomer");
     });
 
     it("tells a stale version apart from a missing or out-of-window appointment", async () => {
@@ -856,8 +886,9 @@ describeDatabase("staff scheduling scope", () => {
 
       // Out of the window with a stale version: the window answers first, and it is a 404.
       const waiting = await booked(employeeA);
+      expect((await transition(waiting.id, ownerCookie, "cancelled")).statusCode).toBe(200);
       const early = await request("PATCH", `/api/appointments/${waiting.id}/operations`, groomerA,
-        { operationalNotes: "Too soon", version: 1 });
+        { operationalNotes: "Too late", version: 1 });
       expect(early.statusCode, early.body).toBe(404);
       expect(early.json()).toEqual({ error: "Active service appointment not found" });
 

@@ -87,8 +87,12 @@ export async function dragAppointmentToSlot(
 export async function revealAppointmentOnCalendar(page: Page, appointmentId: string): Promise<void> {
   const card = page.locator(`[data-appointment-id="${appointmentId}"]`).first();
   // Polled rather than read once: `networkidle` returns before the grid's own reads settle (see
-  // `calendarRedraw` above), and a card that is about to be painted must not be paged past.
+  // `calendarRedraw` above), and a card that is about to be painted must not be paged past. The
+  // grid says when a navigating read is still in flight (`aria-busy` on #calendar-list), so the
+  // poll first waits for THAT rather than spending its budget on a read a slow browser has not
+  // answered yet - a fixed 2.5s on WebKit under load paged straight past the fixture's week.
   const drawn = async (): Promise<boolean> => {
+    await expect(page.locator("#calendar-list")).not.toHaveAttribute("aria-busy", "true", { timeout: 15_000 });
     try { await expect.poll(() => card.count(), { timeout: 2_500 }).toBeGreaterThan(0); return true; }
     catch { return false; }
   };

@@ -280,6 +280,9 @@ export async function login(page: Page,email:string,passwordValue=password) {
   // The authenticated shell, not the dashboard. Dashboard is gated on `dashboard.view` now, and a
   // session without it lands on the first destination it actually has - so waiting on the
   // dashboard specifically would be waiting for a screen this member is right not to be shown.
-  await expect(page.locator("#app-view")).toBeVisible();
+  // The shell is revealed once the session's first refresh has answered - some fifteen reads in
+  // parallel - so it gets the budget of a page load, not of one assertion. Five seconds was a test
+  // choice that WebKit on a loaded machine occasionally missed after a sign-in that had succeeded.
+  await expect(page.locator("#app-view")).toBeVisible({ timeout: 15_000 });
   await expect(page.locator("#auth-view")).toBeHidden();
 }

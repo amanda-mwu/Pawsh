@@ -1144,7 +1144,9 @@ function calendarAction(item){
   // merely switched off without saying by what or where, which is the half-answer this replaces.
   else if(item.status==="scheduled")controls.push(appointmentLockNoteMarkup("appointment-lock-note"));
   if(item.status==="scheduled"&&allowed("appointments.cancel")){controls.push(`<button type="button" role="menuitem" class="calendar-action terminal-action destructive" data-id="${item.id}" data-status="cancelled"${scoped}>Cancel appointment</button>`);controls.push(`<button type="button" role="menuitem" class="calendar-action terminal-action" data-id="${item.id}" data-status="no_show"${scoped}>No show</button>`);}
-  if(["checked_in","in_service"].includes(item.status)&&allowed("appointments.edit"))controls.push(`<button type="button" role="menuitem" class="calendar-action service-action" data-id="${item.id}"${scoped}>Adjust services</button>`);
+  // Locked the moment an invoice exists, the same as the surface's + Add service: drawn disabled with
+  // the one reason rather than opening an editor whose Save the server will refuse.
+  if(["checked_in","in_service"].includes(item.status)&&allowed("appointments.edit"))controls.push(`<button type="button" role="menuitem" class="calendar-action service-action" data-id="${item.id}"${item.invoiceId?refusalAttributes(SERVICES_LOCKED_REASON):scoped}>Adjust services</button>${item.invoiceId?`<small class="calendar-action-reason">${escape(SERVICES_LOCKED_REASON)}</small>`:""}`);
   return `<div class="calendar-actions-menu"><button type="button" class="calendar-action-trigger" aria-label="Appointment actions for ${escape(petName({petName:item.petName}))}" aria-haspopup="menu" aria-expanded="false" data-appointment-menu="${item.id}">&#8943;</button><div class="calendar-action-popover" role="menu" hidden>${controls.join("")}</div></div>`;
 }
 // The hash fallback. The modulus stays at five whatever the palette grows to: widening it would
@@ -3700,8 +3702,9 @@ function appendPrintRoot(className,html){
  * as from its footer - and Print.
  *
  * EVERY DOCUMENT STILL IDENTIFIES ITSELF INSIDE THE PREVIEW, and that is the PRECONDITION for
- * dropping the label rather than a hope about it. `printFinancialRoot` hands the Invoice and the
- * Receipt an <h1> - `Invoice #1042`, `Receipt #1042`, the same strings they print under. The
+ * dropping the label rather than a hope about it. `printFinancialRoot` hands the Invoice an <h1> -
+ * `Invoice #1042`, the string it prints under; the Receipt no longer comes through here at all, it
+ * opens full screen (`openReceiptDocument`) and names itself in that layer's bar. The
  * Ticket prepends nothing and needs nothing: `ticketDocumentMarkup` OPENS on `Appointment #: 4f2c1a90` and the salon's own
  * name, so the one document whose body used to say nothing at all now says it first.
  *
@@ -3744,8 +3747,9 @@ function printInvoiceDocument(receipt){
 // work sheet and carries no money at all.
 //
 // `print-payment-receipt` on the root is a DOCUMENT-IDENTITY marker rather than a style hook, and
-// its having no rule in `styles.css` is deliberate rather than an oversight. `printFinancialRoot`
-// builds the Invoice and the Receipt the same way, so without a marker the two printed documents
+// its having no rule in `styles.css` is deliberate rather than an oversight. Both financial
+// documents reach paper as a bare `.print-root` (the Invoice through `printFinancialRoot`, the
+// Receipt from `openReceiptDocument`'s Print), so without a marker the two printed documents
 // would be indistinguishable in the DOM - a bare `.print-root` is the Invoice, this is the Receipt,
 // and `.print-ticket` is the Ticket. The Receipt's actual print styling hangs off the classes
 // INSIDE the markup - `.print-root .payment-receipt-record`, `.print-root .payment-receipt-refund`
@@ -5329,7 +5333,7 @@ function paymentReceiptMarkup(receipt){
       +`</dl></div>`
     +paymentReceiptPurchaseMarkup(receipt)
     +(records?`<section class="payment-receipt-payments" data-testid="payment-receipt-payments"><h4>Payments</h4>${records}</section>`:"")
-    +`<div class="receipt-total" data-testid="payment-receipt-total-settled"><span>Total settled</span><strong>${money(settledMinor)}</strong></div>`
+    +`<div class="payment-receipt-settled" data-testid="payment-receipt-total-settled"><span>Total settled</span><strong>${money(settledMinor)}</strong></div>`
     +(receipt.refundedMinor
       ? `<div class="receipt-refunded" data-testid="payment-receipt-refunded"><span>Refunded</span><strong>-${money(receipt.refundedMinor)}</strong></div>`
       : "")

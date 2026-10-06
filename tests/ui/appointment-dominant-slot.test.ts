@@ -613,6 +613,15 @@ describe("the calendar card's overflow menu is gated the way the surface is", ()
     expect(item(markup, "Cancel appointment")).not.toContain("disabled");
   });
 
+  it("draws Adjust services disabled with the lock reason once the visit is invoiced, whoever holds it", () => {
+    for (const status of ["checked_in", "in_service"]) {
+      const locked = item(cardMenu(status, GROOMER, { invoiceId: "inv1" }), "Adjust services");
+      expect(locked, status).toContain("disabled");
+      expect(locked, status).toContain("Services are locked once the visit is invoiced");
+      expect(item(cardMenu(status, GROOMER), "Adjust services"), status).not.toContain("disabled");
+    }
+  });
+
   it("draws the same items disabled with the scope key on a colleague's card, and Checkout untouched", () => {
     const scheduled = cardMenu("scheduled", CANCELLING, OTHER);
     for (const label of ["Check in", "Move", "Cancel appointment", "No show"]) {

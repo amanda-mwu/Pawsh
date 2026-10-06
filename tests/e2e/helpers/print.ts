@@ -27,8 +27,9 @@ export async function observePrinting(page: Page): Promise<void> {
 /**
  * THE PREVIEW STEP, PRESSED THROUGH.
  *
- * Print Invoice, Print Receipt, Ticket and Print no longer reach `appendPrintRoot` on the press:
- * they open `previewPrintRoot`'s in-app preview over the dialog they were pressed from, and Print
+ * Print Invoice, Ticket and Print no longer reach `appendPrintRoot` on the press: they open
+ * `previewPrintRoot`'s in-app preview over the dialog they were pressed from (Print Receipt opens
+ * the full-screen Receipt instead - see `printFromReceipt`), and Print
  * inside it is what puts the document on paper. A spec that asserts on `.print-root` is therefore
  * two presses away from paper rather than one, and this is the second press.
  *

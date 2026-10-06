@@ -197,7 +197,9 @@ test("@responsive a cancelled visit is struck and dimmed on the grid, and the su
 
     const card = page.locator(`[data-appointment-id="${gone.id}"]`).first();
     await expect(card).toHaveClass(/status-cancelled/u);
-    expect(await card.evaluate((node) => ({
+    // Polled: the grid redraws once its reads settle, and a card read mid-redraw (WebKit on a
+    // tablet) can report the node it is about to replace.
+    await expect.poll(() => card.evaluate((node) => ({
       opacity: getComputedStyle(node).opacity,
       struck: getComputedStyle(node.querySelector(".appointment-pet")!).textDecorationLine
     }))).toEqual({ opacity: "0.6", struck: "line-through" });
@@ -382,8 +384,12 @@ test("@responsive the Invoice footer on a phone is the balance and four actions 
     }
     await expect(surface.getByTestId("invoice-send-receipt")).toBeDisabled();
     await expect(surface.getByTestId("invoice-ask-review")).toBeDisabled();
-    const rows = await foot.locator("button").evaluateAll((buttons) => new Set(buttons.map((button) => Math.round(button.getBoundingClientRect().top))).size);
-    expect(rows).toBe(2);
+    // AT MOST two rows. The documents are the footer's quiet utility treatment now (one secondary
+    // style for every surface), so on a wide-enough phone all four sit on one row; what this holds
+    // is that the footer never stacks past two rows and nothing spills out of it sideways.
+    await expect.poll(() => foot.locator("button").evaluateAll((buttons) =>
+      new Set(buttons.map((button) => Math.round(button.getBoundingClientRect().top))).size)).toBeLessThanOrEqual(2);
+    expect(await foot.evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
 
     // Landscape: the same footer, and the document still has room above it.
     await page.setViewportSize({ width: 844, height: 390 });

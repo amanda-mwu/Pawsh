@@ -305,10 +305,11 @@ describe("every status offers the one thing it is waiting for", () => {
     for (const status of ["scheduled", "checked_in", "in_service"]) {
       expect(control(client(status).markup(), "appointment-adjust-services"), status).not.toBeNull();
     }
-    // The route refuses once an invoice exists, so the control goes rather than producing a
-    // sentence nobody can act on.
+    // The route refuses once an invoice exists, so the control is drawn disabled with the reason
+    // beside it - build it or grey it out - rather than simply vanishing.
     const billed = client("checked_in", { invoiceId: "inv-1", invoiceStatus: "open", invoiceBalanceMinor: 8500 });
-    expect(control(billed.markup(), "appointment-adjust-services")).toBeNull();
+    expect(control(billed.markup(), "appointment-adjust-services")).toContain("disabled");
+    expect(billed.markup()).toContain('data-testid="appointment-services-locked"');
   });
 
   it("draws one ticket action and no second route to the same document", () => {

@@ -1,5 +1,5 @@
 import { test, expect, login, completeAppointment } from "./fixtures/tenant.js";
-import { observePrinting, clearPrintRoots, printFromPreview } from "./helpers/print.js";
+import { observePrinting, clearPrintRoots, printFromPreview, printFromReceipt } from "./helpers/print.js";
 import {
   closeInvoice, invoiceStatement, invoiceSurface, invoiceTitle, openInvoiceFromHistory
 } from "./helpers/invoice.js";
@@ -206,32 +206,24 @@ test("the desktop Invoice is a workspace, and both print routes carry their own 
     // Back on the Invoice, which is where it was pressed from.
     await expect(document_).toBeVisible();
 
-    // ---- Print Receipt → a RECEIPT preview → paper, and NEVER a Ticket dialog ----------------
+    // ---- Print Receipt → the full-screen Receipt → paper, and NEVER a Ticket ----------------
     await document_.getByTestId("invoice-print-receipt").click();
-    const preview = page.getByTestId("print-preview");
-    await expect(preview).toBeVisible();
-    expect(await previewName(page)).toBe("Print preview");
-    // THE PREVIEW IS THE RECEIPT. Not the Ticket — which is the shop's operational work sheet and
-    // carries no money at all — and not the Invoice's own statement retitled.
-    await expect(preview.getByTestId("payment-receipt")).toHaveCount(1);
-    await expect(preview.getByTestId("ticket-document")).toHaveCount(0);
-    await expect(preview.locator(".receipt")).toHaveCount(0);
-    await expect(preview).not.toContainText("Ticket");
-    await expect(preview).toContainText("Total settled");
-    // It references the invoice it evidences. Pawsh has no separate receipt series and inventing
-    // one would be an identifier nothing reconciles against.
-    await expect(preview.locator("h1")).toHaveText(`Receipt #${invoice.invoiceNumber}`);
-    // WHAT THE CHROME DOES KEEP: the two controls, and nothing naming the document. Back out, and
-    // Print. Both are still there with the label gone, and the heading says neither "Receipt" nor
-    // the invoice's number.
-    await expect(page.getByTestId("stacked-dialog-dismiss")).toHaveText("Close");
-    await expect(page.getByTestId("stacked-dialog-confirm")).toHaveText("Print");
-    await expect(page.getByTestId("stacked-dialog-close")).toBeVisible();
-    expect(await previewName(page)).not.toContain("Receipt");
-    expect(await previewName(page)).not.toContain(String(invoice.invoiceNumber));
-    // And Print from inside it is what reaches the print path.
-    await printFromPreview(page);
-    await expect(printRoot(page).locator("h1")).toHaveText(`Receipt #${invoice.invoiceNumber}`);
+    await expect(page.getByTestId("receipt-document")).toBeVisible();
+    // THE LAYER IS THE RECEIPT. Not the Ticket — the shop's operational work sheet, no money —
+    // and not the Invoice's own statement retitled. Its bar references the invoice it evidences:
+    // Pawsh has no separate receipt series.
+    const paper = page.getByTestId("receipt-document-paper");
+    await expect(page.getByTestId("receipt-document-title")).toHaveText(`Receipt #${invoice.invoiceNumber}`);
+    await expect(paper.getByTestId("payment-receipt")).toHaveCount(1);
+    await expect(paper.getByTestId("ticket-document")).toHaveCount(0);
+    await expect(paper.locator(".receipt")).toHaveCount(0);
+    await expect(paper).not.toContainText("Ticket");
+    await expect(paper).toContainText("Total settled");
+    await expect(page.getByTestId("receipt-document-print")).toHaveText("Print");
+    // Print from inside it is what reaches the print path; closing returns to the Invoice.
+    await printFromReceipt(page);
+    await expect(document_).toBeVisible();
+    await expect(printRoot(page).getByTestId("payment-receipt-number")).toContainText(`#${invoice.invoiceNumber}`);
     await expect(printRoot(page).getByTestId("payment-receipt")).toHaveCount(1);
     await expect(printRoot(page).getByTestId("ticket-document")).toHaveCount(0);
     await clearPrintRoots(page);

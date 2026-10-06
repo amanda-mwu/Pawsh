@@ -1,7 +1,7 @@
 import { test, expect, login, completeAppointment } from "./fixtures/tenant.js";
 import type { TenantFixture } from "./fixtures/tenant.js";
 import { openCheckout } from "./helpers/checkout.js";
-import { observePrinting, clearPrintRoots, printFromPreview } from "./helpers/print.js";
+import { observePrinting, clearPrintRoots, printFromPreview, printFromReceipt } from "./helpers/print.js";
 import type { APIRequestContext, Locator } from "@playwright/test";
 
 /**
@@ -162,7 +162,7 @@ test("a workspace billing in a CLDR zero-decimal currency keeps its minor units 
     // the Invoice's coverage says nothing whatever about them. Unpinned, this is where a peso
     // workspace hands over "COP 102" for a settlement of 10160 minor units.
     await surface.getByTestId("checkout-print-receipt").click();
-    await printFromPreview(page);
+    await printFromReceipt(page);
     const receiptDoc = page.locator(".print-root").getByTestId("payment-receipt");
     await expect(receiptDoc).toHaveCount(1);
     await expect(receiptDoc.getByTestId("payment-receipt-total-settled"))

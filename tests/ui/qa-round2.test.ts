@@ -270,3 +270,75 @@ describe("Move with nothing changed sends nothing", () => {
     expect(unchanged(form({ startAt: "2026-10-09T10:00", employeeId: "e1", disambiguation: "later" }), appointment, "2026-10-09T10:00")).toBe(false);
   });
 });
+
+// ─── The full-screen Receipt ───────────────────────────────────────────────────────────────
+
+describe("the Receipt opens full screen, closes back, and prints only its paper", () => {
+  function harness() {
+    const printed: Array<{ className: string; innerHTML: string }> = [];
+    const prints = { count: 0 };
+    const nodes: Record<string, { textContent?: string; innerHTML?: string }> = {
+      "#receipt-document-title": { textContent: "" },
+      "#receipt-document-paper": { innerHTML: "" }
+    };
+    const buttons: Record<string, { onclick: null | (() => void) }> = {};
+    const state = { open: false, focused: "" };
+    const listeners: Array<() => void> = [];
+    const dialog = {
+      querySelector(selector: string) {
+        const id = /data-testid="([^"]+)"/u.exec(selector)![1]!;
+        return buttons[id] ?? (buttons[id] = { onclick: null });
+      },
+      addEventListener(_type: string, listener: () => void) { listeners.push(listener); },
+      showModal() { state.open = true; },
+      close() { state.open = false; listeners.splice(0).forEach((listener) => listener()); }
+    };
+    const source = { isConnected: true, focus() { state.focused = "Print Receipt"; } };
+    const open = build<(receipt: unknown) => void>(
+      ["appendPrintRoot", "openReceiptDocument"],
+      {
+        $: (selector: string) => (selector === "#receipt-document" ? dialog : nodes[selector]),
+        document: {
+          activeElement: source,
+          createElement: () => ({ className: "", innerHTML: "", remove() {} }),
+          body: { append(node: { className: string; innerHTML: string }) { printed.push(node); } }
+        },
+        globalThis: { print() { prints.count += 1; } },
+        setTimeout: () => 0,
+        paymentReceiptTitle: () => "Receipt #INV-1042",
+        paymentReceiptMarkup: () => '<div class="wide payment-receipt" data-testid="payment-receipt">«paper»</div>'
+      },
+      "openReceiptDocument"
+    );
+    return { open, printed, prints, nodes, buttons, state };
+  }
+
+  it("opens over the screen it was pressed from, titled by the receipt, with the paper on it", () => {
+    const h = harness();
+    h.open({});
+    expect(h.state.open).toBe(true);
+    expect(h.nodes["#receipt-document-title"]!.textContent).toBe("Receipt #INV-1042");
+    expect(h.nodes["#receipt-document-paper"]!.innerHTML).toContain("«paper»");
+    expect(h.printed).toHaveLength(0);
+  });
+
+  it("× closes it back to the control it was opened from, printing nothing", () => {
+    const h = harness();
+    h.open({});
+    h.buttons["receipt-document-close"]!.onclick!();
+    expect(h.state.open).toBe(false);
+    expect(h.state.focused).toBe("Print Receipt");
+    expect(h.prints.count).toBe(0);
+  });
+
+  it("Print hands exactly the paper to the browser's print, as the Receipt's print root", () => {
+    const h = harness();
+    h.open({});
+    h.buttons["receipt-document-print"]!.onclick!();
+    expect(h.prints.count).toBe(1);
+    expect(h.printed).toEqual([expect.objectContaining({
+      className: "print-root print-payment-receipt",
+      innerHTML: '<div class="wide payment-receipt" data-testid="payment-receipt">«paper»</div>'
+    })]);
+  });
+});

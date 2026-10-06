@@ -1,5 +1,5 @@
 import { test, expect, login, completeAppointment } from "./fixtures/tenant.js";
-import { observePrinting, clearPrintRoots, printFromPreview } from "./helpers/print.js";
+import { observePrinting, clearPrintRoots, printFromPreview, printFromReceipt } from "./helpers/print.js";
 import { closeInvoice, invoiceStatement, invoiceSurface, invoiceTitle } from "./helpers/invoice.js";
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 
@@ -136,8 +136,8 @@ test("a settled appointment opens its own Invoice from the appointment footer",
     await clearPrintRoots(page);
 
     await document_.getByTestId("invoice-print-receipt").click();
-    await printFromPreview(page);
-    await expect(printRoot(page).locator("h1")).toHaveText(`Receipt #${invoice.invoiceNumber}`);
+    await printFromReceipt(page);
+    await expect(printRoot(page).getByTestId("payment-receipt-number")).toContainText(`#${invoice.invoiceNumber}`);
     const receiptDoc = printRoot(page).getByTestId("payment-receipt");
     // PRESENT, not "visible". `.print-root{display:none}` keeps every print document off the
     // screen and `@media print` is the only thing that reveals it.

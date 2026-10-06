@@ -221,6 +221,14 @@
       <button type="button" class="secondary compact close">Close</button>
     </div>
   </dialog>
+  <dialog id="receipt-document" class="receipt-document" aria-labelledby="receipt-document-title" data-testid="receipt-document">
+    <header class="receipt-document-bar">
+      <h2 id="receipt-document-title" data-testid="receipt-document-title">Receipt</h2>
+      <button type="button" class="surface-close" data-testid="receipt-document-close" aria-label="Close receipt">&#215;</button>
+    </header>
+    <div class="receipt-document-body"><article class="receipt-document-paper" id="receipt-document-paper" data-testid="receipt-document-paper"></article></div>
+    <footer class="receipt-document-foot"><button type="button" class="primary compact" data-testid="receipt-document-print">Print</button></footer>
+  </dialog>
   <dialog id="stacked-dialog" class="stacked-dialog" aria-labelledby="stacked-dialog-title" data-testid="stacked-dialog">
     <h4 id="stacked-dialog-title">Details</h4>
     <div id="stacked-dialog-body"></div>

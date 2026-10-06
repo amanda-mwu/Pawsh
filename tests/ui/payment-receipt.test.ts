@@ -145,6 +145,8 @@ const PRINT_BINDINGS = slice(
 /** The stub's output, distinctive enough that a raw `Intl` call could not produce it by accident. */
 const PREFERRED_STAMP = "«preference-layer stamp»";
 /** What `printTicket` would put on paper. Nothing financial may ever produce it. */
+/** How the Receipt's paper names itself: the receipt number in its own meta block. */
+const RECEIPT_IDENTITY = '<div data-testid="payment-receipt-number"><dt>Receipt</dt><dd>#1042</dd></div>';
 const TICKET_SENTINEL = '<div data-testid="ticket-document">«the shop’s work sheet»</div>';
 
 interface PrintedRoot {
@@ -232,7 +234,8 @@ function loadClient(options: { money?: string } = {}): ClientModule {
     const prints = {count:0};
     const document = {
       createElement:() => ({className:"",innerHTML:"",remove(){}}),
-      body:{append(node){printed.push(node);}}
+      body:{append(node){printed.push(node);}},
+      activeElement:null
     };
     const globalThis = {print(){prints.count += 1;}};
     // The 1000ms tidy-up is a browser concern; a real timer here would outlive the test run.
@@ -274,7 +277,27 @@ function loadClient(options: { money?: string } = {}): ClientModule {
       options.onConfirm();
       return null;
     };
-    const $ = () => queryHost(() => modal.body, modalHandlers);
+    // THE FULL-SCREEN RECEIPT LAYER, recorded and then printed. Opening it is recorded as a preview
+    // (its title and the paper on it) and Print is pressed at once - the same convention as the
+    // stacked preview above: this file is about which document reaches paper.
+    const receiptLayer = {title:{textContent:""}, paper:{innerHTML:""}, buttons:{}};
+    const receiptDialog = {
+      querySelector(selector){
+        const id = /data-testid="([^"]+)"/u.exec(selector)?.[1];
+        return receiptLayer.buttons[id] || (receiptLayer.buttons[id] = {onclick:null});
+      },
+      addEventListener(){},
+      close(){},
+      showModal(){
+        previews.push({title:receiptLayer.title.textContent, body:receiptLayer.paper.innerHTML,
+          confirmLabel:"Print", dismissLabel:"Close"});
+        receiptLayer.buttons["receipt-document-print"].onclick();
+      }
+    };
+    const $ = (selector) => selector === "#receipt-document" ? receiptDialog
+      : selector === "#receipt-document-title" ? receiptLayer.title
+      : selector === "#receipt-document-paper" ? receiptLayer.paper
+      : queryHost(() => modal.body, modalHandlers);
     // The Invoice's own corrections are bound by their own function and tested by their own spec.
     const bindReceiptActions = () => {};
 
@@ -463,7 +486,9 @@ function lineValue(markup: string, testid: string): string | null {
 function tenderLines(markup: string): string[] {
   return [
     ...markup.matchAll(
-      /<div class="payment-receipt-tender" data-testid="payment-receipt-tender"><span>([^<]*)<\/span><strong>([^<]*)<\/strong><\/div>/gu
+      // "Paid by <method>" on the left, "Pay <amount>" on the right - the reference layout. Read
+      // back as `method | amount`, so a row in any other shape is simply not seen.
+      /<div class="payment-receipt-tender" data-testid="payment-receipt-tender"><span>Paid by ([^<]*)<\/span><strong>Pay ([^<]*)<\/strong><\/div>/gu
     )
   ].map((match) => `${match[1]} | ${match[2]}`);
 }
@@ -472,12 +497,11 @@ function tenderLines(markup: string): string[] {
 function itemLines(markup: string): string[] {
   return [
     ...markup.matchAll(
-      /<div class="payment-receipt-item" data-testid="payment-receipt-item"><span>([\s\S]*?)<\/span><strong>([^<]*)<\/strong><\/div>/gu
+      // One table row per line: Name | Pet | Price. Read back as `name (for pet) | price`, the
+      // pet omitted when the line names none ("—").
+      /<tr data-testid="payment-receipt-item"><td>([^<]*)<\/td><td>([^<]*)<\/td><td>([^<]*)<\/td><\/tr>/gu
     )
-    // The label may carry a `<small>` naming the pet, so it is read as markup and flattened here
-    // rather than matched as a run of plain text - a line with a pet would otherwise not be seen
-    // at all, and every "lists every service line" assertion would quietly count one fewer.
-  ].map((match) => `${match[1]!.replace(/<[^>]+>/gu, "").replace(/\s+/gu, " ").trim()} | ${match[2]}`);
+  ].map((match) => `${match[1]}${match[2] === "—" ? "" : ` (for ${match[2]})`} | ${match[3]}`);
 }
 
 /**
@@ -627,7 +651,7 @@ describe("1. a paymentless Invoice cannot produce a Receipt", () => {
     client.printPaymentReceipt(receiptFixture([creditPayment(), keyedCardPayment()]));
     expect(client.printed).toHaveLength(1);
     expect(client.printed[0]!.className).toBe("print-root print-payment-receipt");
-    expect(client.printed[0]!.innerHTML).toContain("<h1>Receipt #1042</h1>");
+    expect(client.printed[0]!.innerHTML).toContain(RECEIPT_IDENTITY);
     expect(client.prints.count).toBe(1);
   });
 });
@@ -744,7 +768,7 @@ describe("3. Print Receipt is a separate, independent control", () => {
     const refunded = { ...receiptFixture([terminalPayment({ amountMinor: 9201 })]), refundedMinor: 1000 };
     bindSurface(client, checkoutFixture(refunded))["checkout-print-receipt"]!();
     expect(client.printed).toHaveLength(1);
-    expect(client.printed[0]!.innerHTML).toContain("<h1>Receipt #1042</h1>");
+    expect(client.printed[0]!.innerHTML).toContain(RECEIPT_IDENTITY);
     expect(lineValue(client.printed[0]!.innerHTML, "payment-receipt-total-settled"))
       .toBe("Total settled | $92.01");
     expect(lineValue(client.printed[0]!.innerHTML, "payment-receipt-refunded"))
@@ -786,8 +810,10 @@ describe("3. Print Receipt is a separate, independent control", () => {
     const handlers = bindSurface(client, checkoutFixture(receiptFixture([creditPayment(), keyedCardPayment()])));
     handlers["checkout-print-invoice"]!();
     handlers["checkout-print-receipt"]!();
-    expect(client.printed.map((root) => root.innerHTML.slice(0, 22)))
-      .toEqual(["<h1>Invoice #1042</h1>", "<h1>Receipt #1042</h1>"]);
+    expect(client.printed).toHaveLength(2);
+    expect(client.printed[0]!.innerHTML.startsWith("<h1>Invoice #1042</h1>")).toBe(true);
+    expect(client.printed[1]!.innerHTML).toContain(RECEIPT_IDENTITY);
+    expect(client.printed[1]!.innerHTML).not.toContain("Invoice #1042");
   });
 });
 
@@ -807,7 +833,7 @@ describe("4. Print Receipt renders the Receipt, never the Ticket", () => {
     const [root] = client.printed;
     expect(root!.className).toBe("print-root print-payment-receipt");
     expect(root!.innerHTML).toContain('data-testid="payment-receipt"');
-    expect(root!.innerHTML).toContain("<h1>Receipt #1042</h1>");
+    expect(root!.innerHTML).toContain(RECEIPT_IDENTITY);
     // What `printTicket` would have produced, which nothing financial may ever contain.
     expect(root!.innerHTML).not.toContain(TICKET_SENTINEL);
     expect(root!.innerHTML).not.toContain("Ticket");
@@ -852,7 +878,7 @@ describe("split tender is ONE Receipt with several tender components", () => {
 
   it("presents the composition the owner asked for: methods, then Total settled", () => {
     const markup = loadClient().paymentReceiptMarkup(split());
-    expect(markup).toContain("<h4>Payment methods</h4>");
+    expect(markup).toContain("<h4>Payments</h4>");
     expect(tenderLines(markup)).toEqual(["Client credit | $40.00", "Card | $52.01"]);
     expect(lineValue(markup, "payment-receipt-total-settled")).toBe("Total settled | $92.01");
   });
@@ -862,8 +888,7 @@ describe("split tender is ONE Receipt with several tender components", () => {
     expect(markup.match(/data-testid="payment-receipt"/gu)).toHaveLength(1);
     expect(testids(markup).filter((id) => id === "payment-receipt-payment")).toHaveLength(2);
     // Every amount corresponds to a row in `payments`; none of them is a sum pretending to be one.
-    expect(markup).toContain("#c1ed17aa");
-    expect(markup).toContain("#ca2d0007");
+    expect(tenderLines(markup)).toEqual(["Client credit | $40.00", "Card | $52.01"]);
   });
 
   it("SAYS 'Payment 1 of N' NOWHERE — a settlement is not a series of checkout events", () => {
@@ -875,15 +900,15 @@ describe("split tender is ONE Receipt with several tender components", () => {
     expect(/Payment \$\{[^}]*\} of \$\{/u.test(source)).toBe(false);
   });
 
-  it("identifies each component separately: reference, and when it was received", () => {
+  it("carries no payment record id and no per-tender stamp: the paper has one Date", () => {
+    // The reference layout dates the settlement once, at the head, from its LAST component; a
+    // client's paper carries no ledger row ids.
     const markup = loadClient().paymentReceiptMarkup(split());
-    expect(markup).toContain(
-      `<div data-testid="payment-receipt-received"><span>Received</span><strong>${PREFERRED_STAMP} 2026-09-02T19:30:00.000Z</strong></div>`
-    );
-    expect(markup).toContain(
-      `<div data-testid="payment-receipt-received"><span>Received</span><strong>${PREFERRED_STAMP} 2026-09-02T19:31:00.000Z</strong></div>`
-    );
-    expect(testids(markup).filter((id) => id === "payment-receipt-reference")).toHaveLength(2);
+    expect(markup).not.toContain("#c1ed17aa");
+    expect(markup).not.toContain("#ca2d0007");
+    expect(testids(markup)).not.toContain("payment-receipt-reference");
+    expect(testids(markup)).not.toContain("payment-receipt-received");
+    expect(markup).toContain('<div data-testid="payment-receipt-date"><dt>Date</dt><dd>2026-09-02</dd></div>');
   });
 
   it("leaves a voided component off the composition and out of the total", () => {
@@ -937,70 +962,52 @@ describe("client credit is settled, not collected", () => {
   });
 });
 
-describe("processor identity is stated only where it exists", () => {
-  it("names the provider and its payment id", () => {
+describe("no processor or terminal identifier reaches the client's paper", () => {
+  it("names a terminal tender by its method and nothing else", () => {
     const markup = loadClient().paymentReceiptMarkup(
       receiptFixture([terminalPayment({ amountMinor: 9201 })])
     );
-    expect(lineValue(markup, "payment-receipt-provider")).toBe("Processor | Square");
-    expect(lineValue(markup, "payment-receipt-provider-payment-id"))
-      .toBe("Processor payment ID | sqpmt_9Rt4KvA1");
-    // The fixture also carries `externalReference`, and it is NOT a third line: the block headed
-    // "the Receipt never prints the operator's processor reference" holds that on its own.
-
     // Named the way the Invoice's payment history names it, through the shared label.
-    expect(tenderLines(markup)).toEqual(["card terminal | $92.01"]);
+    expect(tenderLines(markup)).toEqual(["Square Terminal | $92.01"]);
+    expect(markup).not.toContain("sqpmt_9Rt4KvA1");
+    expect(markup).not.toContain("Processor");
+    expect(testids(markup)).not.toContain("payment-receipt-provider");
+    expect(testids(markup)).not.toContain("payment-receipt-provider-payment-id");
   });
 
   it("INVENTS NO PROCESSOR on cash, on credit or on a manually keyed card", () => {
     const markup = loadClient().paymentReceiptMarkup(
       receiptFixture([creditPayment(), keyedCardPayment()])
     );
-    for (const field of [
-      "payment-receipt-provider",
-      "payment-receipt-provider-payment-id"
-    ]) {
-      expect(lineValue(markup, field), field).toBeNull();
-    }
-    // Not an empty row and not a placeholder dash: a label with nothing after it still tells the
-    // reader a processor was in this transaction.
     expect(markup).not.toContain("Processor");
     expect(markup).not.toContain("<strong></strong>");
   });
 
-  it("treats a blank processor field as the same absence as null", () => {
+  it("draws exactly the paper's own parts on a plain settlement, in order", () => {
     const markup = loadClient().paymentReceiptMarkup(
       receiptFixture([
         keyedCardPayment({ amountMinor: 9201, provider: "", providerPaymentId: "   ", externalReference: "" })
-      ])
+      ], { appointmentId: "3f9a0c11-0000-4000-8000-0000000000aa" })
     );
-    expect(markup).not.toContain("Processor");
     expect(testids(markup)).toEqual([
       "payment-receipt",
+      "payment-receipt-appointment",
       "payment-receipt-salon",
+      "payment-receipt-number",
+      "payment-receipt-date",
       "payment-receipt-client",
+      "payment-receipt-payments",
       "payment-receipt-payment",
       "payment-receipt-tender",
-      "payment-receipt-reference",
-      "payment-receipt-received",
-      "payment-receipt-total-settled"
+      "payment-receipt-total-settled",
+      "payment-receipt-balance"
     ]);
+    expect(markup).toContain('data-testid="payment-receipt-appointment">Appointment #: 3f9a0c11</h2>');
   });
 
-  it("falls back to what the ledger stored rather than guessing a provider's name", () => {
+  it("escapes what the ledger stored", () => {
     const markup = loadClient().paymentReceiptMarkup(
-      receiptFixture([terminalPayment({ amountMinor: 9201, provider: "stripe" })])
-    );
-    expect(lineValue(markup, "payment-receipt-provider")).toBe("Processor | stripe");
-  });
-
-  it("escapes what came back from the processor", () => {
-    // Asserted on the processor payment id, which this document still draws. It used to be
-    // asserted on `externalReference`, which it no longer draws at all.
-    const markup = loadClient().paymentReceiptMarkup(
-      receiptFixture([
-        terminalPayment({ amountMinor: 9201, providerPaymentId: "wag & <b>wash</b>" })
-      ])
+      receiptFixture([cashPayment({ amountMinor: 9201 })], { firstName: "wag & <b>wash</b>", lastName: "" })
     );
     expect(markup).toContain("wag &amp; &lt;b&gt;wash&lt;/b&gt;");
     expect(markup).not.toContain("<b>wash</b>");
@@ -1072,17 +1079,16 @@ describe("the Receipt never prints the operator's processor reference", () => {
     }
   });
 
-  it("STILL NAMES THE PROCESSOR AND ITS PAYMENT ID, which the ruling kept", () => {
-    // The reference line went; processor identity did not. A Receipt that named neither would
-    // satisfy the two tests above while being a different regression entirely.
+  it("still names the terminal tender, by its method, without the processor's id", () => {
+    // The reference receipt carries no terminal or processor identifier: the tender is named
+    // and its amount stated, and nothing a client could send back is printed beside it.
     const markup = loadClient().paymentReceiptMarkup(
       receiptFixture([
         terminalPayment({ amountMinor: 9201, externalReference: OPERATOR_FREE_TEXT })
       ])
     );
-    expect(lineValue(markup, "payment-receipt-provider")).toBe("Processor | Square");
-    expect(lineValue(markup, "payment-receipt-provider-payment-id"))
-      .toBe("Processor payment ID | sqpmt_9Rt4KvA1");
+    expect(tenderLines(markup)).toEqual(["Square Terminal | $92.01"]);
+    expect(markup).not.toContain("sqpmt_9Rt4KvA1");
   });
 
   it("never draws `providerRefundId`, which the server strips before this client sees it", () => {
@@ -1267,10 +1273,12 @@ describe("the Receipt is not a second host for the Invoice's money statement", (
     for (const invoiceOnly of [
       "Payment records", "No payment recorded", "Void record", "refund-payment",
       "receipt-discount-step", "receipt-discount-total", "receipt-discount-rate",
-      "payment-receipt-balance"
+      "Balance still owed"
     ]) {
       expect(markup, invoiceOnly).not.toContain(invoiceOnly);
     }
+    // The reference receipt closes on its Balance, which on a completed settlement is $0.00.
+    expect(lineValue(markup, "payment-receipt-balance")).toBe("Balance | $0.00");
   });
 
   it("heads itself with the salon and the client, through the shared identity renderer", () => {
@@ -1278,15 +1286,17 @@ describe("the Receipt is not a second host for the Invoice's money statement", (
     expect(markup).toContain('<header class="salon-identity" data-testid="payment-receipt-salon">');
     expect(markup).toContain('<p class="salon-identity-name">Riverside Grooming</p>');
     expect(markup).toContain("<span>Phone:</span> 626-555-0101");
-    expect(markup).toContain('<p data-testid="payment-receipt-client">Emma Johnson</p>');
+    expect(markup).toContain('<div data-testid="payment-receipt-client"><dt>Client</dt><dd>Emma Johnson</dd></div>');
     // Who printed it, then who it is about, then the money — the order the Invoice uses too.
     expect(markup.indexOf("salon-identity")).toBeLessThan(markup.indexOf("Emma Johnson"));
     expect(markup.indexOf("Emma Johnson")).toBeLessThan(markup.indexOf("payment-receipt-payment"));
   });
 
   it("reads the clock through the workspace's preference layer, never the browser's locale", () => {
+    // The harness's `formatPrefDate` writes the bare ISO day; a renderer that formatted the date
+    // itself would print something else.
     expect(loadClient().paymentReceiptMarkup(receiptFixture([cashPayment({ amountMinor: 9201 })])))
-      .toContain(PREFERRED_STAMP);
+      .toContain('<div data-testid="payment-receipt-date"><dt>Date</dt><dd>2026-09-02</dd></div>');
   });
 });
 
@@ -1351,7 +1361,7 @@ describe("a settled visit reached from transaction history can reprint both docu
 
     client.modalHandlers["invoice-print-receipt"]!();
     expect(client.printed).toHaveLength(1);
-    expect(client.printed[0]!.innerHTML).toContain("<h1>Receipt #1042</h1>");
+    expect(client.printed[0]!.innerHTML).toContain(RECEIPT_IDENTITY);
     expect(client.printed[0]!.innerHTML).toContain("Total settled");
     // The workspace behind it did not change document.
     expect(workspaceTitle(client.modal.body)).toBe("Invoice #1042");
@@ -1484,8 +1494,9 @@ describe("6.1 the Receipt states what was purchased", () => {
       "Full Groom - Standard (for Barfi) | $75.00",
       "Nail Trim | $10.00"
     ]);
-    // Named, because a bare pair of amounts under a salon's address is not self-describing.
-    expect(markup).toContain("<h4>Purchased</h4>");
+    // Named, and laid out as the reference receipt's table: Name | Pet | Price.
+    expect(markup).toContain("<h4>Service(s)</h4>");
+    expect(markup).toContain('<thead><tr><th scope="col">Name</th><th scope="col">Pet</th><th scope="col">Price</th></tr></thead>');
   });
 
   /**
@@ -1503,10 +1514,10 @@ describe("6.1 the Receipt states what was purchased", () => {
     const markup = loadClient().paymentReceiptMarkup(
       itemisedFixture([cashPayment({ amountMinor: 9201 })])
     );
-    expect(markup).toContain('<small class="receipt-item-pet">(for Barfi)</small>');
-    // ONE parenthetical, on one line. No empty one, no dangling "(for )", no dash.
-    expect(markup.match(/\(for /gu)).toHaveLength(1);
-    expect(markup).not.toContain("(for )");
+    expect(markup).toContain('<tr data-testid="payment-receipt-item"><td>Full Groom - Standard</td><td>Barfi</td><td>$75.00</td></tr>');
+    // A line with no source pet says so with a dash in its Pet cell - never an empty cell and
+    // never the pet from the line above.
+    expect(markup).toContain('<tr data-testid="payment-receipt-item"><td>Nail Trim</td><td>—</td><td>$10.00</td></tr>');
     // And the pet is never borrowed from the line beside it: `Nail Trim` has no source pet, so it
     // is drawn as a line about no pet rather than as a second line about Barfi.
     expect(itemLines(markup)[1]).toBe("Nail Trim | $10.00");
@@ -1597,12 +1608,11 @@ describe("6.2 the Receipt still identifies itself as a Receipt", () => {
     client.printPaymentReceipt(itemisedFixture([creditPayment(), keyedCardPayment()]));
     const root = client.printed.at(-1);
     expect(root!.className).toContain("print-payment-receipt");
-    expect(root!.innerHTML).toContain("<h1>Receipt #1042</h1>");
-    // The PREVIEW'S CHROME names no document — the document under it does, in the <h1> it prints
-    // under, which is the one place an operator reads a name off a document anywhere else. A
-    // chrome label was a second copy of that name a centimetre above it.
-    expect(client.previews.at(-1)!.title).toBe("Print preview");
-    expect(client.previews.at(-1)!.body).toContain("<h1>Receipt #1042</h1>");
+    expect(root!.innerHTML).toContain(RECEIPT_IDENTITY);
+    // The full-screen layer's bar names the Receipt; the paper under it names itself too, so the
+    // printed copy - which is the paper alone - still says what it is.
+    expect(client.previews.at(-1)!.title).toBe("Receipt #1042");
+    expect(client.previews.at(-1)!.body).toContain(RECEIPT_IDENTITY);
     // Not the bill, and not the work sheet.
     expect(root!.innerHTML).not.toContain("Invoice #");
     expect(root!.innerHTML).not.toContain(TICKET_SENTINEL);
@@ -1769,18 +1779,17 @@ describe("6.5 `externalReference` is still excluded from the larger document", (
     }
   });
 
-  it("keeps it off the printed copy too, while still naming the processor the ruling kept", () => {
+  it("keeps it off the printed copy too, and the processor's own id with it", () => {
     const client = loadClient();
     client.printPaymentReceipt(itemisedFixture([
       terminalPayment({ amountMinor: 9201, externalReference: OPERATOR_FREE_TEXT })
     ]));
     const printed = client.printed.at(-1)!.innerHTML;
     expect(printed).not.toContain(SENTINEL_DIGITS);
-    // `provider` and `provider_payment_id` are the processor's own identifiers and they stay:
-    // this test is about the operator's free-text field, not about processor identity.
-    expect(lineValue(printed, "payment-receipt-provider")).toBe("Processor | Square");
-    expect(lineValue(printed, "payment-receipt-provider-payment-id"))
-      .toBe("Processor payment ID | sqpmt_9Rt4KvA1");
+    // Nor the terminal's payment id: the paper names the tender and its amount and nothing a
+    // client could send back.
+    expect(printed).not.toContain("sqpmt_9Rt4KvA1");
+    expect(tenderLines(printed)).toEqual(["Square Terminal | $92.01"]);
   });
 });
 
@@ -1821,7 +1830,7 @@ describe("6.6 `providerRefundId` is still excluded from the larger document", ()
     const client = loadClient();
     client.printPaymentReceipt(refunded({ providerRefundId: LEAKED }));
     const printed = client.printed.at(-1)!.innerHTML;
-    expect(printed).toContain("<h4>Purchased</h4>");
+    expect(printed).toContain("<h4>Service(s)</h4>");
     expect(printed).not.toContain(LEAKED);
   });
 });

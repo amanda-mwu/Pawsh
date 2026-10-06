@@ -57,3 +57,16 @@ export async function clearPrintRoots(page: Page): Promise<void> {
     for (const root of document.querySelectorAll(".print-root")) root.parentNode?.removeChild(root);
   });
 }
+
+/**
+ * THE RECEIPT, PRESSED THROUGH. Print Receipt opens the full-screen Receipt layer rather than the
+ * stacked preview; its own Print hands the paper to the print path, and the close control returns
+ * to the screen it was opened from. Asserts the layer arrived, prints, and closes it again.
+ */
+export async function printFromReceipt(page: Page): Promise<void> {
+  const layer = page.getByTestId("receipt-document");
+  await expect(layer).toBeVisible();
+  await page.getByTestId("receipt-document-print").click();
+  await page.getByTestId("receipt-document-close").click();
+  await expect(layer).toBeHidden();
+}

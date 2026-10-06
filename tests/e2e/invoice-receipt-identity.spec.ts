@@ -1,6 +1,6 @@
 import { test, expect, login, completeAppointment, createAppointment } from "./fixtures/tenant.js";
 import { openCheckout, chooseMethod, setPayAmount, checkoutSurface } from "./helpers/checkout.js";
-import { observePrinting, clearPrintRoots, printFromPreview } from "./helpers/print.js";
+import { observePrinting, clearPrintRoots, printFromPreview, printFromReceipt } from "./helpers/print.js";
 import { voidRecord } from "./helpers/void-payment.js";
 import {
   closeInvoice, invoiceStatement, invoiceSurface, invoiceTitle, openInvoiceFromHistory
@@ -177,16 +177,16 @@ test("an Invoice stays an Invoice, and a Receipt appears beside it once a paymen
     // the COMPOSITION of that one settlement — never a series the client is asked to count
     // through, and never one fused $101.60 payment that no row in `payments` corresponds to.
     await settled.getByTestId("checkout-print-receipt").click();
-    await printFromPreview(page);
+    await printFromReceipt(page);
     const receiptDoc = printRoot(page).getByTestId("payment-receipt");
-    await expect(printRoot(page).locator("h1")).toHaveText(`Receipt #${invoice.invoiceNumber}`);
+    await expect(printRoot(page).getByTestId("payment-receipt-number")).toContainText(`#${invoice.invoiceNumber}`);
     // PRESENT, not "visible". `.print-root{display:none}` (styles.css) keeps every print document
     // off the screen and `@media print` is the only thing that reveals it, so `toBeVisible` is
     // unsatisfiable here however right the document is. Counting it is the claim that can be true:
     // it is the same question step 3 asks with `toHaveCount(0)` when the Receipt is withheld.
     await expect(receiptDoc).toHaveCount(1);
     await expect(receiptDoc.getByTestId("payment-receipt-payment")).toHaveCount(2);
-    await expect(receiptDoc).toContainText("Payment methods");
+    await expect(receiptDoc).toContainText("Payments");
     await expect(receiptDoc.getByTestId("payment-receipt-tender").nth(0)).toContainText("Cash");
     await expect(receiptDoc.getByTestId("payment-receipt-tender").nth(0)).toContainText("$40.00");
     await expect(receiptDoc.getByTestId("payment-receipt-tender").nth(1)).toContainText("$61.60");
@@ -199,8 +199,8 @@ test("an Invoice stays an Invoice, and a Receipt appears beside it once a paymen
     await expect(receiptDoc.getByTestId("payment-receipt-total-settled")).toContainText("$101.60");
     await expect(receiptDoc.getByTestId("payment-receipt-total-settled")).toContainText("Total settled");
     await expect(receiptDoc).not.toContainText("Total paid");
-    // Nothing is owed, so nothing claims to be.
-    await expect(receiptDoc.getByTestId("payment-receipt-balance")).toHaveCount(0);
+    // The reference receipt closes on its Balance, which on a completed settlement is nothing.
+    await expect(receiptDoc.getByTestId("payment-receipt-balance")).toContainText("$0.00");
     // NEVER A TICKET. The Ticket is the shop's work sheet, it has its own renderer and its own
     // print root, and the Receipt reaching it would hand a client an operational document.
     await expect(printRoot(page)).not.toContainText("Ticket");
@@ -219,7 +219,7 @@ test("an Invoice stays an Invoice, and a Receipt appears beside it once a paymen
     // things only `receiptBodyMarkup` produces, and every one of them is still absent.
     const purchase = receiptDoc.getByTestId("payment-receipt-purchase");
     await expect(purchase).toHaveCount(1);
-    await expect(purchase).toContainText("Purchased");
+    await expect(purchase).toContainText("Service(s)");
     // THE SERVICE LINES OFF THE REAL PAYLOAD. `invoice_items.description` is
     // `service_name_snapshot`, so this is the name of the service the appointment actually
     // carried rather than anything this spec typed.
@@ -254,11 +254,12 @@ test("an Invoice stays an Invoice, and a Receipt appears beside it once a paymen
     for (const ticketOnly of ["Appointment note", "Latest Note", "Breed", "Duration", "Groomer"]) {
       await expect(receiptDoc, ticketOnly).not.toContainText(ticketOnly);
     }
-    // MANUAL CASH COMPONENTS, TRUTHFULLY. Method, amount, when each was taken, and each with its
-    // own payment reference — and no processor and no processor payment id, because a cash payment
-    // has neither and printing the labels empty would imply a card processor was involved.
-    await expect(receiptDoc.getByTestId("payment-receipt-received")).toHaveCount(2);
-    await expect(receiptDoc.getByTestId("payment-receipt-reference")).toHaveCount(2);
+    // MANUAL CASH COMPONENTS, TRUTHFULLY: "Paid by Cash · Pay $x" per tender, one Date for the
+    // settlement at the head, and no ledger ids, no processor and no processor payment id on a
+    // paper handed to a client.
+    await expect(receiptDoc.getByTestId("payment-receipt-tender").nth(0)).toContainText("Paid by Cash");
+    await expect(receiptDoc.getByTestId("payment-receipt-date")).toHaveCount(1);
+    await expect(receiptDoc.getByTestId("payment-receipt-reference")).toHaveCount(0);
     await expect(receiptDoc).not.toContainText("Processor");
     for (const processorField of [
       "payment-receipt-provider",
@@ -443,18 +444,14 @@ test("a client's transaction history opens the Invoice, in every settlement stat
     await clearPrintRoots(page);
 
     await settledDocument.getByTestId("invoice-print-receipt").click();
-    // A RECEIPT PREVIEW HOLDS A DOCUMENT NAMED AS A RECEIPT — in its own <h1>, not in the window's
-    // chrome — and it is the Receipt that is in it, never the Ticket, which is the shop's work
-    // sheet and carries no money at all.
-    await expect(page.locator("#stacked-dialog-title")).toContainText("Print preview");
-    await expect(page.locator("#stacked-dialog-title")).not.toContainText("Receipt");
-    await expect(page.getByTestId("print-preview").locator("h1"))
-      .toHaveText(`Receipt #${paid.invoiceNumber}`);
-    await expect(page.getByTestId("print-preview")).toContainText("Total settled");
-    await expect(page.getByTestId("print-preview").getByTestId("ticket-document"))
+    // THE RECEIPT, FULL SCREEN: its bar names it, and the paper under it is the Receipt - never
+    // the Ticket, which is the shop's work sheet and carries no money at all.
+    await expect(page.getByTestId("receipt-document-title")).toHaveText(`Receipt #${paid.invoiceNumber}`);
+    await expect(page.getByTestId("receipt-document-paper")).toContainText("Total settled");
+    await expect(page.getByTestId("receipt-document-paper").getByTestId("ticket-document"))
       .toHaveCount(0);
-    await printFromPreview(page);
-    await expect(printRoot(page).locator("h1")).toHaveText(`Receipt #${paid.invoiceNumber}`);
+    await printFromReceipt(page);
+    await expect(printRoot(page).getByTestId("payment-receipt-number")).toContainText(`#${paid.invoiceNumber}`);
     await expect(printRoot(page).getByTestId("payment-receipt-total-settled"))
       .toContainText("Total settled");
     await expect(printRoot(page).getByTestId("ticket-document")).toHaveCount(0);

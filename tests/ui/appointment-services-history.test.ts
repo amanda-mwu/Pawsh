@@ -365,7 +365,7 @@ describe("the work list states each service as it stands for this visit", () => 
     expect(opening).not.toMatch(/edit_all_staff/u);
   });
 
-  it("withholds the pencil - absent, not disabled - once the route would refuse the write", () => {
+  it("withholds the pencil where the route never accepts the write, and greys it once the visit is billed", () => {
     for (const status of ["completed", "cancelled", "no_show"]) {
       const app = workList(status);
       app.grant("appointments.edit");
@@ -373,9 +373,14 @@ describe("the work list states each service as it stands for this visit", () => 
       expect(control(markup, "appointment-service-edit", "l1"), status).toBeNull();
       expect(control(markup, "appointment-adjust-services"), status).toBeNull();
     }
+    // BUILD IT OR GREY IT OUT: once invoiced the pencil and + Add service stay, disabled, and the
+    // reason is a visible line rather than a title alone.
     const billed = workList("checked_in", { invoiceId: "inv-1", invoiceStatus: "open" });
     billed.grant("appointments.edit");
-    expect(control(draw(billed), "appointment-service-edit", "l1")).toBeNull();
+    const markup = draw(billed);
+    expect(control(markup, "appointment-service-edit", "l1")).toContain("disabled");
+    expect(control(markup, "appointment-adjust-services")).toContain("disabled");
+    expect(markup).toContain('data-testid="appointment-services-locked">Services are locked once the visit is invoiced.</p>');
   });
 });
 

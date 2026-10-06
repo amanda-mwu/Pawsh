@@ -3750,11 +3750,30 @@ function printInvoiceDocument(receipt){
 // and `.print-ticket` is the Ticket. The Receipt's actual print styling hangs off the classes
 // INSIDE the markup - `.print-root .payment-receipt-record`, `.print-root .payment-receipt-refund`
 // - which is the narrower hook and stays correct wherever that markup is drawn.
-function printPaymentReceipt(receipt){
+function printPaymentReceipt(receipt,opener=null){
   if(!receiptHasPayment(receipt))return;
   if(receiptBalanceOutstanding(receipt))return;
-  printFinancialRoot(paymentReceiptTitle(receipt),paymentReceiptMarkup(receipt),
-    "print-root print-payment-receipt");
+  openReceiptDocument(receipt,opener);
+}
+/**
+ * THE RECEIPT, FULL SCREEN, BEFORE IT IS ON PAPER. Every Print Receipt opens this one layer: the
+ * paper on a grey ground under a bar naming the receipt, × to go back to whatever it was opened
+ * over (the Invoice, or a settled Check Out), and Print bottom-right, which hands exactly the paper
+ * on screen to `appendPrintRoot` - the same markup, so the screen and the page cannot disagree.
+ */
+function openReceiptDocument(receipt,opener=null){
+  const dialog=$("#receipt-document");
+  const paper=paymentReceiptMarkup(receipt);
+  // The control that opened it, named by the caller: WebKit does not focus a button it clicks, so
+  // `activeElement` there is the page body and × would hand focus to nothing.
+  const source=opener||document.activeElement;
+  $("#receipt-document-title").textContent=paymentReceiptTitle(receipt);
+  $("#receipt-document-paper").innerHTML=paper;
+  dialog.querySelector('[data-testid="receipt-document-close"]').onclick=()=>dialog.close();
+  dialog.querySelector('[data-testid="receipt-document-print"]').onclick=()=>
+    appendPrintRoot("print-root print-payment-receipt",paper);
+  dialog.addEventListener("close",()=>{if(source?.isConnected)source.focus();},{once:true});
+  dialog.showModal();
 }
 
 function checkoutDisclosureMarkup(id,label,body,open){
@@ -4409,8 +4428,8 @@ async function checkout(id) {
     dialog.querySelector('[data-testid="checkout-print-invoice"]')?.addEventListener("click",()=>{
       if(co.receipt)printInvoiceDocument(co.receipt);
     });
-    dialog.querySelector('[data-testid="checkout-print-receipt"]')?.addEventListener("click",()=>{
-      if(co.receipt)printPaymentReceipt(co.receipt);
+    dialog.querySelector('[data-testid="checkout-print-receipt"]')?.addEventListener("click",event=>{
+      if(co.receipt)printPaymentReceipt(co.receipt,event?.currentTarget);
     });
     // NO RECEIPT IS HANDED UP. The Ticket is a work sheet and carries no money at all, so the
     // receipt this surface is holding is not its business; the bill stays here, on the screen that
@@ -5221,225 +5240,100 @@ function receiptDiscountLines(receipt,invoice){
  * so a payment cannot be called one thing on the bill and another on the evidence.
  */
 function receiptPaymentLabel(payment){
-  return payment.provider==="square"?"card terminal":paymentMethodLabel(payment.method);
+  return payment.provider==="square"?"Square Terminal":paymentMethodLabel(payment.method);
 }
-// The processor's own name, written the way a person would. There is one provider today; anything
-// else falls through to whatever the ledger stored rather than to a guess.
-const PAYMENT_PROVIDER_LABELS={square:"Square"};
-function paymentProviderLabel(provider){
-  return PAYMENT_PROVIDER_LABELS[provider]||String(provider||"");
-}
-
 /**
- * ONE LABELLED FACT, DRAWN ONLY WHEN THERE IS ONE.
+ * WHAT WAS PURCHASED: one row per service line per pet - Name | Pet | Price - under "Service(s)".
  *
- * Every optional line on the Receipt goes through this, so "only when present" is one rule in one
- * place rather than six conditionals that can each be got wrong separately. An absent value draws
- * NOTHING - not an empty row, not a dash - for the same reason the salon identity header omits a
- * line it has no value for: a row reading "Processor payment ID: -" on a cash receipt implies a
- * processor was involved.
- */
-function paymentReceiptLine(label,value,testid){
-  const text=String(value??"").trim();
-  return text
-    ? `<div data-testid="${escapeAttr(testid)}"><span>${escape(label)}</span><strong>${escape(text)}</strong></div>`
-    : "";
-}
-
-/**
- * WHAT WAS PURCHASED, ON THE EVIDENCE THAT IT WAS PAID FOR.
- *
- * A Receipt is evidence of a completed settlement, and a client holding one may reasonably ask
- * what the settlement was FOR. Itemised detail does not make this an operational document: a
- * service name and its price are what the client bought and already agreed to, and every figure
- * here is one the ledger holds. What it must never become is a SECOND INVOICE - so this is a
- * SUMMARY, and the differences from `receiptBodyMarkup` are deliberate, not accidental:
- *
- *   NO DISCOUNT BREAKDOWN. The Invoice draws `receiptDiscountLines` - every step in applied
- *       order, with its percentage, and a sum beneath them - because the Invoice's job is to make
- *       compounding legible to somebody querying the bill. The Receipt draws ONE line carrying
- *       `invoice.discountMinor`, the same aggregate those steps sum to. A client checking what
- *       they paid needs to see that something came off; the arithmetic of how is the bill's.
- *   NO BALANCE, NO PAYMENT HISTORY, NO CORRECTIONS. A balance is what is still owed and this
- *       document exists only where nothing is - `receiptBalanceOutstanding` saw to that - and
- *       Void and Refund are operator corrections that belong on the bill. The one balance line
- *       this document has is in `totals` below and is a statement about the settlement.
- *   NO ROW IS DRAWN FOR A FIGURE OF ZERO. "Where applicable", which is the same rule every other
- *       optional line on this document already follows: `paymentReceiptLine` draws nothing for an
- *       absent value, and the Invoice's own `refundedLine` is withheld at zero for the reason a
- *       permanent "Tip $0.00" would be worse than none - on a document a client keeps, a zeroed
- *       row reads as a fact about the visit rather than as the absence of one.
- *
- * NOTHING OPERATIONAL CROSSES OVER. Internal notes, workflow and service notes, appointment edit
- * history and status history are the SHOP'S OWN COPY OF THE WORK. They are the Ticket's, they are
- * reached from the Ticket's surface, and no amount of "the client might find it useful" makes an
- * internal work record something to hand across a counter. This function reads `receipt.items`
- * and four figures off `receipt.invoice` and touches nothing else on the payload - which is also
- * why piping the Ticket's model in here later would render nothing rather than leak.
- *
- * THE PET IS HERE NOW, AND IT IS THE LINE'S OWN. This used to say the pet was unreachable, and it
- * was: `invoice_items` carries no pet name and the receipt endpoint joined no further than the
- * invoice, its business, its customer and its location. The endpoint now resolves `petName` per
- * item through the line's OWN `source_appointment_service_id`, and one read feeds both financial
- * documents, so this summary states it too - a household with two dogs on one bill gets two
- * `Full Groom` lines, and without the pet a client holding this cannot tell which is which.
- * `receiptItemPetMarkup` is the shared renderer and it is gated on presence: a manual line, or a
- * line whose source is unreachable, sends `null` and draws no pet at all rather than borrowing the
- * visit's. Still no join of its own, still nothing invented.
- *
- * SUBTOTAL IS DRAWN ONLY WHEN SOMETHING MOVED IT. With no discount, no tax and no tip a subtotal
- * and a total are the same number twice, and a summary that states one figure under two names is
- * a summary that invites a reader to look for the difference.
- *
- * NO SECTION AT ALL WHEN THERE ARE NO ITEMS. An empty heading over nothing states nothing, and
- * the tender composition below stands on its own exactly as it did before this existed.
+ * The adjustments that turn the lines into the bill (discount, tax, tip) are drawn beneath the
+ * table only when there is one, followed by the bill's Total, so the paper reconciles: what was
+ * bought, what it came to, and below it how that was settled. No section at all when there are no
+ * items; the tender rows stand on their own.
  */
 function paymentReceiptPurchaseMarkup(receipt){
   const invoice=receipt.invoice;
   const items=Array.isArray(receipt.items)?receipt.items:[];
   if(!items.length)return "";
-  const lines=items.map(item=>
-    `<div class="payment-receipt-item" data-testid="payment-receipt-item">`
-      +`<span>${escape(item.description)}${receiptItemPetMarkup(item)}</span>`
-      +`<strong>${money(item.amountMinor)}</strong></div>`).join("");
-  // One rule for every adjustment, so "only when there is one" cannot be got right for tax and
-  // wrong for tip. The sign travels with the label because only the discount carries one.
+  const rows=items.map(item=>`<tr data-testid="payment-receipt-item">`
+      +`<td>${escape(item.description)}</td>`
+      +`<td>${escape(String(item.petName??"").trim()||"—")}</td>`
+      +`<td>${money(item.amountMinor)}</td></tr>`).join("");
+  // One rule for every adjustment, so "only when there is one" cannot be right for tax and wrong
+  // for tip. The sign travels with the label because only the discount carries one.
   const adjustment=(label,minor,testid,sign)=>Number(minor||0)
-    ? `<div data-testid="${testid}"><span>${escape(label)}</span>`
-      +`<strong>${sign}${money(minor)}</strong></div>`
+    ? `<div data-testid="${testid}"><span>${escape(label)}</span><strong>${sign}${money(minor)}</strong></div>`
     : "";
   const adjustments=adjustment("Discount",invoice.discountMinor,"payment-receipt-discount","-")
     +adjustment("Tax",invoice.taxMinor,"payment-receipt-tax","")
     +adjustment("Tip",invoice.tipMinor,"payment-receipt-tip","");
   return `<section class="payment-receipt-purchase" data-testid="payment-receipt-purchase">`
-    +`<h4>Purchased</h4>`
-    +lines
+    +`<h4>Service(s)</h4>`
+    +`<table class="payment-receipt-items"><thead><tr><th scope="col">Name</th><th scope="col">Pet</th>`
+      +`<th scope="col">Price</th></tr></thead><tbody>${rows}</tbody></table>`
     +(adjustments
-      ? `<div data-testid="payment-receipt-subtotal"><span>Subtotal</span>`
-        +`<strong>${money(invoice.subtotalMinor)}</strong></div>`+adjustments
+      ? `<div data-testid="payment-receipt-subtotal"><span>Subtotal</span><strong>${money(invoice.subtotalMinor)}</strong></div>`
+        +adjustments
       : "")
-    // Plain-weight beside `Total settled`, which keeps `.receipt-total`. This document's subject
-    // is the settlement, so the settlement's figure is the one that carries the emphasis.
     +`<div class="payment-receipt-purchase-total" data-testid="payment-receipt-invoice-total">`
       +`<span>Total</span><strong>${money(invoice.totalMinor)}</strong></div>`
   +`</section>`;
 }
 
 /**
- * THE RECEIPT: THE TENDER COMPOSITION OF ONE COMPLETED SETTLEMENT.
+ * THE RECEIPT: THE PAPER THAT PROVES ONE COMPLETED SETTLEMENT.
  *
- * ONE INVOICE PER APPOINTMENT. ONE COMPLETED SETTLEMENT PER INVOICE. A SETTLEMENT MAY USE SEVERAL
- * TENDER COMPONENTS. $40.00 of client credit and $52.01 on a card is ONE settlement paid two ways,
- * not two checkouts; the `payments` rows behind it are components of that settlement and this
- * document presents them as such. It used to head each block "Payment 1 of 2", which framed one
- * settlement as a SERIES of independent payment events and invited a client holding it to ask
- * which of the two receipts they were looking at. There is one. This is it.
+ * ONE INVOICE PER APPOINTMENT, ONE COMPLETED SETTLEMENT PER INVOICE, AND A SETTLEMENT MAY USE
+ * SEVERAL TENDER COMPONENTS. The paper is laid out as the salon's reference receipt is: the
+ * appointment's reference as its title; the salon on the left and the date, the client and the
+ * receipt number on the right; the services bought; one "Paid by <method> · Pay $x" row per
+ * tender; and under a rule, the Balance.
  *
- * Not the money statement under another heading. `receiptBodyMarkup` above is the Invoice - what
- * the visit cost, itemised, and what is still owed - and it is what an operator prints for a
- * client asking about the bill. This is what an operator prints for a client asking for proof
- * they paid, and its subject is how the settlement was tendered: what was taken, how, when, and
- * by what reference each component can be found again. It is also NOT the Ticket, which states no
- * money at all and is reached from its own surface; nothing here goes anywhere near
- * `ticketDocumentMarkup`.
+ * ITS RULES, which the layout does not change:
+ *   Total settled  ALWAYS, and never "Total paid": client credit is settled from the client's own
+ *                  balance, no money was collected for it, and its row says so.
+ *   Refunded       only when money went back, ATTRIBUTED to the tender it came out of as well as
+ *                  summed. A failed refund moved nothing and is not on the paper.
+ *   No series      there is one settlement, so there is no "Payment N of M".
+ *   No identifiers no externalReference (free text an operator typed), no terminal or processor
+ *                  ids, no payment record ids - this paper is handed to a client.
+ *   Voided         components settled nothing and are not on it; history is on the Invoice.
  *
- * "TOTAL SETTLED", NEVER "TOTAL PAID". The aggregate includes client credit, and client credit is
- * an obligation discharged from the client's own balance - no money was collected for it. A total
- * that spans both tender types and calls itself "paid" claims a salon took money it never touched,
- * on the one document a client keeps as proof. The credit component says so on its own line too,
- * so the composition is readable without doing the arithmetic. The INVOICE may still show `Paid`
- * as its settlement status: that is a statement about the obligation, which is discharged, and it
- * is correct.
- *
- * WHAT IT SHOWS BEYOND THE COMPONENTS, and why each line earns its place:
- *
- *   Total settled  ALWAYS. A settlement of several components is a figure a reader should not
- *                  have to add up at a counter.
- *   Refunded       ONLY when money has gone back, and ATTRIBUTED TO ITS COMPONENT as well as
- *                  summed. A settlement refunded down one of two tenders is not the same fact as
- *                  one refunded down the other - the card is where the money went back to - so
- *                  the refund is drawn inside the component it came out of, keyed on
- *                  `refunds[].paymentId`, and the aggregate below is a sum rather than a
- *                  replacement for it.
- *   Balance        ONLY while something is still owed. `receiptSettlementComplete` means this
- *                  renderer is not reached in that state through any control the product offers;
- *                  the line stays because a document that ever did state a part settlement must
- *                  say so rather than read as settlement in full.
- *
- * NOTHING IS INVENTED. `provider` and `provider_payment_id` are nullable on `payments`, and a
- * cash payment, a client-credit payment or a manually keyed card payment carries neither: those
- * two lines are then ABSENT - not blank, not dashed. The client fabricates no processor identity
- * to fill a gap, and no backend change was needed to hold that line -
- * `GET /api/invoices/:id/receipt` already returns both columns.
- *
- * VOIDED COMPONENTS ARE NOT ON IT. A voided record settled nothing and so evidences nothing. The
- * correction is history, and history is on the Invoice, where the voided row still stands.
+ * `openReceiptDocument` is the only place it is opened, behind both settlement gates.
  */
 function paymentReceiptMarkup(receipt){
   const invoice=receipt.invoice;
-  // The same header the Invoice and the Ticket draw, through the same renderer and off the same
-  // four fields. Its own test id, because three documents that share a block still have to be
-  // asserted apart.
   const salon=salonIdentityMarkup(invoiceSalonIdentity(invoice),"payment-receipt-salon");
   const settled=settledComponents(receipt);
   const settledMinor=settledComponentsMinor(receipt);
+  // The date the settlement completed: its last recorded component.
+  const settledAt=settled.map(payment=>payment.recordedAt).filter(Boolean).sort().at(-1)||invoice.updatedAt||invoice.createdAt;
+  const reference=invoice.appointmentId?String(invoice.appointmentId).slice(0,8):"";
   const records=settled.map(payment=>
-    // A <section> rather than a <div>: `.payment-receipt>div` is a money row of this document's
-    // own totals, and a block shaped like a row would put a component into that sweep.
     `<section class="payment-receipt-record" data-testid="payment-receipt-payment">`
-      // THE COMPOSITION LINE: how this part of the settlement was tendered, and for how much.
-      // Method on the left, amount on the right, one line per component - the shape a reader
-      // scans down to see what made up the total underneath.
       +`<div class="payment-receipt-tender" data-testid="payment-receipt-tender">`
-        +`<span>${escape(receiptPaymentLabel(payment))}</span>`
-        +`<strong>${money(payment.amountMinor)}</strong></div>`
-      // Said on the component, not left to the total: this much of the settlement came off the
-      // client's own balance and no money changed hands for it.
+        +`<span>Paid by ${escape(receiptPaymentLabel(payment))}</span>`
+        +`<strong>Pay ${money(payment.amountMinor)}</strong></div>`
       +(payment.method==="client_credit"
         ? `<p class="fine" data-testid="payment-receipt-credit-note">Settled from the client&#39;s account balance. No money was collected.</p>`
         : "")
-      // Pawsh's own handle on this component, in the 8-character form the Ticket and Check Out
-      // already use for a reference somebody reads aloud. It is not a processor field and is
-      // never presented as one.
-      +(payment.id
-        ? paymentReceiptLine("Payment reference",`#${String(payment.id).slice(0,8)}`,
-          "payment-receipt-reference")
-        : "")
-      // Through the preference layer, like every other stamp in this client. `Intl` on an empty
-      // locale list would print this workspace's receipt in whatever the laptop is set to.
-      +paymentReceiptLine("Received",
-        payment.recordedAt?formatPrefDateAndTime(new Date(payment.recordedAt)):"",
-        "payment-receipt-received")
-      +paymentReceiptLine("Processor",paymentProviderLabel(payment.provider),
-        "payment-receipt-provider")
-      +paymentReceiptLine("Processor payment ID",payment.providerPaymentId,
-        "payment-receipt-provider-payment-id")
-      // NO `externalReference`, DELIBERATELY. It is unconstrained free text an operator types,
-      // up to 200 characters, and this document is handed to a client - so whatever was typed
-      // into it, a card number included, would be printed on paper the salon does not control.
-      // The same endpoint already strips `providerRefundId` for the same reason: a screen has no
-      // use for it, and a value a client holds is a value a client can send back. The field may
-      // keep reaching this client on the projection; the Receipt does not draw it.
       +paymentReceiptRefunds(receipt,payment)
     +`</section>`).join("");
-  const totals=`<div class="receipt-total" data-testid="payment-receipt-total-settled">`
-      +`<span>Total settled</span><strong>${money(settledMinor)}</strong></div>`
-    +(receipt.refundedMinor
-      ? `<div class="receipt-refunded" data-testid="payment-receipt-refunded"><span>Refunded</span>`
-        +`<strong>-${money(receipt.refundedMinor)}</strong></div>`
-      : "")
-    +(invoice.balanceMinor
-      ? `<div data-testid="payment-receipt-balance"><span>Balance still owed</span>`
-        +`<strong>${money(invoice.balanceMinor)}</strong></div>`
-      : "");
-  return `<div class="wide payment-receipt" data-testid="payment-receipt">${salon}`
-    +`<p data-testid="payment-receipt-client">${escape(clientName(invoice))}</p>`
-    // WHAT WAS BOUGHT, ABOVE HOW IT WAS TENDERED. A reader asks what for before they ask by what
-    // means, and the settlement figure underneath reads as the discharge of the total above it.
+  const meta=(label,value,testid)=>`<div data-testid="${testid}"><dt>${escape(label)}</dt><dd>${escape(value)}</dd></div>`;
+  return `<div class="wide payment-receipt" data-testid="payment-receipt">`
+    +(reference?`<h2 class="payment-receipt-title" data-testid="payment-receipt-appointment">Appointment #: ${escape(reference)}</h2>`:"")
+    +`<div class="payment-receipt-head">${salon}`
+      +`<dl class="payment-receipt-meta">`
+        +meta("Receipt",`#${invoice.invoiceNumber}`,"payment-receipt-number")
+        +(settledAt?meta("Date",formatPrefDate(new Date(settledAt)),"payment-receipt-date"):"")
+        +meta("Client",clientName(invoice),"payment-receipt-client")
+      +`</dl></div>`
     +paymentReceiptPurchaseMarkup(receipt)
-    // Named, because a bare list of two amounts under a client's name is not self-describing.
-    +(records?`<h4>Payment methods</h4>`:"")
-    +records+totals
+    +(records?`<section class="payment-receipt-payments" data-testid="payment-receipt-payments"><h4>Payments</h4>${records}</section>`:"")
+    +`<div class="receipt-total" data-testid="payment-receipt-total-settled"><span>Total settled</span><strong>${money(settledMinor)}</strong></div>`
+    +(receipt.refundedMinor
+      ? `<div class="receipt-refunded" data-testid="payment-receipt-refunded"><span>Refunded</span><strong>-${money(receipt.refundedMinor)}</strong></div>`
+      : "")
+    +`<div class="payment-receipt-balance" data-testid="payment-receipt-balance"><span>Balance</span><strong>${money(invoice.balanceMinor)}</strong></div>`
   +`</div>`;
 }
 
@@ -5756,7 +5650,7 @@ function bindInvoiceWorkspace(root,receipt){
   root.querySelector('[data-testid="invoice-print-invoice"]')
     ?.addEventListener("click",()=>printInvoiceDocument(receipt));
   root.querySelector('[data-testid="invoice-print-receipt"]')
-    ?.addEventListener("click",()=>printPaymentReceipt(receipt));
+    ?.addEventListener("click",event=>printPaymentReceipt(receipt,event?.currentTarget));
   const appointmentId=receipt.invoice?.appointmentId;
   root.querySelector('[data-testid="invoice-take-payment"]')
     ?.addEventListener("click",()=>runDetached(()=>runOnce(`checkout:${appointmentId}`,()=>checkout(appointmentId))));
@@ -16813,6 +16707,8 @@ function appointmentPermissionRefusal(action){
  */
 const APPOINTMENT_SCOPE_REFUSAL="This appointment is assigned to another groomer";
 function appointmentScopeRefusal(){return refusalAttributes(APPOINTMENT_SCOPE_REFUSAL);}
+// The server's own refusal, said before the press: the bill is raised from these lines.
+const SERVICES_LOCKED_REASON="Services are locked once the visit is invoiced";
 // The same rule on a block, said about a block: the drawer used to borrow the appointment sentence
 // and told an operator looking at Lunch that "this appointment" belonged to somebody else.
 const BLOCK_SCOPE_REFUSAL="This blocked time is on another groomer's calendar";
@@ -17019,7 +16915,11 @@ function appointmentSurfaceMarkup(surface){
         ? `<button type="button" class="secondary compact" data-testid="appointment-adjust-services"${
           can.adjustServices?"":can.adjustServicesRefusal}>+ Add service</button>`
         : "")
-      +`</div>${serviceRows}`
+      +`</div>`
+      +(can.servicesLocked
+        ? `<p class="work-block-note" data-testid="appointment-services-locked">${escape(SERVICES_LOCKED_REASON)}.</p>`
+        : "")
+      +serviceRows
       +`<div class="appointment-service-total"><span>Total</span><strong>${model.durationMinutes} min${
         model.totalPriceMinor!==null?` · ${money(model.totalPriceMinor)}`:""}</strong></div>`
     +`</div>`
@@ -17354,11 +17254,18 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
        * is a refusal this surface can see coming: the bill is raised from these snapshots, and a
        * control that could only ever produce that sentence is not a control.
        */
-      adjustServicesOffered:["scheduled","checked_in","in_service"].includes(status)
-        &&!surface.item.invoiceId,
+      //
+      // BUILD IT OR GREY IT OUT. Once the visit is invoiced the services are locked, and the
+      // controls stay on screen, disabled, with the reason said in a visible line beneath the
+      // head - an operator who saw them simply vanish read it as "services cannot be edited".
+      servicesLocked:Boolean(surface.item.invoiceId)&&!["cancelled","no_show"].includes(status),
+      adjustServicesOffered:(["scheduled","checked_in","in_service"].includes(status)&&!surface.item.invoiceId)
+        ||(Boolean(surface.item.invoiceId)&&!["cancelled","no_show"].includes(status)),
       adjustServices:["scheduled","checked_in","in_service"].includes(status)
         &&!surface.item.invoiceId&&allowed("appointments.edit")&&mine,
-      adjustServicesRefusal:appointmentRefusal(item,"change the services on this appointment","appointments.edit"),
+      adjustServicesRefusal:surface.item.invoiceId
+        ? refusalAttributes(SERVICES_LOCKED_REASON)
+        : appointmentRefusal(item,"change the services on this appointment","appointments.edit"),
       /*
        * CHECKING THE PET IN, FROM THE SCREEN THE OPERATOR IS ALREADY ON.
        *

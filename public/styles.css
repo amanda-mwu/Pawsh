@@ -4247,3 +4247,50 @@ body.calendar-dragging .calendar-block[data-draggable="true"],body.calendar-drag
   #appointment-detail .surface-foot-utility{flex-wrap:nowrap;gap:0;overflow-x:auto;scrollbar-width:none}
   #appointment-detail .surface-foot-utility .secondary{flex:0 0 auto;padding:2px 5px;font-size:12px;white-space:nowrap}
 }
+
+/* == The Receipt, full screen ==
+   A layer over whatever it was opened from: the bar names the receipt and closes it, the paper
+   sits centred on a grey ground, and Print is bottom-right. On a phone the paper takes the width
+   and the bar and footer stay put while the paper scrolls. */
+dialog.receipt-document{width:100vw;max-width:none;height:100dvh;max-height:none;margin:0;padding:0;border-radius:0;background:var(--surface-2);overflow:hidden}
+dialog.receipt-document[open]{display:grid;grid-template-rows:auto minmax(0,1fr) auto}
+dialog.receipt-document::backdrop{background:rgba(32,37,34,.55)}
+.receipt-document-bar{display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);padding:var(--space-2) clamp(16px,3vw,40px);border-bottom:1px solid var(--line);background:var(--paper)}
+.receipt-document-bar h2{margin:0;font:600 16px/1.3 var(--font-sans)}
+.receipt-document-body{overflow-y:auto;padding:var(--space-5) clamp(12px,3vw,40px)}
+.receipt-document-paper{box-sizing:border-box;width:100%;max-width:760px;margin:0 auto;padding:32px 36px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--paper);box-shadow:0 2px 10px rgba(32,37,34,.08)}
+.receipt-document-foot{display:flex;justify-content:flex-end;padding:var(--space-2) clamp(16px,3vw,40px);border-top:1px solid var(--line);background:var(--paper)}
+.payment-receipt-title{margin:0 0 var(--space-4);text-align:center;font:700 18px/1.3 var(--font-sans)}
+.payment-receipt-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:var(--space-3) var(--space-5);padding-bottom:var(--space-3)}
+.payment-receipt-head>.salon-identity{flex:1 1 220px}
+.payment-receipt-meta{display:grid;gap:3px;margin:0;font-size:12.5px;line-height:1.6;text-align:right}
+.payment-receipt-meta>div{display:flex;justify-content:flex-end;gap:6px}
+.payment-receipt-meta dt{font-weight:600}
+.payment-receipt-meta dd{margin:0}
+.payment-receipt-purchase>h4,.payment-receipt-payments>h4{margin:var(--space-3) 0 0;padding-bottom:6px;border-bottom:2px solid var(--ink);font:600 14px/1.35 var(--font-sans)}
+.payment-receipt-items{width:100%;border-collapse:collapse;font-size:13.5px}
+.payment-receipt-items th{padding:8px 6px 8px 0;border-bottom:1px solid var(--line);color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.04em;text-align:left}
+.payment-receipt-items td{padding:9px 6px 9px 0;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
+.payment-receipt-items th:last-child,.payment-receipt-items td:last-child{padding-right:0;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.payment-receipt-payments .payment-receipt-record>.payment-receipt-tender{border-top:1px dashed var(--line)}
+.payment-receipt-payments .payment-receipt-record:first-of-type>.payment-receipt-tender{border-top:0}
+.payment-receipt>.payment-receipt-balance{margin-top:var(--space-2);border-top:2px solid var(--ink);font-weight:700;font-size:15px}
+@media(max-width:580px){
+  .receipt-document-body{padding:var(--space-2)}
+  .receipt-document-paper{padding:18px 14px}
+  .payment-receipt-meta{text-align:left}
+  .payment-receipt-meta>div{justify-content:flex-start}
+  .receipt-document-foot>.primary{width:100%;min-height:40px}
+}
+@media print{
+  .print-root .payment-receipt-title{text-align:center;font-size:14pt}
+  .print-root .payment-receipt-head{display:flex;justify-content:space-between;gap:12pt}
+  .print-root .payment-receipt-meta{text-align:right}
+  .print-root .payment-receipt-items{width:100%;border-collapse:collapse}
+  .print-root .payment-receipt-items th,.print-root .payment-receipt-items td{border-bottom:1px solid #999;padding:4pt 4pt 4pt 0;text-align:left}
+  .print-root .payment-receipt-items td:last-child,.print-root .payment-receipt-items th:last-child{text-align:right}
+  .print-root .payment-receipt>.payment-receipt-balance{border-top:2px solid #111}
+}
+/* The reason a block's controls are greyed, said where a finger can read it - not only in a title. */
+.work-block-note{margin:0 0 var(--space-2);color:var(--muted);font-size:12px;line-height:1.4}
+.payment-receipt-purchase>div{font-size:13.5px}

@@ -6,6 +6,7 @@ import {
   completeAppointment,
   createMember,
   appointmentAction,
+  prepareReceipt,
   password
 } from "./fixtures/tenant.js";
 import { permissionPresets } from "@pawsh/domain";
@@ -419,3 +420,82 @@ test.describe("at 320px", () => {
     expect(tops).toHaveLength(1);
   });
 });
+
+// ─── The full-screen Receipt, and locked services ──────────────────────────────────────────
+
+test("@responsive Invoice → Print Receipt opens the full-screen Receipt; × returns to the Invoice; Print prints the paper",
+  async ({ page, request, tenant }) => {
+    const { appointment, invoice } = await prepareReceipt(request, tenant);
+    await page.addInitScript(() => {
+      (window as unknown as { __prints: number }).__prints = 0;
+      window.print = () => { (window as unknown as { __prints: number }).__prints += 1; };
+    });
+    await login(page, tenant.ownerEmail);
+    await openDetail(page, appointment.id);
+    await detail(page).getByTestId("appointment-invoice").click();
+    const invoiceSurface = page.getByTestId("invoice-print-receipt");
+    await expect(invoiceSurface).toBeVisible();
+    await invoiceSurface.click();
+
+    const layer = page.getByTestId("receipt-document");
+    await expect(layer).toBeVisible();
+    // Full screen: the layer is the viewport.
+    const box = (await layer.boundingBox())!;
+    const viewport = page.viewportSize()!;
+    expect(Math.round(box.width)).toBe(viewport.width);
+    expect(Math.round(box.height)).toBe(viewport.height);
+    const { invoiceNumber } = invoice as unknown as { invoiceNumber: string };
+    await expect(page.getByTestId("receipt-document-title")).toHaveText(`Receipt #${invoiceNumber}`);
+
+    // THE PAPER, as the reference lays it out.
+    const paper = page.getByTestId("receipt-document-paper");
+    await expect(paper.getByTestId("payment-receipt-appointment")).toHaveText(`Appointment #: ${appointment.id.slice(0, 8)}`);
+    await expect(paper.getByTestId("payment-receipt-salon")).toContainText(`PW Smoke ${tenant.runId}`);
+    await expect(paper.getByTestId("payment-receipt-client")).toContainText("Emma Johnson");
+    await expect(paper.getByTestId("payment-receipt-date")).toHaveCount(1);
+    await expect(paper.locator(".payment-receipt-items th")).toHaveText(["Name", "Pet", "Price"]);
+    const item = paper.getByTestId("payment-receipt-item");
+    await expect(item).toHaveCount(1);
+    await expect(item.locator("td").nth(1)).toHaveText("Charlie");
+    await expect(paper.getByTestId("payment-receipt-tender")).toHaveText([/Paid by Cash\s*Pay \$\d+\.\d{2}/u]);
+    await expect(paper.getByTestId("payment-receipt-total-settled")).toContainText("Total settled");
+    await expect(paper.getByTestId("payment-receipt-balance")).toContainText("Balance");
+    await expect(paper.getByTestId("payment-receipt-balance")).toContainText("$0.00");
+    // What the paper never carries.
+    await expect(paper).not.toContainText(/Payment \d+ of \d+/u);
+    await expect(paper).not.toContainText("Processor");
+    await expect(paper.getByTestId("ticket-document")).toHaveCount(0);
+
+    // Print is reachable on every viewport, and prints just the paper.
+    await expect(page.getByTestId("receipt-document-print")).toBeInViewport();
+    await page.getByTestId("receipt-document-print").click();
+    expect(await page.evaluate(() => (window as unknown as { __prints: number }).__prints)).toBe(1);
+
+    // × closes back to the Invoice it was opened from.
+    await page.getByTestId("receipt-document-close").click();
+    await expect(layer).toBeHidden();
+    await expect(invoiceSurface).toBeVisible();
+    await expect(invoiceSurface).toBeFocused();
+  });
+
+test("@responsive a paid visit's services are greyed with the reason; a scheduled visit's are live",
+  async ({ page, request, tenant }) => {
+    const { appointment } = await prepareReceipt(request, tenant);
+    const scheduled = await createAppointment(request, tenant, { localStart: `${tenant.anchor}T16:00` });
+    await login(page, tenant.ownerEmail);
+
+    await openDetail(page, appointment.id);
+    const add = detail(page).getByTestId("appointment-adjust-services");
+    await expect(add).toBeVisible();
+    await expect(add).toBeDisabled();
+    await expect(detail(page).getByTestId("appointment-service-edit").first()).toBeDisabled();
+    // Said where a finger can read it, not only in a title.
+    await expect(detail(page).getByTestId("appointment-services-locked"))
+      .toHaveText("Services are locked once the visit is invoiced.");
+    await expect(detail(page).getByTestId("appointment-services-locked")).toBeVisible();
+    await detail(page).locator("[data-surface-close]").click();
+
+    await openDetail(page, scheduled.id);
+    await expect(detail(page).getByTestId("appointment-adjust-services")).toBeEnabled();
+    await expect(detail(page).getByTestId("appointment-services-locked")).toHaveCount(0);
+  });

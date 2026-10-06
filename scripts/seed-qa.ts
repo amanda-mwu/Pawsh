@@ -124,8 +124,8 @@ const setup = await sql.begin(async (tx) => {
   }
   const ownerId = await ensureUser(ownerEmail, "Olivia Owner");
   const [business] = await tx<{ id: string }[]>`
-    insert into businesses(name,currency,tax_rate_basis_points,reminder_lead_minutes)
-    values (${businessName},'USD',825,1440) returning id
+    insert into businesses(name,currency,tax_rate_basis_points,reminder_lead_minutes,phone,email)
+    values (${businessName},'USD',825,1440,'626-555-0100','frontdesk@pawsh-test.example') returning id
   `;
   const businessId = business!.id;
   await tx`select set_config('app.business_id',${businessId},true)`;

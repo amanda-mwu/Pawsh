@@ -152,6 +152,11 @@ jobs:
         run: npx playwright install chromium firefox webkit
       - name: Full canonical browser, accessibility, responsive, security, and regression suite
         if: matrix.node == '24'
+        # The whole canonical suite (600+ tests) ran 11-13 minutes on this runner and crossed the
+        # wrapper's 15-minute full-profile default on a slower one with nothing failing. The job's
+        # own 55-minute limit still bounds it.
+        env:
+          PAWSH_PLAYWRIGHT_WRAPPER_TIMEOUT_MS: "1800000"
         run: npm run test:e2e
       - run: npm run compatibility:metadata
       - run: npm run artifacts:scan

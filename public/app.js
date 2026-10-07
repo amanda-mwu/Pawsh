@@ -1165,7 +1165,7 @@ function calendarAction(item){
   // Offered from check-in through completed; locked once a payment is recorded, the same as the
   // surface's + Add service: drawn disabled with the one reason rather than opening an editor whose
   // Save the server will refuse.
-  if(["checked_in","in_service","completed"].includes(item.status)&&allowed("appointments.edit")&&(servicesEditable(item)||servicesLockedByPayment(item))){const locked=servicesLockedByPayment(item);controls.push(`<button type="button" role="menuitem" class="calendar-action service-action" data-id="${item.id}"${locked?refusalAttributes(SERVICES_LOCKED_REASON):scoped}>Adjust services</button>${locked?`<small class="calendar-action-reason">${escape(SERVICES_LOCKED_REASON)}.</small>`:""}`);}
+  if(["checked_in","in_service","completed"].includes(item.status)&&allowed("appointments.edit")&&(servicesEditable(item)||servicesLockedByPayment(item))){const locked=servicesLockedByPayment(item);controls.push(`<button type="button" role="menuitem" class="calendar-action service-action" data-id="${item.id}"${locked?refusalAttributes(servicesLockedReason(item)):scoped}>Adjust services</button>${locked?`<small class="calendar-action-reason">${escape(servicesLockedReason(item))}.</small>`:""}`);}
   return `<div class="calendar-actions-menu"><button type="button" class="calendar-action-trigger" aria-label="Appointment actions for ${escape(petName({petName:item.petName}))}" aria-haspopup="menu" aria-expanded="false" data-appointment-menu="${item.id}">&#8943;</button><div class="calendar-action-popover" role="menu" hidden>${controls.join("")}</div></div>`;
 }
 // The hash fallback. The modulus stays at five whatever the palette grows to: widening it would
@@ -16786,6 +16786,10 @@ const SERVICES_LOCKED_REASON="Services are locked once a payment is recorded. Vo
 const SERVICES_EDIT_STATUSES=["scheduled","checked_in","in_service","completed"];
 function servicesEditable(item){return item?.servicesEditable===true;}
 function servicesLockedByPayment(item){return Boolean(item)&&!servicesEditable(item)&&SERVICES_EDIT_STATUSES.includes(item.status)&&Boolean(item.invoiceId);}
+// A settled bill - paid, including a $0 bill its coupons settled with no payment at all - is final;
+// an open bill with a payment on it is locked by that payment, which a void releases.
+const SERVICES_SETTLED_REASON="Services are locked once the bill is settled";
+function servicesLockedReason(item){return ["paid","refunded","partially_refunded"].includes(item?.invoiceStatus)?SERVICES_SETTLED_REASON:SERVICES_LOCKED_REASON;}
 // The same rule on a block, said about a block: the drawer used to borrow the appointment sentence
 // and told an operator looking at Lunch that "this appointment" belonged to somebody else.
 const BLOCK_SCOPE_REFUSAL="This blocked time is on another groomer's calendar";
@@ -17002,7 +17006,7 @@ function appointmentSurfaceMarkup(surface){
         : "")
       +`</div>`
       +(can.servicesLocked
-        ? `<p class="work-block-note" data-testid="appointment-services-locked">${escape(SERVICES_LOCKED_REASON)}.</p>`
+        ? `<p class="work-block-note" data-testid="appointment-services-locked">${escape(servicesLockedReason(item))}.</p>`
         : "")
       +serviceRows
       +`<div class="appointment-service-total"><span>Total</span><strong>${model.durationMinutes} min${
@@ -17346,7 +17350,7 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
       adjustServicesOffered:servicesEditable(surface.item)||servicesLockedByPayment(surface.item),
       adjustServices:servicesEditable(surface.item)&&allowed("appointments.edit")&&mine,
       adjustServicesRefusal:servicesLockedByPayment(surface.item)
-        ? refusalAttributes(SERVICES_LOCKED_REASON)
+        ? refusalAttributes(servicesLockedReason(surface.item))
         : appointmentRefusal(item,"change the services on this appointment","appointments.edit"),
       /*
        * CHECKING THE PET IN, FROM THE SCREEN THE OPERATOR IS ALREADY ON.

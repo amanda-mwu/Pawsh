@@ -173,8 +173,10 @@ test("@responsive the checkout workspace lays out on a desk and collapses on a p
     expect(desk.overflow, "the page must never scroll sideways").toBeLessThanOrEqual(0);
 
     await page.setViewportSize({ width: 390, height: 844 });
+    // Polled: after a resize WebKit reflows over a frame or two, and a read taken at once can still
+    // see the desk's two columns.
+    await expect.poll(async () => (await geometry()).columns, { message: "one column on a phone" }).toBe(1);
     const phone = await geometry();
-    expect(phone.columns, "one column on a phone").toBe(1);
     // MONEY FIRST. The bill is below it, not scrolled past to reach it.
     expect(phone.payTop).toBeLessThan(phone.billTop);
     expect(phone.overflow, "the page must never scroll sideways").toBeLessThanOrEqual(0);

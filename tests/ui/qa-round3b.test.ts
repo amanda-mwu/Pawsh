@@ -49,7 +49,8 @@ describe("the server's servicesEditable decides", () => {
     reason: string;
     servicesEditable(item: Record<string, unknown>): boolean;
     servicesLockedByPayment(item: Record<string, unknown>): boolean;
-  }>(`${LOCK}\nreturn { reason: SERVICES_LOCKED_REASON, servicesEditable, servicesLockedByPayment };`, {});
+    lockedReason(item: Record<string, unknown>): string;
+  }>(`${LOCK}\nreturn { reason: SERVICES_LOCKED_REASON, servicesEditable, servicesLockedByPayment, lockedReason: servicesLockedReason };`, {});
 
   it("an invoiced visit with no payment on it is editable - the invoice alone locks nothing", () => {
     const open = { status: "completed", invoiceId: "inv-1", invoiceStatus: "open", servicesEditable: true };
@@ -73,6 +74,14 @@ describe("the server's servicesEditable decides", () => {
 
   it("an older projection without the field is not editable - the client never guesses", () => {
     expect(app.servicesEditable({ status: "scheduled", invoiceId: null })).toBe(false);
+  });
+
+  it("a settled bill - a $0 one its coupon settled included - says it is settled, not to void a payment", () => {
+    const settled = { status: "completed", invoiceId: "inv-1", invoiceStatus: "paid", servicesEditable: false };
+    expect(app.servicesLockedByPayment(settled)).toBe(true);
+    expect(app.lockedReason(settled)).toBe("Services are locked once the bill is settled");
+    const partly = { status: "completed", invoiceId: "inv-1", invoiceStatus: "partially_paid", servicesEditable: false };
+    expect(app.lockedReason(partly)).toBe(app.reason);
   });
 
   it("the lock says a payment closed it, and how to open it again", () => {

@@ -67,13 +67,13 @@ test("an invoiced, unpaid visit's services stay editable, and an edit re-prices 
     .toContainText(/Invoice recalculated[\s\S]*New total \$/u);
 });
 
-test("a recorded payment locks the services, on the surface and on the card menu, with the way to undo it", async ({ page, request, tenant }) => {
+test("a settled bill locks the services, on the surface and on the card menu, and says so", async ({ page, request, tenant }) => {
   const { appointment } = await prepareReceipt(request, tenant);
   await login(page, tenant.ownerEmail);
   await openDetail(page, appointment.id);
   await expect(detail(page).getByTestId("appointment-adjust-services")).toBeDisabled();
   await expect(detail(page).getByTestId("appointment-services-locked"))
-    .toHaveText("Services are locked once a payment is recorded. Void the payment to change them.");
+    .toHaveText("Services are locked once the bill is settled.");
   await detail(page).locator("[data-surface-close]").click();
 
   const card = page.locator(`#calendar-list [data-appointment-id="${appointment.id}"]`).filter({ visible: true }).first();
@@ -82,7 +82,7 @@ test("a recorded payment locks the services, on the surface and on the card menu
   await trigger.click();
   const menu = page.locator(".calendar-action-popover:not([hidden])");
   await expect(menu.locator(".service-action")).toBeDisabled();
-  await expect(menu.locator(".calendar-action-reason")).toHaveText("Services are locked once a payment is recorded. Void the payment to change them.");
+  await expect(menu.locator(".calendar-action-reason")).toHaveText("Services are locked once the bill is settled.");
 });
 
 // ─── 2 · one Invoice surface; the Ticket in the head ─────────────────────────────────────────

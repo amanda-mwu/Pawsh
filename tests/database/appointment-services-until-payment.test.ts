@@ -306,10 +306,55 @@ describeDatabase("appointment services are editable until a payment is recorded"
       where business_id=${businessId} and invoice_id=${invoiceId}
     `;
     expect(redemption).toMatchObject({ amountMinor: 2000, count: 1 });
-    // A zero-total invoice has no payment on it, so it stays editable and reopens when it grows.
+    // Its coupon has settled it at $0: the bill is final with no payment row, and an edit may not
+    // silently reopen it.
     const back = await request("PATCH", `/api/appointments/${id}/services/${line.id}`, ownerCookie, { priceMinor: 8000 });
-    expect(back.statusCode, back.body).toBe(200);
-    expect(await invoice(invoiceId)).toMatchObject({ discountMinor: 3000, status: "open" });
+    expect(back.statusCode, back.body).toBe(409);
+    expect(back.json()).toMatchObject({ code: "SERVICES_LOCKED_INVOICE_SETTLED", error: "Services are locked once the bill is settled." });
+    expect(await invoice(invoiceId)).toMatchObject({ totalMinor: 0, balanceMinor: 0, status: "paid" });
+    expect((await detail(id)).servicesEditable).toBe(false);
+  });
+
+  it("locks a bill its coupon settled at $0 at checkout - no payment row, no fake one, no reopening", async () => {
+    const code = `ZERO${suffix.slice(0, 6)}`.toUpperCase();
+    const coupon = await request("POST", "/api/settings/coupons", ownerCookie, { code, kind: "amount", amountMinor: 500000 });
+    expect(coupon.statusCode, coupon.body).toBe(201);
+    const { id, invoiceId } = await invoicedVisit(employeeA, { appliedDiscountIds: [], couponCode: code, tipMinor: 0 });
+    const before = await invoice(invoiceId);
+    expect(before).toMatchObject({ totalMinor: 0, balanceMinor: 0, status: "paid" });
+    const [payments] = await db<{ count: number }[]>`
+      select count(*)::int as count from payments where business_id=${businessId} and invoice_id=${invoiceId}
+    `;
+    expect(payments!.count).toBe(0);
+    const current = await detail(id);
+    expect(current.servicesEditable).toBe(false);
+    const line = current.services[0]!;
+    const list = await request("PUT", `/api/appointments/${id}/services`, ownerCookie,
+      { lines: [{ id: line.id, serviceId: groomId }, { serviceId: bathId }] });
+    expect(list.statusCode, list.body).toBe(409);
+    expect(list.json().code).toBe("SERVICES_LOCKED_INVOICE_SETTLED");
+    const price = await request("PATCH", `/api/appointments/${id}/services/${line.id}`, ownerCookie, { priceMinor: 9900 });
+    expect(price.statusCode, price.body).toBe(409);
+    expect(price.json().code).toBe("SERVICES_LOCKED_INVOICE_SETTLED");
+    expect(await invoice(invoiceId)).toEqual(before);
+    const [after] = await db<{ count: number }[]>`
+      select count(*)::int as count from payments where business_id=${businessId} and invoice_id=${invoiceId}
+    `;
+    expect(after!.count).toBe(0);
+  });
+
+  it("re-pricing an open invoice is the price permission's, whatever the role is called", async () => {
+    // A custom desk role - not a groomer, no checkout key - with the all-staff scope.
+    const priced = await seat("desk-priced", ["appointments.view", "appointments.edit", "appointments.edit_all_staff", "appointments.service_price_edit"]);
+    const unpriced = await seat("desk-unpriced", ["appointments.view", "appointments.edit", "appointments.edit_all_staff"]);
+    const { id, invoiceId } = await invoicedVisit();
+    const line = (await detail(id)).services[0]!;
+    const refused = await request("PATCH", `/api/appointments/${id}/services/${line.id}`, unpriced.cookie, { priceMinor: 4321 });
+    expect(refused.statusCode, refused.body).toBe(403);
+    expect(refused.json().error).toBe("Missing permission: appointments.service_price_edit");
+    const allowed = await request("PATCH", `/api/appointments/${id}/services/${line.id}`, priced.cookie, { priceMinor: 4321 });
+    expect(allowed.statusCode, allowed.body).toBe(200);
+    expect(await invoice(invoiceId)).toMatchObject({ id: invoiceId, subtotalMinor: 4321, status: "open" });
   });
 
   it("refuses both routes once client credit is taken, and changes nothing", async () => {

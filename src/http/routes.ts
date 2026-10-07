@@ -717,10 +717,12 @@ function appointmentCalendarRows(
       -- combine with this. The payments probe runs only for an invoiced visit.
       (a.status in ('scheduled','checked_in','in_service','completed') and case
         when inv.id is null then true
+        when inv.status not in ('draft','open') then false
         else not exists (select 1 from payments pay
           where pay.business_id=a.business_id and pay.invoice_id=inv.id and pay.status='recorded')
           and not exists (select 1 from square_terminal_checkouts stc
-            where stc.business_id=a.business_id and stc.invoice_id=inv.id and stc.status='needs_review')
+            where stc.business_id=a.business_id and stc.invoice_id=inv.id
+              and stc.status in ('pending','in_progress','needs_review'))
       end) as services_editable
     from appointments a
     join customers c on c.id=a.customer_id
@@ -2086,6 +2088,14 @@ async function refuseServiceEditOutsideWindow(
   if (parked) {
     throw new FinancialRequestError(409, "SERVICES_LOCKED_BY_PAYMENT",
       "A card payment for this invoice is waiting for review. Resolve it before changing the services.");
+  }
+  // A SETTLED BILL IS FINAL WHETHER OR NOT A PAYMENT ROW EXISTS. Checkout marks a bill whose
+  // coupons and discounts bring it to $0 `paid` with no payment at all; letting an edit re-price it
+  // would silently reopen a finalized invoice. So the lock is the invoice's own settled state as
+  // well as any recorded payment (checked above, so a payment keeps its own answer) - never a fake $0 payment row to make the count work.
+  if (["paid", "partially_paid", "refunded", "partially_refunded"].includes(invoice.status)) {
+    throw new FinancialRequestError(409, "SERVICES_LOCKED_INVOICE_SETTLED",
+      "Services are locked once the bill is settled.");
   }
   return invoice;
 }

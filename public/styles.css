@@ -3988,6 +3988,11 @@ body.calendar-dragging .calendar-block[data-draggable="true"],body.calendar-drag
    when and what state. */
 @container (max-width:110px){.appointment-block .appointment-notes-trigger:not([data-alert]),.appointment-block .appointment-head .card-warning,.appointment-block .appointment-badge+.appointment-badge{display:none!important}}
 @container (max-width:84px){.appointment-block .appointment-notes-trigger{display:none!important}}
+/* In a lane this narrow the start time and the status code are the whole strip, and they need the
+   room the "..." reserves: a pressed card opens the visit, whose own actions carry the menu's.
+   Measured on Linux's wider fallback fonts, where the reserve cut "2:00" to "2:0". */
+@container (max-width:84px){.appointment-block .calendar-open{padding-right:6px}.appointment-block .appointment-time .time-from{flex:none}}
+@container (max-width:84px){.appointment-block>.appointment-quick-actions{display:none}}
 /* `.week-appointment span` makes every span in a card a clipped block; the range's two halves are
    one line of text. */
 .appointment-block .appointment-time>span{display:inline;overflow:visible}

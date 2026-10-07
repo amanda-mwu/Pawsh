@@ -213,7 +213,16 @@ test("a groomer lifts her own block with a held finger and drops it; a quick swi
     await expect(page.locator(".calendar-block.dragging")).toHaveCount(0);
     await expect(page.getByTestId("stacked-dialog")).toBeHidden();
 
-    // Held, then carried an hour down: the same ask-then-PATCH a mouse drop gets.
+    // Held, then carried an hour down: the same ask-then-PATCH a mouse drop gets. The swipe's
+    // scroll can still be settling (Linux CI), so the band is measured only once it has stopped
+    // moving - a hold taken mid-scroll lands beside it.
+    let last = "";
+    await expect.poll(async () => {
+      const now = JSON.stringify(await band.boundingBox());
+      const settled = now === last;
+      last = now;
+      return settled;
+    }, { intervals: [150] }).toBe(true);
     const held = (await band.boundingBox())!;
     const hx = held.x + held.width / 2, hy = held.y + held.height / 2;
     await touch("touchStart", hx, hy);

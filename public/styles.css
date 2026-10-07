@@ -3994,6 +3994,7 @@ body.calendar-dragging .calendar-block[data-draggable="true"],body.calendar-drag
    the strip no longer reserves its width, and the strip and chip run on tighter side padding. */
 @container (max-width:84px){
   .appointment-block .calendar-open{padding:4px 3px 4px 4px}
+  .appointment-block>.appointment-head{padding:0 2px 0 3px}
   .appointment-block .appointment-time .time-from{flex:none}
   .appointment-block .appointment-head .appointment-badge{padding-inline:3px}
   .appointment-block>.appointment-quick-actions{top:auto;bottom:2px;right:2px}

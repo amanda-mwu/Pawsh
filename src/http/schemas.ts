@@ -541,9 +541,15 @@ export const petPhotoUploadMetadataSchema = z.object({
   useAsAvatar: z.boolean().default(false)
 }).strict();
 
-export const petAvatarSchema = z.object({
-  photoId: z.string().uuid().nullable()
-}).strict();
+/**
+ * Either a photograph already in the pet's gallery (or null to fall back to the initial), or a
+ * photograph taken during one of the pet's visits, which is copied into the gallery first. The two
+ * shapes are exclusive: a body naming both is refused rather than one silently winning.
+ */
+export const petAvatarSchema = z.union([
+  z.object({ photoId: z.string().uuid().nullable() }).strict(),
+  z.object({ appointmentPhotoId: z.string().uuid() }).strict()
+]);
 
 /**
  * Vaccinations other than rabies.

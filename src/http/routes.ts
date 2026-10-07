@@ -227,6 +227,9 @@ const photoUploadMetadataSchema = z.object({
 const maxPhotosPerPhase = 12;
 // A pet gallery is a handful of portraits over the years, not an album.
 const maxPetPhotos = 24;
+// The pet profile's visit-photo strip. Twelve a phase over years of visits would be an unbounded
+// read; the newest are what the profile shows, and `hasMore` says the rest exist.
+const maxVisitPhotosListed = 200;
 
 /**
  * Escape a value for interpolation into the report card preview page.
@@ -707,7 +710,18 @@ function appointmentCalendarRows(
       -- "Paid · $0 due" has no way to open the bill that says so. Null for an uninvoiced visit,
       -- which is a different thing from an unpaid one and reads differently.
       inv.id as invoice_id,
-      inv.status as invoice_status, inv.balance_minor as invoice_balance_minor
+      inv.status as invoice_status, inv.balance_minor as invoice_balance_minor,
+      -- Whether the visit's services may be changed, by the rule the service edit routes enforce
+      -- (refuseServiceEditOutsideWindow): an editable status, and no live invoice or one with no
+      -- recorded payment. Permission and own-scope are the caller's, and stay the client's to
+      -- combine with this. The payments probe runs only for an invoiced visit.
+      (a.status in ('scheduled','checked_in','in_service','completed') and case
+        when inv.id is null then true
+        else not exists (select 1 from payments pay
+          where pay.business_id=a.business_id and pay.invoice_id=inv.id and pay.status='recorded')
+          and not exists (select 1 from square_terminal_checkouts stc
+            where stc.business_id=a.business_id and stc.invoice_id=inv.id and stc.status='needs_review')
+      end) as services_editable
     from appointments a
     join customers c on c.id=a.customer_id
     join pets p on p.id=a.pet_id
@@ -1996,20 +2010,216 @@ async function lockAppointmentForServiceEdit(
   return { ...appointment, employeeIds };
 }
 
+/** The appointment statuses whose services may change, before the payment rule is applied. */
+const serviceEditStatuses: readonly string[] = ["scheduled", "checked_in", "in_service", "completed"];
+
+/** The visit's live invoice, read under its row lock, when the service edit may recompute it. */
+interface UnpaidVisitInvoice {
+  id: string;
+  customerId: string;
+  subtotalMinor: number;
+  discountMinor: number;
+  taxMinor: number;
+  tipMinor: number;
+  totalMinor: number;
+  balanceMinor: number;
+  status: string;
+  discountType: string | null;
+  taxRateBasisPoints: number;
+}
+
 /**
- * The status window and the invoice guard, shared by the list edit and the line edit so the two
- * cannot drift apart. Both sentences are the ones the list edit has always answered with.
+ * SERVICES ARE EDITABLE UNTIL ANY PAYMENT IS RECORDED. Shared by the list edit and the line edit
+ * so the two cannot drift apart.
+ *
+ * The status window: scheduled, checked in, in service and completed - a groomer may change the
+ * work at pickup. Cancelled and no-show stay refused with the sentence they always had.
+ *
+ * The money rule: no live invoice, or a live invoice with no `recorded` payment. A voided
+ * payment moved no money and does not count; any other payment, client credit included, locks
+ * the services until it is voided. A card on the terminal for this invoice locks them too, since
+ * the reader is charging the balance this edit would change.
+ *
+ * THE INVOICE ROW LOCK IS THE SERIALISATION POINT WITH EVERY TENDER. The payment route, the void
+ * route, the Terminal start and the Terminal reconciler all lock this row before they read or
+ * write a balance, so taken here (after the appointment row, which no tender locks) a tender
+ * either committed first and is counted below, or waits and then meets a balance that no longer
+ * matches its `expectedBalanceMinor`.
+ *
+ * Answers the locked invoice when there is one to recompute, else null.
  */
 async function refuseServiceEditOutsideWindow(
   tx: Transaction, businessId: string, appointmentId: string, status: string
-): Promise<void> {
-  if (!["scheduled","checked_in","in_service"].includes(status)) {
+): Promise<UnpaidVisitInvoice | null> {
+  if (!serviceEditStatuses.includes(status)) {
     throw new Error("Services cannot be changed in the current appointment state");
   }
-  const invoice = await tx`
-    select id from invoices where business_id=${businessId} and appointment_id=${appointmentId} and status<>'void'
+  const [invoice] = await tx<UnpaidVisitInvoice[]>`
+    select id,customer_id,subtotal_minor,discount_minor,tax_minor,tip_minor,total_minor,balance_minor,
+      status,discount_type,tax_rate_basis_points
+    from invoices
+    where business_id=${businessId} and appointment_id=${appointmentId} and status<>'void'
+    for update
   `;
-  if (invoice.length) throw new Error("Services cannot change after checkout begins");
+  if (!invoice) return null;
+  const [paid] = await tx<{ recorded: number }[]>`
+    select count(*)::int as recorded from payments
+    where business_id=${businessId} and invoice_id=${invoice.id} and status='recorded'
+  `;
+  if ((paid?.recorded ?? 0) > 0) {
+    throw new FinancialRequestError(409, "SERVICES_LOCKED_BY_PAYMENT",
+      "Services are locked once a payment is recorded. Void the payment to change them.");
+  }
+  if (await readLiveTerminalCheckout(tx, { businessId, invoiceId: invoice.id })) {
+    throw new FinancialRequestError(409, "TERMINAL_CAPTURE_IN_FLIGHT",
+      "A card payment for this invoice is on the terminal. Wait for it to finish, or cancel it, "
+      + "before changing the services.");
+  }
+  // A terminal checkout parked for review may already have charged the card without the payment
+  // being posted yet, so it locks the services exactly as a recorded payment does: re-pricing the
+  // bill under money that may have been taken is the mismatch the reconciler exists to catch.
+  const [parked] = await tx<{ id: string }[]>`
+    select id from square_terminal_checkouts
+    where business_id=${businessId} and invoice_id=${invoice.id} and status='needs_review'
+    limit 1
+  `;
+  if (parked) {
+    throw new FinancialRequestError(409, "SERVICES_LOCKED_BY_PAYMENT",
+      "A card payment for this invoice is waiting for review. Resolve it before changing the services.");
+  }
+  return invoice;
+}
+
+/**
+ * RECOMPUTES THE VISIT'S UNPAID INVOICE FROM THE SERVICE LINES AS THEY NOW STAND, in the
+ * transaction that changed them. Same invoice: id and number kept, `calculation_version` bumped
+ * as its revision counter.
+ *
+ * The arithmetic is checkout's: `applyDiscounts` then `calculateInvoice`. The discounts are the
+ * ones already on the bill - its `invoice_discounts` snapshots, folded again in their recorded
+ * order - so a percentage follows the new subtotal and a fixed amount clamps to it exactly as it
+ * did at checkout; nothing is re-resolved from the catalog and no coupon is redeemed twice (its
+ * one redemption row is updated to what it now takes off). No discount can stop applying to a
+ * different bill: none has a condition on the services or the amount, and the fold clamps rather
+ * than refusing. The tax rate is the one the invoice was raised at, the tip is kept, and with no
+ * payment recorded the balance is the total and the status is checkout's (`paid` at zero, else
+ * `open`).
+ *
+ * An invoiced visit must keep at least one service: checkout refuses a bill with none, and so
+ * does this, rather than leaving an invoice with no lines on it.
+ */
+async function recomputeUnpaidInvoice(
+  tx: Transaction,
+  context: { businessId: string; userId: string },
+  input: { appointmentId: string; invoice: UnpaidVisitInvoice; lines: readonly AppointmentServiceLine[] }
+): Promise<void> {
+  const { invoice, lines } = input;
+  if (!lines.length) {
+    throw new FinancialRequestError(409, "CHECKOUT_REQUIRES_SERVICE",
+      "An invoiced visit must keep at least one service. Void the invoice to remove them all.");
+  }
+  const discounts = await tx<{
+    id: string; source: "manual" | "discount" | "coupon"; discountId: string | null; couponId: string | null;
+    nameSnapshot: string | null; kindSnapshot: DiscountKind; amountMinorSnapshot: number | null;
+    rateBasisPointsSnapshot: number | null; unitsSnapshot: number; couponCode: string | null;
+  }[]>`
+    select d.id,d.source,d.discount_id,d.coupon_id,d.name_snapshot,d.kind_snapshot,
+      d.amount_minor_snapshot,d.rate_basis_points_snapshot,d.units_snapshot,
+      upper(btrim(c.code)) as coupon_code
+    from invoice_discounts d
+    left join coupons c on c.business_id=d.business_id and c.id=d.coupon_id
+    where d.business_id=${context.businessId} and d.invoice_id=${invoice.id}
+    order by d.line_position,d.id
+  `;
+  const [business] = await tx<{ discountStackingMode: DiscountStackingMode }[]>`
+    select discount_stacking_mode from businesses where id=${context.businessId}
+  `;
+  const subtotal = lines.reduce((sum, line) => sum + line.priceMinor, 0);
+  // The rows are already in the order they were folded at checkout. A rank-neutral mode keeps
+  // that order (the sort is stable), so a salon that changed its stacking setting since does not
+  // see this bill re-folded under a rule it was not raised under.
+  const application = applyDiscounts({
+    subtotal,
+    lines: discounts.map((row): DiscountLine => ({
+      kind: row.kindSnapshot, amountMinor: row.amountMinorSnapshot,
+      rateBasisPoints: row.rateBasisPointsSnapshot, units: row.unitsSnapshot
+    })),
+    stackingMode: "one_per_appointment"
+  });
+  const totals = calculateInvoice({
+    lineAmounts: lines.map((line) => line.priceMinor),
+    discount: application.discountMinor, taxRateBasisPoints: invoice.taxRateBasisPoints,
+    tip: invoice.tipMinor
+  });
+  const appliedByRow = new Map(application.applied.map((step) => [discounts[step.index]!.id, step.appliedMinor]));
+  const intentFingerprint = checkoutIntentFingerprint({
+    appointmentId: input.appointmentId, customerId: invoice.customerId,
+    services: lines.map((line) => ({ id: line.id, name: line.name, amountMinor: line.priceMinor })),
+    totals, discountType: invoice.discountType?.trim() || null,
+    appliedDiscountIds: discounts.flatMap((row) => row.source === "discount" && row.discountId ? [row.discountId] : []),
+    couponCode: discounts.find((row) => row.source === "coupon")?.couponCode ?? null,
+    stackingMode: business!.discountStackingMode,
+    breakdown: discounts.map((row) => ({
+      source: row.source, discountId: row.discountId, couponId: row.couponId, name: row.nameSnapshot,
+      kind: row.kindSnapshot, amountMinor: row.amountMinorSnapshot, rateBasisPoints: row.rateBasisPointsSnapshot,
+      units: row.unitsSnapshot, appliedMinor: appliedByRow.get(row.id) ?? 0
+    })),
+    taxRateBasisPoints: invoice.taxRateBasisPoints
+  });
+  const status = totals.total === 0 ? "paid" : "open";
+  await tx`
+    update invoices
+    set subtotal_minor=${totals.subtotal}, discount_minor=${totals.discount}, tax_minor=${totals.tax},
+      total_minor=${totals.total}, balance_minor=${totals.total}, status=${status},
+      intent_fingerprint=${intentFingerprint}, calculation_version=calculation_version+1, updated_at=now()
+    where business_id=${context.businessId} and id=${invoice.id}
+  `;
+  await tx`delete from invoice_items where business_id=${context.businessId} and invoice_id=${invoice.id}`;
+  for (const [index, line] of lines.entries()) {
+    await tx`
+      insert into invoice_items
+        (business_id, invoice_id, description, quantity, unit_price_minor, amount_minor,
+         source_appointment_service_id, line_position)
+      values
+        (${context.businessId}, ${invoice.id}, ${line.name}, 1, ${line.priceMinor}, ${line.priceMinor},
+         ${line.id}, ${index + 1})
+    `;
+  }
+  for (const row of discounts) {
+    const appliedMinor = appliedByRow.get(row.id) ?? 0;
+    await tx`
+      update invoice_discounts set applied_minor=${appliedMinor}
+      where business_id=${context.businessId} and id=${row.id}
+    `;
+    if (row.source === "coupon" && row.couponId) {
+      await tx`
+        update coupon_redemptions set amount_minor=${appliedMinor}
+        where business_id=${context.businessId} and invoice_id=${invoice.id} and coupon_id=${row.couponId}
+      `;
+    }
+  }
+  await record(tx, {
+    businessId: context.businessId, actorId: context.userId, action: "invoice.recalculate",
+    resourceType: "invoice", resourceId: invoice.id,
+    before: {
+      subtotalMinor: invoice.subtotalMinor, discountMinor: invoice.discountMinor, taxMinor: invoice.taxMinor,
+      tipMinor: invoice.tipMinor, totalMinor: invoice.totalMinor, balanceMinor: invoice.balanceMinor,
+      status: invoice.status
+    },
+    after: {
+      subtotalMinor: totals.subtotal, discountMinor: totals.discount, taxMinor: totals.tax,
+      tipMinor: totals.tip, totalMinor: totals.total, balanceMinor: totals.total, status
+    }
+  });
+}
+
+/**
+ * Takes the invoice's line items off before service lines are deleted: `invoice_items` points at
+ * `appointment_services`, and the delete would otherwise be refused by that foreign key. The
+ * recompute writes them back from the lines that remain.
+ */
+async function detachInvoiceItems(tx: Transaction, businessId: string, invoiceId: string): Promise<void> {
+  await tx`delete from invoice_items where business_id=${businessId} and invoice_id=${invoiceId}`;
 }
 
 /**
@@ -2413,6 +2623,42 @@ interface ResolvedDiscount {
   rateBasisPoints: number | null;
   applyScope: DiscountApplyScope | null;
   units: number;
+}
+
+/**
+ * The checkout intent fingerprint, in one place because two writers produce it: the checkout
+ * that raises an invoice, and the service edit that recomputes an unpaid one. Both must hash the
+ * same shape, or a checkout replayed after an edit would be judged against a fingerprint made
+ * by different rules.
+ */
+function checkoutIntentFingerprint(input: {
+  appointmentId: string;
+  customerId: string;
+  services: readonly { id: string; name: string; amountMinor: number }[];
+  totals: { subtotal: number; discount: number; tax: number; tip: number; total: number };
+  discountType: string | null;
+  appliedDiscountIds: readonly string[];
+  couponCode: string | null;
+  stackingMode: DiscountStackingMode;
+  breakdown: readonly (Omit<ResolvedDiscount, "nameSnapshot" | "applyScope"> & { name: string | null; appliedMinor: number })[];
+  taxRateBasisPoints: number;
+}): string {
+  return canonicalHash({
+    version: 1, appointmentId: input.appointmentId, customerId: input.customerId,
+    services: input.services.map((service) => ({ id: service.id, name: service.name, amountMinor: service.amountMinor })),
+    subtotalMinor: input.totals.subtotal, discountMinor: input.totals.discount,
+    discountType: input.discountType,
+    appliedDiscountIds: [...input.appliedDiscountIds], couponCode: input.couponCode,
+    stackingMode: input.stackingMode,
+    discountBreakdown: input.breakdown.map((entry) => ({
+      source: entry.source, discountId: entry.discountId, couponId: entry.couponId,
+      name: entry.name, kind: entry.kind, amountMinor: entry.amountMinor,
+      rateBasisPoints: entry.rateBasisPoints, units: entry.units,
+      appliedMinor: entry.appliedMinor
+    })),
+    taxRateBasisPoints: input.taxRateBasisPoints, taxMinor: input.totals.tax,
+    tipMinor: input.totals.tip, totalMinor: input.totals.total
+  });
 }
 
 /**
@@ -9608,6 +9854,64 @@ export function registerRoutes(
     };
   });
 
+  /**
+   * Every photograph taken of this pet during its visits, so the profile can show them without
+   * opening each appointment. Newest visit first, and within a visit the After set before the
+   * Before set, because the finished groom is the picture people come looking for.
+   *
+   * Read under the same keys as the photographs themselves: `pets.view` for the profile, and
+   * `appointments.view` because each item is an appointment photograph served by
+   * `/api/appointment-photos/:id/content`, which a caller without that key could not load. No
+   * assignment filter, as on `GET /api/appointments/:id/photos`: a groomer sees what the dog looked
+   * like on a colleague's visit, and may change only their own.
+   *
+   * `petPhotoId` is the gallery copy made when the photograph was chosen as the pet's picture (the
+   * copy's upload id is the visit photograph's id, and its bytes are the same), so the interface
+   * can say which visit photograph is already the avatar without a second request.
+   */
+  app.get("/api/pets/:id/visit-photos", {
+    preHandler: [authenticate, requirePermission("pets.view"), requirePermission("appointments.view")]
+  }, async (request, reply) => {
+    const context = auth(request);
+    const { id } = idParams.parse(request.params);
+    const [pet] = await db<{ id: string; avatarPhotoId: string | null }[]>`
+      select id,avatar_photo_id from pets where business_id=${context.businessId} and id=${id}
+    `;
+    if (!pet) return reply.code(404).send({ error: "Pet not found" });
+    const rows = await db<{
+      id: string; appointmentId: string; visitDate: string; startAt: Date; phase: "before" | "after";
+      width: number | null; height: number | null; contentType: string; uploadedAt: Date;
+      petPhotoId: string | null;
+    }[]>`
+      select photo.id,photo.appointment_id,
+        to_char(appointment.scheduled_local_start,'YYYY-MM-DD') as visit_date,
+        appointment.start_at,photo.phase,photo.width,photo.height,photo.content_type,
+        photo.created_at as uploaded_at,copy.id as pet_photo_id
+      from appointment_photos photo
+      join appointments appointment
+        on appointment.business_id=photo.business_id and appointment.id=photo.appointment_id
+      left join pet_photos copy
+        on copy.business_id=photo.business_id and copy.pet_id=photo.pet_id
+        and copy.upload_request_id=photo.id and copy.state='stored' and copy.sha256=photo.sha256
+      where photo.business_id=${context.businessId} and photo.pet_id=${id} and photo.state='stored'
+      order by appointment.start_at desc,appointment.id desc,
+        (photo.phase='after') desc,photo.created_at,photo.id
+      limit ${maxVisitPhotosListed + 1}
+    `;
+    const items = rows.slice(0, maxVisitPhotosListed).map((row) => ({
+      ...row,
+      // No caption is stored on a visit photograph today; the field is reported so the shape does
+      // not change the day one is.
+      caption: null,
+      contentUrl: `/api/appointment-photos/${row.id}/content`,
+      isAvatar: row.petPhotoId !== null && row.petPhotoId === pet.avatarPhotoId
+    }));
+    return {
+      items, avatarPhotoId: pet.avatarPhotoId, hasMore: rows.length > maxVisitPhotosListed,
+      canSetAvatar: context.isOwner || context.permissions.includes("pets.edit")
+    };
+  });
+
   app.post("/api/pets/:id/photos", {
     preHandler: [authenticate, requirePermission("pets.edit")]
   }, async (request, reply) => {
@@ -9765,6 +10069,9 @@ export function registerRoutes(
     const context = auth(request);
     const { id } = idParams.parse(request.params);
     const input = body(petAvatarSchema, request.body);
+    if ("appointmentPhotoId" in input) {
+      return avatarFromVisitPhoto(request, reply, id, input.appointmentPhotoId);
+    }
     const result = await db.begin(async (tx) => {
       await setTenant(tx, context.businessId);
       if (input.photoId) {
@@ -9784,7 +10091,7 @@ export function registerRoutes(
       await record(tx, {
         businessId: context.businessId, actorId: context.userId,
         action: "pet.avatar.set", resourceType: "pet", resourceId: id,
-        after: { photoId: input.photoId ?? null }
+        after: { photoId: input.photoId ?? null, source: "pet_photo" }
       });
       return { avatarPhotoId: input.photoId ?? null };
     });
@@ -9792,6 +10099,194 @@ export function registerRoutes(
     if ("missingPhoto" in result) return reply.code(404).send({ error: "Photo not found" });
     return result;
   });
+
+  /**
+   * Make a photograph from one of the pet's visits its picture.
+   *
+   * The visit photograph is COPIED into the pet's own gallery rather than pointed at: the avatar
+   * is a pointer into `pet_photos`, and a gallery copy survives the visit photograph being deleted
+   * by the groomer who took it. The copy is attributed to the person choosing it (`uploaded_by`),
+   * because choosing the picture is their act, and the source is named in the audit row.
+   *
+   * The copy's `upload_request_id` is the visit photograph's id, which makes a second pick of the
+   * same photograph find the first copy through the existing unique key instead of storing it
+   * twice. A copy is only reused when its bytes are the visit photograph's bytes (same sha256), so
+   * an ordinary upload that happened to send that id cannot stand in for it.
+   *
+   * The bytes go through the same checks an upload does: the stored size and digest must match
+   * the row, the size limit applies, and the type stored is what the bytes parse as. Storage is
+   * written before the transaction and removed again if the transaction does not commit; the row,
+   * the avatar and both audit rows commit together.
+   */
+  async function avatarFromVisitPhoto(
+    request: FastifyRequest, reply: FastifyReply, petId: string, appointmentPhotoId: string
+  ) {
+    const context = auth(request);
+    // Reading the visit photograph is reading the appointment's record, under its own key.
+    if (!can(context, "appointments.view")) {
+      return reply.code(403).send({ error: "Missing permission: appointments.view" });
+    }
+    if (!await activePet(context.businessId, petId)) return reply.code(404).send({ error: "Pet not found" });
+    const [source] = await db<{
+      id: string; appointmentId: string; storageKey: string; sizeBytes: string; sha256: string;
+      originalFilename: string;
+    }[]>`
+      select id,appointment_id,storage_key,size_bytes,sha256,original_filename
+      from appointment_photos
+      where business_id=${context.businessId} and id=${appointmentPhotoId} and pet_id=${petId}
+        and state='stored'
+    `;
+    if (!source) return reply.code(404).send({ error: "Photo not found" });
+    const provenance = {
+      source: "appointment_photo", appointmentPhotoId: source.id, appointmentId: source.appointmentId
+    };
+
+    type CopyOutcome =
+      | { kind: "missingPet" } | { kind: "limit" } | { kind: "conflict" }
+      | { kind: "done"; photoId: string; copied: boolean };
+
+    /** Point the avatar at a gallery photo and audit it, inside the caller's transaction. */
+    const setAvatar = async (tx: Transaction, photoId: string) => {
+      await tx`
+        update pets set avatar_photo_id=${photoId},updated_at=now()
+        where business_id=${context.businessId} and id=${petId}
+      `;
+      await record(tx, {
+        businessId: context.businessId, actorId: context.userId,
+        action: "pet.avatar.set", resourceType: "pet", resourceId: petId,
+        after: { photoId, ...provenance }
+      });
+    };
+
+    /** The earlier copy of this visit photograph, if one is in the gallery. */
+    const existingCopy = async (tx: SqlExecutor) => {
+      const [row] = await tx<{ id: string; state: string; sha256: string | null }[]>`
+        select id,state,sha256 from pet_photos
+        where business_id=${context.businessId} and pet_id=${petId}
+          and upload_request_id=${source.id}
+      `;
+      return row ?? null;
+    };
+
+    /** Lock the pet so concurrent picks and the photo count are answered one at a time. */
+    const lockPet = async (tx: SqlExecutor) => {
+      const [pet] = await tx<{ id: string }[]>`
+        select id from pets
+        where business_id=${context.businessId} and id=${petId} and archived_at is null
+        for update
+      `;
+      return pet ?? null;
+    };
+
+    /** Reuse an earlier copy, or report why it cannot be reused. Null when there is none. */
+    const reuse = async (tx: Transaction): Promise<CopyOutcome | null> => {
+      const copy = await existingCopy(tx);
+      if (!copy) return null;
+      if (copy.state !== "stored" || copy.sha256 !== source.sha256) return { kind: "conflict" };
+      await setAvatar(tx, copy.id);
+      return { kind: "done", photoId: copy.id, copied: false };
+    };
+
+    const respond = async (outcome: CopyOutcome) => {
+      if (outcome.kind === "missingPet") return reply.code(404).send({ error: "Pet not found" });
+      if (outcome.kind === "limit") {
+        return reply.code(409).send({
+          code: "PHOTO_LIMIT_REACHED",
+          error: `Up to ${maxPetPhotos} photos can be kept for one pet.`
+        });
+      }
+      if (outcome.kind === "conflict") {
+        return reply.code(409).send({ error: "That photo is already being saved to this pet" });
+      }
+      const [photo] = await db`
+        select id,width,height,size_bytes,original_filename,content_type,created_at
+        from pet_photos where business_id=${context.businessId} and id=${outcome.photoId}
+      `;
+      return reply.code(200).send({ avatarPhotoId: outcome.photoId, photo, copied: outcome.copied });
+    };
+
+    const countStored = async (tx: SqlExecutor) => {
+      const [count] = await tx<{ count: number }[]>`
+        select count(*)::int count from pet_photos
+        where business_id=${context.businessId} and pet_id=${petId} and state='stored'
+      `;
+      return count?.count ?? 0;
+    };
+
+    // A second pick of the same photograph costs no storage read or write.
+    const early = await db.begin(async (tx) => {
+      await setTenant(tx, context.businessId);
+      if (!await lockPet(tx)) return { kind: "missingPet" } as const;
+      const reused = await reuse(tx);
+      if (reused) return reused;
+      if (await countStored(tx) >= maxPetPhotos) return { kind: "limit" } as const;
+      return null;
+    });
+    if (early) return respond(early);
+
+    let bytes: Uint8Array;
+    try {
+      const object = await documentStorage.get(source.storageKey);
+      if (object.size !== Number(source.sizeBytes)) throw new Error("size mismatch");
+      bytes = object.bytes;
+    } catch (error) {
+      request.log.warn({ appointmentPhotoId: source.id, errorName: (error as Error).name },
+        "visit photo unavailable for avatar copy");
+      return reply.code(503).send({ error: "Photo is temporarily unavailable" });
+    }
+    const shape = readPhotoShape(bytes);
+    if (bytes.byteLength > maxPhotoBytes || !shape || sha256(bytes) !== source.sha256) {
+      request.log.error({ appointmentPhotoId: source.id }, "visit photo failed validation on copy");
+      return reply.code(503).send({ error: "Photo is temporarily unavailable" });
+    }
+
+    const photoId = randomUUID();
+    const storageKey = `business/${context.businessId}/pets/${petId}/photos/${photoId}`;
+    try {
+      await documentStorage.put(storageKey, bytes, shape.contentType);
+    } catch (error) {
+      request.log.warn({ petId, errorName: (error as Error).name }, "avatar copy could not be stored");
+      return reply.code(503).send({ error: "The photo could not be stored" });
+    }
+    let outcome: CopyOutcome;
+    try {
+      outcome = await db.begin(async (tx): Promise<CopyOutcome> => {
+        await setTenant(tx, context.businessId);
+        if (!await lockPet(tx)) return { kind: "missingPet" };
+        // Another pick of the same photograph committed while the bytes were being copied.
+        const reused = await reuse(tx);
+        if (reused) return reused;
+        if (await countStored(tx) >= maxPetPhotos) return { kind: "limit" };
+        const [inserted] = await tx<{ id: string }[]>`
+          insert into pet_photos
+            (id,business_id,pet_id,state,storage_key,content_type,width,height,size_bytes,sha256,
+             original_filename,upload_request_id,uploaded_by)
+          values (${photoId},${context.businessId},${petId},'stored',${storageKey},${shape.contentType},
+            ${shape.width},${shape.height},${bytes.byteLength},${source.sha256},
+            ${safePhotoFilename(source.originalFilename, shape.contentType)},${source.id},${context.userId})
+          on conflict (business_id,pet_id,upload_request_id) do nothing
+          returning id
+        `;
+        // An ordinary upload holding this upload id landed between the check and the insert.
+        if (!inserted) return { kind: "conflict" };
+        await record(tx, {
+          businessId: context.businessId, actorId: context.userId,
+          action: "pet.photo.add", resourceType: "pet", resourceId: petId,
+          after: { photoId, ...provenance }
+        });
+        await setAvatar(tx, photoId);
+        return { kind: "done", photoId, copied: true };
+      });
+    } catch (error) {
+      await documentStorage.delete(storageKey).catch(() => undefined);
+      throw error;
+    }
+    // Every outcome other than a fresh copy leaves the object just written unreferenced.
+    if (outcome.kind !== "done" || !outcome.copied) {
+      await documentStorage.delete(storageKey).catch(() => undefined);
+    }
+    return respond(outcome);
+  }
 
   app.delete("/api/pet-photos/:id", {
     preHandler: [authenticate, requirePermission("pets.edit")]
@@ -11025,7 +11520,7 @@ export function registerRoutes(
     const groomerLabel = (ids: string[]) => ids.map((employeeId) => employeeName.get(employeeId) ?? "a former staff member").join(", ");
     const moneyActions = new Set([
       "invoice.create", "payment.record", "payment.void", "payment.refund.request", "payment.refund.completed",
-      "payment.refund.failed", "coupon.redeem", "credit.redeem", "credit.reverse"
+      "payment.refund.failed", "coupon.redeem", "credit.redeem", "credit.reverse", "invoice.recalculate"
     ]);
     const items = rows.map((row) => {
       const money = mayViewPayments && moneyActions.has(row.action);
@@ -12041,7 +12536,8 @@ export function registerRoutes(
       const appointment = await lockAppointmentForServiceEdit(tx, context, id);
       if (!appointment) return null;
       if (input.version && appointment.version !== input.version) return { stale: true } as const;
-      await refuseServiceEditOutsideWindow(tx, context.businessId, id, appointment.status);
+      const invoice = await refuseServiceEditOutsideWindow(tx, context.businessId, id, appointment.status);
+      if (invoice) await detachInvoiceItems(tx, context.businessId, invoice.id);
       const before = await appointmentServiceLines(tx, context.businessId, id);
       const owned = new Map(before.map((line) => [line.id, line]));
       const keptIds = new Set<string>();
@@ -12111,6 +12607,7 @@ export function registerRoutes(
         overrideAuthorized, availabilityOverride: input.availabilityOverride,
         overrideReason: input.overrideReason ?? null
       });
+      if (invoice) await recomputeUnpaidInvoice(tx, context, { appointmentId: id, invoice, lines: after });
       await record(tx, {
         businessId: context.businessId, actorId: context.userId, action: "appointment.services.update",
         resourceType: "appointment", resourceId: id,
@@ -12176,7 +12673,7 @@ export function registerRoutes(
       const before = (await appointmentServiceLines(tx, context.businessId, id)).find((line) => line.id === lineId);
       if (!before) return null;
       if (input.version && appointment.version !== input.version) return { stale: true } as const;
-      await refuseServiceEditOutsideWindow(tx, context.businessId, id, appointment.status);
+      const invoice = await refuseServiceEditOutsideWindow(tx, context.businessId, id, appointment.status);
       const durationMinutes = input.durationMinutes ?? before.durationMinutes;
       const priceMinor = input.priceMinor ?? before.priceMinor;
       const durationChanged = durationMinutes !== before.durationMinutes;
@@ -12215,6 +12712,8 @@ export function registerRoutes(
         `;
       }
       if (priceChanged) {
+        // A duration is not billed, so only a price change moves an unpaid invoice.
+        if (invoice) await recomputeUnpaidInvoice(tx, context, { appointmentId: id, invoice, lines: after });
         await record(tx, {
           businessId: context.businessId, actorId: context.userId,
           action: "appointment.service.price_edit", resourceType: "appointment", resourceId: id,
@@ -12344,24 +12843,17 @@ export function registerRoutes(
        * The resolved breakdown is included as well as the raw request, because a discount that was
        * edited between two otherwise identical checkouts is a different bill.
        */
-      const intentFingerprint = canonicalHash({
-        version: 1, appointmentId: id, customerId: appointment.customerId,
+      const intentFingerprint = checkoutIntentFingerprint({
+        appointmentId: id, customerId: appointment.customerId,
         services: services.map((service) => ({ id: service.id, name: service.serviceNameSnapshot, amountMinor: service.priceMinorSnapshot })),
-        subtotalMinor: totals.subtotal, discountMinor: totals.discount,
-        discountType: input.discountType?.trim() || null,
-        appliedDiscountIds: [...input.appliedDiscountIds], couponCode,
+        totals, discountType: input.discountType?.trim() || null,
+        appliedDiscountIds: input.appliedDiscountIds, couponCode,
         stackingMode: appointment.discountStackingMode,
-        discountBreakdown: application.applied.map((step) => {
+        breakdown: application.applied.map((step) => {
           const entry = resolved[step.index]!;
-          return {
-            source: entry.source, discountId: entry.discountId, couponId: entry.couponId,
-            name: entry.nameSnapshot, kind: entry.kind, amountMinor: entry.amountMinor,
-            rateBasisPoints: entry.rateBasisPoints, units: entry.units,
-            appliedMinor: step.appliedMinor
-          };
+          return { ...entry, name: entry.nameSnapshot, appliedMinor: step.appliedMinor };
         }),
-        taxRateBasisPoints: appointment.taxRateBasisPoints, taxMinor: totals.tax,
-        tipMinor: totals.tip, totalMinor: totals.total
+        taxRateBasisPoints: appointment.taxRateBasisPoints
       });
       if (existing) {
         if (existing.intentFingerprint !== intentFingerprint) {

@@ -708,21 +708,25 @@ describeDatabase("appointment service lines", () => {
   });
 
   describe("once the money starts", () => {
-    it("refuses both routes the way the list edit always has", async () => {
+    it("refuses both routes once a payment is recorded, not when the invoice is raised", async () => {
       const booking = await book(employeeA, [groomId]);
       const line = (await detail(booking.id)).services[0]!;
       expect((await request("POST", `/api/appointments/${booking.id}/transition`, ownerCookie, { status: "checked_in" })).statusCode).toBe(200);
       const checkout = await request("POST", `/api/appointments/${booking.id}/checkout`, ownerCookie,
         { discountMinor: 0, tipMinor: 0, appliedDiscountIds: [] });
       expect(checkout.statusCode, checkout.body).toBe(201);
+      const payment = await request("POST", `/api/invoices/${checkout.json().id}/payments`, ownerCookie,
+        { amountMinor: 1000, expectedBalanceMinor: checkout.json().balanceMinor, method: "cash" });
+      expect(payment.statusCode, payment.body).toBe(201);
+      const locked = "Services are locked once a payment is recorded. Void the payment to change them.";
       const price = await patchLine(booking.id, line.id, manager, { priceMinor: 100 });
-      expect(price.statusCode).toBe(400);
-      expect(price.json().error).toBe("Services cannot change after checkout begins");
+      expect(price.statusCode).toBe(409);
+      expect(price.json()).toMatchObject({ code: "SERVICES_LOCKED_BY_PAYMENT", error: locked });
       const duration = await patchLine(booking.id, line.id, ownerCookie, { durationMinutes: 10 });
-      expect(duration.statusCode).toBe(400);
+      expect(duration.statusCode).toBe(409);
       const list = await putLines(booking.id, ownerCookie, { lines: [{ id: line.id, serviceId: groomId }, { serviceId: bathId }] });
-      expect(list.statusCode).toBe(400);
-      expect(list.json().error).toBe("Services cannot change after checkout begins");
+      expect(list.statusCode).toBe(409);
+      expect(list.json()).toMatchObject({ code: "SERVICES_LOCKED_BY_PAYMENT", error: locked });
       expect((await storedLines(booking.id))[0]).toMatchObject({ priceMinor: 8000, durationMinutes: 60 });
     });
   });

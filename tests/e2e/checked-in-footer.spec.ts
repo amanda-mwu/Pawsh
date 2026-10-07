@@ -256,7 +256,7 @@ test("a groomer edits the note on their own completed visit", async ({ page, req
   expect((await visit(request, appointment.id)).operationalNotes).toBe("Rocky did well; tender on the left hip.");
 });
 
-test("Ready for Pickup finishes the work, touches no money, and moves Print Ticket into the lead zone",
+test("Ready for Pickup finishes the work, touches no money, and leaves Print Ticket in the head",
   async ({ page, request, tenant }) => {
     const appointment = await checkInAppointment(request, tenant);
     await login(page, tenant.ownerEmail);
@@ -275,9 +275,9 @@ test("Ready for Pickup finishes the work, touches no money, and moves Print Tick
     // Secondary, always: money outranks it, and there is exactly one primary on this footer.
     await expect(ready(page)).toHaveClass(/secondary/u);
     await expect(detail(page).locator("footer .primary")).toHaveCount(1);
-    // While the visit is still moving the sheet is a utility.
-    await expect(detail(page).locator(".surface-foot-utility [data-testid='appointment-ticket']")).toHaveCount(1);
-    await expect(detail(page).locator(".surface-foot-lead [data-testid='appointment-ticket']")).toHaveCount(0);
+    // The sheet is the head's printer icon, in no footer zone.
+    await expect(detail(page).locator(".surface-head [data-testid='appointment-ticket']")).toHaveCount(1);
+    await expect(detail(page).locator("footer [data-testid='appointment-ticket']")).toHaveCount(0);
 
     await ready(page).click();
 
@@ -290,11 +290,11 @@ test("Ready for Pickup finishes the work, touches no money, and moves Print Tick
     expect((await visit(request, appointment.id)).invoiceId).toBeNull();
 
     // And the button is gone from the visit it has already finished. The sheet stays the same
-    // quiet utility it is in every state (QA UX-13) - still exactly one Print Ticket.
+    // printer icon in the head - still exactly one Print Ticket, none in the footer.
     await expect(ready(page)).toHaveCount(0);
     await expect(detail(page).getByTestId("appointment-ticket")).toHaveCount(1);
-    await expect(detail(page).locator(".surface-foot-lead [data-testid='appointment-ticket']")).toHaveCount(0);
-    await expect(detail(page).locator(".surface-foot-utility [data-testid='appointment-ticket']")).toHaveCount(1);
+    await expect(detail(page).locator("footer [data-testid='appointment-ticket']")).toHaveCount(0);
+    await expect(detail(page).locator(".surface-head [data-testid='appointment-ticket']")).toHaveCount(1);
     await expect(detail(page).getByTestId("appointment-take-payment")).toHaveClass(/primary/u);
     await expect(detail(page).locator("footer .primary")).toHaveCount(1);
   });

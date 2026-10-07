@@ -209,6 +209,9 @@ function loadClient(): ClientModule {
     "use strict";
     const money = (minor) => "$" + (Number(minor || 0) / 100).toFixed(2);
     const appointmentStatusLabel = (status) => String(status || "").replaceAll("_", " ");
+    // The surface head reads the lifecycle through these two (tests/ui/qa-round3.test.ts holds them).
+    const appointmentReadyForPickup = () => false;
+    const appointmentLifecycleLabel = (item) => appointmentStatusLabel(item?.status);
     const clientName = (record) =>
       [record.firstName, record.lastName].filter(Boolean).join(" ").trim() || "Not set";
     const paymentMethodLabel = (method) =>
@@ -449,6 +452,9 @@ function appointmentSurface(overrides: Record<string, unknown> = {}) {
     invoiceId: null,
     invoiceStatus: null,
     invoiceBalanceMinor: null,
+    // The server's `servicesEditable`: an editable status and no recorded payment - an invoiced
+    // fixture stands for a paid one here unless it says otherwise.
+    servicesEditable: !overrides.invoiceId,
     ...overrides
   };
   return {
@@ -583,7 +589,7 @@ describe("the financial control on a completed appointment", () => {
     // Exactly one primary control in the footer, so the Invoice's claim on that slot is real
     // rather than shared with the Ticket it displaced.
     expect(markup.match(/class="primary compact"/gu)?.length).toBe(1);
-    expect(control(markup, "appointment-ticket")).toContain("secondary");
+    expect(control(markup, "appointment-ticket")).toContain('aria-label="Print Ticket"');
     // The Ticket is still one button away in every state. It carries no money and never did.
     expect(handlers["appointment-ticket"]).toBeUndefined();
     expect(markup).toContain('data-testid="appointment-ticket"');

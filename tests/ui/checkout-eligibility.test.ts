@@ -79,6 +79,9 @@ function client(status: string, invoice: Record<string, unknown> = {}): Module {
     invoiceId: null, invoiceStatus: null, invoiceBalanceMinor: 0,
     services: [{ serviceId: "s1", name: "Full groom", durationMinutes: 90, priceMinor: 6500 }],
     groomers: [{ id: "e1", displayName: "Alex" }],
+    // The server's `servicesEditable`: an editable status and no recorded payment - an invoiced
+    // fixture stands for a paid one here unless it says otherwise.
+    servicesEditable: ["scheduled", "checked_in", "in_service", "completed"].includes(status) && !invoice.invoiceId,
     ...invoice
   };
 
@@ -96,6 +99,9 @@ function client(status: string, invoice: Record<string, unknown> = {}): Module {
     const state = { me: { employeeId: null }, clientProfile: null, pets: [] };
     const appointmentBillingChip = () => ({ tone: "neutral", label: "Unbilled" });
     const appointmentStatusLabel = (status) => String(status || "").replaceAll("_", " ");
+    // The surface head reads the lifecycle through these two (tests/ui/qa-round3.test.ts holds them).
+    const appointmentReadyForPickup = () => false;
+    const appointmentLifecycleLabel = (item) => appointmentStatusLabel(item?.status);
     const appointmentLockNoteMarkup = () => "";
     const appointmentActivityMarkup = () => "<!--activity-->";
     const appointmentLifecycleMarkup = () => "<!--lifecycle-->";
@@ -357,26 +363,26 @@ describe("the footer separates what the visit is waiting for from everything els
     const expected: Record<string, { lead: string[]; utility: string[] }> = {
       scheduled: {
         lead: ["appointment-check-in"],
-        utility: ["appointment-cancel", "appointment-no-show", "appointment-book-again", "appointment-ticket"]
+        utility: ["appointment-cancel", "appointment-no-show", "appointment-book-again"]
       },
       checked_in: {
         lead: ["appointment-ready", "appointment-take-payment"],
-        utility: ["appointment-book-again", "appointment-ticket"]
+        utility: ["appointment-book-again"]
       },
       in_service: {
         lead: ["appointment-complete"],
-        utility: ["appointment-book-again", "appointment-ticket"]
+        utility: ["appointment-book-again"]
       },
       // THE SHEET IS THE SAME QUIET UTILITY IN EVERY STATE (QA UX-13). It used to move to the
       // lead zone on a completed visit, so one control wore different weights on different visits.
       completed: {
         lead: ["appointment-take-payment"],
-        utility: ["appointment-book-again", "appointment-ticket"]
+        utility: ["appointment-book-again"]
       },
       // A CANCELLED VISIT LEADS WITH RESCHEDULE - booking it again is the one thing it is still
       // waiting for. Book Again and the sheet are utility (QA D8); there is no footer Close.
-      cancelled: { lead: ["appointment-reschedule"], utility: ["appointment-book-again", "appointment-ticket"] },
-      no_show: { lead: ["appointment-reschedule"], utility: ["appointment-book-again", "appointment-ticket"] }
+      cancelled: { lead: ["appointment-reschedule"], utility: ["appointment-book-again"] },
+      no_show: { lead: ["appointment-reschedule"], utility: ["appointment-book-again"] }
     };
     for (const status of appointmentStatuses) {
       const markup = client(status).markup();
@@ -412,7 +418,9 @@ describe("the footer separates what the visit is waiting for from everything els
     expect(zone(markup, "lead")).toEqual(["appointment-invoice"]);
     expect(control(markup, "appointment-invoice")).toContain("primary");
     expect(control(markup, "appointment-ticket")).not.toContain("primary");
-    // Book Again on a settled visit (QA D8), the sheet beside it, and no footer Close (QA UX-13).
-    expect(zone(markup, "utility")).toEqual(["appointment-book-again", "appointment-ticket"]);
+    // Book Again on a settled visit (QA D8), no footer Close (QA UX-13), and the sheet is the
+    // head's printer icon now, not a footer pill.
+    expect(zone(markup, "utility")).toEqual(["appointment-book-again"]);
+    expect(markup).toMatch(/<div class="surface-head-actions">.*?data-testid="appointment-ticket"/su);
   });
 });

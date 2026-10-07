@@ -53,6 +53,36 @@ test("a checked-in card offers Checkout in compact menu rows, and the preview st
   await expect(page.locator("#calendar-hover-preview")).toBeHidden();
 });
 
+// QA-CAL-08 · the card face reads like the book: strip (time, icon, code chip), pet, breed,
+// services - wrapped in a narrow lane, never ellipsized, and no client name on the face.
+test("an overlap lane's card keeps its code chip and wraps its pet instead of truncating it", async ({ page, request, tenant }) => {
+  const live = await createAppointment(request, tenant, { localStart: `${tenant.anchor}T12:30` });
+  const overlap = await request.post("/api/appointments", { headers: { "Idempotency-Key": crypto.randomUUID() }, data: {
+    locationId: tenant.locationId, customerId: tenant.customerId, petId: tenant.petId, employeeId: tenant.employeeId,
+    serviceIds: [tenant.serviceId], localStart: `${tenant.anchor}T13:00`, expectedLocationVersion: tenant.locationVersion,
+    overrideConflict: true, overrideReason: "e2e: deliberate overlap"
+  } });
+  const second = await overlap.json() as { id: string };
+  await login(page, tenant.ownerEmail);
+  await openCalendar(page);
+  await page.locator("#calendar-view-select").selectOption("day");
+  await revealAppointmentOnCalendar(page, live.id);
+  for (const id of [live.id, second.id]) {
+    const card = page.locator(`#calendar-list [data-appointment-id="${id}"]`).filter({ visible: true }).first();
+    await expect(card).toHaveAttribute("data-card-lanes", "2");
+    const chip = card.locator(".appointment-badge .badge-code");
+    await expect(chip).toBeVisible();
+    const [cardBox, chipBox] = [await card.boundingBox(), await chip.boundingBox()];
+    expect(chipBox!.x + chipBox!.width).toBeLessThanOrEqual(cardBox!.x + cardBox!.width);
+    const pet = card.locator(".appointment-pet");
+    await expect(pet).toHaveCSS("white-space", "normal");
+    await expect(pet).toHaveCSS("text-overflow", "clip");
+    await expect(card.locator(".appointment-breed")).toBeVisible();
+    await expect(card.locator(".calendar-open")).not.toContainText("Emma Johnson");
+    await expect(card.locator(".calendar-open")).toHaveAttribute("aria-label", /Emma Johnson/u);
+  }
+});
+
 test("a cancelled visit does not halve the live one it crosses", async ({ page, request, tenant }) => {
   const live = await createAppointment(request, tenant, { localStart: `${tenant.anchor}T12:30` });
   const overlap = await request.post("/api/appointments", { headers: { "Idempotency-Key": crypto.randomUUID() }, data: {

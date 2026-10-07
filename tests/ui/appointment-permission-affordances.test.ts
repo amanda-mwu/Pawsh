@@ -100,6 +100,9 @@ function appointment(status: string, extra: Record<string, unknown> = {}) {
     invoiceId: null, invoiceStatus: null,
     services: [{ serviceId: "s1", name: "Full groom", durationMinutes: 90, priceMinor: 6500 }],
     groomers: [{ id: "e1", displayName: "Alex" }],
+    // The server's `servicesEditable`: an editable status and no recorded payment - an invoiced
+    // fixture stands for a paid one here unless it says otherwise.
+    servicesEditable: ["scheduled", "checked_in", "in_service", "completed"].includes(status) && !extra.invoiceId,
     ...extra
   };
 }
@@ -125,6 +128,9 @@ function client(status = "scheduled", { railFails = "forbidden" as "forbidden" |
     const appointmentMoveAllowed = () => allowed("appointments.edit") && !appointmentsLocked();
     const appointmentBillingChip = () => ({ tone: "neutral", label: "Unbilled" });
     const appointmentStatusLabel = (status) => String(status || "").replaceAll("_", " ");
+    // The surface head reads the lifecycle through these two (tests/ui/qa-round3.test.ts holds them).
+    const appointmentReadyForPickup = () => false;
+    const appointmentLifecycleLabel = (item) => appointmentStatusLabel(item?.status);
     const appointmentLockNoteMarkup = () => "";
     const appointmentActivityMarkup = () => "<!--activity-->";
     const appointmentLifecycleMarkup = () => "<!--lifecycle-->";
@@ -279,14 +285,15 @@ describe("a control the VISIT does not allow stays absent", () => {
     // `PUT /api/appointments/:id/services` accepts `scheduled`, `checked_in` and `in_service`.
     // This used to offer the last two, so the status where adding a nail trim is most ordinary -
     // the client rings up before the visit - was the one with no way to do it.
-    for (const status of ["scheduled", "checked_in", "in_service"]) {
+    // Completed too, now: services stay editable until a payment is recorded.
+    for (const status of ["scheduled", "checked_in", "in_service", "completed"]) {
       const app = client(status);
       app.grant("calendar.view", "appointments.view", "appointments.edit", "appointments.cancel");
       expect(control(draw(app), "appointment-adjust-services"), status).not.toBeNull();
     }
 
-    // And nowhere else: the route refuses the other three outright.
-    for (const status of ["completed", "cancelled", "no_show"]) {
+    // And nowhere else: the route refuses the other two outright.
+    for (const status of ["cancelled", "no_show"]) {
       const app = client(status);
       app.grant("calendar.view", "appointments.view", "appointments.edit", "appointments.cancel");
       expect(control(draw(app), "appointment-adjust-services"), status).toBeNull();

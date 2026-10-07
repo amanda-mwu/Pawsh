@@ -14,6 +14,7 @@ import { appointmentStatuses, canEnterCheckout } from "@pawsh/domain";
  *
  *   `.week-slot` without `border:0`                         "a week slot draws no button border"
  *   the time painting past its box / the badge shrinking    "a narrow card keeps the start time and the whole badge"
+ *     or the strip wrapping onto a second line again
  *   cancelled visits back in the lane packing               "a cancelled visit does not take a lane from a live one"
  *   the "Now" tag back on the line                          "the Now tag sits in the time gutter"
  *   the card menu back to bordered 36px boxes               "the card menu is compact rows"
@@ -86,12 +87,18 @@ describe("the card strip", () => {
     const head = slice("  const [timeFrom,timeTo]=model.timeRangeCompact.split(\"–\");", "\n  const services=");
     expect(head).toContain('<span class="time-from">${escape(timeFrom)}</span>');
     expect(head).toContain('<span class="time-to">–${escape(timeTo)}</span>');
-    expect(styles).toContain(".appointment-block .appointment-time{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:clip}");
+    // QA-R3-02: the range is a one-line wrapping row, so an end that does not fit drops whole
+    // ("2:00", never "2:00–3:00 P"); the start and the chip never give way; the strip never wraps.
+    expect(styles).toContain(".appointment-block .appointment-time{display:flex;flex:0 1 auto;flex-wrap:wrap;min-width:0;height:1.3em;overflow:hidden;text-overflow:clip}");
+    expect(styles).toContain(".appointment-block .appointment-time>.time-from{flex:none}");
     expect(styles).toContain(".appointment-block .appointment-badges{flex:none}");
     expect(styles).toContain(".appointment-block .appointment-time>span{display:inline;overflow:visible}");
-    // Below 150px the end of the range and the plain notes icon go; the safety alert stays.
-    expect(styles).toContain("@container (max-width:150px){.appointment-block .appointment-time .time-to{display:none}.appointment-block .appointment-notes-trigger:not([data-alert]){display:none}}");
-    expect(styles).toContain(".appointment-block.density-brief>.calendar-open{min-width:min(50%,44px)}");
+    // The <100px chip-first wrap is gone: it drew chip / icon / "2:00–3:00 P" on three lines.
+    expect(styles).not.toContain(".appointment-head>.appointment-badges{order:-2}");
+    expect(styles).not.toMatch(/\.appointment-head\{flex-wrap:wrap\}/u);
+    // What a narrow strip gives up, in order; measured in tests/e2e/qa-pass-calendar.spec.ts.
+    expect(styles).toContain("@container (max-width:110px){.appointment-block .appointment-notes-trigger:not([data-alert]),.appointment-block .appointment-head .card-warning,.appointment-block .appointment-badge+.appointment-badge{display:none!important}}");
+    expect(styles).toContain("@container (max-width:84px){.appointment-block .appointment-notes-trigger{display:none!important}}");
   });
 });
 

@@ -485,9 +485,10 @@ test("an unsettled invoice from transaction history prints the bill and offers n
     await expect(invoiceTitle(page)).toHaveText(`Invoice #${unsettled.invoiceNumber}`);
     await expect(document_.getByTestId("invoice-print-invoice")).toBeVisible();
     await expect(document_.getByTestId("invoice-print-receipt")).toHaveCount(0);
-    // ABSENT, NOT DISABLED — which is a different answer from the one Send Receipt gets two
-    // controls along. There is no Receipt to disable here; there is no send CAPABILITY there.
-    await expect(document_.getByTestId("invoice-send-receipt")).toBeDisabled();
+    // ABSENT, NOT DISABLED, and so are Send Receipt and Ask for Review: an unsettled invoice offers
+    // no receipt actions at all (QA round 3) - they arrive together once the settlement completes.
+    await expect(document_.getByTestId("invoice-send-receipt")).toHaveCount(0);
+    await expect(document_.getByTestId("invoice-ask-review")).toHaveCount(0);
 
     await document_.getByTestId("invoice-print-invoice").click();
     await printFromPreview(page);

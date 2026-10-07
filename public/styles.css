@@ -203,6 +203,15 @@ button:focus-visible,a:focus-visible{outline:3px solid var(--coral);outline-offs
 
 /* One shared calendar preview and one shared appointment detail dialog. */
 #calendar-hover-preview.appointment-hover:not([hidden]){display:block;max-width:280px;pointer-events:none}#calendar-hover-preview .hover-summary{margin-bottom:0;padding-top:8px;border-top:1px solid var(--line)}
+/* QA-CAL-08 · The grid's hover reads as the book's: a dark card, white text, labels a step back
+   (#c9cfcb on --tooltip is ~11:1), the status as the card's own code chip. */
+#calendar-hover-preview.appointment-hover{border-color:var(--tooltip);background:var(--tooltip);color:#fff;line-height:1.4}
+#calendar-hover-preview.appointment-hover>div>span,#calendar-hover-preview.appointment-hover dt{color:#c9cfcb}
+#calendar-hover-preview p{margin:6px 0 0}
+#calendar-hover-preview .hover-status{justify-content:flex-start;align-items:center;gap:6px}
+#calendar-hover-preview .hover-status>span{font-size:12px;text-transform:none;letter-spacing:0}
+#calendar-hover-preview .hover-label{color:#c9cfcb}
+#calendar-hover-preview .hover-status .appointment-badge{color:#fff;font-size:10px;letter-spacing:.04em;box-shadow:0 0 0 1px rgba(255,255,255,.45)}
 .detail-warning{color:#b3261e}
 
 /* ── Pawsh operational density pass ───────────────────────────────────────────
@@ -294,7 +303,7 @@ button:disabled{cursor:not-allowed;opacity:.55}
 /* THE EDIT GLYPH IS A STROKED PATH IN currentColor, so it takes the button's ink in every state
    and can be sized to the box: 16px of a 30px button, where the U+270E font glyph it replaces
    drew perhaps 9px of thin ink and read as a smudge. */
-.icon-action .edit-glyph{display:block;width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.icon-action .edit-glyph,.icon-action .print-glyph{display:block;width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 /* A DISABLED ICON BUTTON IS DRAWN IN MUTED INK AT FULL OPACITY, not in its live colour at 55%.
    The global `button:disabled{opacity:.55}` is right for a text button, whose word survives it;
    on a 16px glyph it left the brand green at 2.4:1 against white - a mark you could not be sure
@@ -854,41 +863,30 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
 .appointment-quick-actions .calendar-action-trigger{position:relative;width:14px;height:14px;min-height:0;border-color:transparent;border-radius:var(--radius-sm);background:transparent;color:var(--muted);font-size:12px}
 .appointment-quick-actions .calendar-action-trigger:hover,.appointment-quick-actions .calendar-action-trigger[aria-expanded="true"]{border-color:transparent;background:var(--surface-2);color:var(--ink)}
 .appointment-quick-actions .calendar-action-popover{top:16px}
-/* Pet and breed share one line, so the breed costs height on no card and can come back at short
-   density. The parentheses are presentational: .appointment-breed keeps the bare breed as text.
-   THE NAME NEVER GIVES UP A PIXEL WHILE THE BREED HAS ONE TO GIVE. As `flex:0 1 auto` the name
-   took its share of every shrink - a fifth of a pixel on a 136px phone lane - and a fifth of a
-   pixel is enough to turn "Rocky" into "Roc…". It is `flex-shrink:0` with the lane as its cap,
-   so the breed absorbs the squeeze and the name is only clipped when it alone does not fit. */
-.appointment-identity{display:flex!important;align-items:baseline;gap:3px;min-width:0}
-.appointment-block .appointment-pet{flex:0 0 auto;min-width:0;max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:12px;line-height:1.2}
+/* QA-CAL-08 · THE CARD READS LIKE THE BOOK. The pet in bold, the breed on its own line, then the
+   services. A narrow lane WRAPS every line instead of ellipsizing it, and the card clips at its own
+   bottom edge - it is never drawn taller than its visit. The parentheses are presentational:
+   .appointment-breed keeps the bare breed as text. */
+.appointment-identity{display:flex!important;flex-direction:column;min-width:0}
+/* `text-overflow:clip` on all three: `.week-appointment strong,.week-appointment span` still says
+   `ellipsis`, and a wrapping name must never end in "…" where its last line meets the card's edge. */
+.appointment-block .appointment-pet{min-width:0;white-space:normal;overflow-wrap:anywhere;text-overflow:clip;font-size:12px;line-height:1.2}
 .appointment-block.density-short .appointment-pet{font-size:11px;line-height:1.1}
 .day-appointment .appointment-pet{font-size:13px}
-.appointment-block .appointment-breed{flex:0 20 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--muted);font-size:var(--card-text)}
+.appointment-block .appointment-breed{display:block;min-width:0;white-space:normal;overflow-wrap:anywhere;text-overflow:clip;color:var(--muted);font-size:var(--card-text);line-height:1.2}
 .appointment-block.density-short .appointment-breed{display:block!important}
 .appointment-block .appointment-breed::before{content:"("}
 .appointment-block .appointment-breed::after{content:")"}
 /* The one base groom reads in ink; add-ons are greyed back so the card answers "what is this
    booking" before "what was added to it". */
 .appointment-block .appointment-services{display:flex!important;flex-direction:column;min-width:0;font-size:var(--card-text);line-height:1.25}
-.appointment-block .service-primary,.appointment-block .service-addon{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.appointment-block .service-primary,.appointment-block .service-addon{min-width:0;white-space:normal;overflow-wrap:anywhere;text-overflow:clip}
 .appointment-block .service-primary{color:var(--ink)}
 .appointment-block .service-addon{color:var(--muted)}
-.appointment-client{margin-top:auto;padding-top:2px;color:var(--ink);font-size:var(--card-text);font-weight:600}
-.appointment-block.density-short .appointment-client,.appointment-block.density-medium .appointment-client{display:none}
-/* BRIEF IS ONE LINE. A visit of 25 minutes or less is painted shorter than the strip plus a line
-   beneath it at every density, so the strip gives up its own row: it loses its paper background and
-   rule and sits inline before the pet name, and everything below the name is gone. The pet name is
-   what a sliver has to say, so the time is the part that shrinks when the two compete for width. */
-.appointment-block.density-brief{flex-direction:row;align-items:center}
-.appointment-block.density-brief>.appointment-head{flex:0 3 auto;min-width:0;padding:0 0 0 4px;background:transparent;border-bottom:0}
-.appointment-block.density-brief .appointment-time{flex:0 1 auto}
-/* `width:auto` undoes the button's `width:100%`, which as a flex basis had squeezed the time to
-   nothing beside it; the name grows into what the time leaves, never the other way round. */
-.appointment-block.density-brief>.calendar-open{flex:1 1 0;width:auto;min-width:0;justify-content:center;padding:0 16px 0 4px}
-.appointment-block.density-brief .appointment-breed,.appointment-block.density-brief .appointment-badges,.appointment-block.density-brief .appointment-services,.appointment-block.density-brief .appointment-client,.appointment-block.density-brief .multi-groomer{display:none!important}
+/* A brief card (25 minutes or less) has the same anatomy: the strip never gives up its row, so at
+   that height the strip IS the card - time, notes icon and status code - and the rest clips. */
+.appointment-block>.appointment-head{flex:none}
 .appointment-block.density-brief .appointment-pet{font-size:11px;line-height:1.1}
-.appointment-block.density-brief .appointment-quick-actions{top:50%;transform:translateY(-50%)}
 /* Already clipped today by the card's overflow; stated explicitly so the flex body cannot start
    reserving height for it. */
 .appointment-block>.appointment-accessible-safety{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
@@ -908,7 +906,6 @@ dialog{border-radius:var(--radius-lg);max-height:min(88vh,860px)}
   .appointment-quick-actions{top:-3px;right:-3px}
   .appointment-notes-trigger svg{width:14px;height:14px}
   .appointment-notes-trigger::after,.appointment-quick-actions .calendar-action-trigger::after{inset:-11px}
-  .appointment-block.density-brief .appointment-quick-actions{top:50%}
 }
 
 /* Payment badges. PAI/UNP replace the lifecycle badge once an appointment has an
@@ -3692,6 +3689,8 @@ input[type="password"]::-ms-reveal,input[type="password"]::-ms-clear{display:non
 .calendar-block[data-draggable="true"],.calendar-block[data-draggable="true"] .calendar-block-open{cursor:grab}
 body.calendar-dragging .calendar-block[data-draggable="true"],body.calendar-dragging .calendar-block[data-draggable="true"] .calendar-block-open{cursor:grabbing}
 .calendar-block.dragging{z-index:30;pointer-events:none;opacity:.92;box-shadow:0 10px 24px rgba(32,37,34,.28)}
+/* A held finger lifts the band, so the hold must not select its label or raise the callout. */
+.calendar-block[data-draggable="true"]{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
 @media(hover:none){.calendar-block[data-draggable="true"],.calendar-block[data-draggable="true"] .calendar-block-open{cursor:pointer}}
 
 /* == The phone shell ==
@@ -3969,45 +3968,47 @@ body.calendar-dragging .calendar-block[data-draggable="true"],body.calendar-drag
 
 /* RC-04 · THE STRIP NEVER PAINTS OVER ITSELF. The time used to be fixed and `overflow:visible`,
    so in a narrow card it ran on under the notes icon and the badge, and the badge was the part
-   that shrank - "S…" and "C…" say nothing. The order of what gives way is now: the END of the
-   range first (dropped below 150px, see the container rule after the badge words), then the
-   time clips at its own edge; the badge is never cut and the start time is the last thing to go.
-   The badge carries the word and the three-letter code both, and the card says which is drawn: a
-   brief or short card (30 minutes or less, one strip and one line) has room for the code only; a
-   medium or long card spells the status out - unless the card itself is narrower than 150px, as
-   it is in a week lane split between groomers. The card is already a size container, so the width
-   is the card's own and not the column's. */
-.appointment-block .appointment-time{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:clip}
+   that shrank - "S…" and "C…" say nothing. The time is the one elastic item: it clips at its own
+   edge, and the status chip is never cut. Every card wears the three-letter code (QA-CAL-08) -
+   a 15-minute card and a week lane alike; the word is the chip's accessible name and the hover's. */
+/* QA-R3-02 · THE STRIP IS ONE LINE AND NOTHING IN IT IS CUT MID-CHARACTER. The range is two
+   halves on a one-line wrapping row: when the end ("–3:00 PM") does not fit it drops to the
+   hidden second line WHOLE, so the strip reads "2:00" rather than "2:00–3:00 P". The start never
+   gives way. The chip stays beside it; the strip never wraps onto a second or third line. */
+.appointment-block .appointment-time{display:flex;flex:0 1 auto;flex-wrap:wrap;min-width:0;height:1.3em;overflow:hidden;text-overflow:clip}
+.appointment-block .appointment-time>.time-from{flex:none}
 .appointment-block .appointment-badges{flex:none}
-.appointment-block .appointment-badge{white-space:nowrap}
-.appointment-badge .badge-word,.appointment-badge .badge-code{display:none}
-.density-medium .appointment-badge .badge-word,.density-long .appointment-badge .badge-word{display:inline}
-.density-brief .appointment-badge .badge-code,.density-short .appointment-badge .badge-code{display:inline}
-/* Written at the density rules' own specificity: a bare `.appointment-badge .badge-word` inside
-   the container query is one class short of `.density-medium .appointment-badge .badge-word`
-   and loses to it, which drew "Scheduled SCH" side by side on every week lane at the 150px
-   floor. */
-@container (max-width:150px){.density-medium .appointment-badge .badge-word,.density-long .appointment-badge .badge-word{display:none}.density-medium .appointment-badge .badge-code,.density-long .appointment-badge .badge-code{display:inline}}
-/* QA-CAL-02 · A NARROW CARD (a week lane, an overlap lane, a phone lane) keeps the start time, the
-   pet name and the whole badge code. The end of the range goes, and so does the plain notes icon -
-   the safety-alert one stays, because that is the one note that has to read before a tap. A brief
-   card's name is given a floor beside its strip, or a strip that still did not fit took the whole
-   line and left the name zero pixels wide. */
+.appointment-block .appointment-badge{flex:none;white-space:nowrap}
+.appointment-badge .badge-word{display:none}
+.appointment-badge .badge-code{display:inline}
+/* QA-CAL-02 · A NARROW CARD (a week lane, an overlap lane, a phone lane) gives things up in a
+   fixed order so the start time and the status chip are what is left, readable: the plain notes
+   icon, the rabies "!" and a second chip - the "UNP" beside a "RDY" - at 110px, then the
+   safety-alert icon at 84px. The hover and the visit carry all of it; the strip only has to say
+   when and what state. */
+@container (max-width:110px){.appointment-block .appointment-notes-trigger:not([data-alert]),.appointment-block .appointment-head .card-warning,.appointment-block .appointment-badge+.appointment-badge{display:none!important}}
+@container (max-width:84px){.appointment-block .appointment-notes-trigger{display:none!important}}
 /* `.week-appointment span` makes every span in a card a clipped block; the range's two halves are
    one line of text. */
 .appointment-block .appointment-time>span{display:inline;overflow:visible}
-@container (max-width:150px){.appointment-block .appointment-time .time-to{display:none}.appointment-block .appointment-notes-trigger:not([data-alert]){display:none}}
-/* An overlap lane on a phone is 60-75px: the rabies "!" goes too (the visit's own surface states
-   it), so the start time and the badge code are what the strip holds. */
-@container (max-width:90px){.appointment-block .appointment-head .card-warning{display:none!important}}
 /* Phones hide the card menu, so the strip's right reserve for its trigger is given back. */
 @media(max-width:580px){.appointment-block>.appointment-head{padding-right:4px}}
-.appointment-block.density-brief>.calendar-open{min-width:min(50%,44px)}
 /* QA-CAL-03 · A cancelled or no-show visit crossing a live one is drawn behind it, pushed to the
    lane's right edge, so the live card keeps the full lane and the struck-through one still shows
    the 16px sliver the live card's own right reserve leaves - its menu trigger sits in it. */
 .week-appointment[data-card-behind]{z-index:1}
 .week-appointment[data-card-behind]:not([data-card-lanes]){justify-self:end;margin-left:0;margin-right:3px}
+/* QA-R3-03 · THAT RESERVE IS THE SLIVER'S AND NOBODY ELSE'S. Every card stopped 16px short of its
+   lane for a cancelled visit that, on most days, was not there - a lone visit sat beside a strip of
+   white. Only a live card with one behind it (`data-card-covers`) keeps the reserve; any other
+   unstacked card takes its whole lane, inside the same 3px margins. */
+.week-appointment:not([data-card-lanes]):not([data-card-covers]):not([data-card-behind]){width:calc(100% - 6px)}
+/* The whole card opens the visit (not only the body under the strip), so the whole card says so. */
+.appointment-block:not([data-draggable="true"]){cursor:pointer}
+/* QA-R3-04 · Ready for pickup is a label over `completed`, so its chip wears the completed token. */
+.appointment-badge.badge-ready{background:var(--status-completed)}
+.appointment-status-chips{display:inline-flex;align-items:center;gap:4px}
+.appointment-status-chips .appointment-badge{padding:2px 4px;font-size:10px}
 /* QA-CAL-05 · THE CARD MENU IS A MENU, NOT A STACK OF BUTTONS. Five 36px bordered boxes 5px apart
    ran to 216px for "Check in, View, Move, Cancel, No show". The rows touch, carry no border, and
    take the surface tint on hover/focus; the terminal actions are set off by one rule. A pointer
@@ -4309,3 +4310,26 @@ dialog.receipt-document::backdrop{background:rgba(32,37,34,.55)}
 /* A disabled card-menu item says why in a line a touch screen can see, like the New menu's. */
 .calendar-action-popover .calendar-action-reason{display:block;padding:0 10px 6px;color:var(--muted);font-size:11px;line-height:1.35}
 @media(pointer:coarse){.receipt-document-foot>.primary{min-height:40px}}
+/* QA-R3-05 · MESSAGES ON A PHONE IS A LIST, THEN A CLIENT. The ≤900/≤580px `aside` rules are the
+   app sidebar's, and they reached the two panes that are also <aside>s: the list pane became a
+   two/three-column grid, so the client list was squeezed into a ~100px column beside the search
+   and the filter tabs were clipped. Here the panes are plain blocks again: search and the tabs
+   (scrolling sideways, never clipped) full width on top, the list full width below; choosing a
+   client swaps the list for the thread and the client's details, with an arrow back. */
+.message-back{display:none}
+@media(max-width:700px){
+  .messages-workspace>aside{display:block;width:auto;max-width:none;height:auto;padding:12px;grid-template-columns:none}
+  .message-list-pane .search{display:block;width:100%;max-width:none}
+  .message-list-pane .search input{width:100%}
+  .message-filters{flex-wrap:nowrap;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none}
+  .message-filters button{flex:none}
+  .message-client-list{display:grid;width:100%}
+  .messages-workspace:not(.is-client-open) .message-thread,.messages-workspace:not(.is-client-open) .message-context{display:none}
+  .messages-workspace.is-client-open .message-list-pane{display:none}
+  .message-thread>header{display:flex;align-items:center;justify-content:flex-start;gap:8px}
+  .message-back{display:inline-grid;place-items:center;flex:none;width:var(--icon-btn,40px);height:var(--icon-btn,40px);padding:0;border:1px solid var(--line);border-radius:var(--radius-md,8px);background:var(--paper);color:var(--ink);font-size:18px}
+}
+/* The head's Print Ticket icon keeps the 44px touch floor every other control holds on a coarse
+   pointer. It is drawn at 44 rather than reaching it through an invisible hit area, because the
+   head's x sits right beside it and would take the overlap. */
+@media(pointer:coarse){.surface-head-print{min-width:44px;min-height:44px}}

@@ -123,7 +123,7 @@ test("a settled visit never leads with an Invoice the groomer cannot open", asyn
   await expect(invoice).not.toHaveClass(/\bprimary\b/);
   // Nothing disabled is promoted, and the sheet is the same utility secondary in every state
   // (QA UX-13), so this footer draws no primary at all.
-  await expect(detail(page).getByTestId("appointment-ticket")).toHaveClass(/\bsecondary\b/);
+  await expect(detail(page).locator(".surface-head [data-testid='appointment-ticket']")).toHaveAttribute("aria-label", "Print Ticket");
   await expect(detail(page).locator("footer .primary")).toHaveCount(0);
 });
 

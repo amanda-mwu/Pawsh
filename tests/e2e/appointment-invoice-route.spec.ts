@@ -92,11 +92,11 @@ test("a settled appointment opens its own Invoice from the appointment footer",
     const invoiceControl = detail(page).getByTestId("appointment-invoice");
     await expect(invoiceControl).toBeVisible();
     await expect(invoiceControl).toBeEnabled();
-    await expect(invoiceControl).toHaveText("Invoice");
-    // The Ticket is still here, still one button away, and no longer the primary control - the
-    // operator opening a settled visit came for the money document.
+    await expect(invoiceControl).toHaveText("View Invoice");
+    // The Ticket is still one press away - the printer icon in the head - and never the primary:
+    // the operator opening a settled visit came for the money document.
     await expect(detail(page).getByTestId("appointment-ticket")).toBeVisible();
-    await expect(detail(page).getByTestId("appointment-ticket")).toHaveClass(/secondary/u);
+    await expect(detail(page).locator(".surface-head [data-testid='appointment-ticket']")).toHaveAttribute("aria-label", "Print Ticket");
     await expect(invoiceControl).toHaveClass(/primary/u);
 
     // ---- The Invoice, in the one workspace that owns it ---------------------------------------

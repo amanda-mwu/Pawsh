@@ -365,7 +365,9 @@ describe("a cancelled or no-show visit reads as one", () => {
 
   it("the surface head wears the cards' badge and, for a visit that will not happen, says so in a banner", () => {
     const head = slice("  const head=`<header class=\"surface-head\">`", "\n  // The rail is clientSummaryMarkup() verbatim");
-    expect(head).toContain('class="appointment-status appointment-badge badge-${escape(item.status)}" data-testid="appointment-status">${escape(appointmentStatusLabel(item.status))}</span>');
+    // The badge reads the lifecycle as the desk says it: Ready for pickup over an unsettled
+    // completed visit (tests/ui/qa-round3.test.ts holds the label itself).
+    expect(head).toContain('class="appointment-status appointment-badge badge-${escape(appointmentReadyForPickup(item)?"ready":item.status)}" data-testid="appointment-status">${escape(appointmentLifecycleLabel(item))}</span>');
     expect(head).toContain('data-testid="appointment-status-banner"');
     expect(head).toContain('["cancelled","no_show"].includes(item.status)');
     // Inside the <header>, where the shell's three declared rows are not disturbed by a fourth child.
@@ -688,13 +690,11 @@ describe("the card head", () => {
   it("a card badge carries the word and the code", () => {
     const head = slice("  const badges=`<span class=\"appointment-badges\">", "\n  const head=");
     expect(head).toContain('<span class="badge-word">${escape(badge.label)}</span><span class="badge-code">${badge.code}</span>');
-    expect(rule(".density-medium .appointment-badge .badge-word,.density-long .appointment-badge .badge-word")).toBe("display:inline");
-    expect(rule(".density-brief .appointment-badge .badge-code,.density-short .appointment-badge .badge-code")).toBe("display:inline");
-    // A card narrower than 150px - a week lane split between groomers - falls back to the code.
-    // The container rule must carry the density prefix, or it is a class short of the rule it
-    // overrides and the card draws the word AND the code.
-    expect(styles).toContain("@container (max-width:150px){.density-medium .appointment-badge .badge-word,.density-long .appointment-badge .badge-word{display:none}.density-medium .appointment-badge .badge-code,.density-long .appointment-badge .badge-code{display:inline}}");
-    expect(styles).not.toMatch(/@container \(max-width:150px\)\{\.appointment-badge \.badge-word/u);
+    // QA-CAL-08: every card draws the three-letter code, whatever its density or width; the word
+    // stays in the DOM as the chip's text for automation, and is the chip's accessible name.
+    expect(rule(".appointment-badge .badge-word")).toBe("display:none");
+    expect(rule(".appointment-badge .badge-code")).toBe("display:inline");
+    expect(styles).not.toMatch(/\.density-(medium|long) \.appointment-badge \.badge-word/u);
   });
 
   it("the strip never paints over itself, and the badge is never the part that gives way", () => {
@@ -702,7 +702,7 @@ describe("the card head", () => {
     // past its own box. It clips at its edge, a narrow card drops the END of the range first,
     // and the badge keeps its whole code. The convergence rule still wins the cascade.
     const elastic = styles.indexOf(".appointment-block .appointment-time{flex:1 1 auto");
-    const bounded = styles.indexOf(".appointment-block .appointment-time{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:clip}");
+    const bounded = styles.indexOf(".appointment-block .appointment-time{display:flex;flex:0 1 auto;flex-wrap:wrap;min-width:0;height:1.3em;overflow:hidden;text-overflow:clip}");
     expect(bounded).toBeGreaterThan(elastic);
     expect(styles).toContain(".appointment-block .appointment-badges{flex:none}");
     expect(styles).not.toContain(".appointment-block .appointment-time{flex:0 0 auto;overflow:visible");

@@ -62,9 +62,10 @@ test("Take Payment records, toasts, throws nothing, and the voided invoice can b
     await expect(take).toBeVisible();
     await expect(take).toHaveClass(/\bprimary\b/u);
     await expect(invoiceSurface(page).locator("footer .primary")).toHaveCount(1);
-    // The not-built controls are utility, and the Receipt sentence is gone with the Receipt.
-    await expect(invoiceSurface(page).locator(".surface-foot-utility [data-testid='invoice-send-receipt']")).toBeDisabled();
-    await expect(invoiceSurface(page).getByTestId("invoice-unavailable-note")).not.toContainText("Print the Receipt");
+    // A reopened bill offers no receipt actions, and their sentence goes with them (QA round 3).
+    await expect(invoiceSurface(page).getByTestId("invoice-send-receipt")).toHaveCount(0);
+    await expect(invoiceSurface(page).getByTestId("invoice-ask-review")).toHaveCount(0);
+    await expect(invoiceSurface(page).getByTestId("invoice-unavailable-note")).toHaveCount(0);
 
     await take.click();
     await expect(checkoutSurface(page)).toBeVisible();

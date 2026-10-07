@@ -247,6 +247,9 @@ function workList(status = "scheduled", extra: Record<string, unknown> = {}): Wo
     status, version: 4, notes: null, operationalNotes: null,
     invoiceId: null, invoiceStatus: null, invoiceBalanceMinor: 0,
     services: lines(), groomers: [{ id: "e1", displayName: "Alex" }],
+    // The server's `servicesEditable`: an editable status and no recorded payment - an invoiced
+    // fixture stands for a paid one here unless it says otherwise.
+    servicesEditable: ["scheduled", "checked_in", "in_service", "completed"].includes(status) && !extra.invoiceId,
     ...extra
   };
   const prelude = `
@@ -259,6 +262,9 @@ function workList(status = "scheduled", extra: Record<string, unknown> = {}): Wo
     const appointmentMoveAllowed = () => allowed("appointments.edit");
     const appointmentBillingChip = () => ({ tone: "neutral", label: "Unbilled" });
     const appointmentStatusLabel = (status) => String(status || "").replaceAll("_", " ");
+    // The surface head reads the lifecycle through these two (tests/ui/qa-round3.test.ts holds them).
+    const appointmentReadyForPickup = () => false;
+    const appointmentLifecycleLabel = (item) => appointmentStatusLabel(item?.status);
     const appointmentLockNoteMarkup = () => "";
     const appointmentActivityMarkup = () => "<!--activity-->";
     const appointmentLifecycleMarkup = () => "<!--lifecycle-->";
@@ -365,22 +371,22 @@ describe("the work list states each service as it stands for this visit", () => 
     expect(opening).not.toMatch(/edit_all_staff/u);
   });
 
-  it("withholds the pencil where the route never accepts the write, and greys it once the visit is billed", () => {
-    for (const status of ["completed", "cancelled", "no_show"]) {
+  it("withholds the pencil where the route never accepts the write, and greys it once a payment is recorded", () => {
+    for (const status of ["cancelled", "no_show"]) {
       const app = workList(status);
       app.grant("appointments.edit");
       const markup = draw(app);
       expect(control(markup, "appointment-service-edit", "l1"), status).toBeNull();
       expect(control(markup, "appointment-adjust-services"), status).toBeNull();
     }
-    // BUILD IT OR GREY IT OUT: once invoiced the pencil and + Add service stay, disabled, and the
-    // reason is a visible line rather than a title alone.
-    const billed = workList("checked_in", { invoiceId: "inv-1", invoiceStatus: "open" });
+    // BUILD IT OR GREY IT OUT: once a payment is recorded the pencil and + Add service stay,
+    // disabled, and the reason is a visible line rather than a title alone.
+    const billed = workList("checked_in", { invoiceId: "inv-1", invoiceStatus: "partially_paid", servicesEditable: false });
     billed.grant("appointments.edit");
     const markup = draw(billed);
     expect(control(markup, "appointment-service-edit", "l1")).toContain("disabled");
     expect(control(markup, "appointment-adjust-services")).toContain("disabled");
-    expect(markup).toContain('data-testid="appointment-services-locked">Services are locked once the visit is invoiced.</p>');
+    expect(markup).toContain('data-testid="appointment-services-locked">Services are locked once a payment is recorded. Void the payment to change them.</p>');
   });
 });
 

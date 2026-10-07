@@ -256,7 +256,7 @@ test("a terminal appointment offers only what still means something", async ({
   // What the state decides is the PRIMARY SLOT: the one thing a cancelled visit is still waiting
   // for is to be booked again, so Reschedule leads for an owner; the head's x is the way out.
   await expect(page.getByTestId("appointment-ticket")).toBeVisible();
-  await expect(page.getByTestId("appointment-ticket")).toHaveClass(/secondary/);
+  await expect(page.locator(".surface-head [data-testid='appointment-ticket']")).toHaveAttribute("aria-label", "Print Ticket");
   await expect(page.getByTestId("appointment-reschedule")).toHaveClass(/primary/);
   // The SERVICE note is closed on a cancelled visit - it is written while a dog is on the table
   // - so it is text rather than a field. The APPOINTMENT note is a different field with no

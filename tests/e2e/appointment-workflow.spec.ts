@@ -204,7 +204,7 @@ test("one ticket action, and no second route to the same document",
     await expect(page.getByTestId("appointment-ticket-print")).toHaveCount(0);
     const ticket = at(page, "appointment-ticket");
     await expect(ticket).toBeVisible();
-    await expect(ticket).toHaveText("Print Ticket");
+    await expect(ticket).toHaveAttribute("aria-label", "Print Ticket");
 
     await ticket.click();
     await expect(page.getByTestId("ticket-document")).toBeVisible();

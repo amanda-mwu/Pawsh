@@ -491,7 +491,7 @@ test("@responsive a paid visit's services are greyed with the reason; a schedule
     await expect(detail(page).getByTestId("appointment-service-edit").first()).toBeDisabled();
     // Said where a finger can read it, not only in a title.
     await expect(detail(page).getByTestId("appointment-services-locked"))
-      .toHaveText("Services are locked once the visit is invoiced.");
+      .toHaveText("Services are locked once a payment is recorded. Void the payment to change them.");
     await expect(detail(page).getByTestId("appointment-services-locked")).toBeVisible();
     await detail(page).locator("[data-surface-close]").click();
 

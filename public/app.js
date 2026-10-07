@@ -72,6 +72,8 @@ function resetTenantState() {
   resetBusinessWorkspace();
   petCoatColors = [];
   dismissedAgreementBanners.clear();
+  // Where the calendar was scrolled, and which period it already revealed, belong to the session.
+  resetCalendarReveal();
 }
 let customerSearchSequence = 0;
 let calendarDetailOrigin = null;
@@ -1016,7 +1018,10 @@ document.addEventListener("click",event=>{
 function appointmentHtml(item) {
   const time = schedulingTime(item);
   const customer = `${clientName(item)}`;
-  return `<article class="appointment" data-testid="appointment" data-appointment-id="${item.id}"><time>${time}</time><div><span class="pet">${escape(petName({petName:item.petName}))}</span><small>${escape(customer)} · ${escape(item.employeeName)}</small>${safetyContext(item)}</div><div class="appointment-actions"><span class="badge ${item.status}">${escape(appointmentStatusLabel(item.status))}</span>${calendarAction(item)}</div></article>`;
+  // The lifecycle in words ("Ready for pickup" over an unsettled completed visit) and, once there
+  // is an invoice, the card's own payment chip beside it - the row says both, as the card does.
+  const payment = item.invoiceStatus ? appointmentBadges(item).at(-1) : null;
+  return `<article class="appointment" data-testid="appointment" data-appointment-id="${item.id}"><time>${time}</time><div><span class="pet">${escape(petName({petName:item.petName}))}</span><small>${escape(customer)} · ${escape(item.employeeName)}</small>${safetyContext(item)}</div><div class="appointment-actions"><span class="appointment-status-chips"><span class="badge ${item.status}">${escape(appointmentLifecycleLabel(item))}</span>${payment?`<span class="appointment-badge badge-${escape(payment.variant)}" role="img" aria-label="${escape(payment.label)}">${escape(payment.code)}</span>`:""}</span>${calendarAction(item)}</div></article>`;
 }
 function renderAppointments() {
   renderCalendar();
@@ -1061,9 +1066,10 @@ const ADD_ON_SERVICE_CATEGORIES=new Set(["DOG_ADDON","A_LA_CARTE"]);
 function appointmentServiceSplit(model){
   const categories=new Map(state.services.map(service=>[service.id,service.category]));
   const entries=model.serviceSnapshots.map((service,index)=>({index,name:service.name,duration:Number(service.durationMinutes)||0,addOn:ADD_ON_SERVICE_CATEGORIES.has(categories.get(service.serviceId)||"")}));
-  if(!entries.length)return {primary:"",addOns:[]};
+  if(!entries.length)return {primary:"",addOns:[],addOnOnly:false};
   const primary=[...entries].sort((a,b)=>Number(a.addOn)-Number(b.addOn)||b.duration-a.duration||a.index-b.index)[0];
-  return {primary:primary.name,addOns:entries.filter(entry=>entry!==primary).map(entry=>entry.name)};
+  // A visit with no full service at all - a nail trim, an ear clean - is drawn as its strip alone.
+  return {primary:primary.name,addOns:entries.filter(entry=>entry!==primary).map(entry=>entry.name),addOnOnly:entries.every(entry=>entry.addOn)};
 }
 // Pawsh has no appointment confirmation flag and /api/appointments carries no invoice, so the card
 // badge reports the one state the API can actually back: the appointment lifecycle. An unknown
@@ -1073,21 +1079,30 @@ const APPOINTMENT_BADGES={scheduled:["SCH","Scheduled"],checked_in:["CHK","Check
 // chip, hover card - from the table above, which mirrors `appointmentStatusBadges` in
 // packages/domain/src/labels.ts. Sentence case, so no stylesheet has to capitalise it.
 function appointmentStatusLabel(status){return APPOINTMENT_BADGES[status]?.[1]||String(status||"").replaceAll("_"," ");}
-function appointmentBadge(item){
-  // Once an appointment has been checked out its payment state is the signal a
-  // salon acts on, so it takes the badge. Before that there is no invoice and the
-  // lifecycle status is shown instead. Confirmed/unconfirmed has no data source yet.
+// READY FOR PICKUP IS THE LABEL OVER `completed` (no state of its own) for as long as the visit
+// has not been settled: the dog is done and is waiting to go home. A settled (or refunded) visit
+// has gone home, and its payment chip is the whole story.
+const READY_FOR_PICKUP_BADGE={code:"RDY",label:"Ready for pickup",variant:"ready"};
+const SETTLED_INVOICE_STATUSES=new Set(["paid","refunded","partially_refunded"]);
+function appointmentReadyForPickup(item){return item?.status==="completed"&&!SETTLED_INVOICE_STATUSES.has(item.invoiceStatus);}
+/** The lifecycle as a visit's surfaces say it: "Ready for pickup" over an unsettled completed visit. */
+function appointmentLifecycleLabel(item){return appointmentReadyForPickup(item)?READY_FOR_PICKUP_BADGE.label:appointmentStatusLabel(item?.status);}
+/**
+ * THE CHIPS A VISIT WEARS, in reading order. A settled invoice is the signal a salon acts on, so it
+ * is the only chip. An OPEN invoice is not: "UNP" alone hid that Daisy was finished and waiting, so
+ * the lifecycle chip stays and the unpaid marker sits beside it ("RDY UNP"). No invoice is the
+ * lifecycle alone. Confirmed/unconfirmed has no data source yet.
+ */
+function appointmentBadges(item){
   const invoiceStatus=item&&item.invoiceStatus;
-  if(invoiceStatus){
-    // Named one at a time rather than defaulted, so a refunded invoice cannot fall through into
-    // "Unpaid" - which would put a groomer's calendar card in front of somebody as money to chase.
-    if(invoiceStatus==="paid")return {code:"PAI",label:"Paid",variant:"paid"};
-    if(invoiceStatus==="refunded")return {code:"REF",label:"Refunded",variant:"refunded"};
-    if(invoiceStatus==="partially_refunded")return {code:"PRF",label:"Partly refunded",variant:"partially-refunded"};
-    return {code:"UNP",label:"Unpaid",variant:"unpaid"};
-  }
+  // Named one at a time rather than defaulted, so a refunded invoice cannot fall through into
+  // "Unpaid" - which would put a groomer's calendar card in front of somebody as money to chase.
+  if(invoiceStatus==="paid")return [{code:"PAI",label:"Paid",variant:"paid"}];
+  if(invoiceStatus==="refunded")return [{code:"REF",label:"Refunded",variant:"refunded"}];
+  if(invoiceStatus==="partially_refunded")return [{code:"PRF",label:"Partly refunded",variant:"partially-refunded"}];
   const badge=APPOINTMENT_BADGES[item&&item.status];
-  return badge?{code:badge[0],label:badge[1],variant:item.status}:null;
+  const lifecycle=appointmentReadyForPickup(item)?READY_FOR_PICKUP_BADGE:badge?{code:badge[0],label:badge[1],variant:item.status}:null;
+  return [lifecycle,invoiceStatus?{code:"UNP",label:"Unpaid",variant:"unpaid"}:null].filter(Boolean);
 }
 /**
  * THE PET'S CARE RECORD, ONE VOCABULARY FOR EVERY SURFACE. Five fields arrive on the appointment
@@ -1114,10 +1129,13 @@ function appointmentNoteEntries(item){
 }
 function appointmentPresentation(item){
   const start=new Date(item.startAt),end=new Date(item.endAt),zone=item.schedulingTimezone||schedulingZone(),formatTime=value=>formatPrefTime(value,zone),serviceSnapshots=item.services||[],services=serviceSnapshots.map(service=>service.name),groomers=(item.groomers||[]).map(groomer=>groomer.displayName),prices=serviceSnapshots.map(service=>service.priceMinor).filter(value=>value!==null&&value!==undefined);
-  return {id:item.id,date:appointmentLocalValue(item).slice(0,10),dateLabel:formatPrefWeekdayLongMonthDay(start,zone),timeRange:`${formatTime(start)}–${formatTime(end)}`,timeRangeCompact:compactTimeRange(start,end,zone),petName:item.petName,breed:item.breed||"",customerName:`${clientName(item)}`,services,serviceSnapshots,groomer:groomers[0]||item.employeeName,status:item.status.replace("_"," "),statusKey:item.status,rabiesNeeded:["not_provided","expires_before_appointment"].includes(item.rabiesAppointmentStatus),warning:item.safetyAlerts||"",careNotes:[["Safety alert",item.safetyAlerts,true],["Behavior",item.behaviorNotes,false],["Medical",item.medicalNotes,false],["Grooming",item.groomingPreferences,false],["Coat",item.coatNotes,false]].filter(([,value])=>typeof value==="string"&&value.trim().length>0).map(([kind,value,alarm])=>({kind,value:value.trim(),alarm})),durationMinutes:Math.max(1,Math.round((end-start)/60000)),totalPriceMinor:prices.length===serviceSnapshots.length?prices.reduce((sum,value)=>sum+Number(value),0):null};
+  return {id:item.id,date:appointmentLocalValue(item).slice(0,10),dateLabel:formatPrefWeekdayLongMonthDay(start,zone),timeRange:`${formatTime(start)}–${formatTime(end)}`,startTime:formatTime(start),createdLabel:item.createdAt?formatPrefDateAndTime(new Date(item.createdAt),zone):"",timeRangeCompact:compactTimeRange(start,end,zone),petName:item.petName,breed:item.breed||"",customerName:`${clientName(item)}`,services,serviceSnapshots,groomer:groomers[0]||item.employeeName,status:item.status.replace("_"," "),statusKey:item.status,rabiesNeeded:["not_provided","expires_before_appointment"].includes(item.rabiesAppointmentStatus),warning:item.safetyAlerts||"",careNotes:[["Safety alert",item.safetyAlerts,true],["Behavior",item.behaviorNotes,false],["Medical",item.medicalNotes,false],["Grooming",item.groomingPreferences,false],["Coat",item.coatNotes,false]].filter(([,value])=>typeof value==="string"&&value.trim().length>0).map(([kind,value,alarm])=>({kind,value:value.trim(),alarm})),durationMinutes:Math.max(1,Math.round((end-start)/60000)),totalPriceMinor:prices.length===serviceSnapshots.length?prices.reduce((sum,value)=>sum+Number(value),0):null};
 }
 function appointmentAccessibleName(model){return `${model.timeRange}, ${model.petName}${model.breed?`, ${model.breed}`:""}, ${model.customerName}, ${model.services.join(", ")}, ${model.status}`;}
-function appointmentHoverDetails(model){return `<div><span>Status</span><strong>${escape(appointmentStatusLabel(model.statusKey))}</strong></div><p><strong>${escape(model.dateLabel)}</strong><br>${escape(model.timeRange)}</p><dl><div><dt>Client</dt><dd>${escape(model.customerName)}</dd></div><div><dt>Pet</dt><dd>${escape(petName({petName:model.petName}))}${model.breed?` · ${escape(model.breed)}`:""}</dd></div><div><dt>Services</dt><dd>${model.services.map(escape).join("<br>")}</dd></div><div><dt>Groomer</dt><dd>${escape(model.groomer)}</dd></div></dl><p class="hover-summary"><strong>${model.durationMinutes} min${model.totalPriceMinor!==null?` · ${money(model.totalPriceMinor)}`:""}</strong></p>`;}
+// The hover is where a card is read in full, in the book's order: the status the card's chip
+// abbreviates (`badges`, from `appointmentBadges`), the day and start, the client (name only - never contact details), each pet with
+// its services, the groomer, and when the booking was made.
+function appointmentHoverDetails(model,badges){return `<div class="hover-status"><span>Status:</span><strong>${badges?.length?badges.map(badge=>`<span class="appointment-badge badge-${escape(badge.variant)}">${escape(badge.code)}</span> ${escape(badge.label)}`).join(" · "):escape(appointmentStatusLabel(model.statusKey))}</strong></div><p class="hover-when"><strong>${escape(model.dateLabel)}</strong> · ${escape(model.startTime)}</p><p><span class="hover-label">Client:</span> ${escape(model.customerName)}</p><p><span class="hover-label">Pet &amp; Services:</span><br>${escape(petName({petName:model.petName}))} : ${model.services.map(escape).join(", ")}</p><p>Groom by ${escape(model.groomer)}</p>${model.createdLabel?`<p class="hover-created">Created at ${escape(model.createdLabel)}</p>`:""}`;}
 /**
  * THE CARD'S OVERFLOW MENU, GATED THE WAY THE DETAIL SURFACE IS.
  *
@@ -1144,9 +1162,10 @@ function calendarAction(item){
   // merely switched off without saying by what or where, which is the half-answer this replaces.
   else if(item.status==="scheduled")controls.push(appointmentLockNoteMarkup("appointment-lock-note"));
   if(item.status==="scheduled"&&allowed("appointments.cancel")){controls.push(`<button type="button" role="menuitem" class="calendar-action terminal-action destructive" data-id="${item.id}" data-status="cancelled"${scoped}>Cancel appointment</button>`);controls.push(`<button type="button" role="menuitem" class="calendar-action terminal-action" data-id="${item.id}" data-status="no_show"${scoped}>No show</button>`);}
-  // Locked the moment an invoice exists, the same as the surface's + Add service: drawn disabled with
-  // the one reason rather than opening an editor whose Save the server will refuse.
-  if(["checked_in","in_service"].includes(item.status)&&allowed("appointments.edit"))controls.push(`<button type="button" role="menuitem" class="calendar-action service-action" data-id="${item.id}"${item.invoiceId?refusalAttributes(SERVICES_LOCKED_REASON):scoped}>Adjust services</button>${item.invoiceId?`<small class="calendar-action-reason">${escape(SERVICES_LOCKED_REASON)}</small>`:""}`);
+  // Offered from check-in through completed; locked once a payment is recorded, the same as the
+  // surface's + Add service: drawn disabled with the one reason rather than opening an editor whose
+  // Save the server will refuse.
+  if(["checked_in","in_service","completed"].includes(item.status)&&allowed("appointments.edit")&&(servicesEditable(item)||servicesLockedByPayment(item))){const locked=servicesLockedByPayment(item);controls.push(`<button type="button" role="menuitem" class="calendar-action service-action" data-id="${item.id}"${locked?refusalAttributes(SERVICES_LOCKED_REASON):scoped}>Adjust services</button>${locked?`<small class="calendar-action-reason">${escape(SERVICES_LOCKED_REASON)}.</small>`:""}`);}
   return `<div class="calendar-actions-menu"><button type="button" class="calendar-action-trigger" aria-label="Appointment actions for ${escape(petName({petName:item.petName}))}" aria-haspopup="menu" aria-expanded="false" data-appointment-menu="${item.id}">&#8943;</button><div class="calendar-action-popover" role="menu" hidden>${controls.join("")}</div></div>`;
 }
 // The hash fallback. The modulus stays at five whatever the palette grows to: widening it would
@@ -1166,39 +1185,39 @@ function groomerColorSlot(employeeId){
   const stored=state.employees.find(item=>item.id===employeeId)?.colorSlot;
   return Number.isInteger(stored)&&stored>=0&&stored<groomerPaletteSize?stored:groomerSlot(employeeId);
 }
-// Card anatomy: a white header strip (compact time, notes button, status badge, safety flags)
-// above the groomer-tinted body (pet + breed, base service, greyed add-ons, client). The strip is
-// kept shallow on purpose so a 30-minute card still shows the pet name underneath it.
-//
-// BRIEF IS ONE LINE. A card is painted as tall as its visit is long, and 25 minutes or less is not
-// tall enough for the strip AND a line beneath it at any density the grid offers - so a brief card
-// lays its time and its pet name side by side on the one line it has, and the pet name is never
-// the part that is clipped away.
-function appointmentCard(item,{day=false,style="",groomerId="",lane=0,lanes=1,behind=false}={}){
+// Card anatomy: a white header strip (compact time, notes button, status code, safety flags)
+// above the groomer-tinted body (pet, breed on its own line, base service, greyed add-ons). The
+// client and the care notes are not on the face: the hover card and the visit carry them, and the
+// accessible name still says the client. A narrow card wraps its text and clips at its own bottom
+// edge, so a card that is only as tall as its strip is the strip - time, icon and code.
+// Every visit gets the same face and its HEIGHT decides how much of it shows: a short add-on visit
+// (a 20-minute ear clean) is just its strip, a long one still says whose pet and what service - an
+// add-on visit forced to its strip at any height drew an hour-tall empty box.
+function appointmentCard(item,{day=false,style="",groomerId="",lane=0,lanes=1,behind=false,covers=false}={}){
   const model=appointmentPresentation(item),density=model.durationMinutes<=25?"brief":model.durationMinutes<=30?"short":model.durationMinutes<90?"medium":"long";
   // Only a scheduled appointment can be rescheduled, and only with appointments.edit, which is the
   // same gate the Move action carries - AND only where the scope allows it: a groomer without
   // `appointments.edit_all_staff` drags their own cards and nobody else's, which is what the
   // schedule route would say to the drop. Everything else renders exactly as before.
   const draggable=item.status==="scheduled"&&calendarDragAvailable()&&scopeAllows(item);
-  const split=appointmentServiceSplit(model),addOnLimit=density==="long"?3:density==="medium"?2:1,addOns=split.addOns.slice(0,addOnLimit),extra=split.addOns.length-addOns.length;
-  const badge=appointmentBadge(item),notes=appointmentNoteEntries(item);
+  // Every service is listed; the card's own height decides how many read, as the book does.
+  const split=appointmentServiceSplit(model),addOns=split.addOns;
+  const chips=appointmentBadges(item),notes=appointmentNoteEntries(item);
   const alerted=Boolean(item.safetyAlerts&&String(item.safetyAlerts).trim());
   const notesButton=notes.length?`<button type="button" class="appointment-notes-trigger" data-appointment-notes="${item.id}" data-testid="appointment-notes-trigger" ${alerted?'data-alert="true" ':""}aria-haspopup="dialog" aria-label="${alerted?"Safety alert and notes":"Notes"} for ${escape(petName({petName:model.petName}))}"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 3h8l4 4v14H7z"/><path d="M15 3v4h4"/><path d="M10 12.5h6"/><path d="M10 16.5h4"/></svg></button>`:"";
   // .appointment-status stays as the machine-readable full status the calendar suite reads; the
   // visible badge is a separate element so the assertion and the design never fight each other.
-  const badges=`<span class="appointment-badges"><small class="appointment-status" aria-hidden="true">${escape(model.status)}</small>${badge?`<span class="appointment-badge badge-${escape(badge.variant)}" role="img" aria-label="${escape(badge.label)}"><span class="badge-word">${escape(badge.label)}</span><span class="badge-code">${badge.code}</span></span>`:""}${model.rabiesNeeded?`<small class="card-warning" aria-label="Rabies needed">!</small>`:""}</span>`;
-  // The range is two spans so a narrow card can drop the end and keep the start whole; the
-  // element's text is still the whole range, so nothing that reads it changes.
+  const badges=`<span class="appointment-badges"><small class="appointment-status" aria-hidden="true">${escape(model.status)}</small>${chips.map(badge=>`<span class="appointment-badge badge-${escape(badge.variant)}" role="img" aria-label="${escape(badge.label)}"><span class="badge-word">${escape(badge.label)}</span><span class="badge-code">${badge.code}</span></span>`).join("")}${model.rabiesNeeded?`<small class="card-warning" aria-label="Rabies needed">!</small>`:""}</span>`;
+  // The range is two spans; a narrow card clips it at the strip's edge rather than the code chip.
   const [timeFrom,timeTo]=model.timeRangeCompact.split("–");
   const head=`<div class="appointment-head"><time class="appointment-time"><span class="time-from">${escape(timeFrom)}</span>${timeTo===undefined?"":`<span class="time-to">–${escape(timeTo)}</span>`}</time>${notesButton}${badges}</div>`;
-  const services=`<span class="appointment-services">${split.primary?`<span class="service-primary">${escape(split.primary)}</span>`:""}${addOns.map(name=>`<span class="service-addon">${escape(name)}</span>`).join("")}${extra>0?`<small>+${extra} more</small>`:""}</span>`;
-  const body=`<button type="button" class="calendar-open" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><span class="appointment-identity"><strong class="appointment-pet">${escape(petName({petName:model.petName}))}</strong>${model.breed?`<span class="appointment-breed">${escape(model.breed)}</span>`:""}</span>${services}<span class="appointment-client">${escape(model.customerName)}</span></button>`;
+  const services=`<span class="appointment-services">${split.primary?`<span class="service-primary">${escape(split.primary)}</span>`:""}${addOns.map(name=>`<span class="service-addon">${escape(name)}</span>`).join("")}</span>`;
+  const body=`<button type="button" class="calendar-open" data-calendar-appointment="${item.id}" aria-label="${escape(appointmentAccessibleName(model))}"><span class="appointment-identity"><strong class="appointment-pet">${escape(petName({petName:model.petName}))}</strong>${model.breed?`<span class="appointment-breed">${escape(model.breed)}</span>`:""}</span>${services}</button>`;
   // TWO APPOINTMENTS AT THE SAME TIME ARE TWO CARDS SIDE BY SIDE, the way two blocks are two
   // bands: overlapping is permitted, so a second card must never cover the first. Each card is
   // told its lane and the lane count of its cluster and the stylesheet divides the column.
   const stacked=lanes>1;
-  return `<article class="${day?"day-appointment ":""}week-appointment appointment-block density-${density} status-${escape(item.status)}" data-appointment-id="${item.id}" ${draggable?'data-draggable="true" ':""}${groomerId?`data-groomer-id="${groomerId}" data-groomer-slot="${groomerColorSlot(groomerId)}"`:""}${stacked?` data-card-lane="${lane}" data-card-lanes="${lanes}"`:""}${behind?" data-card-behind":""} style="${style}${stacked?`;--card-lane:${lane};--card-lanes:${lanes}`:""}">${head}${body}<div class="sr-only appointment-accessible-safety">${safetyContext(item)}</div><div class="appointment-quick-actions">${calendarAction(item)}</div></article>`;
+  return `<article class="${day?"day-appointment ":""}week-appointment appointment-block density-${density} status-${escape(item.status)}" data-appointment-id="${item.id}" ${draggable?'data-draggable="true" ':""}${groomerId?`data-groomer-id="${groomerId}" data-groomer-slot="${groomerColorSlot(groomerId)}"`:""}${stacked?` data-card-lane="${lane}" data-card-lanes="${lanes}"`:""}${behind?" data-card-behind":""}${covers?" data-card-covers":""} style="${style}${stacked?`;--card-lane:${lane};--card-lanes:${lanes}`:""}">${head}${body}<div class="sr-only appointment-accessible-safety">${safetyContext(item)}</div><div class="appointment-quick-actions">${calendarAction(item)}</div></article>`;
 }
 // == Blocked time on the grid ==
 //
@@ -1367,10 +1386,12 @@ function appointmentColumnLayout(items,day,start,slots,firstRow){
   // beside it - a struck-through Boba made Charlie's card half as wide for a visit that is not
   // happening. Live visits are packed on their own; the inactive ones are packed among
   // themselves and, where they cross a live visit, drawn BEHIND it (`behind`), first in the
-  // column so the live card paints over them, with a sliver left showing for the tap.
+  // column so the live card paints over them, with a sliver left showing for the tap. That sliver
+  // is the ONLY reason a card stops short of its lane's edge: a live card over one `covers` it and
+  // keeps the reserve; every other card - a lone visit above all - takes the whole lane.
   const inactive=entries.filter(entry=>appointmentInactiveStatus(entry.item.status)),live=entries.filter(entry=>!appointmentInactiveStatus(entry.item.status));
-  const behind=entry=>live.some(other=>other.from<entry.to&&entry.from<other.to);
-  return [...columnLanes(inactive).map(entry=>({...entry,behind:behind(entry)})),...columnLanes(live)];
+  const crosses=(entry,others)=>others.some(other=>other.from<entry.to&&entry.from<other.to);
+  return [...columnLanes(inactive).map(entry=>({...entry,behind:crosses(entry,live)})),...columnLanes(live).map(entry=>({...entry,covers:crosses(entry,inactive)}))];
 }
 function appointmentInactiveStatus(status){return status==="cancelled"||status==="no_show";}
 /**
@@ -1470,6 +1491,10 @@ globalThis.addEventListener("resize",sizeCalendarScroll);
 // a paint the operator can see, so the open that follows still lands where it should. A live tick
 // repaints the same period and leaves the operator's scroll alone.
 let calendarRevealKey=null;
+// A NEW SESSION OPENS ON ITS OWN TODAY. The scroll box is static markup and outlives a sign-out,
+// and so did this key: a groomer signing in after the owner had scrolled the same week inherited
+// the owner's scroll and no reveal, with today's column off-screen. `resetTenantState` calls this.
+function resetCalendarReveal(){calendarRevealKey=null;const scroll=$(".week-scroll");if(scroll){scroll.scrollLeft=0;scroll.scrollTop=0;}}
 function calendarRevealDue(){
   if(document.body.dataset.view!=="calendar")return false;
   // NOT LAID OUT YET IS NOT ON SCREEN. A session whose landing view IS the calendar paints it
@@ -1564,8 +1589,8 @@ function renderWeekCalendar(){
   const visible=filteredAppointments();let appointments="";
   for(let dayIndex=0;dayIndex<days.length;dayIndex++)for(let groomerIndex=0;groomerIndex<groomers.length;groomerIndex++){
     const groomer=groomers[groomerIndex],own=visible.filter(item=>(item.groomers||[]).some(assigned=>assigned.id===groomer.id));
-    for(const {item,row,span,place,lane,lanes,behind} of appointmentColumnLayout(own,days[dayIndex],start,slots,3))
-      appointments+=appointmentCard(item,{day:true,groomerId:groomer.id,lane,lanes,behind,style:`grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${row}/span ${span};${minutePaintStyle(place)}`});
+    for(const {item,row,span,place,lane,lanes,behind,covers} of appointmentColumnLayout(own,days[dayIndex],start,slots,3))
+      appointments+=appointmentCard(item,{day:true,groomerId:groomer.id,lane,lanes,behind,covers,style:`grid-column:${dayIndex*groomers.length+groomerIndex+2};grid-row:${row}/span ${span};${minutePaintStyle(place)}`});
   }
   const now=currentBusinessMinutes(),todayIndex=days.indexOf(businessDate()),nowRow=Math.floor((now-start)/30)+3,currentLine=todayIndex>=0&&now>=start&&now<end?calendarNowMarkup(`${todayIndex*groomers.length+2}/span ${groomers.length}`,nowRow,now-start):"";target.innerHTML=header+cells+blocks+appointments+currentLine;
   $("#calendar-range").textContent=`${formatPrefLocalMonthDay(days[0])} – ${formatPrefLocalMonthDayYear(days[6])}`;
@@ -1599,9 +1624,9 @@ function renderDayCalendar(){
   }
   for(let column=0;column<groomers.length;column++){
     const groomer=groomers[column],own=filteredAppointments().filter(item=>(item.groomers||[]).some(assigned=>assigned.id===groomer.id));
-    for(const {item,row,span,place,lane,lanes,behind} of appointmentColumnLayout(own,state.calendar.selectedDate,start,slots,2)){
+    for(const {item,row,span,place,lane,lanes,behind,covers} of appointmentColumnLayout(own,state.calendar.selectedDate,start,slots,2)){
       if(firstBusyColumn===null||column<firstBusyColumn)firstBusyColumn=column;
-      content+=appointmentCard(item,{day:true,groomerId:groomer.id,lane,lanes,behind,style:`grid-column:${column+2};grid-row:${row}/span ${span};${minutePaintStyle(place)}`});
+      content+=appointmentCard(item,{day:true,groomerId:groomer.id,lane,lanes,behind,covers,style:`grid-column:${column+2};grid-row:${row}/span ${span};${minutePaintStyle(place)}`});
     }
   }
   state.calendar.firstBusyColumn=firstBusyColumn??0;
@@ -1682,6 +1707,10 @@ function appointmentHost(target){return target.closest?.("[data-appointment-id],
 // legal target and the server gets to answer with the conflict). A drop is never applied
 // optimistically - the request goes first and the calendar reloads from what the server did.
 const CALENDAR_DRAG_THRESHOLD=5,CALENDAR_DRAG_EDGE=48,CALENDAR_DRAG_SPEED=16;
+// A FINGER PICKS A BAND UP BY HOLDING IT. On touch a finger that travels is scrolling the grid, so
+// a block is only lifted once it has been held still (within the slop) for the hold; a tap still
+// opens it and a swipe still scrolls.
+const CALENDAR_TOUCH_HOLD=350,CALENDAR_TOUCH_SLOP=10;
 let calendarDrag=null;
 /**
  * Whether a MOVE is on offer at all.
@@ -2026,6 +2055,7 @@ function swallowNextClick(){
 function endCalendarDrag(commit){
   const drag=calendarDrag;if(!drag)return;
   calendarDrag=null;
+  globalThis.clearTimeout(drag.hold);
   if(drag.frame)globalThis.cancelAnimationFrame(drag.frame);
   if(!drag.active)return;
   if(drag.card.hasPointerCapture?.(drag.pointerId))drag.card.releasePointerCapture(drag.pointerId);
@@ -2060,17 +2090,21 @@ function endCalendarDrag(commit){
 }
 document.addEventListener("pointerdown",event=>{
   if(calendarDrag)endCalendarDrag(false);
-  if(event.pointerType!=="mouse"||event.button!==0||!event.isPrimary)return;
+  // A mouse drags a card or a band; a finger or a pen drags a band, after the hold. Cards keep the
+  // menu's Move on touch (see `calendarDragAvailable`).
+  const touch=event.pointerType==="touch"||event.pointerType==="pen";
+  if(!touch&&event.pointerType!=="mouse"||event.button!==0||!event.isPrimary)return;
   const card=calendarDragCard(event.target);if(!card)return;
   // `minutes` is how long the thing being dragged is, so the drop preview is drawn its height.
-  const common={card,pointerId:event.pointerId,fromX:event.clientX,fromY:event.clientY,x:event.clientX,y:event.clientY,active:false,slot:null,preview:null,minutes:30,container:null,frame:0};
+  const common={card,pointerId:event.pointerId,fromX:event.clientX,fromY:event.clientY,x:event.clientX,y:event.clientY,active:false,slot:null,preview:null,minutes:30,container:null,frame:0,touch,hold:0};
   if(card.dataset.blockedTimeId){
     const block=blockedTimeById(card.dataset.blockedTimeId);if(!block||!blockedTimeDragAvailable(block))return;
-    calendarDrag={...common,kind:"block",id:block.id,fromSlot:block.scheduledLocalStart.slice(0,16),fromGroomer:block.employeeId||"",
+    const drag=calendarDrag={...common,kind:"block",id:block.id,fromSlot:block.scheduledLocalStart.slice(0,16),fromGroomer:block.employeeId||"",
       minutes:blockedTimeMinutes(block.scheduledLocalEnd)-blockedTimeMinutes(block.scheduledLocalStart)};
+    if(touch)drag.hold=globalThis.setTimeout(()=>{if(calendarDrag!==drag)return;beginCalendarDrag();highlightDropSlot(calendarDropSlot(drag.x,drag.y));},CALENDAR_TOUCH_HOLD);
     return;
   }
-  if(!calendarDragAvailable())return;
+  if(touch||!calendarDragAvailable())return;
   const item=calendarAppointmentById(card.dataset.appointmentId);if(!item||item.status!=="scheduled"||!scopeAllows(item))return;
   calendarDrag={...common,kind:"appointment",id:item.id,fromSlot:appointmentLocalValue(item),fromGroomer:card.dataset.groomerId||"",
     minutes:Math.max(5,Math.round((new Date(item.endAt)-new Date(item.startAt))/60000))};
@@ -2079,12 +2113,19 @@ document.addEventListener("pointermove",event=>{
   const drag=calendarDrag;if(!drag||event.pointerId!==drag.pointerId)return;
   drag.x=event.clientX;drag.y=event.clientY;
   if(!drag.active){
-    if(Math.abs(drag.x-drag.fromX)<CALENDAR_DRAG_THRESHOLD&&Math.abs(drag.y-drag.fromY)<CALENDAR_DRAG_THRESHOLD)return;
+    const slop=drag.touch?CALENDAR_TOUCH_SLOP:CALENDAR_DRAG_THRESHOLD;
+    if(Math.abs(drag.x-drag.fromX)<slop&&Math.abs(drag.y-drag.fromY)<slop)return;
+    // A finger that travels before the hold is scrolling the grid, not carrying the band.
+    if(drag.touch){endCalendarDrag(false);return;}
     beginCalendarDrag();
   }
   positionDraggedCard();
   highlightDropSlot(calendarDropSlot(drag.x,drag.y));
 });
+// Once a held band is lifted the finger carries it: the grid must not scroll under it (which would
+// also cancel the pointer stream), and a long-press must not open the browser's own menu.
+document.addEventListener("touchmove",event=>{if(calendarDrag?.touch&&calendarDrag.active&&event.cancelable)event.preventDefault();},{passive:false});
+document.addEventListener("contextmenu",event=>{if(calendarDrag?.touch)event.preventDefault();});
 document.addEventListener("pointerup",event=>{if(calendarDrag&&event.pointerId===calendarDrag.pointerId)endCalendarDrag(true);});
 document.addEventListener("pointercancel",event=>{if(calendarDrag&&event.pointerId===calendarDrag.pointerId)endCalendarDrag(false);});
 document.addEventListener("keydown",event=>{if(event.key==="Escape"&&calendarDrag)endCalendarDrag(false);});
@@ -2160,15 +2201,16 @@ function confirmAppointmentDrop(localStart,origin=null,appointment=null){
   });
 }
 /**
- * WHETHER THIS SESSION MAY DRAG THIS BLOCK. Four facts, none of them new: the edit key the drawer's
- * Update already needs; a fine pointer, for the same reason cards keep the menu path on touch; a
- * block whose start and end fall in one day, because a drop names one wall-clock start and the
- * end is derived from the block's own length; and ownership - mine, or a session that may manage
- * any staff member's time.
+ * WHETHER THIS SESSION MAY DRAG THIS BLOCK. Three facts: the edit key the drawer's Update already
+ * needs; a block whose start and end fall in one day, because a drop names one wall-clock start and
+ * the end is derived from the block's own length; and ownership - mine, or a session that may
+ * manage any staff member's time. ANY POINTER: a groomer moves her own lunch from the phone in her
+ * hand, so a band is lifted by a mouse drag or by a held finger (`CALENDAR_TOUCH_HOLD`). The
+ * fine-pointer gate here is what left Grace's own block immovable on touch.
  */
 function blockedTimeScopeAllows(block){return allowed("appointments.edit_all_staff")||(Boolean(myEmployeeId())&&block?.employeeId===myEmployeeId());}
 function blockedTimeDragAvailable(block){
-  return allowed("calendar.blocks_edit")&&globalThis.matchMedia("(hover: hover) and (pointer: fine)").matches
+  return allowed("calendar.blocks_edit")
     &&blockedTimeSpan(block).editable&&blockedTimeScopeAllows(block);
 }
 /** `blockedTimePlusHour`'s shape for an arbitrary length, sliced rather than parsed as ever. */
@@ -2266,12 +2308,25 @@ function blockedTimeHoverDetails(block){
 // A card's menu (or the slot menu) is what the operator is reading while it is open, and the
 // preview would sit over it - focus moving into the menu is itself a focusin on the card.
 function calendarMenuOpen(){return Boolean(document.querySelector(".calendar-action-popover:not([hidden])"));}
-function showCalendarHover(host){if(!globalThis.matchMedia("(hover: hover) and (pointer: fine)").matches)return;if(calendarMenuOpen()||!host?.isConnected){hideCalendarHover();return;}const blockId=host?.dataset.blockedTimeId,block=blockId?blockedTimeById(blockId):null,item=blockId?null:calendarAppointmentById(host?.dataset.appointmentId);if(!block&&!item)return;const preview=$("#calendar-hover-preview"),rect=host.getBoundingClientRect(),width=Math.min(280,globalThis.innerWidth-24);preview.innerHTML=block?blockedTimeHoverDetails(block):appointmentHoverDetails(appointmentPresentation(item));preview.style.width=`${width}px`;preview.hidden=false;const height=preview.offsetHeight,leftSpace=rect.left-12,rightSpace=globalThis.innerWidth-rect.right-12,left=rightSpace>=width?rect.right+8:leftSpace>=width?rect.left-width-8:Math.max(12,Math.min(rect.left,globalThis.innerWidth-width-12)),top=rect.bottom+height+12<=globalThis.innerHeight?rect.bottom+8:Math.max(12,rect.top-height-8);preview.style.left=`${left}px`;preview.style.top=`${top}px`;if(block){preview.dataset.hoverBlockedTimeId=block.id;preview.removeAttribute("data-hover-appointment-id");}else{preview.dataset.hoverAppointmentId=item.id;preview.removeAttribute("data-hover-blocked-time-id");}}
+function showCalendarHover(host){if(!globalThis.matchMedia("(hover: hover) and (pointer: fine)").matches)return;if(calendarMenuOpen()||!host?.isConnected){hideCalendarHover();return;}const blockId=host?.dataset.blockedTimeId,block=blockId?blockedTimeById(blockId):null,item=blockId?null:calendarAppointmentById(host?.dataset.appointmentId);if(!block&&!item)return;const preview=$("#calendar-hover-preview"),rect=host.getBoundingClientRect(),width=Math.min(280,globalThis.innerWidth-24);preview.innerHTML=block?blockedTimeHoverDetails(block):appointmentHoverDetails(appointmentPresentation(item),appointmentBadges(item));preview.style.width=`${width}px`;preview.hidden=false;const height=preview.offsetHeight,leftSpace=rect.left-12,rightSpace=globalThis.innerWidth-rect.right-12,left=rightSpace>=width?rect.right+8:leftSpace>=width?rect.left-width-8:Math.max(12,Math.min(rect.left,globalThis.innerWidth-width-12)),top=rect.bottom+height+12<=globalThis.innerHeight?rect.bottom+8:Math.max(12,rect.top-height-8);preview.style.left=`${left}px`;preview.style.top=`${top}px`;if(block){preview.dataset.hoverBlockedTimeId=block.id;preview.removeAttribute("data-hover-appointment-id");}else{preview.dataset.hoverAppointmentId=item.id;preview.removeAttribute("data-hover-blocked-time-id");}}
 function hideCalendarHover(){const preview=$("#calendar-hover-preview");preview.hidden=true;preview.removeAttribute("data-hover-appointment-id");preview.removeAttribute("data-hover-blocked-time-id");}
 document.addEventListener("pointerover",event=>{const host=appointmentHost(event.target);if(host&&!host.contains(event.relatedTarget))showCalendarHover(host);});
 document.addEventListener("pointerout",event=>{const host=appointmentHost(event.target);if(host&&!host.contains(event.relatedTarget))hideCalendarHover();});
 document.addEventListener("focusin",event=>{const host=appointmentHost(event.target);if(host)showCalendarHover(host);});
 document.addEventListener("focusout",event=>{const host=appointmentHost(event.target);if(host&&!host.contains(event.relatedTarget))hideCalendarHover();});
+/**
+ * THE WHOLE CARD OPENS THE VISIT. Only the body under the strip was a button, so the strip - and a
+ * short, brief or struck-through card that is nothing BUT its strip - opened nothing, and the "⋯"
+ * was the only way in. A press anywhere on a card that is not one of its own controls (notes, the
+ * menu) now opens it, the way the body button does; the body stays the keyboard's tab stop.
+ * A completed drag never gets here: `swallowNextClick` stops that click at the document's capture.
+ */
+document.addEventListener("click",event=>{
+  const card=event.target.closest?.(".appointment-block[data-appointment-id]");
+  if(!card||event.defaultPrevented||event.target.closest("button,a,input,select,textarea,[role=menuitem],.calendar-action-popover"))return;
+  closeCalendarMenus();
+  openCalendarAppointment(card.dataset.appointmentId,card.querySelector(".calendar-open"));
+});
 /* == The Block Time dialog =====================================================================
  *
  * Seam 1 drew the band and said, in its own comment, "no click, no drag, no edit, no delete - a
@@ -5464,13 +5519,16 @@ function invoiceDocumentActionsMarkup(receipt){
   // The documents and the two not-built controls are the UTILITY group; the lead slot belongs to
   // Take Payment when there is money to take, and is absent otherwise - a disabled control never
   // holds the dominant slot.
+  // THE RECEIPT ACTIONS BELONG TO A SETTLED INVOICE AND ONLY TO IT: Print Receipt, Send Receipt
+  // and Ask for Review are drawn together once the settlement completed, and an unpaid or partly
+  // paid bill offers Print Invoice and the payment action alone - no receipt semantics at all.
   return `<div class="surface-foot-actions surface-foot-utility" data-testid="invoice-document-actions">`
     +`<button type="button" class="secondary compact" data-testid="invoice-print-invoice">Print Invoice</button>`
     +(receiptSettlementComplete(receipt)
       ? `<button type="button" class="secondary compact" data-testid="invoice-print-receipt">Print Receipt</button>`
+        +unavailable("invoice-send-receipt","Send Receipt")
+        +unavailable("invoice-ask-review","Ask for Review")
       : "")
-    +unavailable("invoice-send-receipt","Send Receipt")
-    +unavailable("invoice-ask-review","Ask for Review")
   +`</div>`
   +(invoiceCanTakePayment(receipt)
     ? `<div class="surface-foot-actions surface-foot-lead">`
@@ -5481,6 +5539,8 @@ function invoiceDocumentActionsMarkup(receipt){
 // rather than the footer, so a phone's sticky footer is the balance and the actions and nothing
 // that has to be read four lines deep every time the document is opened.
 function invoiceUnavailableNoteMarkup(receipt){
+  // Said only where the two controls it explains are drawn: on a settled invoice.
+  if(!receiptSettlementComplete(receipt))return "";
   return `<p class="fine invoice-unavailable-note" data-testid="invoice-unavailable-note">`
     +`${escape(invoiceUnavailableReason(receipt))}</p>`;
 }
@@ -16134,7 +16194,9 @@ const APPOINTMENT_ACTIVITY_LABELS={
   "payment.refund.failed":"Refund failed",
   "coupon.redeem":"Coupon applied",
   "credit.redeem":"Credit applied",
-  "credit.reverse":"Credit reversed"
+  "credit.reverse":"Credit reversed",
+  // A service edit on an invoiced visit (allowed until a payment is recorded) re-prices the bill.
+  "invoice.recalculate":"Invoice recalculated"
 };
 function activityStamp(value){
   const when=new Date(value);
@@ -16195,7 +16257,7 @@ function appointmentActivityLine(entry){
   // Money, only when the server sent it: the projection nulls every amount for a caller without
   // `payments.view`, and a null here draws nothing rather than "$0.00".
   if(present(entry.amountMinor))details.push(`${money(entry.amountMinor)}${entry.method?` by ${entry.method}`:""}`);
-  else if(present(entry.totalMinor))details.push(money(entry.totalMinor));
+  else if(present(entry.totalMinor))details.push(action==="invoice.recalculate"?`New total ${money(entry.totalMinor)}`:money(entry.totalMinor));
   const who=entry.actor?.label||entry.actorName||"an unknown account";
   return {what,details,who,when:activityStamp(entry.at||entry.createdAt),reason:entry.reason||""};
 }
@@ -16711,8 +16773,19 @@ function appointmentPermissionRefusal(action){
  */
 const APPOINTMENT_SCOPE_REFUSAL="This appointment is assigned to another groomer";
 function appointmentScopeRefusal(){return refusalAttributes(APPOINTMENT_SCOPE_REFUSAL);}
-// The server's own refusal, said before the press: the bill is raised from these lines.
-const SERVICES_LOCKED_REASON="Services are locked once the visit is invoiced";
+// The server's own refusal (409 `SERVICES_LOCKED_BY_PAYMENT`), said before the press. An invoice
+// alone no longer locks anything - an edit re-prices it - only a recorded payment does.
+const SERVICES_LOCKED_REASON="Services are locked once a payment is recorded. Void the payment to change them";
+/**
+ * WHETHER THIS VISIT'S SERVICES MAY CHANGE, as the server says it: `servicesEditable` on the
+ * projection is an editable status (scheduled through completed) AND no payment recorded on the
+ * live invoice. Permission and own-scope stay the caller's to add. `servicesLockedByPayment` is
+ * the one state where the controls are drawn greyed with the reason: the window is open by
+ * status, and a payment is what closed it.
+ */
+const SERVICES_EDIT_STATUSES=["scheduled","checked_in","in_service","completed"];
+function servicesEditable(item){return item?.servicesEditable===true;}
+function servicesLockedByPayment(item){return Boolean(item)&&!servicesEditable(item)&&SERVICES_EDIT_STATUSES.includes(item.status)&&Boolean(item.invoiceId);}
 // The same rule on a block, said about a block: the drawer used to borrow the appointment sentence
 // and told an operator looking at Lunch that "this appointment" belonged to somebody else.
 const BLOCK_SCOPE_REFUSAL="This blocked time is on another groomer's calendar";
@@ -16770,6 +16843,11 @@ function appointmentRefusal(item,action,permission){
  * focus and disabled - and the contrast is decided once in the stylesheet for `.icon-action`
  * rather than per font. The tip points down-left, the way an edit pencil is drawn everywhere else.
  */
+function printGlyph(){
+  return `<svg class="print-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">`
+    +`<path d="M7 9V3h10v6"/><path d="M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2"/>`
+    +`<path d="M7 14h10v7H7z"/></svg>`;
+}
 function editGlyph(){
   return `<svg class="edit-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">`
     +`<path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0 0-3L17 5a2.1 2.1 0 0 0-3 0L3.5 15.5V20z"/>`
@@ -16867,16 +16945,19 @@ function appointmentSurfaceMarkup(surface){
         +` <span class="appointment-billing ${billing.tone}" data-testid="appointment-billing">${escape(billing.label)}</span>`
         // THE SAME BADGE THE CARDS WEAR, with the room to spell the word out. It read as a 10px
         // muted word beside the billing chip, and a cancelled visit looked like a scheduled one
-        // until the footer was read. The text stays the plain status the suite asserts on.
-        +` <span class="appointment-status appointment-badge badge-${escape(item.status)}" data-testid="appointment-status">${escape(appointmentStatusLabel(item.status))}</span></p>`
+        // until the footer was read. The text stays the plain status the suite asserts on - except
+        // that an unsettled completed visit says what it is to the desk: Ready for pickup.
+        +` <span class="appointment-status appointment-badge badge-${escape(appointmentReadyForPickup(item)?"ready":item.status)}" data-testid="appointment-status">${escape(appointmentLifecycleLabel(item))}</span></p>`
       +`<h2 id="appointment-detail-title">${escape(model.dateLabel)}</h2>`
       +`<p class="surface-subhead">${escape(model.timeRange)} · scheduled ${model.durationMinutes} min</p>`
     +`</div>`
-    // ONE WAY TO THE TICKET, AND IT IS THE FOOTER'S. This chrome used to carry an icon bound to
-    // the very same closure as the footer's Ticket button - the same `runOnce("ticket:<id>")` key,
-    // the same document, on the same screen. Two affordances for one act is something an operator
-    // has to work out rather than read, and the footer's is the one that says what it does.
+    // ONE WAY TO THE TICKET, AND IT IS NOW THE HEAD'S: a printer icon top right, beside the
+    // status, as the salon's reference book has it. The footer's Print Ticket is gone, so it is
+    // still one affordance for one act - the same `appointment-ticket` hook, the same
+    // `runOnce("ticket:<id>")` key and the same document - and the footer is left to the visit's
+    // workflow and its money.
     +`<div class="surface-head-actions">`
+      +`<button type="button" class="icon-action surface-head-print" data-testid="appointment-ticket" aria-label="Print Ticket" title="Print Ticket">${printGlyph()}</button>`
       +`<button type="button" class="surface-close" data-surface-close aria-label="Close appointment details">&#215;</button>`
     +`</div>`
     // A visit that will not happen is said once, across the head, before the groomer and the pet
@@ -17003,10 +17084,8 @@ function appointmentSurfaceMarkup(surface){
    *
    * Still one Print Ticket, still the same document, still no receipt semantics.
    */
-  // ONE LOOK IN EVERY STATE (QA UX-13): the sheet is always the same quiet secondary in the
-  // utility group. It moved between the utility group, the lead zone and the primary slot by
-  // status, so the same control wore three weights on three visits. It is never the primary.
-  const ticket=`<button type="button" class="secondary compact" data-testid="appointment-ticket">Print Ticket</button>`;
+  // The Ticket is printed from the head's printer icon (see `head`), in every state; the footer
+  // no longer carries it.
   // It OPENS the invoice rather than raising a second one, and it is the same workspace a client's
   // transaction history opens, so there is one Invoice document with one title and one pair of
   // print controls.
@@ -17019,7 +17098,7 @@ function appointmentSurfaceMarkup(surface){
   // demonstrably exists, with no route to it from the visit that raised it.
   const invoice=can.invoice
     ? `<button type="button" class="${primarySlot==="invoice"?"primary":"secondary"} compact" data-testid="appointment-invoice"${
-      can.invoiceViewable?"":appointmentPermissionRefusal("view invoices")}>Invoice</button>`
+      can.invoiceViewable?"":appointmentPermissionRefusal("view invoices")}>View Invoice</button>`
     : "";
   // Billing the visit, or collecting what is still owed on a bill already raised. ONE CONTROL FOR
   // BOTH, interpolated into both footers, because `readOnly` is a statement about the VISIT no
@@ -17132,7 +17211,7 @@ function appointmentSurfaceMarkup(surface){
     // bill leads; on a cancelled one Reschedule leads. Book Again and the sheet are utility in
     // both. There is no footer Close - the head's × is the way out (QA UX-13).
     ? `<footer class="surface-foot">`
-      +`<div class="surface-foot-actions surface-foot-utility">${bookAgain}${ticket}${parkedMarkup}</div>`
+      +`<div class="surface-foot-actions surface-foot-utility">${bookAgain}${parkedMarkup}</div>`
       +leadZone
     +`</footer>`
     : `<footer class="surface-foot">`
@@ -17142,7 +17221,6 @@ function appointmentSurfaceMarkup(surface){
         +(can.cancelOffered?`<button type="button" class="secondary compact" data-testid="appointment-no-show"${
           can.cancel?"":can.noShowRefusal}>No-show</button>`:"")
         +bookAgain
-        +ticket
         +parkedMarkup
         // An invoice reaches this branch only if one exists while the visit is still moving, which
         // no path produces today - `readOnly` is exactly completed-and-invoiced. It is interpolated
@@ -17262,12 +17340,12 @@ async function openCalendarAppointment(id,origin=null,{returnView="calendar"}={}
       // BUILD IT OR GREY IT OUT. Once the visit is invoiced the services are locked, and the
       // controls stay on screen, disabled, with the reason said in a visible line beneath the
       // head - an operator who saw them simply vanish read it as "services cannot be edited".
-      servicesLocked:Boolean(surface.item.invoiceId)&&!["cancelled","no_show"].includes(status),
-      adjustServicesOffered:(["scheduled","checked_in","in_service"].includes(status)&&!surface.item.invoiceId)
-        ||(Boolean(surface.item.invoiceId)&&!["cancelled","no_show"].includes(status)),
-      adjustServices:["scheduled","checked_in","in_service"].includes(status)
-        &&!surface.item.invoiceId&&allowed("appointments.edit")&&mine,
-      adjustServicesRefusal:surface.item.invoiceId
+      // The window is the server's `servicesEditable`: open through completed, and closed by a
+      // recorded payment rather than by the invoice itself.
+      servicesLocked:servicesLockedByPayment(surface.item),
+      adjustServicesOffered:servicesEditable(surface.item)||servicesLockedByPayment(surface.item),
+      adjustServices:servicesEditable(surface.item)&&allowed("appointments.edit")&&mine,
+      adjustServicesRefusal:servicesLockedByPayment(surface.item)
         ? refusalAttributes(SERVICES_LOCKED_REASON)
         : appointmentRefusal(item,"change the services on this appointment","appointments.edit"),
       /*
@@ -18343,8 +18421,20 @@ async function selectMessageClient(id){
   state.pets=[...state.pets.filter(pet=>pet.customerId!==id),...data.pets];
   renderMessages();
   const name=clientName(data.customer);
-  $("#message-thread").innerHTML=`<header><a class="message-client-link" href="/clients/${id}" target="_blank" rel="noopener">${escape(name)}</a></header><div class="message-disabled-state"><h3>Messaging is not connected</h3><p>No conversation history, inbound webhook, SMS provider, delivery status, or scheduler is configured.</p></div><footer><textarea disabled aria-label="Message composer" placeholder="Messaging unavailable"></textarea><button type="button" class="primary" disabled>Send</button></footer>`;
+  // ON A PHONE THE CLIENT IS ITS OWN SCREEN (≤700px): the list gives way to the thread and the
+  // client's details, and the arrow in the thread's head is the way back to the list. Above that
+  // width the class changes nothing and the arrow is not drawn - the three panes sit side by side.
+  $(".messages-workspace")?.classList.add("is-client-open");
+  $("#message-thread").innerHTML=`<header><button type="button" class="message-back" data-message-back aria-label="Back to clients">&#8592;</button><a class="message-client-link" href="/clients/${id}" target="_blank" rel="noopener">${escape(name)}</a></header><div class="message-disabled-state"><h3>Messaging is not connected</h3><p>No conversation history, inbound webhook, SMS provider, delivery status, or scheduler is configured.</p></div><footer><textarea disabled aria-label="Message composer" placeholder="Messaging unavailable"></textarea><button type="button" class="primary" disabled>Send</button></footer>`;
   renderClientSummaryPane();
+  $("#message-thread [data-message-back]")?.addEventListener("click",closeMessageClient);
+  if(messagesPhoneWidth())$("#messages")?.scrollIntoView?.({block:"start"});
+}
+function messagesPhoneWidth(){return globalThis.matchMedia("(max-width:700px)").matches;}
+/** Back to the client list on a phone: the selection is kept, so its row stays marked and focused. */
+function closeMessageClient(){
+  $(".messages-workspace")?.classList.remove("is-client-open");
+  $(`#message-client-list [data-message-client="${state.messageClientId}"]`)?.focus();
 }
 const reminderTabs=[["appointment_reminder","Appointment Reminder","supported"],["secondary_reminder","Secondary Reminder","deferred"],["same_day_reminder","Same-Day Reminder","deferred"],["rebook_reminder","Rebook Reminder","deferred"],["vaccination_reminder","Vaccination Reminder","supported"],["birthday_reminder","Pet Birthday Reminder","deferred"]];
 async function loadReminders(type=state.reminders.type){state.reminders.type=type;const result=await api(`/api/reminders?type=${encodeURIComponent(type)}`);state.reminders={type,items:result.items,supported:result.supported};renderReminders();}

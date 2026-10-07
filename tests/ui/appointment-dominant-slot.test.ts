@@ -113,6 +113,9 @@ function client(
     invoiceId: null, invoiceStatus: null, invoiceBalanceMinor: 0,
     services: [{ serviceId: "s1", name: "Full groom", durationMinutes: 90, priceMinor: 6500 }],
     groomers: [{ id: "e1", displayName: "Alex" }],
+    // The server's `servicesEditable`: an editable status and no recorded payment - an invoiced
+    // fixture stands for a paid one here unless it says otherwise.
+    servicesEditable: ["scheduled", "checked_in", "in_service", "completed"].includes(status) && !extra.invoiceId,
     ...extra
   };
 
@@ -126,6 +129,9 @@ function client(
     const appointmentMoveAllowed = () => allowed("appointments.edit");
     const appointmentBillingChip = () => ({ tone: "neutral", label: "Unbilled" });
     const appointmentStatusLabel = (status) => String(status || "").replaceAll("_", " ");
+    // The surface head reads the lifecycle through these two (tests/ui/qa-round3.test.ts holds them).
+    const appointmentReadyForPickup = () => false;
+    const appointmentLifecycleLabel = (item) => appointmentStatusLabel(item?.status);
     const appointmentLockNoteMarkup = () => "";
     const appointmentActivityMarkup = () => "<!--activity-->";
     const appointmentLifecycleMarkup = () => "<!--lifecycle-->";
@@ -258,7 +264,7 @@ describe("a disabled control never steals the dominant slot", () => {
       expect(invoice, invoiceStatus).toContain('class="primary compact"');
       expect(primaries(markup), invoiceStatus).toEqual(["appointment-invoice"]);
       expect(zone(markup, "lead"), invoiceStatus).toEqual(["appointment-invoice"]);
-      expect(zone(markup, "utility"), invoiceStatus).toContain("appointment-ticket");
+      expect(markup, invoiceStatus).toMatch(/<div class="surface-head-actions">.*?data-testid="appointment-ticket"/su);
     }
   });
 
@@ -362,7 +368,7 @@ describe("a disabled control never steals the dominant slot", () => {
     // is promoted.
     const markup = client("completed", GROOMER).markup();
     expect(primaries(markup)).toEqual([]);
-    expect(zone(markup, "utility")).toContain("appointment-ticket");
+    expect(markup).toMatch(/<div class="surface-head-actions">.*?data-testid="appointment-ticket"/su);
     expect(control(markup, "appointment-take-payment")).toBeNull();
     expect(control(markup, "appointment-invoice")).toBeNull();
   });
@@ -395,9 +401,11 @@ describe("a disabled control never steals the dominant slot", () => {
       for (const extra of [{}, SETTLED]) {
         const markup = client(status, EVERYTHING, extra).markup();
         const where = `${status} ${JSON.stringify(extra)}`;
-        expect(zone(markup, "utility"), where).toContain("appointment-ticket");
+        // The sheet is the head's printer icon (QA round 3): in neither footer zone, in every state.
+        expect(markup, where).toMatch(/<div class="surface-head-actions">.*?data-testid="appointment-ticket"/su);
+        expect(zone(markup, "utility"), where).not.toContain("appointment-ticket");
         expect(zone(markup, "lead"), where).not.toContain("appointment-ticket");
-        expect(control(markup, "appointment-ticket"), where).toContain('class="secondary compact"');
+        expect(control(markup, "appointment-ticket"), where).toContain('aria-label="Print Ticket"');
         expect(markup.match(/data-testid="appointment-ticket"/gu), where).toHaveLength(1);
       }
     }
@@ -532,7 +540,7 @@ describe("ownership is a refusal of its own", () => {
         expect(control(markup, testid), `${status} ${testid}`).toBeNull();
       }
       expect(markup, status).toMatch(/data-testid="appointment-view-only">Assigned to [^<]+ — view only<\/p>/u);
-      expect(zone(markup, "utility"), status).toContain("appointment-ticket");
+      expect(markup, status).toMatch(/<div class="surface-head-actions">.*?data-testid="appointment-ticket"/su);
       expect(primaries(markup), status).toEqual([]);
     }
     // The visit's own groomer is not told it is view only.
@@ -582,7 +590,8 @@ describe("the calendar card's overflow menu is gated the way the surface is", ()
   function cardMenu(status: string, granted: readonly string[], extra: Record<string, unknown> = {}, me: string | null = "e1"): string {
     const escape = (value = "") =>
       String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-    const item = { id: "a1", status, petName: "Rex", employeeId: "e1", groomers: [{ id: "e1", displayName: "Alex" }], ...extra };
+    const item = { id: "a1", status, petName: "Rex", employeeId: "e1", groomers: [{ id: "e1", displayName: "Alex" }],
+      servicesEditable: ["scheduled", "checked_in", "in_service", "completed"].includes(status) && !extra.invoiceId, ...extra };
     const prelude = `
       "use strict";
       const petName = (record) => record.petName || "Pet";
@@ -613,11 +622,13 @@ describe("the calendar card's overflow menu is gated the way the surface is", ()
     expect(item(markup, "Cancel appointment")).not.toContain("disabled");
   });
 
-  it("draws Adjust services disabled with the lock reason once the visit is invoiced, whoever holds it", () => {
-    for (const status of ["checked_in", "in_service"]) {
-      const locked = item(cardMenu(status, GROOMER, { invoiceId: "inv1" }), "Adjust services");
+  it("draws Adjust services disabled with the lock reason once a payment is recorded, whoever holds it", () => {
+    for (const status of ["checked_in", "in_service", "completed"]) {
+      const locked = item(cardMenu(status, GROOMER, { invoiceId: "inv1", servicesEditable: false }), "Adjust services");
       expect(locked, status).toContain("disabled");
-      expect(locked, status).toContain("Services are locked once the visit is invoiced");
+      expect(locked, status).toContain("Services are locked once a payment is recorded. Void the payment to change them");
+      // An invoice with no payment on it re-prices instead: the item stays pressable.
+      expect(item(cardMenu(status, GROOMER, { invoiceId: "inv1", servicesEditable: true }), "Adjust services"), status).not.toContain("disabled");
       expect(item(cardMenu(status, GROOMER), "Adjust services"), status).not.toContain("disabled");
     }
   });

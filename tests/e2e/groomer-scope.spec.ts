@@ -273,6 +273,6 @@ test("a groomer reads the receipt of their own settled visit, and not a colleagu
     await expect(refused).toBeDisabled();
     await expect(refused).toHaveAttribute("title", /permission to view invoices/u);
     // Nothing disabled is promoted, and the sheet is never the primary (QA UX-13).
-    await expect(detail(page).getByTestId("appointment-ticket")).toHaveClass(/\bsecondary\b/u);
+    await expect(detail(page).locator(".surface-head [data-testid='appointment-ticket']")).toHaveAttribute("aria-label", "Print Ticket");
     await expect(detail(page).locator("footer .primary")).toHaveCount(0);
   });

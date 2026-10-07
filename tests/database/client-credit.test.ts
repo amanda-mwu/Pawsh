@@ -715,7 +715,16 @@ describeDatabase("client credit", () => {
     });
     expect(profile.statusCode).toBe(200);
     expect(profile.json().summary).toBeNull();
-    expect(JSON.stringify(profile.json())).not.toContain("7500");
+    // Walked as VALUES, not searched as text: the response carries random UUIDs, and one that
+    // happened to contain "7500" failed this on Windows CI without any amount being present.
+    const values: unknown[] = [];
+    const walk = (node: unknown): void => {
+      if (Array.isArray(node)) node.forEach(walk);
+      else if (node && typeof node === "object") Object.values(node).forEach(walk);
+      else values.push(node);
+    };
+    walk(profile.json());
+    expect(values.filter((value) => value === 7500 || value === "7500" || value === "75.00" || value === "$75.00")).toEqual([]);
 
     const owner = await app.inject({
       method: "GET", url: `/api/customers/${client.customerId}/history`,

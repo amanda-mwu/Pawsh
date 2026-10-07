@@ -166,6 +166,9 @@ test("@responsive a Check In dated after today asks first: Cancel leaves it, Con
   expect((await visit(request, appointment.id)).status).toBe("scheduled");
 
   await detail(page).getByTestId("appointment-check-in").click();
+  // The same wait as the two answers above: the dialog is reused, and a Confirm pressed before it
+  // has been asked this time (slow WebKit) answers nothing.
+  await expect(question).toBeVisible();
   await page.getByTestId("stacked-dialog-confirm").click();
   await expect.poll(async () => (await visit(request, appointment.id)).status).toBe("checked_in");
 });

@@ -17,7 +17,10 @@ import { expect, type Page } from "@playwright/test";
 export async function openBooking(page: Page): Promise<void> {
   await page.getByTestId("new-action-trigger").click();
   await page.getByTestId("new-action-menu").getByRole("menuitem", { name: "New Appointment" }).click();
-  await expect(page.getByTestId("booking-client-search")).toBeVisible();
+  // The workspace draws once its first reads (clients, services, groomers) answer, so it gets a
+  // page load's budget like the signed-in shell, not one assertion's: WebKit on a loaded machine
+  // occasionally took past five seconds.
+  await expect(page.getByTestId("booking-client-search")).toBeVisible({ timeout: 15_000 });
 }
 
 /** The header's New Appointment item, for specs that assert its gate rather than press it. */
